@@ -5,9 +5,9 @@ sluice.yaml overrides pieces of it; env vars win last so ops and offline tests
 can override without editing files.
 """
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 
-from sluice.core.leads import LEAD_LAYOUTS
+from sluice.core.leads import LEAD_LAYOUTS, Lead
 from sluice.core.paths import config_file
 from sluice.core.urlguard import parse_allow_hosts
 
@@ -247,6 +247,158 @@ def refuse_wrong_container(block: str, key: str, value, default, *,
         f"but got a {type(value).__name__}. {shape}")
 
 
+# Params keys a search entry's `{params}` element must never be allowed to carry -- they
+# collide with a `Lead` IDENTITY field and `_row_to_lead`'s `setattr` loop
+# (`ingest/base.py`) applies every params key VERBATIM, with no guard of its own: a
+# `params` key named `url` silently REPLACES the scraped url, and `url` is what the
+# vault's non-resurrection match records into `seen.db` -- which has no removal path, so a
+# poisoned url suppresses a real lead permanently with no note anywhere to reverse it.
+# Measured (#212 round 4, arc-r4-001): `{"job_typ": "perm", "url": "PWN"}` (a typo'd key
+# beside a colliding one) passes both the length and third-element-is-a-dict checks below
+# and leaves `lead.url == "PWN"`.
+#
+# DERIVED from `Lead`'s own dataclass fields, never hand-listed -- CLAUDE.md's
+# derive-don't-hand-list rule, and the reason arc-r4-001 gave for the ORIGINAL deferral
+# ("restricting keys is a behaviour change against existing configs") is true only of a
+# full ALLOWLIST, not of this narrow denylist: nobody writes `url:`/`company:`/`title:`
+# into a search's params deliberately, so refusing those collisions is not a behaviour
+# change any real config depends on.
+#
+# `job_type` is the ONE exclusion, and it is deliberate rather than an oversight: it is
+# the SANCTIONED override `_row_to_lead`'s own docstring documents ("a perm search on a
+# contract-default source still tags the lead job_type=perm"), and several shipped
+# sources' `searches_spec` already rely on it (`ingest/sources/google.py`'s
+# `{"job_type": "perm"}}`, `wttj.py`, `wellfound.py`, `escape_city.py`).
+#
+# What #212 does NOT do: define the full set of params keys #223 is allowed to use for
+# anything beyond `job_type` (a pay floor, per the round-4 architect ruling). A params key
+# that is neither a Lead-identity collision nor `job_type` is still applied VERBATIM today
+# (see `test_a_non_colliding_params_key_is_still_applied_verbatim` in
+# `tests/test_base_sources.py`) -- #223's implementer reads THIS function, not the #223
+# spec, so that gap is recorded here rather than only on the issue.
+_PARAMS_KEY_CLASH = frozenset(f.name for f in fields(Lead)) - {"job_type"}
+
+
+def validate_search_entry(owner: str, index: int, entry) -> None:
+    """Refuse a `sources.<id>.searches`-shaped ENTRY that is not `[label, url]` or
+    `[label, url, {params}]` -- the shape a `Search` is built from by indexing
+    positionally as `entry[0], entry[1], entry[2]`.
+
+    ONE grammar, THREE call sites (#212 round 2 -- round 1 shipped this same grammar
+    written out twice, in `load_config` here and in `ingest/base.py`'s `_mk_search`,
+    with nothing binding the two together and #223 already queued to extend it):
+
+      1. `load_config`, over every `sources.<id>.searches` entry -- the PRIMARY rung.
+         A user's own config, caught at load time, naming the exact key
+         (`sources.{sid}.searches[{index}]`) before `ingest list-sources`/`test-source`/
+         `run` ever construct a `Search`.
+      2. `ingest/base.py`'s `_mk_search` -- defence in depth for anything that builds a
+         `Search` WITHOUT going through `load_config`: a test, a future caller, or a
+         source's own `searches_spec` reached via `.searches()`.
+      3. `ingest/base.py`'s `BrowserListSource.__post_init__` -- the source CONTRACT
+         declaration itself, over the whole `searches_spec`, beside `validate_posting_paths`/
+         `validate_reprobed` which already validate that class's other two contract
+         fields. Without this rung, a malformed `searches_spec` still constructs fine --
+         rungs 1 and 2 only run when `load_config` or `.searches()` is actually called --
+         so the registry's per-plugin isolation ("a broken plugin must not sink the rest")
+         never gets a chance to run, because nothing raises at the point a broken plugin is
+         imported. Rung 3 catches it there instead, at construction, the same reasoning
+         `validate_posting_paths`/`validate_reprobed` are already there for.
+
+      Measured, three shapes all survive rung 1's SIBLING container check
+      (`refuse_wrong_container`, which only confirms `searches` itself is a list) and then
+      explode positionally: `[["OnlyLabel"]]` (too short) raised a bare `IndexError`; the
+      natural YAML mapping spelling of an entry (`- label: x` / `url: y`, which parses to a
+      dict) raised `KeyError(0)`; and a scalar third element (`["L", "u", "perm"]`, the shape
+      a user reaches for un-braced) passed both original rungs and only exploded inside
+      `_row_to_lead`'s `{**extra, **search.params}` merge as `TypeError: 'str' object is not
+      a mapping` -- `status=error`, naming none of source, key or index.
+
+      This function lives in `core/config.py` rather than beside `validate_posting_paths`/
+      `validate_reprobed` in `ingest/base.py`: no `core/` module imports a sub-app AT MODULE
+      SCOPE (measured: 22 core modules, 0 such imports). `core/app.py` is the one exception,
+      and it is the composition root -- 34 sub-app imports, every one of them LAZY inside a
+      method body, wiring sub-apps together at call time. `core/config.py` is the BASE of
+      that stack, not a peer of `app.py`: every sub-app config loader and `cli.py` itself
+      sit on it, and `load_config` would need the import inside a per-ENTRY validation loop,
+      so `app.py`'s lazy-import pattern does not transfer here. Hence the grammar lives in
+      `core/config.py` and `ingest/base.py` imports it, never the reverse -- `ingest/base.py`
+      already imports `sluice.core.leads`, so this adds no new dependency direction, only a
+      new module. `tests/test_core_layering.py` is the executable guard: a subprocess
+      witness proves importing every `core/` module never eagerly drags a sub-app into
+      `sys.modules`, and a static sweep proves no `core/` module other than `app.py` names
+      a sub-app at all -- either spelling, lazy or eager.
+
+    Never echoes the ENTRY. A `sources.<id>.searches` entry is the single most
+    preference-dense value in a sluice config -- a label plus a board URL that reliably
+    carries target role keywords and `location=` -- and an uncaught `ValueError` is printed
+    by `cli.py` as one copy-pasteable line, so it reaches logs, bug reports and pasted
+    tracebacks exactly the way `refuse_retired_locations`'s docstring (this same file) warns
+    against: "an exception travels further ... than the config file it came from." Reports
+    only the OBSERVED SHAPE -- `type(x).__name__`, and `len(x)` for a sized CONTAINER other
+    than a bare string -- never the value, and never a mapping's keys either (a YAML mapping's
+    keys can be user text too, as the `- label: x` spelling above shows). A bare string's own
+    length is withheld too (`got a str`, not `got a str of length 12`): unlike a list or dict's
+    length, a string's length is derived from the user's real search text, so reporting it
+    would leak a fragment of the very value this function is careful everywhere else never to
+    reproduce. The qualified key and index already point the user at the exact line; nothing
+    here needs the content to be actionable.
+
+    The third element's KEYS are checked against `_PARAMS_KEY_CLASH` (a `Lead` identity-field
+    collision, `job_type` excluded -- see that constant's own comment); a colliding key is
+    named in the refusal, because a KEY is structural sluice vocabulary, not the user's search
+    text, so naming it does not violate never-echo. What is still UNCHECKED, deliberately
+    deferred to #223: which NON-colliding params keys are actually meaningful (`job_type`
+    today; a pay floor is the queued #223 case). A typo'd or invented key that does not
+    collide with a `Lead` field is still applied VERBATIM by `_row_to_lead`'s `setattr` loop
+    -- read this paragraph before "closing" that gap; it is #223's allowlist to design, not a
+    round-4 omission.
+    """
+    qualified = f"{owner}[{index}]"
+    shape = "[label, url]` or `[label, url, {params}]"
+    if not isinstance(entry, (list, tuple)) or len(entry) not in (2, 3):
+        if isinstance(entry, (str, bytes)):
+            # A bare string IS the entry here (`sources.<id>.searches: - my search`), and
+            # its length would itself leak a fragment of the user's real search text --
+            # unlike a list/dict/tuple's length, which says nothing about content.
+            # `bytes` for the same reason and not as defensive padding: PyYAML's SafeLoader
+            # resolves `!!binary` to bytes, so `- !!binary <base64 of the search>` reaches
+            # here and its length is the search text's length just as a str's is.
+            observed = f"a {type(entry).__name__}"
+        else:
+            try:
+                observed = f"a {type(entry).__name__} of length {len(entry)}"
+            except TypeError:
+                # No `len()` at all (an int, a bool, `None`, ...) -- the round-1
+                # raw-traceback bug class on a shape `refuse_wrong_container` cannot see
+                # (it only checks that `searches` itself is a list, not each entry):
+                # `- 5` / `- null` / `- true` under `searches:` all land here.
+                observed = f"a {type(entry).__name__}"
+        raise ValueError(f"{qualified} must be `{shape}`, got {observed}")
+    label, url = entry[0], entry[1]
+    if not isinstance(label, str) or not isinstance(url, str):
+        bad, bad_type = (("label", type(label).__name__) if not isinstance(label, str)
+                          else ("url", type(url).__name__))
+        raise ValueError(
+            f"{qualified} must be `{shape}` with label and url as strings -- the {bad} "
+            f"is a {bad_type}")
+    if len(entry) == 3 and entry[2] is not None:
+        if not isinstance(entry[2], dict):
+            raise ValueError(
+                f"{qualified} must be `{shape}` with the third element a `{{params}}` "
+                f"mapping -- got a {type(entry[2]).__name__}")
+        clashing = _PARAMS_KEY_CLASH & entry[2].keys()
+        if clashing:
+            # Naming the KEY is fine (never-echo protects the user's search TEXT, and a key
+            # is drawn from sluice's own small `Lead`-field vocabulary, never from it) --
+            # naming the VALUE would not be, so it never appears here.
+            raise ValueError(
+                f"{qualified} params key(s) {sorted(clashing)} collide with a Lead identity "
+                f"field and would silently replace the scraped value (a `url` key, for "
+                f"example, would replace the real url, which drives non-resurrection "
+                f"matching recorded permanently in seen.db) -- rename the key")
+
+
 # The claude-max CLI's LOCATION, which is a deployment fact rather than a preference: the same
 # category as CAMOFOX_URL, whose own comment says env overrides it "so offline tests / alt
 # sessions need no code change". It earns an env override for the same reason, and #209 is the
@@ -400,6 +552,45 @@ def refuse_retired_locations(data: dict) -> None:
             "if you exported it.")
 
 
+def _safe_scalar_repr(value) -> str:
+    """`repr(value)` for a genuine SCALAR typo, `type(value).__name__` for a CONTAINER.
+
+    Backs the three `lead_ttl_days`/`lead_layout`/`min_jd_chars` raises below. Each is
+    documented as never-echo EXEMPT on the ground that "a TTL, a layout name and a
+    character count are not personal" -- true of the value the field is SUPPOSED to hold,
+    and false of the value the raise actually sees when a config file is misindented one
+    level: a YAML block that was meant to sit under a SIBLING key (`target_locations`,
+    `reject_companies`, ...) then becomes THIS key's value, a list or dict carrying that
+    sibling's real content, and `!r}` reproduces the whole thing in one copy-pasteable
+    `ValueError` (#212 round 4, neu-r4-001 -- measured). A genuine scalar mistype
+    (`lead_ttl_days: yes` -> `True`, or a bare typo'd string) keeps the diagnostic repr
+    these raises were written to give; only a list/dict -- which these three fields never
+    legitimately hold -- switches to the type name.
+
+    `bytes` joins list/dict for the identical reason, not as defensive padding: PyYAML's
+    SafeLoader resolves a `!!binary` scalar to `bytes`, so a misindented block tagged
+    `!!binary` reaches here as a `bytes` value, and `repr()` reproduces it in full exactly
+    as it would a list or dict -- the same gap `validate_search_entry` closed one commit
+    earlier for `sources.<id>.searches` entries, on the sibling seam these three raises
+    share. None of the three fields ever legitimately holds `bytes` either.
+    """
+    # ALLOW-LIST, not a deny-list of containers, and that inversion is the whole point.
+    # The deny-list spelling shipped three times and was wrong three times: `(list, dict)`
+    # missed `bytes` (`!!binary`), then `(list, dict, bytes)` missed `set` and `tuple`
+    # (`!!set` is plain SafeLoader, and `_safe_scalar_repr({'a','b'})` reproduced both
+    # members) -- each round closing the type that had just been reported and leaving the
+    # class open. Naming what is SAFE to reproduce cannot go stale that way: a scalar that
+    # is not one of these five cannot be reproduced at all, whatever YAML tag reaches it.
+    #
+    # These five are the types whose repr cannot carry free text a user wrote: an int, a
+    # float, a bool (`lead_ttl_days: yes` -> `True`, the diagnostic these raises exist to
+    # give) and None are closed vocabularies, and a `str` here is a scalar typed on THIS
+    # key's own line -- never a sibling's misindented block, which arrives as a list or a
+    # dict and is exactly what neu-r4-001 measured leaking.
+    return repr(value) if isinstance(value, (int, float, bool, str)) or value is None \
+        else f"a {type(value).__name__}"
+
+
 def load_config(path: str | None = None) -> Config:
     data = {}
     path = path or config_file()
@@ -428,6 +619,13 @@ def load_config(path: str | None = None) -> Config:
             refuse_wrong_container(
                 f"sources.{sid}", "searches", sconf["searches"], [],
                 example='[["My label", "https://example.invalid/jobs"]]')
+            # SHAPE, one level down from the container check just above: that call refuses a
+            # scalar `searches:` value but says nothing about what each ENTRY looks like, so
+            # `[["OnlyLabel"]]` and the natural YAML mapping spelling of an entry both passed
+            # it and reached `_mk_search` as a bare `IndexError`/`KeyError` -- see
+            # `validate_search_entry`'s own docstring for the measured reproduction.
+            for _index, _entry in enumerate(sconf["searches"]):
+                validate_search_entry(f"sources.{sid}.searches", _index, _entry)
         if sconf.get("tuning") is not None:
             refuse_wrong_container(f"sources.{sid}", "tuning", sconf["tuning"], {})
         sources[sid] = SourceConfig(
@@ -476,7 +674,8 @@ def load_config(path: str | None = None) -> Config:
     raw_ttl = 0 if raw_ttl is None else raw_ttl
     if isinstance(raw_ttl, bool) or not isinstance(raw_ttl, int) or raw_ttl < 0:
         raise ValueError(
-            f"lead_ttl_days must be a non-negative integer (0 = off), got {raw_ttl!r}")
+            f"lead_ttl_days must be a non-negative integer (0 = off), got "
+            f"{_safe_scalar_repr(raw_ttl)}")
 
     # #1. Validated HERE as well as in `Vault.__init__`, and the two are NOT redundant. A
     # loader-only check is an equivalent mutant for every one of the ~150 direct `Vault(...)`
@@ -487,7 +686,7 @@ def load_config(path: str | None = None) -> Config:
     if raw_layout is not None and raw_layout not in LEAD_LAYOUTS:
         raise ValueError(
             f"lead_layout must be one of "
-            f"{', '.join(repr(n) for n in LEAD_LAYOUTS)}, got {raw_layout!r}")
+            f"{', '.join(repr(n) for n in LEAD_LAYOUTS)}, got {_safe_scalar_repr(raw_layout)}")
 
     # #169. Same shape as lead_ttl_days above, same reason: bool checked FIRST and
     # separately because it SUBCLASSES int, so `min_jd_chars: yes` -- the natural
@@ -497,7 +696,8 @@ def load_config(path: str | None = None) -> Config:
     raw_floor = 0 if raw_floor is None else raw_floor
     if isinstance(raw_floor, bool) or not isinstance(raw_floor, int) or raw_floor < 0:
         raise ValueError(
-            f"min_jd_chars must be a non-negative integer (0 = off), got {raw_floor!r}")
+            f"min_jd_chars must be a non-negative integer (0 = off), got "
+            f"{_safe_scalar_repr(raw_floor)}")
 
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
