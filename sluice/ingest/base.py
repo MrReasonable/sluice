@@ -21,6 +21,7 @@ from datetime import date
 from typing import Protocol
 from urllib.parse import urlparse
 
+from sluice.core.config import validate_search_entry
 from sluice.core.leads import Lead
 
 HealthSignals = dict
@@ -31,6 +32,15 @@ class Search:
     label: str
     url: str | None = None
     params: dict | None = None
+    # Did this search come from the user's `sources.<id>.searches`, or is it the
+    # source's shipped example? (#212) The default is False because that is what a
+    # shipped example IS -- so every existing construction, including
+    # `BrowserListSource.searches()`, stays correct without being touched, and a
+    # future search-producing path that forgets to think about provenance is
+    # treated as the tool's guess rather than the user's assertion. The direction
+    # matters: #223 lets a `configured` search's `params` drive a pay floor, so a
+    # wrong True is a shipped preference wearing the user's authority.
+    configured: bool = False
 
 
 @dataclass
@@ -149,6 +159,21 @@ def _rejected_path_count(posting_paths, rows) -> int:
     )
 
 
+# `searches_spec`'s own contract grammar -- the third field `BrowserListSource` validates
+# at construction, beside `posting_paths` and `reprobed` below -- is NOT here: it is
+# `core/config.py`'s `validate_search_entry`, called from `BrowserListSource.__post_init__`
+# further down. No `core/` module imports a sub-app at MODULE SCOPE (measured: 22 core
+# modules, 0 such imports); `core/app.py` is the one exception, and it is the composition
+# root, wiring sub-apps together lazily at call time, inside method bodies. `core/config.py`
+# is the BASE of that stack, not a peer of `app.py` -- `load_config` would need the import
+# inside a per-ENTRY validation loop, so `app.py`'s lazy-import pattern does not transfer
+# here. Hence the grammar lives in the natural shared home, `core/config.py`, and this
+# module imports it rather than the reverse. `tests/test_core_layering.py` is the
+# executable guard: a subprocess witness proves importing every `core/` module never
+# eagerly drags a sub-app into `sys.modules`, and a static sweep proves no `core/` module
+# other than `app.py` names a sub-app at all -- either spelling, lazy or eager.
+
+
 def validate_posting_paths(owner: str, posting_paths) -> tuple:
     """Return `posting_paths` NORMALISED to a tuple, or raise if it cannot be one.
 
@@ -206,13 +231,30 @@ def validate_posting_paths(owner: str, posting_paths) -> tuple:
     return prefixes
 
 
-def _mk_search(spec) -> Search:
+def _mk_search(spec, index: int = 0, *, configured: bool = False) -> Search:
     """A searches_spec entry is (label, url) or (label, url, params) - the optional
     params carry per-search metadata (e.g. {"job_type": "perm"}) so the one engine
-    covers perm + contract just by varying search terms/params, not code."""
+    covers perm + contract just by varying search terms/params, not code.
+
+    `configured` says which SIDE of `searches_for`'s choice this entry came from; it is
+    keyword-only so a positional third argument can never be mistaken for it. `index` is
+    this entry's position in whichever list the caller is iterating (`searches_spec` or a
+    config override) -- both call sites have a real one via `enumerate`, so passing it
+    costs nothing and lets this rung's message be precise rather than always naming
+    position 0.
+
+    Validates `spec` via `core/config.py`'s `validate_search_entry` -- see that function's
+    docstring for the full three-rung picture and why it lives in `core/` rather than here.
+    This is rung 2/3: DEFENCE IN DEPTH for a `spec` that reaches this function WITHOUT going
+    through `load_config`'s per-entry check (a test building a spec by hand, a future
+    caller) or without going through `BrowserListSource.__post_init__`'s eager check on the
+    whole `searches_spec` (a source that duck-types `Source` rather than subclassing it).
+    Not redundant with either: this rung is what still catches a malformed entry for every
+    caller that never passes through those two."""
+    validate_search_entry("a search entry", index, spec)
     label, url = spec[0], spec[1]
     params = spec[2] if len(spec) > 2 else None
-    return Search(label=label, url=url, params=params)
+    return Search(label=label, url=url, params=params, configured=configured)
 
 
 def searches_for(source, config=None) -> list:
@@ -227,7 +269,7 @@ def searches_for(source, config=None) -> list:
         except Exception:
             override = None
         if override:
-            return [_mk_search(spec) for spec in override]
+            return [_mk_search(spec, i, configured=True) for i, spec in enumerate(override)]
     return list(source.searches())
 
 
@@ -384,9 +426,29 @@ class BrowserListSource:
         # ASSIGNED back, not merely checked -- see `validate_posting_paths`.
         self.posting_paths = validate_posting_paths(f"source {self.id}", self.posting_paths)
         validate_reprobed(f"source {self.id}", self.reprobed)
+        # #212 round 2: the third source-contract declaration, beside the two above.
+        # Without this rung, a malformed `searches_spec` still constructs fine -- rungs 1
+        # and 2 only run when `load_config` or `.searches()` is actually called -- so the
+        # registry's per-plugin isolation ("a broken plugin must not sink the rest",
+        # `sources/__init__.py`) never gets a chance to run, because nothing raises at the
+        # point a broken plugin is imported. `validate_search_entry` (`core/config.py`) is
+        # the same grammar `load_config` and `_mk_search` apply to the other two entry
+        # points for a `Search` -- see its docstring for why it lives in `core/` rather
+        # than beside `validate_posting_paths`/`validate_reprobed` here.
+        if not isinstance(self.searches_spec, (list, tuple)):
+            # CodeRabbit #212 round 3: without this, `searches_spec=None` (or any other
+            # non-iterable) reached `enumerate(...)` below and raised a raw `TypeError`
+            # naming no source at all -- the exact bug class this rung exists to close,
+            # one line earlier than the loop that was supposed to close it.
+            raise ValueError(
+                f"source {self.id}.searches_spec must be a list of `[label, url]`/"
+                f"`[label, url, {{params}}]` entries, got a "
+                f"{type(self.searches_spec).__name__}")
+        for _i, _spec in enumerate(self.searches_spec):
+            validate_search_entry(f"source {self.id}.searches_spec", _i, _spec)
 
     def searches(self) -> list:
-        return [_mk_search(spec) for spec in self.searches_spec]
+        return [_mk_search(spec, i) for i, spec in enumerate(self.searches_spec)]
 
     def _scroll_step(self, cam, tid) -> None:
         """One scroll step -- one of TWO sanctioned override points for a list-shaped source,
