@@ -1,10 +1,10 @@
 from sluice.core.health import HealthStore
 from sluice.core.leads import Lead
-from sluice.core.config import Config
+from sluice.core.config import Config, SourceConfig
 from sluice.core.seendb import SeenDb
 from sluice.core.vault import Vault
 from sluice.ingest.base import Ctx, Search
-from sluice.ingest.engine import _lead_rates, run
+from sluice.ingest.engine import _lead_rates, _count_example_searches, SourceResult, run
 from sluice.ingest.sink import VaultSink
 
 
@@ -514,3 +514,39 @@ def test_a_login_wall_on_an_earlier_search_survives_a_clean_later_one(tmp_path):
     # The breaker follows the (now-correct) classification: both searches' leads were
     # withheld, not just the one that actually landed on the wall.
     assert result.withheld == 2
+
+
+def test_source_result_counts_the_example_searches_it_ran():
+    """#212: an unconfigured source runs someone else's criteria at full volume and
+    nothing said so. A count, not a flag, states that volume -- how many searches ran
+    at the example -- rather than merely whether any did. `_count_example_searches`
+    itself is agnostic to a mix (asserted below), but no real caller ever produces one:
+    `searches_for` replaces a source's whole search list on override, so in production
+    the result is always 0 or len(searches), never in between."""
+    assert _count_example_searches([Search("a"), Search("b")]) == 2
+    assert _count_example_searches([Search("a", configured=True), Search("b")]) == 1
+    assert _count_example_searches([Search("a", configured=True)]) == 0
+    assert _count_example_searches([]) == 0
+    assert SourceResult(source_id="demo").example_searches == 0
+
+
+def test_run_wires_example_searches_onto_the_report(tmp_path):
+    """#212 review (HIGH 2): the producer above (`_count_example_searches`) and the
+    consumer (`SourceResult.example_searches`) are each tested in isolation with
+    hand-built objects -- nothing before this test drove the real `run()` and asserted
+    the field `_run_source` actually sets on it. Measured: deleting
+    `result.example_searches = _count_example_searches(searches)` from
+    `ingest/engine.py` left the whole suite green."""
+    src = FakeSource("demo", [{"title": "Analyst", "link": "http://x/1"}])
+
+    # Unconfigured: FakeSource.searches() ships exactly one search, and nothing in
+    # `_ctx()` overrides it, so the run falls back to that one shipped example.
+    report = run([src], _ctx(), _FakeSink(), _FakeSeen(), _health(tmp_path), retries=1)
+    assert report.sources[0].example_searches == 1
+
+    # A real SourceConfig override on the real Config (not a hand-built SourceResult)
+    # replaces the source's whole search list, so the run reports zero.
+    cfg = Config(sources={"demo": SourceConfig(searches=[["Mine", "http://y"]])})
+    ctx = Ctx(camofox=None, config=cfg, sleep=lambda *_: None)
+    report = run([src], ctx, _FakeSink(), _FakeSeen(), _health(tmp_path / "cfg"), retries=1)
+    assert report.sources[0].example_searches == 0

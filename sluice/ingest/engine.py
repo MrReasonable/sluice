@@ -93,6 +93,18 @@ class SourceResult:
     fetched: int = 0            # rows parsed, before dedup/relevance
     fresh: int = 0              # leads FOUND this run (found, not necessarily written)
     withheld: int = 0           # of `fresh`, how many were withheld -- see BREAKER_REASONS
+    # How many of THIS RUN's searches were the source's shipped example rather than the
+    # user's own (#212). A count, not a flag: the shape stays correct if a source ever
+    # ships more than one example search, at which point a boolean would collapse the
+    # volume away. Every registered source ships exactly ONE example search today
+    # (measured), so this always renders 0 or 1 -- not evidence the count is doing more
+    # work than a flag would, just the honest state of the fleet, worth keeping the
+    # richer shape for rather than downgrading to a bool that would need re-widening the
+    # day a second source search ships. That count always equals this source's full
+    # search total whenever it is nonzero: `searches_for` (ingest/base.py) replaces a
+    # source's WHOLE search list on override rather than merging per-search, so a run is
+    # either fully configured or fully at the example, never a mix.
+    example_searches: int = 0
     # Of `fetched`, how many the #153 path guard dropped. REPORTED even when it does not
     # cross `detect_drift`'s gate, which is the point: the gate fires only when EVERY row
     # was rejected (an unambiguous grammar change), so a board serving a MIX of old and new
@@ -179,11 +191,21 @@ def run(sources, ctx, sink, seen, health, *, fetch_timeout=60, retries=3):
     return report
 
 
+def _count_example_searches(searches) -> int:
+    """How many of `searches` are the source's shipped example. Keyed on the flag
+    `searches_for`'s choice produced -- `_mk_search` is the only site in `sluice/` that
+    constructs a `Search` (tests/ construct one directly at 34 sites, unscoped by this
+    claim), so this never re-derives the decision from the config here: re-deriving would
+    put a second copy of it one layer away from the one that made it."""
+    return sum(1 for s in searches if not s.configured)
+
+
 def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
     """Run all of a source's searches, appending fresh (new + relevant) leads to
     `fresh`. Returns (count, signals) for health/drift. Marks result.status=error
     only if EVERY search failed to fetch."""
     searches = list(searches_for(source, getattr(ctx, "config", None)))
+    result.example_searches = _count_example_searches(searches)
     total, signals, ok, last_error = 0, {}, 0, None
     rejected = 0      # rows the #153 path guard dropped, SUMMED across searches like `total`
                       # -- see the accumulation below for why a sum and not first-found-wins
