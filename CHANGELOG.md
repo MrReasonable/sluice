@@ -40,6 +40,25 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.3.0](https://github.com/MrReasonable/sluice/compare/v2.2.1...v2.3.0) (2026-08-31)
+
+
+### Features
+
+* **cli:** surface which sources are running shipped example searches ([5861a8b](https://github.com/MrReasonable/sluice/commit/5861a8b2f85712d70cc81c70c4cbd8d0166d2a5f)), closes [#212](https://github.com/MrReasonable/sluice/issues/212)
+* **ingest:** record whether a search is the user's or the source's example ([f5560e7](https://github.com/MrReasonable/sluice/commit/f5560e75a29e1d02705c63a94c4de358627f1fbf)), closes [#212](https://github.com/MrReasonable/sluice/issues/212)
+
+
+### Bug Fixes
+
+* **config:** refuse a malformed sources.&lt;id&gt;.searches entry without echoing it ([7b38116](https://github.com/MrReasonable/sluice/commit/7b3811627f6cc29fddf6dd536d8efdf00134ab2a))
+
+
+### Documentation
+
+* **specs:** design for search provenance, role_type and company casing ([f29f067](https://github.com/MrReasonable/sluice/commit/f29f067b00df52037aec7b978ef1718694c20c15))
+* state what --dry-run does not bound, and document the search marker ([875dcbc](https://github.com/MrReasonable/sluice/commit/875dcbc07df890f31a9f4749b9b0e92fa974dad0))
+
 ## [2.2.1](https://github.com/MrReasonable/sluice/compare/v2.2.0...v2.2.1) (2026-08-30)
 
 
