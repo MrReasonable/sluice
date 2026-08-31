@@ -24,14 +24,22 @@ Scan job boards into the lead store.
 
 ### `job-sluice ingest list-sources [--health]`
 
-Lists every registered source, sorted by id, one per line: `<id> <kind> enabled|disabled`.
-Fully offline. Exit 0 always.
+Lists every registered source, sorted by id, one per line:
 
-With `--health` the line grows:
+```text
+<id> <kind> enabled|disabled[ EXAMPLE-SEARCH(<n>/<m>|?)]
+```
+
+Fully offline. Exit 0, except a malformed `sources.<id>.searches` entry: `main()`'s config
+load (see above) refuses it with a named error, stating the source id, the offending entry's
+index and the expected `[label, url, {params}?]` shape, so the command exits 2 for that case
+before listing a single row rather than crashing mid-listing.
+
+With `--health` the line grows, and the example-search marker moves to the end of it:
 
 ```text
 <id> <kind> enabled|disabled  baseline=<N>[ company=<P>%][ link=<P>%][ location=<P>%]
-    [ (<A> runs ago)][ UNMEASURED | UNGUARDED(<signal>,...)][ RETIRE]
+    [ (<A> runs ago)][ UNMEASURED | UNGUARDED(<signal>,...)][ RETIRE][ EXAMPLE-SEARCH(<n>/<m>|?)]
 ```
 
 - **`baseline=<N>`** — median row count over the last 7 runs.
@@ -54,6 +62,19 @@ With `--health` the line grows:
   named field only. Shown for enabled sources only: nothing runs for a disabled one, so no
   guard can be blind.
 - **`RETIRE`** — the source is flagged for auto-retirement.
+- **`EXAMPLE-SEARCH(<n>/<m>|?)`** — of this source's `<m>` searches this listing, `<n>` are its
+  shipped example rather than one configured under `sources.<id>.searches` (#212). Printed on
+  BOTH the plain and `--health` listings, since which searches a source runs is config state,
+  not health state, and for enabled sources only, the same reason `UNGUARDED` is: a disabled
+  source runs nothing, so it is neither configured nor falling back. Shown only when at least
+  one of the source's searches is unconfigured, and always `<n>` equal to `<m>` when shown —
+  `sources.<id>.searches` replaces a source's whole search list rather than merging into it,
+  so a source is never partially configured.
+- **`EXAMPLE-SEARCH(?)`** — this source's provenance could not be computed at all (a broken
+  plugin whose `searches()` did not yield real `Search` objects); a warning naming the source
+  is also logged. Distinct from the absence of any marker, which means "fully configured" —
+  without this token a provenance failure would render byte-identical to a healthy,
+  fully-configured source, which is exactly the invisibility this feature exists to remove.
 
 ### `job-sluice ingest run [--source ID ...] [--all] [--sink {vault,json}] [--dry-run]`
 
@@ -66,9 +87,19 @@ Drives a live Camofox session and writes results.
 | `--sink` | `vault` | `vault` or `json` |
 | `--dry-run` | off | still records source health, writes nothing to the vault or `seen.db` |
 
+`--dry-run` bounds what sluice **writes**, not what a run **does**. A dry run still invokes every
+selected source's `fetch` exactly as a real run does — the flag only changes the SINK (JSON instead
+of vault) and softens the relocated-`seen.db` guard from a refusal to a warning (`fatal=not
+(dry_run or json_sink)` in `Sluice.ingest`). The flag itself never reaches `fetch`, and no source can
+ask whether it is set, so a source has no way to suppress a remote side effect just because this is a
+dry run — any side effect a fetch has on the far side happens on a dry run exactly as it does on a
+real one. `ingest test-source` calls `fetch` with no sink at all and inherits the same property. No
+shipped source mutates remote state today; this states the boundary rather than a current hazard, the
+way the `triage run` row below names its billed backend call.
+
 The run report is printed to **stderr**, not stdout — pipe accordingly:
-```
-  <source_id>      status=<ok|error> fetched=<N> fresh=<N> drift=<drift|->[ withheld=<N>][ health_error=<msg>] [ RETIRED]
+```text
+  <source_id>      status=<ok|error> fetched=<N> fresh=<N> drift=<drift|->[ withheld=<N>][ rejected_paths=<N>][ health_error=<msg>][ example_searches=<N>] [ RETIRED]
 written: N created, N updated[, N merged][, N refused][, N merged-away][, N merged-away (unproven)], N skipped
 ```
 `withheld` appears only when non-zero: `drift` of `fallback`/`blank`/`login` withholds that
@@ -78,6 +109,9 @@ never recorded as seen, so the next run retries them automatically once the sour
 recovers.
 `health_error` appears only when the health pipeline itself failed. `drift` then prints `-`
 because the run could not be classified, and the leads are withheld for that reason too.
+`example_searches` appears only when non-zero: it counts how many of that source's searches this
+run were its shipped example rather than one you configured under `sources.<id>.searches` (#212).
+A fully configured source omits it, so a clean line means the criteria that ran were yours.
 Refuses (exit 1) if the disabled-sources overlay is unreadable, or if the selection resolves
 to zero enabled sources. Otherwise exits 0 even when individual sources errored — check the
 per-source `status=` field for that. Telegram-notifies (if configured) when any source
@@ -91,7 +125,9 @@ Runs one source live against its configured search (or its built-in example sear
 configured) and prints the parsed leads as indented JSON to stdout. With `--raw`, prints the
 raw fetch payload instead — this is how a golden parser fixture gets captured. A short
 one-line summary (`# <id>: <N> leads from '<label>'`) goes to stderr unless `--raw` is given.
-Exit 0 always.
+Exit 0, except an unknown `ID`: `_require_known_source_ids` (shared with `--source` above)
+refuses it with a named error listing every valid id, so the command exits 2 before attempting
+any fetch rather than raising a bare `KeyError` traceback.
 
 ### `job-sluice ingest enable ID` / `job-sluice ingest disable ID`
 
