@@ -83,3 +83,20 @@ def test_print_report_names_a_health_pipeline_failure_on_the_per_source_line(cap
     err = capsys.readouterr().err
     assert "drift=-" in err
     assert "health_error='disk full'" in err
+
+
+def test_report_line_names_example_searches_only_when_there_are_some(capsys):
+    # Sparse, exactly like the `withheld`/`rejected_paths` clauses beside it: a fully
+    # configured install is always 0 here, so printing it unconditionally would be noise
+    # on every line. #212 is about the UNCONFIGURED case being invisible, not this one.
+    class _R:
+        sources = [SourceResult(source_id="alpha", fetched=3, fresh=1, example_searches=2),
+                   SourceResult(source_id="beta", fetched=3, fresh=1, example_searches=0)]
+        written = {"created": 0, "updated": 0, "skipped": 0}
+
+    _print_report(_R())
+    err = capsys.readouterr().err
+    alpha = next(ln for ln in err.splitlines() if "alpha" in ln)
+    beta = next(ln for ln in err.splitlines() if "beta" in ln)
+    assert "example_searches=2" in alpha, alpha
+    assert "example_searches" not in beta, beta

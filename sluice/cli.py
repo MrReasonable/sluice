@@ -36,6 +36,7 @@ from sluice.core.health import RATE_SIGNALS as HEALTH_RATE_SIGNALS, HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.core.paths import resolve
 from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.ingest import base as base_mod   # Search/searches_for; stdlib-only, no browser
 from sluice.ingest import sources as registry
 
 _log = get_logger("cli")
@@ -139,8 +140,32 @@ def _is_enabled(src, config, disabled: set) -> bool:
     )
 
 
+def _require_known_source_ids(ids) -> None:
+    """Refuse any id in `ids` that is not registered, naming every offender and every
+    valid id -- the same fail-loudly-and-list shape `Sluice.backend`'s role guard already
+    uses. #212 round 3 (inv-r3-002) closed this for `_selected`'s `--source ID ...`;
+    round 4 (inv-r4-001/rev-r4-005) lifts it into a shared helper so `cmd_test_source`'s
+    `id` positional -- a second bare `registry.get` call site -- gets the identical
+    refusal rather than a raw `KeyError` traceback naming no valid id, and so a THIRD call
+    site cannot silently reopen the hole either. `registry.get` raises a bare `KeyError`
+    for an unknown id, which `main()`'s `except ValueError` does not catch. Pre-existing,
+    but this branch's own `searches_spec` `__post_init__` rung newly makes a shipped
+    source vanish from the registry (isolated at import by `sources/__init__.py`'s
+    `_autoload`) rather than sinking it, so "the id you typed just isn't registered" is
+    now a reachable, ordinary case at every call site -- and `test-source <id>` is
+    precisely the command an operator reaches for next when a source has vanished.
+    """
+    known = {s.id for s in registry.all_sources()}
+    unknown = sorted(sid for sid in ids if sid not in known)
+    if unknown:
+        raise ValueError(
+            f"unknown source id(s) {', '.join(unknown)} (expected one of "
+            f"{', '.join(sorted(known))})")
+
+
 def _selected(args, config, disabled) -> list:
     if getattr(args, "source", None):
+        _require_known_source_ids(args.source)
         chosen = [registry.get(sid) for sid in args.source]
     else:  # --all or default: every registered source
         chosen = registry.all_sources()
@@ -205,6 +230,48 @@ def cmd_list_sources(args, config) -> int:
                                  + ",".join(k.removesuffix("_rate") for k in unguarded) + ")")
             if health.should_retire(src.id):
                 line += " RETIRE"
+        # Whether this source runs the USER's criteria or its shipped example (#212).
+        # Enabled sources only, for the same reason UNGUARDED is: a disabled source runs
+        # nothing, so it is neither configured nor falling back. Printed as n/m rather
+        # than a bare flag because n/m is the shape that stays correct if a source ever
+        # ships more than one example search -- every registered source ships exactly
+        # ONE today (measured), so this always renders (1/1) when it fires at all, and
+        # that is the honest state of the fleet rather than evidence the fraction is
+        # doing work a flag could not. `searches_for` (ingest/base.py) replaces a
+        # source's WHOLE search list on override rather than merging per-search, so the
+        # numerator always equals the denominator when the marker fires -- a run is
+        # either fully configured or fully at the example, never a mix.
+        if state == "enabled":
+            try:
+                searches = base_mod.searches_for(src, config)
+                examples = sum(1 for s in searches if not s.configured)
+            except Exception as e:
+                # #212 round 3 (inv-r3-001): per-source isolation, the same rule the
+                # registry's own autoload uses ("a broken plugin must not sink the
+                # rest"). `Source` is a Protocol, so `searches()`'s element type is not
+                # enforced anywhere -- a duck-typed source yielding something that is
+                # not a real `Search` (no `.configured`) must cost its own marker, never
+                # the other rows: this loop used to have no isolation at all, so that
+                # one bad source took the WHOLE listing down mid-print.
+                #
+                # Round 4 (inv-r4-002/rev-r4-002/arc-r4-004): the OLD fallback
+                # (`examples = 0`, no marker) rendered this failure as the byte-identical
+                # GOOD state -- a broken source's row read exactly like a fully
+                # user-configured one, reproducing #212's own invisibility inside the
+                # feature built to remove it, and the warning below is stderr-only so it
+                # vanishes the moment anyone pipes the listing. `EXAMPLE-SEARCH(?)`
+                # answers "cannot tell" in band, the same shape `UNMEASURED` above and
+                # `health_error=` in `_print_report` already use for "could not measure"
+                # vs. "measured clean". `searches = []` is bound fresh here too: without
+                # it the PREVIOUS source's list survived into this one, harmless only
+                # because `examples = 0` short-circuited `len(searches)` below -- and
+                # would become live and WRONG the moment a marker is printed on this path.
+                _log.warning("source %s: cannot report search provenance: %s", src.id, e)
+                searches = []
+                examples = 0
+                line += " EXAMPLE-SEARCH(?)"
+            if examples:
+                line += f" EXAMPLE-SEARCH({examples}/{len(searches)})"
         print(line)
     return 0
 
@@ -490,6 +557,7 @@ def cmd_test_source(args, config) -> int:
     from sluice.core.app import Sluice
     from sluice.ingest.base import Ctx, searches_for
 
+    _require_known_source_ids([args.id])
     src = registry.get(args.id)
     ctx = Ctx(camofox=Sluice(config).fetcher(), config=config)
     search = searches_for(src, config)[0]  # honour a configured override, else built-in
@@ -519,6 +587,9 @@ def _print_report(report) -> None:
               # stays '-' -- printed by name so that combination doesn't read as a bug in
               # this line rather than what it is, a health-pipeline failure.
               f"{f' health_error={r.health_error!r}' if r.health_error else ''}"
+              # Sparse like `withheld`: on a fully configured install this is always 0, and
+              # a source running its shipped example is exactly what #212 says is invisible.
+              f"{f' example_searches={r.example_searches}' if r.example_searches else ''}"
               f"{' RETIRED' if r.retired else ''}", file=sys.stderr)
     w = report.written
     # Sparse: merged/refused (#5) and merged_away/merged_away_unproven (#81) are printed
