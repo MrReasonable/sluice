@@ -25,8 +25,10 @@ board that legitimately lacks a field would be binned daily. The exemption is su
 human instead (`ingest list-sources --health`), because nothing local can tell "does not
 publish this field" from "stopped reading this field".
 """
+import pytest
+
 from sluice.cli import _build_parser, cmd_list_sources
-from sluice.core.config import Config
+from sluice.core.config import Config, SourceConfig
 from sluice.core.health import (
     BLANK_SIGNALS,
     RATE_SIGNALS,
@@ -296,3 +298,144 @@ def test_the_rate_fragments_are_derived_from_the_roster_not_hand_listed(capsys):
     line = _health_lines(capsys)["reed"]
     for key in RATE_SIGNALS:
         assert f"{key.removesuffix('_rate')}=" in line, f"{key} is measured but never shown"
+
+
+# ---- #212: which searches a source actually ran ------------------------------------
+
+def _listing_lines(capsys, config, *flags):
+    """`ingest list-sources` lines by source id, for an arbitrary config and flag set.
+    Separate from `_health_lines` above, which hardcodes `Config()` and `--health`:
+    the example-search marker has to be checked WITHOUT `--health` too."""
+    args = _build_parser().parse_args(["ingest", "list-sources", *flags])
+    assert cmd_list_sources(args, config) == 0
+    return {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines() if ln.split()}
+
+
+def test_a_source_running_its_shipped_example_search_is_flagged(capsys):
+    # `Config()` configures nothing, so every registered source falls back to its shipped
+    # example -- the state an unconfigured install is in, and the one #212 says reaches the
+    # user as leads they never asked for with nothing anywhere saying why. Pinned to the
+    # exact rendered numbers, not merely the prefix: reed ships exactly one example search,
+    # so a prefix-only assertion survives deleting `{examples}/{len(searches)}` from the
+    # f-string entirely (measured -- see the mutation note in the commit).
+    line = _listing_lines(capsys, Config(), "--health")["reed"]
+    assert "EXAMPLE-SEARCH(1/1)" in line, line
+
+
+def test_the_example_search_marker_does_not_require_the_health_flag(capsys):
+    # PLACEMENT guard, and the reason it is its own test. Which searches a source runs is
+    # CONFIG state, not health state. `cmd_list_sources`' `if health is not None:` block
+    # runs all the way to `print(line)`, so a marker added inside it would silently appear
+    # only under `--health` -- green in every test that happens to pass that flag.
+    line = _listing_lines(capsys, Config())["reed"]
+    assert "EXAMPLE-SEARCH(1/1)" in line, line
+
+
+def test_a_source_whose_searches_are_all_configured_is_not_flagged(capsys):
+    # The other direction. Without this the marker could be an unconditional string and
+    # both tests above would still pass.
+    cfg = Config()
+    cfg.sources = {"reed": SourceConfig(
+        searches=[["Example role", "https://example.invalid/q"]])}
+    line = _listing_lines(capsys, cfg, "--health")["reed"]
+    assert "EXAMPLE-SEARCH" not in line, line
+
+
+def test_a_disabled_source_shows_no_example_search_marker(capsys):
+    """`cmd_list_sources`' `if state == "enabled":` gate around the marker -- unguarded
+    otherwise: swapping it for `if True:` leaves the whole suite green (measured). Same
+    construction as test_a_disabled_source_is_not_called_unguarded above: a disabled
+    source runs nothing, so it is neither configured nor falling back to its example, and
+    the marker must not claim either about it."""
+    disabled = sorted(s.id for s in __import__(
+        "sluice.ingest.sources", fromlist=["*"]).all_sources()
+        if not getattr(s, "enabled", True))
+    assert disabled, "no disabled source in the registry -- this guard would prove nothing"
+    line = _listing_lines(capsys, Config(), "--health")[disabled[0]]
+    assert "EXAMPLE-SEARCH" not in line, line
+
+
+class _NoConfiguredSearch:
+    """A duck-typed `Search` stand-in with no `.configured` attribute -- `Source` is a
+    Protocol, so `searches()`'s element type is not enforced anywhere, and a source that
+    yields one is permitted by the contract."""
+    label = "Whatever"
+    url = "https://example.invalid/x"
+
+
+class _DuckTypedSource:
+    """A source that duck-types the `Source` Protocol (permitted) and yields a
+    `Search`-shaped object with no `.configured` field. #212 round 3 (inv-r3-001):
+    `cmd_list_sources` computed the example-search marker in a per-source loop with no
+    isolation, so this one source used to abort the WHOLE listing with an uncaught
+    `AttributeError` -- printing zero rows for every OTHER registered source too."""
+    id = "aaduck"       # sorts first, so an uncaught exception here would print nothing at all
+    enabled = True
+    kind = "test"
+
+    def searches(self):
+        return [_NoConfiguredSearch()]
+
+
+def test_one_sources_broken_provenance_does_not_take_down_the_whole_listing(capsys, caplog):
+    import logging
+
+    try:
+        registry.register(_DuckTypedSource())
+        with caplog.at_level(logging.WARNING, logger="sluice.cli"):
+            lines = _listing_lines(capsys, Config())
+    finally:
+        registry._REGISTRY.pop("aaduck", None)
+    # Per-source isolation, the same rule the registry's own autoload uses: one bad
+    # source must cost its own marker, never the other rows -- assert on the ROW COUNT,
+    # so a listing that silently shrank (the pre-fix behaviour: zero rows printed) would
+    # not pass just because no exception reached the test.
+    assert "aaduck" in lines, "the broken source's own row must still print"
+    # #212 round 4 (inv-r4-002/rev-r4-002/arc-r4-004): the OLD fallback (`examples = 0`,
+    # no marker) rendered a broken source's row byte-identical to a fully user-configured
+    # one -- exactly the invisibility #212 exists to remove, reproduced inside the feature
+    # built to remove it. `EXAMPLE-SEARCH(?)` says "cannot tell" in band, rather than
+    # relying solely on the warning below, which vanishes the moment anyone pipes the
+    # listing (stdout) away from the warning (stderr).
+    assert "EXAMPLE-SEARCH(?)" in lines["aaduck"], lines["aaduck"]
+    assert "reed" in lines, "an unrelated source's row must not be lost"
+    # #212 round 4 (tst-r4-004): the isolation is permitted under hard rule 9 only because
+    # it REPORTS -- measured, deleting the `_log.warning` call left the whole suite green
+    # before this assertion existed, which means nothing pinned the report half at all.
+    warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("aaduck" in r.getMessage() for r in warnings), (
+        f"no WARNING named the broken source: {[r.getMessage() for r in warnings]}")
+
+
+# ---- #212 round 3 (inv-r3-002): an unknown --source id is a named refusal, not a bare
+# KeyError. Pre-existing, but this branch's own __post_init__ rung newly makes a shipped
+# source vanish from the registry (isolated at import) rather than sinking it -------------
+
+def test_selecting_an_unknown_source_id_names_it_rather_than_a_bare_KeyError():
+    from types import SimpleNamespace
+
+    from sluice import cli
+
+    with pytest.raises(ValueError) as e:
+        cli._selected(SimpleNamespace(source=["zz-not-registered"]), Config(), set())
+    # #212 round 4 (tst-r4-005): the MESSAGE is the property, not merely the exception
+    # type -- measured, collapsing the message to a bare constant left the whole suite
+    # green under the old `match="unknown source id"` assertion alone.
+    msg = str(e.value)
+    assert "zz-not-registered" in msg, f"the id the user typed is not named: {msg}"
+    assert "reed" in msg, f"no valid registered id is listed: {msg}"
+
+
+def test_cmd_test_source_names_an_unknown_id_rather_than_a_bare_KeyError():
+    """#212 round 4 (inv-r4-001/rev-r4-005): `cmd_test_source` shared `_selected`'s bare
+    `registry.get(args.id)` call, which round 3 guarded only at the OTHER call site --
+    measured before this fix, `ingest test-source zzbroken` raised a raw `KeyError`
+    traceback naming no valid id. Both call sites now share `_require_known_source_ids`,
+    so this pins the second one directly."""
+    from sluice import cli
+
+    with pytest.raises(ValueError) as e:
+        cli._require_known_source_ids(["zz-not-registered"])
+    msg = str(e.value)
+    assert "zz-not-registered" in msg, f"the id the user typed is not named: {msg}"
+    assert "reed" in msg, f"no valid registered id is listed: {msg}"
