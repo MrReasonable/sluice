@@ -240,9 +240,11 @@ def test_no_shipped_source_search_url_already_matches_the_vocabulary():
     #
     # Filtered to `sluice.` classes, same as `_every_registered_source()` in
     # test_source_auth_probe.py and for the identical reason: the registry is a global
-    # tests register into without cleanup, and `tests/test_registry.py` leaves a `_Dummy`
-    # behind with no `searches()` method at all -- an unfiltered sweep here raises
-    # AttributeError whenever that test happens to run first in the same process.
+    # any test could register into. `tests/test_registry.py` used to leave a `_Dummy`
+    # behind with no `searches()` method at all -- it now cleans up after itself
+    # (#212's `cmd_list_sources` change turned that leftover into a real crash), but the
+    # filter stays as the general-case guard: "shipped sources" is the population this
+    # sweep is about regardless of what any one test happens to register.
     from urllib.parse import urlparse
 
     hits = [s.id for s in registry.all_sources()

@@ -353,10 +353,11 @@ def _every_registered_source():
     Driving off the registry is the difference between a test that covers what someone
     remembered and one that covers what is shipped.
 
-    Filtered to classes defined under `sluice.` because the registry is a global that tests
-    register into without cleanup (`tests/test_registry.py` leaves a `_Dummy` with no
-    `health_hint` behind). "Shipped sources" is the population this sweep is about, and saying
-    so explicitly beats depending on which test ran first.
+    Filtered to classes defined under `sluice.` because the registry is a global that any
+    test could register into (`tests/test_registry.py` used to leave a `_Dummy` with no
+    `health_hint` behind and now cleans up after itself, but nothing enforces that of a
+    future test). "Shipped sources" is the population this sweep is about, and saying so
+    explicitly beats depending on which test ran first.
     """
     from sluice.ingest import sources as registry
     return [s for s in registry.all_sources()
