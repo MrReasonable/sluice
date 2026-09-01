@@ -79,8 +79,8 @@ def test_core_module_discovery_finds_the_real_fleet():
     `test_config_shapes.py`'s own per-block counts use, cannot hide that."""
     modules = _core_modules()
     names = {p.name for p in modules}
-    assert len(modules) == 22, (
-        f"core/ module discovery found {len(modules)} files, expected 22: {sorted(names)}.\n"
+    assert len(modules) == 23, (
+        f"core/ module discovery found {len(modules)} files, expected 23: {sorted(names)}.\n"
         "If a module was ADDED or REMOVED, update this count. If it changed and this "
         "count did not, discovery is silently checking a different fleet than it claims.")
 
