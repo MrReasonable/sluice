@@ -76,8 +76,23 @@ def test_triage_defaults_carry_no_pii():
     # point at as THE neutrality guard -- did not actually cover them.
     assert t.accept_titles == []
     assert t.reject_titles == []
-    assert t.contract_floor_gbp_day == 0
-    assert t.perm_floor_gbp == 0
+    # DERIVED, never hand-listed. The list version named `contract_floor_gbp_day` and
+    # `perm_floor_gbp` only, so #223's two new pay floors landed outside the ratchet
+    # while the property still held -- the generic sweep beside this one is list-valued
+    # by construction, so no numeric preference field is reached by it either. A floor is
+    # the 672ad2a shape in its purest form: a non-zero default silently bins leads on a
+    # basis the user never configured.
+    floors = [f for f in dataclasses.fields(t) if f.name.endswith(("_gbp", "_gbp_day",
+                                                                   "_gbp_hour",
+                                                                   "_gbp_week"))]
+    assert {f.name for f in floors} == {
+        "contract_floor_gbp_hour", "contract_floor_gbp_day",
+        "contract_floor_gbp_week", "perm_floor_gbp"}, (
+        "the pay-floor sweep found a different set than it claims to guard -- if a floor "
+        "was ADDED or REMOVED, update this set; a matcher that stopped matching would "
+        "otherwise certify an empty one")
+    for f in floors:
+        assert getattr(t, f.name) == 0, f"{f.name} ships a non-neutral pay floor"
 
 
 def test_ingest_defaults_carry_no_preference(monkeypatch):

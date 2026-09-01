@@ -36,7 +36,21 @@ class TriageConfig:
     target_locations: list = field(default_factory=lambda: list(_TARGET_LOC))
     reject_locations: list = field(default_factory=lambda: list(_REJECT_LOC))
     reject_companies: list = field(default_factory=lambda: list(_REJECT_CO))
+    # One floor per pay BASIS, each judged only against its own (#223). All default 0 =
+    # no floor, which is what makes a fresh install abstain rather than bin: a shipped
+    # non-zero floor here is the 672ad2a silent-rejection class, and hourly/weekly are in
+    # this list precisely BECAUSE their absence was that class -- an unparsed basis fell
+    # to `perm_floor_gbp` and `£2,000 per week`, about £104k a year, was rejected as a
+    # sub-floor salary.
+    #
+    # Four knobs rather than a day floor plus conversion constants. A conversion needs
+    # shipped hours-per-day and days-per-week numbers, which are an assumption about
+    # someone's working pattern -- a preference wearing the clothes of a parsing fact,
+    # and wrong for anyone on a four-day week. A floor per basis asks the user for the
+    # number they actually have an opinion about, and abstains until they give it.
+    contract_floor_gbp_hour: int = 0
     contract_floor_gbp_day: int = 0
+    contract_floor_gbp_week: int = 0
     perm_floor_gbp: int = 0
     batch_size: int = 5
     ttl_days: int = 7
