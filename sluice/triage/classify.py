@@ -304,9 +304,16 @@ def reverdict_notice(lead: dict, cfg) -> str | None:
     verdict, why = classify(lead, cfg)
     if verdict == "reject" and (after is None or why != after[1]):
         return None
+    # The BASIS and the DIRECTION, deliberately without the reason string's numbers.
+    # `_pay_reject`'s reason carries the advertised amount and the user's configured
+    # floor, and this line is printed once per affected lead to STDERR -- on the
+    # unattended install the notice exists for, that is a system journal another user on
+    # the box may be able to read. `perm_floor_gbp` is the user's own pay expectation,
+    # which is exactly the kind of thing a private job hunt should not leak into a shared
+    # log. CodeQL flags the flow (`py/clear-text-logging-sensitive-data`); it is right
+    # that this is the wrong sink, and the numbers are in the lead's own note anyway.
     return (f"pay was judged as {was}, now judged as {now}: "
-            f"{'reject' if before else 'keep'} -> {'reject' if after else 'keep'}"
-            f"{' (' + after[1] + ')' if after else ''}")
+            f"{'reject' if before else 'keep'} -> {'reject' if after else 'keep'}")
 
 
 def classify(lead: dict, cfg) -> tuple[str, str]:
