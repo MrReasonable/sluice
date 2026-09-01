@@ -40,6 +40,28 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.4.0](https://github.com/MrReasonable/sluice/compare/v2.3.0...v2.4.0) (2026-09-01)
+
+
+### Features
+
+* **core:** fold role_type to a closed set, and read the basis off the posting ([ddff01a](https://github.com/MrReasonable/sluice/commit/ddff01a4d8326778893c82ad4afc4bad8cad8ea3))
+* **core:** record and persist which origin asserted a lead's role_type ([5874d07](https://github.com/MrReasonable/sluice/commit/5874d079028027d04037a799a2cb18aca8379224))
+* **core:** record what the posting says about pay basis on the dossier ([64da3bb](https://github.com/MrReasonable/sluice/commit/64da3bbe02e1bf889d8dab521afdb4b890f19ab0))
+* **triage:** judge pay on the advert's own basis, not on which search ran ([5bd4bb4](https://github.com/MrReasonable/sluice/commit/5bd4bb4dadee4701da2890f892c66e2172b1a8bb))
+* **triage:** write the observation back, and announce the re-verdict first ([9733aa0](https://github.com/MrReasonable/sluice/commit/9733aa06da2bdf5e47156d7b51204bf269ebdb0f))
+
+
+### Bug Fixes
+
+* **triage:** inject the re-verdict scope, and bound the conflict audit ([ce7fd84](https://github.com/MrReasonable/sluice/commit/ce7fd84cde8ac984a548ef43a8bba0848c1c184a))
+* **triage:** keep the user's pay floor out of the re-verdict notice ([435ec29](https://github.com/MrReasonable/sluice/commit/435ec29ae22b77cb36c95752229f6f8e2973f07a))
+
+
+### Documentation
+
+* describe role_type as a pay basis, and record what [#223](https://github.com/MrReasonable/sluice/issues/223) settled ([02a9f6e](https://github.com/MrReasonable/sluice/commit/02a9f6e27ca7843326002c69bd82e5a0a10a10b3))
+
 ## [2.3.0](https://github.com/MrReasonable/sluice/compare/v2.2.1...v2.3.0) (2026-08-31)
 
 
