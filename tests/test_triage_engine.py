@@ -1813,7 +1813,12 @@ def test_the_first_run_names_every_lead_whose_verdict_this_changes(tmp_path):
     # for. A user has to be able to find the lead the notice names.
     assert v.read_leads()[0].slug in said
     assert "keep -> reject" in said
-    assert "Salary below floor: 45000 < 90000" in said
+    assert "annual" in said            # ...and which basis it moved to
+    # NOT the reason string's numbers. `_pay_reject`'s reason carries the advertised
+    # amount and the user's configured floor, and this line goes to stderr once per
+    # affected lead -- on the unattended install the notice exists for, that is a system
+    # journal. A user's own pay expectation does not belong in a possibly shared log.
+    assert "90000" not in said and "45000" not in said
 
 
 def test_the_first_run_writes_nothing_at_all(tmp_path):
