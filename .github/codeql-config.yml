@@ -1,0 +1,33 @@
+# CodeQL scan configuration. Read by .github/workflows/codeql.yml.
+#
+# The query suite is `default`, deliberately: this file exists to make the configuration
+# reviewable, not to change what is scanned for. `security-extended` is a separate
+# decision with its own triage cost and should be taken on its own merits.
+name: sluice
+
+# No `queries:` block ON PURPOSE. Omitting it runs the `default` suite, which is what
+# GitHub's default setup was running (`query_suite: default`), so switching over cannot
+# quietly add or drop a finding. A first draft of this file declared
+# `security-and-quality` two lines under a comment claiming the suite was unchanged --
+# broader than `default`, and it would have arrived as a pile of new alerts on the PR
+# that made the switch.
+
+paths-ignore:
+  # Test data is SYNTHETIC by construction here, and separately guarded: nothing in
+  # `tests/` may carry a real employer, location, contact or credential, and
+  # `tests/test_fixture_name_neutrality.py` fails the build if it does. That guard is
+  # stronger than CodeQL's for this repo, because it is a ratchet over a reviewed roster
+  # rather than a name-based heuristic.
+  #
+  # CodeQL's sensitive-data rules are name-based, so they fire on any local called
+  # `salary`, `password` or `token` regardless of what it holds. On a job-hunting tool
+  # whose whole subject matter is pay, that is a standing stream of false positives from
+  # fixtures: `py/clear-text-storage-sensitive-data` flagged a synthetic "£45,000"
+  # literal written to a pytest `tmp_path`, reached only because a helper parameter is
+  # named `salary`.
+  #
+  # The trade is that a genuine injection or path-traversal defect in a test HELPER goes
+  # unscanned. Accepted: test helpers do not ship -- `sluice/` is the distributed package
+  # -- and a false-positive stream that trains reviewers to dismiss this tool's findings
+  # costs more than the class it would catch here.
+  - tests
