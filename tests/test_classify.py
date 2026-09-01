@@ -351,3 +351,242 @@ def test_reject_pattern_with_punctuation_still_matches_a_standalone_occurrence(t
     cfg.reject_titles = [pat]
     cfg.accept_titles = []
     assert classify(L(titles, role=role), cfg)[0] == "reject"
+
+
+# ── #223 §2.3: the gate decides on evidence, not on which search ran ──────────
+#
+# `role_type` used to be consulted unconditionally, and it records which SEARCH found
+# the lead. The gate now reads the SALARY's own markers first and consults `role_type`
+# only when the note says the value was observed on the posting or declared by the user.
+#
+# Every row here goes through the real `classify()`, never `_pay_basis` alone: the
+# helper's answer is only interesting insofar as it moves a verdict, and a table
+# asserting on the helper would stay green if the gate stopped calling it.
+#
+# `_cfg` fixes contract_floor_gbp_day=480 and perm_floor_gbp=90_000 throughout, which is
+# what makes the two flip rows below discriminate: £300 rejects on the day branch and
+# keeps on the annual one, and £1,200 does exactly the reverse.
+
+_DAY_MARKERS = ["£450/day", "£450 per day", "£450 day rate", "£450 a day",
+                "£450 daily", "£450 per diem", "£450 p/d", "£450 pd"]
+_ANNUAL_MARKERS = ["£45,000 per annum", "£45,000 p.a.", "£45,000 pa",
+                   "£45,000/year", "£45,000 per year", "£45,000 annually"]
+
+
+@pytest.mark.parametrize("salary", _DAY_MARKERS)
+def test_a_salary_that_names_a_day_basis_is_judged_against_the_day_floor(titles, salary):
+    # 450 is under the 480 day floor and over _MIN_CREDIBLE_DAY_RATE, so a row reaching
+    # the DAY branch rejects. It is also under _MIN_CREDIBLE_SALARY, so a row reaching
+    # the ANNUAL branch keeps -- the branches disagree, which is what makes the row a
+    # witness rather than a coincidence.
+    assert classify(L(titles, role_type="", salary=salary), _cfg(titles))[0] == "reject"
+
+
+@pytest.mark.parametrize("salary", _ANNUAL_MARKERS)
+def test_a_salary_that_names_an_annual_basis_is_judged_against_the_annual_floor(titles, salary):
+    # 45,000 is under the 90,000 annual floor and over _MIN_CREDIBLE_SALARY -> reject on
+    # the ANNUAL branch; it is over the 480 day floor, so the DAY branch would keep.
+    assert classify(L(titles, role_type="contract", role_type_source="declared",
+                      salary=salary), _cfg(titles))[0] == "reject"
+
+
+def test_the_salarys_own_marker_beats_a_declared_role_type(titles):
+    # Steps 1-2 run before step 3. A user who declared `job_type: contract` on a search
+    # that returned a posting advertising an annual salary is not the authority on this
+    # posting's pay basis -- the posting is.
+    assert classify(L(titles, role_type="contract", role_type_source="declared",
+                      salary="£45,000 per annum"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, role_type="permanent", role_type_source="observed",
+                      salary="£450/day"), _cfg(titles))[0] == "reject"
+
+
+@pytest.mark.parametrize("source", ["declared", "observed"])
+def test_an_unmarked_salary_consults_a_trusted_role_type(titles, source):
+    # The flip rows. UNMARKED salaries, because a marked one can never reach step 3.
+    assert classify(L(titles, role_type="contract", role_type_source=source,
+                      salary="£300"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, role_type="contract", role_type_source=source,
+                      salary="£1,200"), _cfg(titles))[0] == "keep"
+
+
+@pytest.mark.parametrize("source", ["assumed", "", "whatever"])
+def test_an_unmarked_salary_ignores_an_untrusted_role_type(titles, source):
+    # The same two rows, flipped by provenance ALONE. This is #223's whole complaint:
+    # `role_type: contract` here records that a contract-labelled SEARCH found the lead,
+    # and nothing read the posting.
+    assert classify(L(titles, role_type="contract", role_type_source=source,
+                      salary="£300"), _cfg(titles))[0] == "keep"
+    assert classify(L(titles, role_type="contract", role_type_source=source,
+                      salary="£1,200"), _cfg(titles))[0] == "reject"
+
+
+def test_a_note_predating_the_feature_carries_no_provenance_key_at_all(titles):
+    # Not the same as a blank one, and worth its own row: `L()` builds the frontmatter
+    # dict, so this is a note written before #223 ever ran. It reads as `assumed`.
+    lead = L(titles, role_type="contract", salary="£300")
+    assert "role_type_source" not in lead
+    assert classify(lead, _cfg(titles))[0] == "keep"
+
+
+@pytest.mark.parametrize("stored", ['"contract"', "Contractor", "Fixed-Term", " contract "])
+def test_a_hand_typed_role_type_is_folded_before_the_gate_reads_it(titles, stored):
+    # A human editing the note in Obsidian, or a vault accumulated before #223, holds
+    # whatever spelling the writer used. Every row here needs the ALIAS fold, not merely
+    # a `.lower()`: an earlier draft of this test used `Contract`, which a bare
+    # `.lower()` also folds, so it stayed green under a mutant that deleted
+    # `normalise_role_type` from the read path outright. #223 names the quoted spelling
+    # as one a real vault actually holds.
+    assert classify(L(titles, role_type=stored, role_type_source="declared",
+                      salary="£300"), _cfg(titles))[0] == "reject"
+
+
+def test_an_unrecognised_role_type_does_not_reach_the_contract_branch(titles):
+    # The substring defect the closed set exists for: `"contract" in "contract-to-perm"`
+    # is True, so this row took the day branch on its first eight characters however its
+    # author meant it. It now folds to blank and falls through to the annual branch.
+    assert classify(L(titles, role_type="Contract-to-perm", role_type_source="declared",
+                      salary="£300"), _cfg(titles))[0] == "keep"
+
+
+def test_hourly_and_weekly_pay_are_never_judged_against_the_day_floor(titles):
+    # The harm the ORIGINAL §2.3 declined hourly/weekly support to avoid, kept as a test
+    # now that the support exists. Routing either to the `day` basis moves the applicable
+    # credibility floor from 1000 down to 50 and opens the day branch's reject window
+    # exactly where realistic hourly and weekly figures sit.
+    #
+    # This test replaces `test_hourly_and_weekly_pay_stay_unrecognised`, which pinned the
+    # decision commit 10 REVERSED and was left behind when it did. Measured: deleting the
+    # `hour` and `week` rows from `_BASES` outright left that test passing, so it had
+    # stopped guarding anything while still reading like a decision. A test that survives
+    # the removal of the feature it names is worse than no test -- it certifies.
+    cfg = _cfg(titles)          # already fixes contract_floor_gbp_day=480
+    for salary in ("£65 per hour", "£250 per week"):
+        verdict, why = classify(L(titles, role_type="", salary=salary), cfg)
+        assert verdict == "keep", f"{salary} was judged against the day floor: {why}"
+    # ...and each is judged against its OWN floor when one is set, which is what makes
+    # the row above a choice rather than an accident of everything abstaining.
+    assert classify(L(titles, role_type="", salary="£65 per hour"),
+                    _cfg(titles, contract_floor_gbp_hour=80)) == (
+        "reject", "Hourly rate below floor: 65 < 80")
+    assert classify(L(titles, role_type="", salary="£250 per week"),
+                    _cfg(titles, contract_floor_gbp_week=2000)) == (
+        "reject", "Weekly rate below floor: 250 < 2000")
+
+
+def test_an_unmarked_salary_with_no_trusted_provenance_is_judged_exactly_as_before(titles):
+    # Step 4. The fall-through is today's behaviour byte-for-byte: a bare amount is read
+    # as annual, deliberately unchanged rather than improved by a guess.
+    assert classify(L(titles, role_type="", salary="£45,000"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, role_type="", salary="£120,000"), _cfg(titles))[0] == "keep"
+
+
+# ── #223: hourly and weekly pay get their own bases and their own floors ─────
+#
+# The live defect this closes. The pay basis was never parsed for hourly or weekly, so
+# both fell to the ANNUAL branch and the bare number met `perm_floor_gbp`. What decided
+# the outcome was MAGNITUDE, not basis: measured against the shipped gate with
+# perm_floor_gbp=90_000, `£999 per week` kept and `£1,000 per week` rejected, and
+# `£2,000 per week` -- about £104k a year -- was binned silently.
+#
+# An earlier draft of §2.3 declined to add these BECAUSE the basis set was two-valued:
+# admitting them would have routed both to `day`, moving the applicable credibility floor
+# from 1000 down to 50 and opening the day branch's reject window exactly where realistic
+# hourly and weekly figures sit. That argument is against reusing the DAY floor, not
+# against parsing the basis -- so each basis now carries its own floor, and an unset one
+# abstains exactly as `contract_floor_gbp_day` and `perm_floor_gbp` already do at 0.
+
+_HOURLY = ["£65 per hour", "£65/hour", "£65/hr", "£65 an hour", "£65 hourly",
+           "£65 p/h", "£65 ph"]
+_WEEKLY = ["£2,000 per week", "£2,000/week", "£2,000/wk", "£2,000 a week",
+           "£2,000 weekly", "£2,000 p/w", "£2,000 pw"]
+
+
+@pytest.mark.parametrize("salary", _WEEKLY)
+def test_a_weekly_rate_is_no_longer_binned_against_the_annual_floor(titles, salary):
+    # THE defect. £2,000 a week is roughly £104,000 a year, and every one of these
+    # spellings was rejected as a sub-90,000 salary.
+    assert classify(L(titles, role_type="", salary=salary), _cfg(titles))[0] == "keep"
+
+
+@pytest.mark.parametrize("salary", _HOURLY)
+def test_an_hourly_rate_is_judged_on_its_own_floor_or_not_at_all(titles, salary):
+    # Unconfigured, the hourly floor abstains -- the same 0-means-no-floor rule the two
+    # existing floors use, and the reason a fresh install cannot silently bin anything.
+    assert classify(L(titles, role_type="", salary=salary), _cfg(titles))[0] == "keep"
+    cfg = _cfg(titles, contract_floor_gbp_hour=80)
+    assert classify(L(titles, role_type="", salary=salary), cfg) == (
+        "reject", "Hourly rate below floor: 65 < 80")
+
+
+@pytest.mark.parametrize("salary", _WEEKLY)
+def test_a_weekly_rate_is_judged_on_its_own_floor_when_one_is_set(titles, salary):
+    cfg = _cfg(titles, contract_floor_gbp_week=2500)
+    assert classify(L(titles, role_type="", salary=salary), cfg) == (
+        "reject", "Weekly rate below floor: 2000 < 2500")
+
+
+def test_an_hourly_floor_does_not_judge_a_daily_or_annual_rate(titles):
+    # Each basis is judged against ITS OWN floor and no other. An 80/hour floor must not
+    # reach a £450/day lead (which would reject it) or a £45,000 salary.
+    cfg = _cfg(titles, contract_floor_gbp_hour=80)
+    assert classify(L(titles, role_type="", salary="£450/day"), cfg)[0] == "reject"
+    assert "Day rate" in classify(L(titles, role_type="", salary="£450/day"), cfg)[1]
+    assert classify(L(titles, role_type="", salary="£120,000 per annum"), cfg)[0] == "keep"
+
+
+def test_an_implausible_hourly_parse_abstains_rather_than_rejecting(titles):
+    # The credibility guard, per basis. A stray "£2" is a mis-parse, not an offer, and a
+    # wrong reject bins a lead the user never sees. These floors are MONOTONE -- they sit
+    # inside the reject conjunction, so they can only turn a reject into an abstain.
+    cfg = _cfg(titles, contract_floor_gbp_hour=80)
+    assert classify(L(titles, role_type="", salary="£2 per hour"), cfg)[0] == "keep"
+
+
+def test_an_implausible_weekly_parse_abstains_rather_than_rejecting(titles):
+    cfg = _cfg(titles, contract_floor_gbp_week=2500)
+    assert classify(L(titles, role_type="", salary="£20 per week"), cfg)[0] == "keep"
+
+
+def test_a_salary_naming_two_different_bases_abstains(titles):
+    # Ambiguity abstains, the same rule `observe_role_type` follows for a JD carrying
+    # evidence for both. Picking a winner here would be an arbitrary precedence between
+    # two things the advert actually said, and the day branch's reject window sits right
+    # where an hourly figure lands -- so a wrong pick manufactures a reject.
+    #
+    # The ceiling here is 2,000, which is over _MIN_CREDIBLE_SALARY and under the 90,000
+    # annual floor -- so an "ambiguous" that fell back to `annual` REJECTS. That is the
+    # discriminating property, and it is the whole point of the row: an earlier draft
+    # paired £65/hour with £500/day, whose 500 ceiling sits under the credibility guard,
+    # so the annual fallback kept too and the row witnessed nothing.
+    cfg = _cfg(titles, contract_floor_gbp_hour=80)
+    assert classify(L(titles, role_type="", salary="£65 per hour, £2,000 per week"),
+                    cfg)[0] == "keep"
+
+
+def test_an_unknown_basis_yields_no_opinion_rather_than_an_annual_one(titles):
+    # `_pay_reject` must not default an unrecognised basis to the annual floor. That
+    # default is EXACTLY how `£2,000 per week` came to be judged as a sub-90,000 salary,
+    # and re-introducing it one layer in would restore the defect for the ambiguous case
+    # while every single-basis row stayed green.
+    from sluice.triage.classify import _pay_reject
+    assert _pay_reject("£2,000", "ambiguous", _cfg(titles)) is None
+    assert _pay_reject("£2,000", None, _cfg(titles)) is None
+    # ...and the annual floor really would have rejected it, so the row discriminates.
+    assert _pay_reject("£2,000", "annual", _cfg(titles)) == (
+        "reject", "Salary below floor: 2000 < 90000")
+
+
+def test_an_unmarked_salary_is_still_judged_exactly_as_before(titles):
+    # The four-way split must not disturb step 4. A bare amount still falls through to
+    # the annual branch, which is the pre-#223 behaviour and deliberately unimproved.
+    assert classify(L(titles, role_type="", salary="£45,000"), _cfg(titles))[0] == "reject"
+    assert classify(L(titles, role_type="", salary="£120,000"), _cfg(titles))[0] == "keep"
+
+
+def test_the_new_floors_ship_neutral_so_an_unconfigured_gate_abstains():
+    # The empty-config-abstains invariant, on the two knobs this adds. A shipped
+    # non-zero floor would silently bin hourly and weekly leads on a fresh install --
+    # which is the 672ad2a class this whole change exists to remove, reintroduced.
+    neutral = TriageConfig()
+    assert neutral.contract_floor_gbp_hour == 0
+    assert neutral.contract_floor_gbp_week == 0

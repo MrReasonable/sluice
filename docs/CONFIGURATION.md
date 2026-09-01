@@ -55,8 +55,10 @@ sweep keyed on list defaults.
 | `target_locations` | `[]` | empty = no geographic gate at all |
 | `reject_locations` | `[]` | |
 | `reject_companies` | `[]` | |
+| `contract_floor_gbp_hour` | `0` | `0` = no floor; applied only to a lead advertised per hour |
 | `contract_floor_gbp_day` | `0` | `0` = no floor; compares numbers, not currencies |
-| `perm_floor_gbp` | `0` | `0` = no floor |
+| `contract_floor_gbp_week` | `0` | `0` = no floor; applied only to a lead advertised per week |
+| `perm_floor_gbp` | `0` | `0` = no floor; also the fallback for an advert stating no basis |
 | `batch_size` | `5` | leads per judge call |
 | `ttl_days` | `7` | **dossier cache** TTL — unrelated to the root `lead_ttl_days` |
 | `audit_jsonl` | `""` | resolves to `<XDG_STATE_HOME>/sluice/triage-audit.jsonl`; env override `TRIAGE_AUDIT` |

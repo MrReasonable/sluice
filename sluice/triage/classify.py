@@ -8,6 +8,13 @@ unconfigured gate abstains rather than applying somebody else's idea of a good r
 import re
 
 from sluice.core.leads import is_placeholder_company
+from sluice.core.roletype import (
+    CONTRACT,
+    PERMANENT,
+    boundaried,
+    normalise_role_type,
+    trusted_provenance,
+)
 
 # Boards advertise pay in wildly inconsistent shapes: "£60k", "£30,000-£40,000",
 # "up to £75k", "£500/day", "£50,000 + 10% bonus". The old parser stripped every
@@ -42,8 +49,101 @@ _RANGE_TAIL_RE = re.compile(
 
 # Below these, a parse is not a real offer -- it is a mis-parse. Abstain rather than
 # reject: a wrong reject bins a lead the user never sees, the expensive direction.
+#
+# Parsing facts, not preferences, and the property that makes that claim checkable is
+# that they are MONOTONE: each appears only inside its branch's reject CONJUNCTION, so it
+# can turn a reject into an abstain and never the reverse. A number that cannot
+# manufacture a reject cannot encode an opinion about which jobs are good.
+_MIN_CREDIBLE_HOURLY_RATE = 5
 _MIN_CREDIBLE_DAY_RATE = 50
+_MIN_CREDIBLE_WEEKLY_RATE = 100
 _MIN_CREDIBLE_SALARY = 1000
+
+# How boards SPELL a pay basis (#223 §2.3). Parsing facts, not preferences: they encode
+# how a rate is written, never which rate is desirable, so there is no `*Config` field
+# and no `sluice.yaml.example` entry for either. ENGLISH/UK-BOARD idiom -- a board in
+# another market spells its bases differently and falls through to step 4, which is a
+# visible gap rather than a silent misread.
+#
+# Matched via `roletype.boundaried`, never plain containment: bare `pd` and `pa` inside
+# an ordinary word is #128's bug class through a new door. That helper asserts a word
+# boundary only on an edge the pattern HAS one for, which is what lets `/day` and `p.a.`
+# sit in the same tuple as `pd` -- `_word_match` above cannot, because it asserts both
+# edges unconditionally and "£500/day" then fails the assertion on the `0`.
+#
+# Compiled once at import, like `roletype`'s own JD sets: the gate runs every one of them
+# over every lead of every run. No COUNT here on purpose -- this comment said "all
+# fourteen of these" and the very next commit doubled the table, which is the third stale
+# count in this branch's own prose. The number is the drift surface; `_BASES` is the
+# answer, and it is two lines down.
+_HOUR_MARKERS = ("/hour", "/hr", "per hour", "hourly", "an hour", "a hour", "p/h", "ph")
+_DAY_MARKERS = ("/day", "per day", "day rate", "a day", "daily", "per diem", "p/d", "pd")
+_WEEK_MARKERS = ("/week", "/wk", "per week", "weekly", "a week", "p/w", "pw")
+# `a year` carries the `a <unit>` spelling the other three rows all have, and its absence
+# was not symmetry for its own sake: it is the exact spelling of the only real annual
+# salary in the golden fixtures (`tests/fixtures/indeed/raw.json`, "£60,000 - £70,000 a
+# year"). Without it that string reached NO basis, so it fell to the annual branch by
+# default -- right by accident -- and flipped to the DAY branch under a trusted
+# `role_type: contract`, which is the dependency §2.3 exists to remove.
+_ANNUAL_MARKERS = ("per annum", "p.a.", "pa", "/year", "per year", "a year", "annually")
+
+# basis -> (its markers, its credibility floor, the config key holding its floor, the
+# noun the reject message uses). ONE table, so a basis cannot exist with no floor to be
+# judged against, and cannot be judged against another basis's floor -- which is exactly
+# the harm an earlier draft of §2.3 declined hourly/weekly support to avoid. That draft
+# read the harm as "do not parse these"; it was really "do not reuse the DAY floor".
+_BASES = {
+    "hour": (_HOUR_MARKERS, _MIN_CREDIBLE_HOURLY_RATE, "contract_floor_gbp_hour",
+             "Hourly rate"),
+    "day": (_DAY_MARKERS, _MIN_CREDIBLE_DAY_RATE, "contract_floor_gbp_day", "Day rate"),
+    "week": (_WEEK_MARKERS, _MIN_CREDIBLE_WEEKLY_RATE, "contract_floor_gbp_week",
+             "Weekly rate"),
+    "annual": (_ANNUAL_MARKERS, _MIN_CREDIBLE_SALARY, "perm_floor_gbp", "Salary"),
+}
+_BASIS_RE = {name: tuple(boundaried(m) for m in markers)
+             for name, (markers, _f, _k, _n) in _BASES.items()}
+
+
+def _pay_basis(salary: str, role_type: str, source: str) -> str | None:
+    """A key of `_BASES`, `"ambiguous"`, or None for "the lead does not say" (#223 §2.3).
+
+    The order is the whole design. The SALARY's own markers are read first, so the
+    posting's own words beat everything; only an UNMARKED salary consults `role_type`, and
+    only when the note records the value as observed on the posting or declared by the
+    user. An `assumed` one is the tool's guess about which search ran, which is the defect
+    #223 exists to close.
+
+    **An advert naming TWO bases abstains**, the same rule `observe_role_type` follows for
+    a JD carrying evidence both ways. First-match-wins would be an arbitrary precedence
+    between two things the advert actually said, and the cost is not symmetric: the day
+    branch's reject window sits exactly where an hourly figure lands, so a wrong pick
+    manufactures a reject.
+
+    None falls through to the caller's EXISTING annual branch, byte-for-byte today's
+    behaviour for a bare amount. Deliberately not improved by a guess.
+
+    **There is no magnitude step, and that omission is measured rather than stylistic.**
+    An earlier draft selected the basis from low/high thresholds, by analogy with
+    `_MIN_CREDIBLE_DAY_RATE`. The analogy is false: those constants appear only inside the
+    reject CONJUNCTION, so they are monotone -- they can only turn a reject into an
+    abstain. A step that selects the BRANCH is bidirectional, and the day branch's reject
+    window `[_MIN_CREDIBLE_DAY_RATE, contract_floor_gbp_day)` is exactly where small
+    unmarked numbers land, so a low threshold MANUFACTURES rejects: £300 and £450 both
+    keep on the annual branch and reject on the day one.
+    """
+    text = (salary or "").lower()
+    named = [name for name, patterns in _BASIS_RE.items()
+             if any(r.search(text) for r in patterns)]
+    if len(named) > 1:
+        return "ambiguous"
+    if named:
+        return named[0]
+    if trusted_provenance(source):
+        if role_type == CONTRACT:
+            return "day"
+        if role_type == PERMANENT:
+            return "annual"
+    return None
 
 
 def _salary_amounts(s: str) -> list[int]:
@@ -131,12 +231,98 @@ def _word_match(pat: str, text: str) -> bool:
     return re.search(r"(?<!\w)" + re.escape(pat) + r"(?!\w)", text) is not None
 
 
+def _legacy_pay_basis(lead: dict) -> str:
+    """The branch the PRE-#223 gate would have selected, spelled out verbatim.
+
+    Kept -- and kept EXACT rather than approximated -- for one caller: `reverdict_notice`
+    below. Every approximation tried during implementation under-reported in the
+    direction of the harm. A probe that simply forces this lead's `role_type` to be
+    TRUSTED misses two populations: `Contract-to-perm`, which the old SUBSTRING test sent
+    down the day branch and the closed set now folds to blank, and an annual-marked
+    salary on a contract-labelled lead, because §2.3's marker step runs before the
+    provenance one. Both flip verdict silently, which is precisely what the notice
+    exists to stop.
+
+    Delete this, and `reverdict_notice`, once no vault predating #223 is plausible.
+    """
+    role_type = (lead.get("role_type") or "").lower()
+    salary = (lead.get("salary") or "").lower()
+    if "contract" in role_type or "/day" in salary or "per day" in salary:
+        return "day"
+    return "annual"
+
+
+def _pay_reject(salary: str, basis: str, cfg) -> tuple[str, str] | None:
+    """The floors' verdict for a STATED basis, or None for no opinion.
+
+    Both branches abstain on an implausible parse rather than trusting it. The perm
+    branch always had its credibility guard; the contract branch did not, which is why a
+    "£1.5k/day" lead was silently rejected while the identical mistake on the perm side
+    was harmless.
+
+    Split out from `classify` so the re-verdict notice can ask the same floors the same
+    question under the OTHER basis, rather than re-implementing them and drifting.
+
+    A basis outside `_BASES` -- `"ambiguous"`, or a `None` the caller did not default --
+    yields NO OPINION rather than falling back to a floor. Defaulting an unknown basis to
+    `annual` here is how `£2,000 per week` came to be judged as a sub-90,000 salary; the
+    caller defaults an UNMARKED salary deliberately and visibly, and nothing else should.
+    """
+    amount = _salary_ceiling(salary)
+    if amount is None or basis not in _BASES:
+        return None
+    _markers, credible, key, noun = _BASES[basis]
+    floor = getattr(cfg, key, 0)
+    if amount >= credible and amount < floor:
+        return "reject", f"{noun} below floor: {amount} < {floor}"
+    return None
+
+
+def reverdict_notice(lead: dict, cfg) -> str | None:
+    """What #223 changes for THIS lead's pay verdict, or None when it changes nothing.
+
+    A note written before #223 carries no `role_type_source` key and reads as `assumed`,
+    so the gate stops consulting its `role_type` (§2.1). On an accumulated vault that is
+    a BATCH of leads changing verdict at once, on the first run after an upgrade -- and
+    `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so a lead dismissed that way is never
+    re-selected and the user never sees it again.
+
+    Compares the PAY GATE's own verdict under each basis, which is the thing that
+    actually moves. A lead an earlier gate already rejects is not affected: `classify`
+    returns the FIRST reject it finds, so a current reject whose reason is not the
+    current pay reject means the pay branch never decided this lead at all.
+    """
+    salary = lead.get("salary") or ""
+    was = _legacy_pay_basis(lead)
+    now = _pay_basis(salary, normalise_role_type(lead.get("role_type")),
+                     lead.get("role_type_source") or "") or "annual"
+    if was == now:
+        return None
+    before, after = _pay_reject(salary, was, cfg), _pay_reject(salary, now, cfg)
+    if before == after:
+        return None
+    verdict, why = classify(lead, cfg)
+    if verdict == "reject" and (after is None or why != after[1]):
+        return None
+    return (f"pay was judged as {was}, now judged as {now}: "
+            f"{'reject' if before else 'keep'} -> {'reject' if after else 'keep'}"
+            f"{' (' + after[1] + ')' if after else ''}")
+
+
 def classify(lead: dict, cfg) -> tuple[str, str]:
     role = (lead.get("role") or "").lower()
     company = (lead.get("company") or "").strip()
     location = (lead.get("location") or "").lower()
     salary = (lead.get("salary") or "")
-    role_type = (lead.get("role_type") or "").lower()
+    # Folded on READ as well as on write (#223 §2.2). A note's frontmatter is a file a
+    # human edits in Obsidian, so `Contract` typed by hand must reach the same branch
+    # `contract` does -- and `Contract-to-perm`, which the old substring test sent down
+    # the contract branch on its first eight characters, must reach neither.
+    role_type = normalise_role_type(lead.get("role_type"))
+    # The PERSISTED key, never re-derived from config (§2.5). Asking whether the source's
+    # search is configured TODAY would consult a legacy value written before #223 ran and
+    # recreate the false KEEP this whole issue is about.
+    role_type_source = lead.get("role_type_source") or ""
 
     # The accept list exists to stop a BROAD reject pattern from killing a good
     # title: a bare "manager" reject must not disqualify an accepted "<x> manager".
@@ -165,20 +351,13 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
             t in location for t in cfg.target_locations):
         return "reject", "Location outside target geography"
 
-    # Pay floors. Both branches abstain on an implausible parse rather than trusting
-    # it. The perm branch always had its credibility guard; the contract branch did
-    # not, which is why a "£1.5k/day" lead was silently rejected while the identical
-    # mistake on the perm side was harmless.
-    if "contract" in role_type or "/day" in salary.lower() or "per day" in salary.lower():
-        rate = _salary_ceiling(salary)
-        if (rate is not None and rate >= _MIN_CREDIBLE_DAY_RATE
-                and rate < cfg.contract_floor_gbp_day):
-            return "reject", f"Day rate below floor: {rate} < {cfg.contract_floor_gbp_day}"
-    else:
-        amount = _salary_ceiling(salary)
-        if (amount is not None and amount >= _MIN_CREDIBLE_SALARY
-                and amount < cfg.perm_floor_gbp):
-            return "reject", f"Salary below floor: {amount} < {cfg.perm_floor_gbp}"
+    # Pay floors. `None` from `_pay_basis` means the lead states no basis, and falls
+    # through to the annual branch -- byte-for-byte the pre-#223 behaviour for a bare
+    # unmarked amount.
+    pay = _pay_reject(
+        salary, _pay_basis(salary, role_type, role_type_source) or "annual", cfg)
+    if pay:
+        return pay
 
     # `is_placeholder_company` catches blank AND every honest non-answer a board or
     # a legacy/foreign note carries ("Unknown", "Confidential", "N/A", ...) --

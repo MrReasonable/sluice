@@ -136,8 +136,30 @@ triage:
   # above. Requires company_resolve_fetch: true; set alone, the loader RAISES rather than
   # leaving a knob that could never fire.
   # company_resolve_llm: true   # <- uncomment to opt in (needs company_resolve_fetch too)
+  # One floor per pay BASIS (#223). The gate reads the basis off the advert's own words
+  # (`/day`, `per hour`, `per annum`, ...) and judges each against ITS OWN floor only, so
+  # a day floor never reaches an hourly lead. An advert naming two bases abstains, and an
+  # advert naming none is read as annual -- long-standing behaviour, deliberately
+  # unchanged rather than improved by a guess.
+  #
+  # All four numbers below are INVENTED illustrations. They are not derived from each
+  # other and must not be: converting between them needs an hours-per-day and a
+  # days-per-week assumption, which is a claim about someone's working pattern rather
+  # than about pay, and wrong for anyone on a four-day week. That is exactly why there
+  # are four keys instead of one -- each asks you for a number you have an opinion
+  # about. They carry no recommendation; the shipped default for every one is 0.
+  #
+  # Leaving one at 0 means leads advertised on that basis are never rejected on pay,
+  # which is why hourly and weekly exist here at all: before they had floors of their
+  # own the basis was never parsed and both fell to perm_floor_gbp -- so `£2,000 per
+  # week`, about £104k a year, was silently binned as a sub-90,000 salary.
+  # Deliberately NOT round multiples of each other: 2250 and 90000 were exactly 5x and
+  # 200x the day floor, which is the five-day-week/200-day-year conversion the paragraph
+  # above says must not be used -- so the numbers falsified the comment sitting over them.
+  contract_floor_gbp_hour: 80     # illustrative; set your own (0 = no floor)
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
-  perm_floor_gbp: 90000          # illustrative; set your own (0 = no floor)
+  contract_floor_gbp_week: 2000   # illustrative; set your own (0 = no floor)
+  perm_floor_gbp: 85000          # illustrative; set your own (0 = no floor)
   primary_backend: claude-max
   fallback_backend: deepseek
   # Model ids are BARE, not provider/model: the value is sent verbatim as the API's
