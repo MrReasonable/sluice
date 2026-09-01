@@ -1,0 +1,57 @@
+# CodeQL, as an ADVANCED setup rather than GitHub's default one.
+#
+# The move is not cosmetic. Under default setup the configuration lives in repository
+# settings, so it is invisible in review, absent from a clone, and cannot be changed in a
+# pull request alongside the code it governs. This file makes the scan's scope, its query
+# suite and its schedule reviewable like anything else here.
+#
+# It reproduces what default setup was doing -- the same two languages, the same `default`
+# query suite, the same weekly schedule -- plus one deliberate change, the `paths-ignore`
+# below. Keeping the query suite means switching over cannot quietly add or drop findings;
+# widening it to `security-extended` is a separate decision with its own triage cost.
+#
+# NOTE: default setup and advanced setup are mutually exclusive. GitHub rejects this
+# workflow's SARIF upload while default setup is enabled ("CodeQL analyses from advanced
+# configurations cannot be processed when the default setup is enabled"), so the repo
+# setting must be turned off for this to run.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, matching what default setup ran. A scheduled scan catches a newly published
+    # query against unchanged code, which a push-triggered one never will.
+    - cron: "23 4 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      # `security-events: write` is what uploads the SARIF; nothing else here needs a
+      # token. Declared per job rather than at the top so the rest of the file keeps the
+      # read-only default the other workflows use.
+      security-events: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config-file: ./.github/codeql-config.yml
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
