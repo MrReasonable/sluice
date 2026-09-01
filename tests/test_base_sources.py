@@ -88,8 +88,13 @@ def test_per_search_params_override_source_extra():
     contract, perm = src.searches()
     c = src.parse({"result": [{"title": "Analyst", "link": "http://x/1"}]}, contract)
     p = src.parse({"result": [{"title": "Analyst", "link": "http://y/1"}]}, perm)
-    assert c[0].job_type == "contract"   # source default
-    assert p[0].job_type == "perm"       # per-search override
+    assert c[0].job_type == "contract"       # source default
+    # `perm`, as written in the spec above, now REACHES the store as `permanent`: #223
+    # folds every origin's value to `core/roletype.py`'s closed set, so the gate's
+    # substring test cannot be handed a third spelling. What this test pins is unchanged
+    # -- the per-search params still beat the source's `extra` -- but the assertion has
+    # to be on the folded value, because the raw one no longer survives `_row_to_lead`.
+    assert p[0].job_type == "permanent"      # per-search override
 
 
 def test_health_hint_reports_count_and_hosts():

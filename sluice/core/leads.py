@@ -298,7 +298,16 @@ class Lead:
     location: str = ""
     salary: str = ""
     url: str = ""
-    job_type: str = ""          # "contract" | "permanent" | ""
+    job_type: str = ""          # "contract" | "permanent" | "" -- see core/roletype.py
+    # WHERE `job_type` came from: "observed" (the posting says so) | "declared" (the
+    # user's own assertion -- a search they configured, or a lead they typed) |
+    # "assumed" (the tool's guess -- a shipped example search, a source's `extra`) | ""
+    # (no job_type at all). #223: the relevance gate consults only the first two,
+    # because `job_type` used to record which SEARCH found the lead and was then read
+    # as a fact about the JOB. Stamped by each origin, never inferred afterwards --
+    # `_row_to_lead`'s `{**extra, **params}` merge is lossy, so after it nothing can
+    # tell which dict a key came from.
+    job_type_source: str = ""
     first_seen: str = ""         # ISO date; set when the lead is first created
     last_seen: str = ""          # ISO date; bumped on every re-scrape
     raw_meta: dict = field(default_factory=dict)

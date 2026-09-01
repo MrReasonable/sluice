@@ -23,6 +23,7 @@ from urllib.parse import urlparse
 
 from sluice.core.config import validate_search_entry
 from sluice.core.leads import Lead
+from sluice.core.roletype import ASSUMED, DECLARED, normalise_role_type
 
 HealthSignals = dict
 
@@ -347,10 +348,55 @@ def validate_reprobed(qualified: str, value):
     return value
 
 
+def _job_type_origin(search: Search, extra: dict | None) -> str:
+    """Which of #223 §2.1's origins asserted this row's `job_type` -- `declared`,
+    `assumed`, or `""` for "nobody did".
+
+    Computed PER KEY and BEFORE `_row_to_lead`'s `{**extra, **params}` merge, because
+    after that merge nothing can tell which dict a key came from. Two ways to get this
+    wrong, each measured into a test:
+
+    - **Deciding from the SEARCH alone.** "This search is configured, therefore its
+      job_type is the user's" laundered the SOURCE's shipped `extra` into `declared` for
+      every user who configures `searches` without a `job_type` param -- which is most of
+      them -- and the gate would go on trusting the tool's own guess under the user's
+      authority. `declared` requires BOTH that `params` itself carries the key AND that
+      the search was user-configured (`Search.configured`, #212 direction 1).
+    - **Reading the merged value's TRUTH rather than the key's PRESENCE.** `in`, not
+      `.get()`, mirrors dict-unpacking precedence exactly: a configured search setting
+      `job_type: ""` deliberately blanks the source's default, and the origin of the
+      effective value is then that blank -- i.e. nobody asserted anything.
+
+    A blank assertion is no assertion, so it stamps `""` rather than `assumed`. An
+    UNRECOGNISED one still stamps its origin: the source did assert something, and the
+    value blanking (see `normalise_role_type`) does not un-say it.
+    """
+    params = search.params or {}
+    defaults = extra or {}
+    if "job_type" in params:
+        asserted, by_the_user = params["job_type"], search.configured
+    elif "job_type" in defaults:
+        asserted, by_the_user = defaults["job_type"], False
+    else:
+        return ""
+    if not (isinstance(asserted, str) and asserted.strip()):
+        return ""
+    return DECLARED if by_the_user else ASSUMED
+
+
 def _row_to_lead(source: str, search: Search, row: dict, extra: dict | None) -> Lead:
     """Map an extractor row {title, company?, location?, link, salary?} to a Lead.
     Source-level `extra` sets defaults; the search's own params override them (so
-    a perm search on a contract-default source still tags the lead job_type=perm)."""
+    a perm search on a contract-default source still tags the lead job_type=perm).
+
+    `job_type` is folded to `core/roletype.py`'s closed set and stamped with its origin
+    (#223). Both happen AFTER the `setattr` loop below, which applies every merged key
+    VERBATIM: a source's `extra` is code rather than config, so `validate_search_entry`'s
+    `_PARAMS_KEY_CLASH` check never sees it, and stamping before the loop would let a
+    source hand itself `job_type_source: "observed"` -- the one provenance that outranks
+    the user's own. Deciding the origin happens before the merge; WRITING it happens
+    after."""
+    origin = _job_type_origin(search, extra)
     location = (row.get("location") or "").strip()
     company = _demash_company((row.get("company") or "").strip(), location)
     lead = Lead(
@@ -364,6 +410,8 @@ def _row_to_lead(source: str, search: Search, row: dict, extra: dict | None) -> 
     )
     for key, value in {**(extra or {}), **(search.params or {})}.items():
         setattr(lead, key, value)
+    lead.job_type = normalise_role_type(lead.job_type)
+    lead.job_type_source = origin
     return lead
 
 
