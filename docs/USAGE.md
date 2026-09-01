@@ -157,8 +157,38 @@ clause, tier 0, then a free URL-pattern tier 1, an opt-in real page-visit tier 2
 (`triage.company_resolve_llm`). Never touches a lead already in the application
 lifecycle. `--dry-run` still COMPUTES every resolution tier -- including a real tier-3
 backend call, which is billed -- only the vault write and audit line are skipped.
+`role_type` is judged as a pay BASIS, not as a label (#223). The salary's own markers
+decide it (`/day`, `day rate`, `per annum`, ...); an unmarked salary consults the note's
+`role_type` only where `role_type_source` records it as `observed` (read off the job
+description) or `declared` (from a search you configured, or a lead you typed), never
+where it is `assumed` -- the tool's own guess from a shipped example search or a source
+default. A description that contradicts a value YOU declared is reported per lead and
+recorded in the audit log, and your value is KEPT -- reading a pay basis out of prose is
+imprecise enough that it should not overwrite something you typed, so the choice stays
+yours. Filling a blank, or correcting the tool's own guess, is counted rather than
+announced.
+
+Pay is judged against **one floor per basis** — `contract_floor_gbp_hour`,
+`contract_floor_gbp_day`, `contract_floor_gbp_week`, `perm_floor_gbp` — and never against
+another basis's. An advert naming two bases abstains; one naming none is read as annual.
+Each floor is `0` by default, meaning no floor, so leads on a basis you have not
+configured are never rejected on pay. Before hourly and weekly had floors of their own the
+basis was not parsed at all and both fell to `perm_floor_gbp`, so `£2,000 per week` — about
+£104k a year — was silently binned as a sub-floor salary.
+
+**The first run on a vault written before this feature writes nothing.** Those notes
+carry no `role_type_source`, so they read as `assumed` and stop being judged on
+`role_type`; weekly and hourly leads stop being judged as salaries at the same time. That
+moves a batch of verdicts at once, in BOTH directions, so the run names the affected leads
+and stops. Review them, then run it again to apply. A `--dry-run` shows the notice without
+consuming it. Leads already at `dismiss` are not re-selected by a later run, so recovering
+any the old gate binned needs a deliberate `--status dismiss` sweep.
+
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
-backend=<name> failures=<N>` to stderr and Telegram-notifies. Exit 0 always.
+observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr and
+Telegram-notifies. `tests/test_docs_claims.py` derives those key names from `cli.py` and
+fails when this line and the real one disagree, because every previous version of this
+sentence went stale silently. Exit 0 always.
 
 ### `job-sluice triage normalize-status [--dry-run]`
 

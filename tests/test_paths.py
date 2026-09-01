@@ -461,10 +461,14 @@ def _resolve_call_names():
 def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
     called = _resolve_call_names()
     assert called, "found no resolve(name=...) call sites -- the sweep would be vacuous"
-    # The config file is the one deliberate exemption: an unset SLUICE_CONFIG meant "no
-    # config file", never "./config.yaml", so there is nothing to migrate from. Listing
-    # it here rather than in `_LEGACY` keeps the exemption explicit and reviewable.
-    exempt = {"config.yaml"}
+    # Two deliberate exemptions, listed here rather than in `_LEGACY` so each stays
+    # explicit and reviewable. An unset SLUICE_CONFIG meant "no config file", never
+    # "./config.yaml", so there is nothing to migrate from. And #223's re-verdict marker
+    # shipped in no prior release, so no user can have an older copy of it left behind --
+    # a `_LEGACY` row would name a path that has never existed, which is a migration
+    # check that can only ever be inert. If it goes missing the notice is simply shown
+    # again, which costs one skipped run; see sluice/triage/reverdict.py.
+    exempt = {"config.yaml", "role_type_reverdict_ack.json"}
     missing = called - set(paths._LEGACY) - exempt
     assert not missing, (
         "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "

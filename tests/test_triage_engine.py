@@ -2,11 +2,16 @@ import json
 import os
 import re
 from datetime import datetime
+
+import pytest
+
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 from sluice.triage.config import TriageConfig
 from sluice.core.dossier import DossierCache
+from sluice.triage import reverdict
 from sluice.triage.audit import AuditLog
+from sluice.triage.classify import classify
 from sluice.triage.engine import run
 from sluice.core.backends import BackendError
 from sluice.triage.audit import render_rejected_note
@@ -1600,3 +1605,515 @@ def test_triage_unjudgeable_conflict_is_counted_and_batch_continues(tmp_path, ti
     assert statuses["Example Conflict Co"] == "new"       # conflicted lead left in its prior state
     assert statuses["Beta"] == "unjudgeable"    # survivor's write still landed (batch continued)
     assert report.counts["unjudgeable"] == 1     # only the survivor's write is counted
+
+
+# ── #223 §2.4/§2.5: the observation reaches the note, and a conflict is said ──
+#
+# The ladder is `observed > declared > assumed > ""`, so an observation always wins on
+# the VALUE. What varies is whether the user has to be told: overwriting the tool's own
+# guess is the feature working, while overwriting the user's DECLARATION means their
+# search's premise was wrong and they have no other way to find that out.
+
+
+class _JdCache(DossierCache):
+    """Serves one JD to every lead, through the real `get_or_build` so the observation
+    is computed by production code rather than hand-fed. Subclasses rather than
+    duck-types for `_RecordingCache`'s stated reason: `lead_id` must be stamped by the
+    production `cache_key`."""
+    def __init__(self, tmp_path, markdown):
+        super().__init__(str(tmp_path / "dos"), 7,
+                         lambda lead: {"jd": {"markdown": markdown}, "glassdoor": {}},
+                         clock=lambda: datetime(2026, 7, 7))
+
+
+def _rt_fields(role, *, role_type, source, status="new"):
+    fm = ['company: "Acme"', f'role: "{role}"', 'location: "remote"', 'salary: ""',
+          f'role_type: "{role_type}"', 'url: "https://x/y"', f"status: {status}",
+          "score: 0", 'glassdoor_rating: ""', 'culture_flags: ""',
+          'relevance_notes: ""']
+    if source is not None:
+        fm.append(f'role_type_source: "{source}"')
+    return fm
+
+
+_CONTRACT_JD = "x" * 400 + " This is a 6-month contract, outside IR35."
+
+
+def _run_rt(tmp_path, fm_lines, *, jd=_CONTRACT_JD, dry_run=False):
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", fm_lines)
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, jd), audit,
+                 statuses=("new",), dry_run=dry_run)
+    return report, v.read_leads()[0]
+
+
+def test_an_observation_fills_a_blank_role_type(tmp_path):
+    report, note = _run_rt(tmp_path, _rt_fields("Analyst", role_type="", source=""))
+    assert note.fm["role_type"] == "contract"
+    assert note.fm["role_type_source"] == "observed"
+    assert report.observed_role_types["filled"] == 1
+
+
+def test_an_observation_corrects_the_tools_own_guess_without_a_conflict_line(tmp_path):
+    # `assumed` is the search label #223 is about. Correcting it IS the feature, so it
+    # is counted rather than announced -- a line per lead here would be most of them.
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="permanent", source="assumed"))
+    assert note.fm["role_type"] == "contract"
+    assert note.fm["role_type_source"] == "observed"
+    assert report.observed_role_types["corrected"] == 1
+    assert report.role_type_conflicts == []
+
+
+def test_a_declaration_the_posting_CONTRADICTS_is_reported_and_KEPT(tmp_path):
+    """The user's assertion survives an observation that disagrees with it.
+
+    §2.5 as designed put `observed` above `declared` outright, on the reasoning that the
+    posting is ground truth about what the job IS. Three rounds of review then MEASURED
+    the observer: 37% recall, and a residual false-positive rate on adverts whose subject
+    is contracting. Overriding a declaration on that basis writes a guess over something
+    the user actually asserted, permanently -- and stickily, since the next run sees the
+    value agreeing with itself and skips.
+
+    So an observation fills a blank and corrects the tool's own `assumed` guess, and a
+    contradiction with a `declared` value is SURFACED instead. The user keeps their
+    assertion and learns their search's premise may not hold for this posting; deciding
+    between the two is theirs, and they are the only party who can.
+    """
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="permanent", source="declared"))
+    assert note.fm["role_type"] == "permanent"        # kept
+    assert note.fm["role_type_source"] == "declared"  # ...and still theirs
+    assert report.observed_role_types["conflicted"] == 1
+    assert len(report.role_type_conflicts) == 1
+    said = report.role_type_conflicts[0]
+    assert "permanent" in said and "contract" in said and "declared" in said
+
+
+def test_a_declaration_the_posting_AGREES_with_is_not_a_conflict(tmp_path):
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="contract", source="declared"))
+    assert note.fm["role_type"] == "contract"
+    assert report.role_type_conflicts == []
+    # The counters too, not just the absence of a conflict line: asserting only what did
+    # NOT happen left every bucket unpinned here, and the arm this row takes was filing
+    # the lead under `filled` -- a label its own field comment defines as "had nothing".
+    assert report.observed_role_types == {"filled": 0, "confirmed": 1, "corrected": 0,
+                                          "conflicted": 0}
+
+
+def test_a_posting_that_states_no_basis_leaves_the_declaration_alone(tmp_path):
+    # Abstention must not be mistaken for an observation of "". A JD saying nothing
+    # about basis is not evidence that the user's declaration is wrong.
+    jd = "x" * 400 + " You will own the deployment pipeline."
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="permanent", source="declared"), jd=jd)
+    assert note.fm["role_type"] == "permanent"
+    assert note.fm["role_type_source"] == "declared"
+    assert report.observed_role_types == {"filled": 0, "confirmed": 0, "corrected": 0,
+                                          "conflicted": 0}
+
+
+def test_a_dry_run_observes_and_reports_but_writes_nothing(tmp_path):
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="permanent", source="declared"),
+        dry_run=True)
+    assert note.fm["role_type"] == "permanent"
+    assert note.fm["role_type_source"] == "declared"
+    assert len(report.role_type_conflicts) == 1
+
+
+def test_the_write_is_refused_once_the_lead_leaves_the_statuses_triage_owns(tmp_path):
+    # `require_status=TRIAGE_OWNED`, and the reason is the read->write gap: a JD fetch
+    # sits between reading the note and writing this field, and the lead may enter the
+    # application lifecycle inside it. Read in under an explicit `--status applied`,
+    # which is the only way to select one here.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared",
+                                   status="applied"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
+        statuses=("applied",))
+    assert v.read_leads()[0].fm["role_type"] == "permanent"
+
+
+def test_a_conflict_is_recorded_in_the_durable_audit_log(tmp_path):
+    # The run summary scrolls past; the audit log is what survives it.
+    _run_rt(tmp_path, _rt_fields("Analyst", role_type="permanent", source="declared"))
+    lines = open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()
+    entries = [json.loads(l) for l in lines]
+    conflicts = [e for e in entries if e.get("stage") == "role_type"]
+    assert len(conflicts) == 1
+    # The entry records what the note still SAYS and what the posting read as -- in that
+    # order, because the note was not changed. An earlier shape named the observation
+    # `role_type` and the note's value `previous_role_type`, which described an override
+    # that no longer happens.
+    assert conflicts[0]["role_type"] == "permanent"
+    assert conflicts[0]["role_type_source"] == "declared"
+    assert conflicts[0]["observed_role_type"] == "contract"
+
+
+def test_a_conflict_never_reaches_the_rejected_leads_note(tmp_path):
+    # Same discipline `_resolve_audit` follows: a run that only observed a role_type
+    # rejected nothing, so it must not start re-rendering a note about rejections.
+    from sluice.triage.audit import _is_reject
+    _run_rt(tmp_path, _rt_fields("Analyst", role_type="permanent", source="declared"))
+    lines = open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()
+    for entry in (json.loads(l) for l in lines):
+        if entry.get("stage") == "role_type":
+            assert not _is_reject(entry)
+
+
+# ── #223 §2.1: the mass re-verdict is announced before it is applied ──────────
+#
+# A note written before this feature carries no `role_type_source` key and reads as
+# `assumed`, so the gate stops consulting its `role_type`. On an accumulated vault that
+# is not one lead changing verdict -- it is a batch, all at once, on the first run after
+# an upgrade. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so a lead dismissed that way
+# is not re-selected and the user never sees it again.
+#
+# So the first run that WOULD apply it prints the affected leads and writes nothing.
+# `--dry-run` alone is not sufficient: it requires the user to know to use it.
+
+
+def _floors():
+    cfg = TriageConfig(contract_floor_gbp_day=480, perm_floor_gbp=90_000)
+    cfg.accept_titles, cfg.reject_titles = [], []
+    return cfg
+
+
+def _legacy_fields(role="Analyst", *, salary="£45,000", role_type="contract",
+                   status="new"):
+    # NO `role_type_source` key at all -- a note written before #223 ran. With an
+    # UNMARKED salary, so the pre-#223 gate reached its day branch on `role_type` alone:
+    # £45,000 clears the 480 day floor (keep) and falls under the 90,000 annual one
+    # (reject). The branches disagree, which is what makes this lead affected.
+    return ['company: "Acme"', f'role: "{role}"', 'location: "remote"',
+            f'salary: "{salary}"', f'role_type: "{role_type}"', 'url: "https://x/y"',
+            f"status: {status}", "score: 0", 'glassdoor_rating: ""', 'culture_flags: ""',
+            'relevance_notes: ""']
+
+
+def _run_legacy(tmp_path, fm_lines=None, *, dry_run=False, cfg=None):
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", fm_lines if fm_lines is not None else _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, cfg or _floors(), _Backend(), _cache(tmp_path), audit,
+                 statuses=("new",), dry_run=dry_run)
+    return report, v
+
+
+def test_the_first_run_names_every_lead_whose_verdict_this_changes(tmp_path):
+    report, v = _run_legacy(tmp_path)
+    assert len(report.reverdict_pending) == 1
+    said = report.reverdict_pending[0]
+    # Derived from the store, never spelled out: `_note` seats the note by FILENAME, so
+    # its slug is `acme`, not the `company - role` a hand-written expectation reaches
+    # for. A user has to be able to find the lead the notice names.
+    assert v.read_leads()[0].slug in said
+    assert "keep -> reject" in said
+    assert "Salary below floor: 45000 < 90000" in said
+
+
+def test_the_first_run_writes_nothing_at_all(tmp_path):
+    report, v = _run_legacy(tmp_path)
+    assert v.read_leads()[0].status == "new"           # not dismissed
+    assert report.judged == 0                          # and no judge call was paid for
+    assert not os.path.exists(str(tmp_path / "audit.jsonl"))
+
+
+def test_re_invoking_applies_the_change(tmp_path):
+    # "unless re-invoked" -- the acknowledgement is the second run, not a flag the user
+    # has to discover.
+    _run_legacy(tmp_path)
+    report, v = _run_legacy(tmp_path)
+    assert report.reverdict_pending == []
+    assert v.read_leads()[0].status == "dismiss"
+
+
+def test_a_dry_run_announces_it_but_does_not_consume_the_acknowledgement(tmp_path):
+    # `--dry-run` writes nothing, and that has to include the acknowledgement: a user
+    # who happens to dry-run first must still get the notice on their real run.
+    report, _ = _run_legacy(tmp_path, dry_run=True)
+    assert len(report.reverdict_pending) == 1
+    report, v = _run_legacy(tmp_path)
+    assert len(report.reverdict_pending) == 1
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_vault_with_nothing_to_re_verdict_is_not_interrupted(tmp_path):
+    # A day-marked salary reaches the same branch either way, so this lead's verdict
+    # does not move and there is nothing to announce.
+    report, v = _run_legacy(tmp_path, _legacy_fields(salary="£600/day"))
+    assert report.reverdict_pending == []
+    assert v.read_leads()[0].status != "new"           # the run proceeded normally
+
+
+def test_an_uneventful_run_does_not_spend_the_acknowledgement(tmp_path):
+    # The acknowledgement records that a NOTICE WAS SHOWN, never merely that a run
+    # happened. Otherwise a user who syncs an old vault in later -- or configures a
+    # floor for the first time -- is silently re-verdicted, which is the whole harm.
+    _run_legacy(tmp_path, _legacy_fields(salary="£600/day"))
+    report, v = _run_legacy(tmp_path)
+    assert len(report.reverdict_pending) == 1
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_lead_rejected_for_a_reason_that_is_not_pay_is_not_affected(tmp_path):
+    # Its verdict does not move, because the title reject fires before the pay check
+    # ever runs. Counting it would inflate the notice with leads nothing changes for.
+    cfg = _floors()
+    cfg.reject_titles = ["analyst"]
+    report, _ = _run_legacy(tmp_path, cfg=cfg)
+    assert report.reverdict_pending == []
+
+
+def test_a_lead_whose_provenance_is_already_recorded_is_not_affected(tmp_path):
+    # Written by post-#223 ingest: the gate consults its role_type either way.
+    fm = _legacy_fields() + ['role_type_source: "declared"']
+    report, _ = _run_legacy(tmp_path, fm)
+    assert report.reverdict_pending == []
+
+
+# The two populations an APPROXIMATE legacy basis misses, and the reason
+# `_legacy_pay_basis` spells the pre-#223 selector out verbatim instead. Both were
+# written after a mutant that replaced it with "force this lead's role_type to be
+# trusted and re-run the gate" SURVIVED every other row in this file -- the docstring
+# asserted the shortcut under-reports, and nothing here could falsify it.
+#
+# Both flip keep -> reject, which is the direction that costs: `dismiss` is not
+# re-selected, so an unannounced one is a lead the user never sees again.
+
+def test_a_value_the_old_substring_test_read_as_contract_is_still_announced(tmp_path):
+    # `"contract" in "contract-to-perm"` was True, so the old gate judged this lead on
+    # the DAY floor. The closed set folds it to blank, so the new gate judges it as
+    # annual. An approximation that forces the stored role_type to be trusted sees
+    # `annual` on BOTH sides -- because the fold has already blanked it -- and reports
+    # nothing.
+    report, _ = _run_legacy(tmp_path, _legacy_fields(role_type="Contract-to-perm"))
+    assert len(report.reverdict_pending) == 1
+    assert "keep -> reject" in report.reverdict_pending[0]
+
+
+def test_a_contract_label_beaten_by_an_annual_marker_is_still_announced(tmp_path):
+    # The old gate checked `role_type` FIRST, so this lead went to the day floor. §2.3
+    # reverses that: the salary's own marker wins, and it says annual. An approximation
+    # forcing trust also sees `annual` on both sides, because the marker step runs
+    # before the provenance step it is manipulating.
+    report, _ = _run_legacy(
+        tmp_path, _legacy_fields(salary="£45,000 per annum", role_type="contract"))
+    assert len(report.reverdict_pending) == 1
+    assert "keep -> reject" in report.reverdict_pending[0]
+
+
+# ── #223 §2.5: the precedence ladder, in BOTH conflict directions ────────────
+#
+# Asserting one direction proves nothing about the other: a write-back that always wrote
+# `contract`, or one that simply took whatever the JD's first marker said, would satisfy
+# a single-direction pair. Each row pins the STORED `role_type`/`role_type_source` after
+# the write AND the gate's verdict on the value it stored -- because storing the right
+# token while the gate goes on judging the old one is the failure this whole issue is
+# about, and neither assertion alone can see it.
+#
+# Each direction needs its OWN salary, and the asymmetry is not incidental. The lead has
+# to SURVIVE the classify pass on its declared value -- §9's residual is that a lead the
+# gate dismisses never reaches the dossier build, so it never gets observed at all -- and
+# then move when the observation replaces that value. With contract_floor_gbp_day=480 and
+# perm_floor_gbp=90_000:
+#
+#   £300    annual: keep (300 < _MIN_CREDIBLE_SALARY)   day: REJECT (50 <= 300 < 480)
+#   £1,200  day:    keep (1200 >= 480)                  annual: REJECT (1000 <= 1200 < 90000)
+#
+# So a permanent declaration needs £300 and a contract one needs £1,200. An earlier draft
+# used £1,200 for both, and the permanent row never reached the dossier: the declared
+# value rejected it at the gate, and the test read that as "the write-back did not work".
+
+_PERMANENT_JD = "x" * 400 + " This is a permanent position, 85,000 per annum."
+
+
+def _declared_note(role_type, salary):
+    return ['company: "Acme"', 'role: "Analyst"', 'location: "remote"',
+            f'salary: "{salary}"', f'role_type: "{role_type}"',
+            'role_type_source: "declared"', 'url: "https://x/y"', "status: new",
+            "score: 0", 'glassdoor_rating: ""', 'culture_flags: ""',
+            'relevance_notes: ""']
+
+
+def _observe_over_declaration(tmp_path, *, declared, jd, salary):
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _declared_note(declared, salary))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    # The re-verdict notice is about notes with NO provenance; these have one, so it
+    # never fires -- but acknowledging first keeps that fact out of the assertions.
+    reverdict.acknowledge(str(tmp_path / 'vault'))
+    report = run(v, _floors(), _Backend(), _JdCache(tmp_path, jd), audit,
+                 statuses=("new",))
+    return report, v.read_leads()[0]
+
+
+def test_a_contradicting_posting_leaves_the_declared_verdict_standing(tmp_path):
+    # The VERDICT half of the same decision, and the reason it matters: had the
+    # observation been written, £300 would have moved from "kept as an implausible
+    # salary" to "a day rate under the 480 floor" -- a reject the user never asked for,
+    # off a 37%-recall lexical guess about prose.
+    report, note = _observe_over_declaration(
+        tmp_path, declared="permanent", jd=_CONTRACT_JD, salary="£300")
+    assert note.fm["role_type"] == "permanent"
+    assert report.observed_role_types["conflicted"] == 1
+    assert classify(note.fm, _floors())[0] == "keep"
+
+
+def test_the_other_direction_is_also_reported_and_kept(tmp_path):
+    # Both directions, because a rule that only held one way would be satisfied by a
+    # write-back that always wrote `permanent`. £1,200 stays a day rate under the user's
+    # own declaration rather than being re-judged against the annual floor.
+    report, note = _observe_over_declaration(
+        tmp_path, declared="contract", jd=_PERMANENT_JD, salary="£1,200")
+    assert note.fm["role_type"] == "contract"
+    assert report.observed_role_types["conflicted"] == 1
+    assert classify(note.fm, _floors())[0] == "keep"
+
+
+def test_the_verdict_follows_the_STORED_value_not_the_one_that_was_declared(tmp_path):
+    # The half a stored-fields-only assertion cannot see. Re-reading the note off disk,
+    # rather than the in-memory `note.fm` the run mutated, is what proves the gate on
+    # the NEXT run sees the observation -- §2.4's ordering limit means it cannot reach
+    # the gate on the run that fetched it.
+    _observe_over_declaration(tmp_path, declared="contract", jd=_PERMANENT_JD,
+                              salary="£1,200")
+    fresh = Vault(str(tmp_path / "vault")).read_leads()[0]
+    assert fresh.fm["role_type_source"] == "declared"
+    assert classify(fresh.fm, _floors())[0] == "keep"
+
+
+@pytest.mark.parametrize("salary,basis", [("£2,000 per week", "week"),
+                                          ("£1,500 per hour", "hour")])
+def test_a_lead_the_old_gate_binned_on_the_annual_floor_is_announced_too(
+        tmp_path, salary, basis):
+    """The re-verdict notice covers the RECOVERING direction, not only the losing one.
+
+    Before each basis had a floor of its own the basis was not parsed at all, so both of
+    these met `perm_floor_gbp` and were rejected -- `£2,000 per week` is about £104k a
+    year. They keep now. A user is told, because a lead the old gate dismissed sits at
+    `dismiss`, which `DEFAULT_TRIAGE_STATUSES` does not re-select: nothing brings it back
+    on its own, so the notice is the only place that pairing is visible.
+    """
+    report, _ = _run_legacy(
+        tmp_path, _legacy_fields(salary=salary, role_type=""))
+    assert len(report.reverdict_pending) == 1
+    said = report.reverdict_pending[0]
+    assert f"now judged as {basis}" in said
+    assert "reject -> keep" in said
+
+
+# ── review round 1: the four defects the reviewers found here ────────────────
+
+
+def test_the_notice_names_every_affected_lead_even_under_limit(tmp_path):
+    """The acknowledgement is ONE global marker, so its scope has to be the vault.
+
+    Found independently by three reviewers. On the narrowed version: run 1 with
+    `--limit 1` named one lead and spent the marker; run 2 named nothing and dismissed
+    BOTH. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so the lead that was never named
+    would not surface again -- the precise harm `triage/reverdict.py`'s own docstring
+    claims to prevent.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    _note(v, "beta.md", _legacy_fields(role="Second Analyst"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit,
+                 statuses=("new",), limit=1)
+    assert len(report.reverdict_pending) == 2, (
+        "`--limit` narrowed the notice but not the marker it spends")
+    assert {n.status for n in v.read_leads()} == {"new"}
+
+
+def test_the_notice_names_a_lead_outside_this_runs_status_selection(tmp_path):
+    # Same defect through the other door. A first run over `--status new` must not
+    # acknowledge on behalf of a `research` lead it never looked at.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    _note(v, "beta.md", _legacy_fields(role="Second Analyst", status="research"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    assert len(report.reverdict_pending) == 2
+
+
+def test_a_marker_that_cannot_be_recorded_does_not_brick_triage(tmp_path, monkeypatch):
+    """The livelock. Returning early on the strength of "they will see it again next
+    run" is only sound while the marker is what makes the next run different. Against a
+    read-only state directory it was not: the notice re-showed and the run returned early
+    every time, forever, exiting 0 and looking like an idle run.
+
+    So the run PROCEEDS, having printed the notice. The half of §2.1 that protects the
+    user -- that they SEE the affected leads before it lands -- is kept; the half given
+    up is "and nothing is written yet". Bricking triage is the worse trade.
+    """
+    monkeypatch.setattr(reverdict, "acknowledge", lambda *a, **kw: False)
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    assert len(report.reverdict_pending) == 1          # still told
+    assert v.read_leads()[0].status == "dismiss"       # ...and not stuck
+    assert any("could not be recorded" in f for f in report.failures)
+
+
+def test_a_posting_that_agrees_is_confirmed_rather_than_filled(tmp_path):
+    # `filled` is documented as "had nothing". A note that already said `contract` as
+    # `declared` had something, and the posting agreeing with it is neither a correction
+    # nor a conflict -- only the provenance strengthens.
+    report, note = _run_rt(
+        tmp_path, _rt_fields("Analyst", role_type="contract", source="declared"))
+    assert note.fm["role_type_source"] == "observed"
+    assert report.observed_role_types["confirmed"] == 1
+    assert report.observed_role_types["filled"] == 0
+
+
+@pytest.mark.parametrize("status", ["applied", "interview", "rejected", "accepted"])
+def test_a_dry_run_does_not_report_a_write_require_status_would_refuse(tmp_path, status):
+    # `wrote or dry_run` counted every dry-run observation, skipping the status guard the
+    # real run applies. Measured before the fix: on these four statuses the real run
+    # reported `conflicted: 0` and the dry run reported `conflicted: 1` plus a conflict
+    # line -- a dry run predicting a write the vault refuses.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared",
+                                   status=status))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / 'vault'))
+    report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
+                 statuses=(status,), dry_run=True)
+    assert report.observed_role_types["conflicted"] == 0
+    assert report.role_type_conflicts == []
+
+
+def test_the_held_run_and_the_applied_run_are_distinguishable(tmp_path, monkeypatch):
+    """`reverdict_pending` is non-empty on BOTH arms, so it cannot also say which was
+    taken. The CLI branched on it alone and told the user "WROTE NOTHING" over a run that
+    had just dismissed every lead it named."""
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    held = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    assert held.reverdict_pending and held.reverdict_deferred is True
+    assert v.read_leads()[0].status == "new"
+
+    # ...and the arm where the marker could not be recorded, on a fresh vault so the
+    # notice fires again.
+    monkeypatch.setattr(reverdict, "acknowledge", lambda *a, **kw: False)
+    v2 = Vault(str(tmp_path / "vault2"))
+    _note(v2, "acme.md", _legacy_fields())
+    applied = run(v2, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    assert applied.reverdict_pending and applied.reverdict_deferred is False
+    assert v2.read_leads()[0].status == "dismiss"
+
+
+def test_a_dry_run_is_held_rather_than_applied(tmp_path):
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+                 dry_run=True)
+    assert report.reverdict_deferred is True

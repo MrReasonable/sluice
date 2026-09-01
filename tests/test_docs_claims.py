@@ -13,11 +13,13 @@ sweep here rather than a one-time fix.
 """
 import argparse
 import glob
+import inspect
 import pathlib
 import re
 
 import pytest
 
+from sluice import cli
 from sluice.cli import _build_parser
 from sluice.core.protocols import EVIDENCE_KINDS
 from tests.markdown_fences import strip_fenced_blocks, unclosed_fence
@@ -1497,3 +1499,46 @@ def test_every_evidence_add_flag_is_documented(kind):
         f"`job-sluice {kind} add` accepts {missing} but docs/USAGE.md's heading does not "
         f"list them. The flags are generated from EVIDENCE_KINDS[{kind!r}].fields, so a new "
         f"field creates a new flag with no other prompt to document it.")
+
+
+# ── the triage summary line, derived rather than restated (#223) ──────────────
+#
+# Every previous version of USAGE.md's `job-sluice triage: ...` sentence went stale
+# silently: a field was added to the printed line and the doc kept describing the old
+# one, with nothing red. Restating a format string in prose IS the drift surface, so the
+# key names are derived from `cli.py` and compared.
+_TRIAGE_SUMMARY_KEY = re.compile(r"(\w+)=\{report\.")
+
+
+def _printed_summary_keys():
+    """The `key=` names `cmd_triage_run`'s summary f-string actually interpolates.
+
+    Anchored on `{report.counts}`, not on `print(f"triage: ` -- that shorter prefix also
+    matches the #223 re-verdict notice, which is a DIFFERENT `triage: ` line printed
+    earlier in the same function and interpolates none of these keys. Caught by the
+    vacuity test below, which is the whole reason it is there.
+    """
+    src = inspect.getsource(cli.cmd_triage_run)
+    body = src[src.index('print(f"triage: {report.counts}'):]
+    return set(_TRIAGE_SUMMARY_KEY.findall(body[:body.index("file=sys.stderr")]))
+
+
+def test_the_summary_key_extraction_is_not_vacuous():
+    """SCOPE. The verdict below is a subset check, and the empty set is a subset of
+    everything -- a regex that stopped matching would certify the doc against nothing.
+    Pins the known keys rather than a floor, so one key silently replacing another
+    cannot pass."""
+    assert _printed_summary_keys() == {
+        "judged", "resolved", "llm_calls", "observed_role_types", "backend"}, (
+        "the triage summary line changed. Update this set AND the "
+        "`job-sluice triage: ...` sentence in docs/USAGE.md that it guards.")
+
+
+def test_usage_md_documents_every_key_the_triage_summary_prints():
+    doc = open("docs/USAGE.md", encoding="utf-8").read()
+    line = doc[doc.index("Prints `job-sluice triage:"):]
+    line = line[:line.index("Exit 0 always")]
+    missing = sorted(k for k in _printed_summary_keys() if f"{k}=" not in line)
+    assert not missing, (
+        f"docs/USAGE.md's triage summary sentence omits {missing}, so a user reading it "
+        "sees a line the tool no longer prints")

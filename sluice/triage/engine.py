@@ -35,10 +35,12 @@ from sluice.core.leads import (
 )
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
-from sluice.triage import resolve
+from sluice.core.roletype import DECLARED, OBSERVED, normalise_role_type
+from sluice.core.vault import frontmatter_safe
+from sluice.triage import resolve, reverdict
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 from sluice.triage.audit import render_rejected_note
-from sluice.triage.classify import classify
+from sluice.triage.classify import classify, reverdict_notice
 from sluice.triage.judge import judge
 from sluice.triage.prompt import build_system_prompt_from
 
@@ -75,6 +77,31 @@ class TriageReport:
     # its rows stop summing to the lead total a human reads in a phone notification.
     resolved: dict = field(default_factory=lambda: {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0})
     llm_calls: int = 0
+    # #223 §2.4: how many leads had `role_type` written from the POSTING, split by what
+    # the observation replaced. `filled` had nothing; `confirmed` already agreed and only
+    # gains the stronger provenance; `corrected` had the tool's own guess; `conflicted`
+    # had the user's own declaration. NEW fields rather than rows inside `counts` for the
+    # reason stated above it: counts rows are lead OUTCOMES that sum to the lead total a
+    # human reads in a phone notification.
+    observed_role_types: dict = field(
+        default_factory=lambda: {"filled": 0, "confirmed": 0, "corrected": 0,
+                                 "conflicted": 0})
+    # One message per `conflicted` lead, printed like `failures` -- §2.5's second
+    # obligation, that a disagreement is surfaced rather than silently overridden.
+    # Deliberately NOT in `failures`: nothing failed, and a user scanning a failure
+    # count for something to fix would be misled about both.
+    role_type_conflicts: list = field(default_factory=list)
+    # #223 §2.1: leads whose pay verdict this release MOVES, on a vault written before
+    # provenance existed. See `triage/reverdict.py`.
+    reverdict_pending: list = field(default_factory=list)
+    # ...and whether the run therefore STOPPED. Two bits, because `reverdict_pending` is
+    # non-empty on both arms and cannot also say which one was taken: the run holds when
+    # the acknowledgement landed, and PROCEEDS when it could not be recorded. Inferring
+    # the arm from the list alone made `cmd_triage_run` print "WROTE NOTHING" over a run
+    # that had just dismissed every lead it named, push the same claim to the
+    # notification channel, and return before the summary and the failures line saying
+    # so. Found by a reviewer and independently while reading the CLI back.
+    reverdict_deferred: bool = False
 
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
@@ -85,6 +112,53 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     notes = vault.read_leads(set(statuses))
     if limit:
         notes = notes[:limit]
+
+    # #223 §2.1's delivery requirement, and it runs BEFORE anything else in this
+    # function: the first run that would re-verdict a pre-#223 vault names the affected
+    # leads and writes nothing at all. Returning here rather than skipping the affected
+    # leads individually is deliberate -- the whole run is cheap to repeat (no judge call
+    # is reached), and a partial run is harder for a user to reason about than one that
+    # plainly did nothing.
+    #
+    # `dry_run` prints the notice and does NOT acknowledge it, because a dry run writes
+    # nothing and that has to include this marker: a user who happens to preview first
+    # must still get the notice on their real run.
+    if not reverdict.acknowledged(vault.dir):
+        # Over every status triage OWNS, and BEFORE `--limit` -- never over `notes`,
+        # which both have already narrowed. The acknowledgement covers a whole VAULT, so
+        # its scope has to be the vault rather than this run's selection. Measured on the
+        # narrowed version, with two affected leads and `--limit 1`: run 1 named one lead
+        # and spent the marker; run 2 named nothing and dismissed BOTH. The lead it never
+        # named went to `dismiss`, which `DEFAULT_TRIAGE_STATUSES` does not re-select, so
+        # nothing would ever surface it again.
+        #
+        # COST, stated correctly after a first version of this comment got it wrong: an
+        # AFFECTED vault pays one extra read, once, because the marker is spent and
+        # `acknowledged()` then short-circuits above. An UNAFFECTED one pays it on every
+        # run, forever -- the marker is deliberately only spent when a notice is actually
+        # shown (see `reverdict.py`), so there is nothing to short-circuit on. That is
+        # the price of not silently re-verdicting a vault the user syncs in later.
+        affected = vault.read_leads(set(_status.TRIAGE_OWNED))
+        report.reverdict_pending = [
+            f"{note.slug}: {said}" for note in affected
+            if (said := reverdict_notice(note.fm, cfg))]
+        if report.reverdict_pending:
+            if dry_run:
+                report.reverdict_deferred = True
+                return report          # writes nothing, the marker included
+            if reverdict.acknowledge(vault.dir):
+                report.reverdict_deferred = True
+                return report          # recorded, so the next run applies it
+            # The marker did NOT land (a read-only state dir, a full disk). Returning
+            # early anyway would repeat this forever and triage would never triage
+            # again -- worse than the harm, and it exits 0 looking like an idle run. So
+            # the run PROCEEDS, having printed the notice: the half of §2.1 that
+            # actually protects the user is that they SEE the affected leads, and they
+            # do. The half being given up is "and nothing is written yet".
+            report.failures.append(
+                "role-type re-verdict: the notice above could not be recorded, so this "
+                "run is APPLYING it rather than repeating the notice forever -- fix the "
+                "state directory if you wanted to review the listed leads first")
 
     keeps = []          # notes that pass the pre-gate, headed for enrich + judge
     audit_entries = []
@@ -108,6 +182,146 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         resolve_audit_entries.append(entry)
         if not dry_run:
             audit.append(entry)
+
+    def _report_role_type_conflict(note, observed, previous, previous_source) -> None:
+        """Say that the posting disagrees with what the user declared, and change nothing.
+
+        Two surfaces, because they answer different questions. The run summary is what a
+        human sees now; the durable audit log is what survives the scrollback and lets
+        them find the lead later. `stage` keeps the entry out of the rendered Rejected
+        Leads note (`_is_reject`), the same way `_resolve_audit`'s own entries stay out --
+        a run that only noticed a disagreement rejected nothing.
+        """
+        report.role_type_conflicts.append(
+            f"role-type {note.ref}: the posting reads as {observed!r}, but this lead "
+            f"carries {previous!r} as {previous_source!r} -- KEPT, because it is yours. "
+            "Your search's premise may not hold for this posting")
+        _resolve_audit({"ts": today, "slug": note.slug, "stage": "role_type",
+                        "observed_role_type": observed, "role_type": previous,
+                        "role_type_source": previous_source,
+                        "role": note.fm.get("role", ""),
+                        "url": note.fm.get("url", ""),
+                        "reason": "the posting contradicts the declared role type; "
+                                  "the declaration was kept"})
+
+    def _observe_role_type(note, dossier) -> None:
+        """#223 §2.4/§2.5: write what the POSTING said about pay basis onto the note.
+
+        The ladder is `observed > declared > assumed > ""`, so an observation always
+        wins on the value: the posting is ground truth about what the job IS, while a
+        `declared` value is the user's assertion about a SEARCH, and #223's whole premise
+        is that a search label is not a fact about a posting.
+
+        **Abstention is not an observation of "".** A JD that says nothing about basis is
+        not evidence the user's declaration is wrong, so a blank observation writes
+        nothing at all rather than blanking what is there.
+
+        **Whether a human is TOLD depends on what was overwritten**, which is the only
+        part §2.5 leaves to this PR. Overwriting an `assumed` value is the feature
+        working -- it is the tool correcting its own guess about which search ran, and on
+        the population #223 describes that is most leads, so a line each would bury the
+        run summary. Overwriting a `declared` one means the user's search premise was
+        wrong about this posting, and they have no other route to learn it. Counted
+        either way; announced only for the second.
+
+        **The write is best-effort and unreported, unlike the company-resolve site above,
+        and the asymmetry is deliberate.** `update_fields` returns False for a refusal and
+        for a no-op alike, so a caller cannot tell them apart. There, the write is the
+        entire point of a tier-2 page load or a tier-3 LLM call, so a non-landing is worth
+        a line. Here the observation is a free byproduct of a dossier this run was
+        building anyway, and "the note already says this" is the common case -- reporting
+        every non-landing would be almost all noise. Retried next run either way.
+
+        Runs AFTER the classify pass -- named rather than cited by line, because the
+        `:118` this said was already pointing at a different statement two commits later
+        (#191 is the standing issue about line citations as a drift surface). So an
+        observation cannot reach the gate on the run that fetches it; §9 records that as
+        an accepted residual, and §2.3's marker-first ordering is what makes it tolerable.
+        """
+        observed = normalise_role_type(dossier.get("role_type_observed"))
+        if not observed:
+            return
+        previous = normalise_role_type(note.fm.get("role_type"))
+        previous_source = note.fm.get("role_type_source") or ""
+        if observed == previous and previous_source == OBSERVED:
+            return
+        # Gated on the status BEFORE either arm. The write has always been guarded by
+        # `require_status`; the conflict REPORT needs the same gate for the same reason,
+        # or triage starts commenting on leads it has no business touching -- a lead in
+        # the application lifecycle is one it may not write to and should not narrate.
+        if note.status not in _status.TRIAGE_OWNED:
+            return
+        if previous and observed != previous and previous_source == DECLARED:
+            # THE USER'S ASSERTION SURVIVES. §2.5 as designed put `observed` above
+            # `declared` outright, on the reasoning that the posting is ground truth
+            # about what the job IS. Three rounds of review then measured the observer:
+            # 37% recall, and a residual false-positive rate on adverts whose SUBJECT is
+            # contracting (recruitment, payroll, bid work). Overriding a declaration on
+            # that basis writes a lexical guess over something the user actually typed --
+            # permanently, and stickily, since a later run would see the value agreeing
+            # with itself and skip.
+            #
+            # So the disagreement is reported and the note is left alone. The owner took
+            # this decision against the measurement on 2026-09-01; the design doc's §2.5
+            # and §9 record the change and why.
+            report.observed_role_types["conflicted"] = (
+                report.observed_role_types.get("conflicted", 0) + 1)
+            _report_role_type_conflict(note, observed, previous, previous_source)
+            return
+        if not previous:
+            bucket = "filled"
+        elif observed == previous:
+            # The posting AGREES; only the provenance strengthens. Its own bucket rather
+            # than being folded into one of the other three: an earlier version filed it
+            # under `filled`, which the field's own comment defines as "had nothing", and
+            # carried a dead `else "corrected"` arm that the guard two lines up -- the
+            # exact negation of its condition -- made unreachable for every input.
+            bucket = "confirmed"
+        else:
+            # Differs, and the previous value was NOT the user's own -- a blank, the
+            # tool's `assumed` guess, or an earlier observation this one supersedes.
+            # Correcting any of those is the feature working.
+            bucket = "corrected"
+        # Under `dry_run` nothing is written, so this stands in for the write's own
+        # `require_status` guard. Without it a dry run REPORTED a conflict the real run
+        # refuses: measured on `applied`/`interview`/`rejected`/`accepted`, the real run
+        # counted 0 and the dry run counted 1 and printed a conflict line.
+        #
+        # It reads `note.status` (`_fm_dict`, LAST duplicate key wins) while
+        # `update_fields` re-reads via `_fm_value` (FIRST wins), so on a hand-edited note
+        # carrying two `status:` keys the two can disagree in both directions. That is
+        # the divergence `update_fields`' own docstring already documents and reasons
+        # about: a caller's pre-check via `note.fm` running first is exactly the shape it
+        # says makes the disagreement unreachable as a silent overwrite. Named here
+        # rather than closed with a second guard -- the residual is a wrong dry-run
+        # REPORT on a malformed note, and the vault never writes one.
+        wrote = False
+        if dry_run:
+            wrote = note.status in _status.TRIAGE_OWNED
+        else:
+            # `frontmatter_safe` even though both values come from closed sets -- the
+            # sweep in tests/test_frontmatter_write_sweep.py should keep guarding this
+            # line rather than carrying a `_GUARDED_UPSTREAM` decision that goes stale
+            # silently if either producer is ever widened.
+            safe_role_type = frontmatter_safe(observed) or ""
+            safe_source = frontmatter_safe(OBSERVED) or ""
+            try:
+                wrote = vault.update_fields(
+                    note.ref,
+                    {"role_type": f'"{safe_role_type}"',
+                     "role_type_source": f'"{safe_source}"'},
+                    require_status=frozenset(_status.TRIAGE_OWNED))
+            except VaultConflict as e:
+                # Isolated, exactly as the two sibling write sites are: a human editing
+                # in Obsidian won the race, and one lead's lost observation must not
+                # abort a whole triage run over a field the next run recomputes.
+                report.failures.append(f"role-type {note.ref}: {e}")
+                return
+        if not wrote:
+            return
+        note.fm["role_type"] = observed
+        note.fm["role_type_source"] = OBSERVED
+        report.observed_role_types[bucket] = report.observed_role_types.get(bucket, 0) + 1
 
     _llm_consecutive_errors = 0
     _llm_breaker_tripped = False
@@ -337,6 +551,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 key = "skipped" if outcome in ("skipped", "unchanged") else "unjudgeable"
                 report.counts[key] = report.counts.get(key, 0) + 1
                 continue
+            _observe_role_type(note, d)
             # #109: get_or_build SNAPSHOTS these four off the lead at BUILD time, and the
             # classify pass above resolves a blank/placeholder company into note.fm AFTER that --
             # while the url-hash cache_key makes both passes land on the SAME entry,

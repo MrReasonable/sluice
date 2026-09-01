@@ -793,13 +793,84 @@ def cmd_triage_run(args, config) -> int:
     report = Sluice(config).triage(statuses=statuses, limit=args.limit,
                                    dry_run=args.dry_run, no_llm=args.no_llm,
                                    backend_role=args.backend)
+    # #223 §2.1, printed BEFORE the summary and returning early, because this run did
+    # not triage anything and a summary of zeroes underneath the notice would read as an
+    # ordinary quiet run. `role_type` records which SEARCH found a lead; leads written
+    # before that was recorded stop being judged on it, and the batch below is what
+    # moves. Said in full rather than counted: `dismiss` is not re-selected by a later
+    # run, so a lead dismissed here is one the user never sees again.
+    if report.reverdict_pending and not report.reverdict_deferred:
+        # The run announced the change AND applied it, because the acknowledgement could
+        # not be recorded and repeating the notice forever would mean never triaging
+        # again (see `triage/engine.py`). Printed and then FALLEN THROUGH to the ordinary
+        # summary: an earlier version branched on `reverdict_pending` alone, which is
+        # non-empty on both arms, so it told the user "WROTE NOTHING" over a run that had
+        # just dismissed every lead it named and returned before the summary and the
+        # failures line explaining why.
+        print(f"triage: APPLIED a re-verdict it could not record first. "
+              f"{len(report.reverdict_pending)} lead(s) are judged differently by this "
+              "version (#223); the run below went ahead anyway. A lead now at `dismiss` "
+              "is not re-selected, so recovering one needs a `--status dismiss` sweep:",
+              file=sys.stderr)
+        for msg in report.reverdict_pending:
+            print(f"  {msg}", file=sys.stderr)
+    if report.reverdict_deferred and report.reverdict_pending:
+        # Both conjuncts, mirroring the arm above. `deferred` with an EMPTY list is
+        # unreachable today -- the engine sets it only inside `if reverdict_pending:` --
+        # but unpinned it would print "WROTE NOTHING. 0 lead(s)", push the same, and
+        # suppress the summary for a run that had nothing to announce.
+        #
+        # A dry run gets a different last sentence. It never spends the marker (it writes
+        # nothing, and that has to include the marker), so "run it again to apply them"
+        # is false for it: executed dry, dry, real, real, the identical sentence printed
+        # three times before anything applied.
+        nudge = ("Re-run WITHOUT --dry-run to apply them." if args.dry_run
+                 else "Review these, then run it again to apply them:")
+        print(f"triage: WROTE NOTHING. {len(report.reverdict_pending)} lead(s) are "
+              "judged differently by this version: a role_type recorded before sluice "
+              "tracked where it came from is no longer trusted as a fact about the "
+              "posting, and hourly and weekly pay are no longer judged against the "
+              "annual floor (#223). It moves verdicts BOTH ways -- a lead already at "
+              f"`dismiss` is not re-selected, so recovering one needs a deliberate "
+              f"`--status dismiss` sweep. {nudge}",
+              file=sys.stderr)
+        for msg in report.reverdict_pending:
+            print(f"  {msg}", file=sys.stderr)
+        # Notified as well as printed, and on the path that RETURNS EARLY. An unattended
+        # install (cron, a container) reads stderr from nobody; the push channel is the
+        # only one a human sees, and this is the one run where it has something urgent to
+        # say. Sending nothing here made the notice invisible to exactly the setup the
+        # re-verdict is most dangerous for.
+        _notify_reporting(
+            f"job-sluice triage: WROTE NOTHING -- {len(report.reverdict_pending)} lead(s) "
+            "are judged differently by this version (#223). Run it again to apply.",
+            config=config, label="triage-summary")
+        return 0
     print(f"triage: {report.counts} judged={report.judged} "
           f"resolved={report.resolved} llm_calls={report.llm_calls} "
+          f"observed_role_types={report.observed_role_types} "
           f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
     for msg in report.failures:
         print(f"  {msg}", file=sys.stderr)
-    _notify_reporting(f"job-sluice triage: {report.counts} (backend {report.backend})",
-                      config=config, label="triage-summary")
+    # #223 §2.5: printed SEPARATELY from failures, because nothing failed -- the posting
+    # simply contradicted a role type the user declared on a search, and they have no
+    # other route to learn their search's premise does not hold for this lead. Folding
+    # these into `failures` would misreport both: a failure count a user scans for
+    # something to fix, and a correction they may simply want to know about.
+    for msg in report.role_type_conflicts:
+        print(f"  {msg}", file=sys.stderr)
+    # The APPLIED arm's push carries the re-verdict too, and getting this backwards was
+    # the round-3 finding: the HELD arm -- which writes NOTHING -- pushed an urgent
+    # "#223, run it again" while the arm that had just irreversibly dismissed leads sent
+    # a summary indistinguishable from an ordinary run. On a cron or container install
+    # the push is the only surface a human sees, and `dismiss` is never re-selected, so
+    # the alert was on the recoverable arm and absent from the unrecoverable one.
+    applied = (f"APPLIED a re-verdict it could not record first -- "
+               f"{len(report.reverdict_pending)} lead(s) judged differently (#223). "
+               if report.reverdict_pending else "")
+    _notify_reporting(
+        f"job-sluice triage: {applied}{report.counts} (backend {report.backend})",
+        config=config, label="triage-summary")
     return 0
 
 
