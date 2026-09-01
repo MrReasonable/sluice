@@ -9,6 +9,8 @@ import os
 import re
 from datetime import datetime
 
+from sluice.core.roletype import observe_role_type
+
 
 # The JD-length distribution `job-sluice doctor` reports (#169), as (bucket, exclusive
 # upper bound) pairs. ONE home for the boundary and its label: they were a numeric
@@ -199,6 +201,7 @@ class DossierCache:
         if self._fresh(path):
             return json.loads(open(path, encoding="utf-8").read())
         enrich = self.fetcher(lead)
+        jd = enrich.get("jd", {})
         dossier = {
             "schema_version": 2,
             "lead_id": self.cache_key(lead),
@@ -206,8 +209,20 @@ class DossierCache:
             "position": lead.get("role", ""),
             "location": lead.get("location", ""),
             "role_type": lead.get("role_type", ""),
+            # #223 §2.4: what the POSTING says about pay basis, as distinct from
+            # `role_type` above, which is whatever the note already held -- in the
+            # shape this issue is about, the label of the search that found the lead.
+            # Read through `jd_text`, the same accessor the judge prompt and
+            # `jd_arrived` use, so an observation cannot be derived from a different
+            # slice of the payload than the one the pipeline calls the job description.
+            #
+            # No schema_version bump, matching `page_title`/`structured_data` two keys
+            # below: every consumer reads it with `.get(...) or ""`, so a cache entry
+            # written before this key existed stays valid rather than being thrown away
+            # for a field that is optional by construction.
+            "role_type_observed": observe_role_type(jd_text({"jd": jd})),
             "lead_snapshot": dict(lead),
-            "jd": enrich.get("jd", {}),
+            "jd": jd,
             "glassdoor": enrich.get("glassdoor", {}),
             # #109 tier-2 company resolution reads these two off a fresh dossier
             # directly; defaulting to "" here (not None) is what lets an OLD cached
