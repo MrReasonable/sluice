@@ -33,6 +33,8 @@ import inspect
 import re
 import shutil
 import subprocess
+
+import yaml
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -150,7 +152,8 @@ def _job_names(path: Path) -> list[str]:
 # roster is what makes the per-job equality pins exhaustive in combination rather than merely
 # individually correct.
 _RELEASE_PLEASE_JOBS = ["release-please", "build", "linux-packages", "attest", "pypi",
-                        "release-assets", "docker", "attest-image", "homebrew"]
+                        "release-assets", "docker", "attest-image", "homebrew",
+                        "post-release"]
 _TESTPYPI_JOBS = ["testpypi"]
 _HOMEBREW_DRY_RUN_JOBS = ["dry-run"]
 
@@ -1610,7 +1613,7 @@ _MODULE_HELPER_NAMES = {
     "_permissions_block", "_workflow_wide_directives", "_post_checkout_run_steps",
     "_run_commands", "_publish_action_ref", "_python_version", "_job_names",
     "_artifact_retention_days", "_roster_failure", "_run_block_scalar", "_channel_table_rows",
-    "_artifact_names", "_workflow_files",
+    "_artifact_names", "_workflow_files", "_post_release_dispatch_step",
 }
 
 # Helpers that take NO parameters at all, and so are outside the hazard the rule guards. The
@@ -1684,10 +1687,12 @@ _CHANNEL_TABLE_MARKER = "<!-- channel-status -->"
 _CHANNEL_STATUSES = {"shipped", "planned"}
 
 # Which roster jobs PUBLISH something a user can install from, and the label the table gives
-# each. The other five jobs build, sign or upload -- they produce no channel of their own.
+# each. The other six jobs build, sign, upload, or -- in `post-release`'s case -- dispatch the
+# check that reads what was published. None of them produces a channel of its own.
 _CHANNEL_JOBS = {"pypi": "PyPI", "docker": "Docker", "linux-packages": "deb / rpm",
                  "homebrew": "Homebrew"}
-_NON_CHANNEL_JOBS = {"release-please", "build", "attest", "release-assets", "attest-image"}
+_NON_CHANNEL_JOBS = {"release-please", "build", "attest", "release-assets", "attest-image",
+                     "post-release"}
 
 
 def _channel_table_rows(path: Path) -> dict[str, str]:
@@ -2312,3 +2317,94 @@ def test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_rel
         assert invocation in _job_directives(RELEASE_PLEASE, "homebrew"), (
             f"{invocation!r} is missing from release-please.yml's homebrew job"
         )
+
+
+def test_post_release_job_holds_only_actions_write():
+    """`actions: write` and NOTHING else -- the pin `_ROSTER_MESSAGE` demands for a new job.
+
+    A job-level `permissions:` block is exhaustive rather than additive, so every key absent
+    here is `none`, and the absence is the claim. This job's whole body is one `gh workflow
+    run`: it needs to start a workflow and must not be able to read the tree, publish a
+    package or write a release. `contents: read` creeping in would be silent -- it is the
+    default everywhere else in this file, which is exactly what makes it easy to add here
+    without thinking.
+    """
+    assert _permissions_block(RELEASE_PLEASE, "post-release") == (
+        "    permissions:\n      actions: write"
+    ), (
+        "post-release's permissions must be EXACTLY `actions: write` -- one line, because the "
+        "absence of every other key is the claim. It dispatches a workflow and does nothing "
+        "else; it has no checkout and no reason to reach the tree."
+    )
+
+
+def _post_release_dispatch_step(path: Path) -> dict:
+    """The `post-release` job's single step, PARSED.
+
+    Scoped to the STEP, not the job. An `env:` mapping found anywhere in the job TEXT may belong
+    to a different step while the dispatch step has none -- leaving `$VERSION` unset and the
+    command dying under `set -u` with the guard still green. Parsed rather than text-bounded
+    because steps nest, and a bounded slice over nested blocks is the scoping mistake this guard
+    has already made once.
+
+    The single-step assertion is a property in its own right, not just a convenience for
+    `steps[0]`: this job deliberately has NO checkout, so that a job holding `actions: write`
+    never has a token or the tree in reach. A second step is how that erodes.
+    """
+    jobs = yaml.safe_load(path.read_text())["jobs"]
+    assert "post-release" in jobs, (
+        f"{path.name} has no `post-release` job, so nothing dispatches the install check"
+    )
+    steps = jobs["post-release"]["steps"]
+    assert len(steps) == 1, (
+        f"post-release must hold exactly ONE step -- dispatching the install check is its whole "
+        f"body, and it has no checkout deliberately. Found {len(steps)}: "
+        f"{[s.get('name') for s in steps]}"
+    )
+    return steps[0]
+
+
+def test_post_release_job_dispatches_with_the_flag_that_cannot_read_a_file():
+    """`--raw-field`, never `-F/--field`.
+
+    `gh`'s `--field` respects `@` syntax, so a value beginning with `@` is read as a FILENAME
+    to load rather than as the value. The version release-please emits never starts with `@`,
+    so this is not a live defect -- it is the same class as the `-F k=@file` slip that once
+    posted six review replies as bare paths, pinned before it can happen rather than after.
+
+    Everything below is asserted by EQUALITY against the dispatch step, never by membership over
+    the job. Six review rounds on this PR each found a probe that matched something other than
+    the thing it meant: a comment ABOUT the command, a command naming another workflow, a
+    RENAMED env key, and an env mapping on a different step. A probe passes on a resemblance.
+    """
+    step = _post_release_dispatch_step(RELEASE_PLEASE)
+
+    invocations = [ln.strip() for ln in step.get("run", "").splitlines()
+                   if ln.strip().startswith("gh workflow run")]
+    assert len(invocations) == 1, (
+        f"the dispatch step must hold exactly one `gh workflow run` invocation. "
+        f"Found: {invocations}"
+    )
+    # EQUALITY on the whole invocation, not membership of its parts: substring checks do not pin
+    # POSITION, so `gh workflow run unrelated.yml --raw-field version=post-release.yml` satisfies
+    # "contains post-release.yml" and "contains --raw-field version=" while dispatching something
+    # else. The command is one short literal, so assert the literal.
+    expected = ('gh workflow run post-release.yml --repo "$REPO" '
+                '--raw-field version="$VERSION"')
+    assert invocations[0] == expected, (
+        f"post-release's dispatch must be exactly:\n  {expected}\nGot:\n  {invocations[0]}\n"
+        f"The workflow NAME is what makes the install check run at all -- nothing else in this "
+        f"repo starts it -- and `--raw-field` is what stops `gh` reading a value beginning with "
+        f"`@` as a filename."
+    )
+    # The WHOLE mapping, on THIS step. `$VERSION` is what binds the dispatch to the release just
+    # cut, so a renamed or missing key leaves it unset under `set -u`; an extra key widens what a
+    # job holding `actions: write` can see.
+    assert step.get("env") == {
+        "GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+        "VERSION": "${{ needs.release-please.outputs.version }}",
+        "REPO": "${{ github.repository }}",
+    }, (
+        f"post-release's dispatch step must bind EXACTLY GH_TOKEN, VERSION and REPO. "
+        f"Got: {step.get('env')}"
+    )

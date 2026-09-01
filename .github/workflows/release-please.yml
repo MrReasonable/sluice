@@ -526,3 +526,48 @@ jobs:
           VERSION: ${{ needs.release-please.outputs.version }}
           TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
         run: bash .github/scripts/homebrew_push.sh
+
+  post-release:
+    # Dispatches `post-release.yml`, which installs each PUBLISHED artefact from its real
+    # registry and runs it as an ordinary user.
+    #
+    # `needs:` IS THE ORDERING, and it names one producing job per channel that workflow
+    # checks: `pypi` for the PyPI channel, `docker` for the ghcr image, and `release-assets`
+    # for the .deb and .rpm, because that is the job which uploads them to the release -- which
+    # is where the check fetches them from. `linux-packages` BUILDS them and is deliberately
+    # not named: it is already `release-assets`'s own `needs:`, and naming the builder rather
+    # than the publisher would be the same off-by-one this job exists to fix.
+    #
+    # `post-release.yml` used to trigger on `release: published` and raced all three, because
+    # the release is cut by `release-please` -- the FIRST job here -- and every publish hangs
+    # off it. It was red on v2.2.1, v2.3.0 and v2.4.0: every release since it was added.
+    #
+    # `homebrew` is deliberately absent. The check does not exercise that channel (this
+    # workflow's own `homebrew` job renders, audits, installs and tests the formula before the
+    # tap is pushed), so waiting on it would delay the check and couple it to a failure in a
+    # channel it never looks at. `tests/test_release_publish_wiring.py` pins that
+    # correspondence from both ends so a new channel cannot be checked without being waited on.
+    needs: [release-please, pypi, docker, release-assets]
+    if: success() && needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      # `workflow_dispatch` is one of exactly two events that STILL start a run when triggered
+      # with the built-in GITHUB_TOKEN -- every other event it triggers is suppressed, to stop
+      # a workflow re-triggering itself. So no App token is needed here, and this job holds the
+      # narrowest permission in the file: it cannot read contents, only start a workflow.
+      actions: write
+    steps:
+      # No checkout. `gh workflow run` addresses the workflow by name through `--repo`, so
+      # nothing from the tree is needed -- and a checkout here would put a token in reach of
+      # a job whose whole body is one dispatch.
+      - name: Dispatch the post-release install check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # `--raw-field`, not `--field`: `-F/--field` respects `@` syntax and would read a
+          # value beginning with `@` as a FILE to load. The version never starts with `@`, but
+          # the flag that cannot misread it is the one to use.
+          gh workflow run post-release.yml --repo "$REPO" --raw-field version="$VERSION"

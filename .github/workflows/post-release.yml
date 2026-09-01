@@ -9,10 +9,23 @@ name: Post-release install check
 # dependency that is declared but not installable, package data the wheel carries and the
 # .deb's unpack step drops, an image whose entrypoint is wrong.
 #
-# It runs AFTER the release, and that is deliberate rather than a compromise. The artefacts do
-# not exist until release-please has published them, so this cannot gate the release; what it
-# can do is say quickly that a published version is broken, which is the difference between
-# finding out now and finding out from a user.
+# It runs AFTER the artefacts are published, and that is deliberate rather than a compromise:
+# they do not exist until `release-please.yml` has pushed them, so this cannot gate the release.
+# What it can do is say quickly that a published version is broken, which is the difference
+# between finding out now and finding out from a user.
+#
+# `release-please.yml` DISPATCHES IT, and that is the whole of the ordering. This workflow used
+# to trigger on `release: published`, which reads as "after the release" and is not: release-
+# please cuts the GitHub release in its FIRST job, and every publishing job (`pypi`, `docker`,
+# `release-assets`) declares `needs: release-please` and therefore runs after it. The event
+# fired at the START of the publish fan-out and this workflow raced it -- measured red on
+# v2.2.1, v2.3.0 and v2.4.0, which is every release since it was added: "no matching
+# distribution" from PyPI, 404 for the .deb and .rpm, "manifest unknown" for the image. A check
+# that fails on every release is a check nobody reads, which is worse than not having one --
+# the next genuine publish failure is indistinguishable from the noise. `release-please.yml`'s
+# `post-release` job now names those publishes in its `needs:` and dispatches this workflow
+# once they are done, so the ordering is DECLARED where it can be enforced rather than inferred
+# from an event name.
 #
 # NON-ROOT is the point of the deb/rpm jobs. Verifying a Linux package as root cannot see a
 # non-root failure and looks identical to success: root bypasses directory traversal checks, so
@@ -24,15 +37,17 @@ name: Post-release install check
 # EVERY `${{ }}` REACHES THE SHELL THROUGH `env`, never inlined into a script body. Expression
 # substitution happens before the shell parses, so an inlined value containing a quote runs as
 # code -- and validating it afterwards is worthless, because by then it has already run. The
-# version is attacker-influenced on both triggers: a dispatch input, and a tag name chosen by
-# whoever cut the release.
+# version is attacker-influenced: it is a `workflow_dispatch` input, typed by whoever runs the
+# workflow by hand, or passed through from the tag whoever cut the release chose.
 
 on:
-  release:
-    types: [published]
-  # Re-runnable against any released version. That is what makes this useful for a release
-  # published before this workflow existed, and for re-checking after a registry incident;
-  # without it the only way to exercise the workflow at all is to cut a release.
+  # The ONLY trigger. `release-please.yml`'s `post-release` job is the caller; see the ordering
+  # note above for why `release: published` was removed rather than left alongside it -- kept
+  # alongside, it would still fire early and still red every release.
+  #
+  # Being a dispatch is also what makes this re-runnable by hand against any released version:
+  # useful for a release published before this workflow existed, and for re-checking after a
+  # registry incident.
   workflow_dispatch:
     inputs:
       version:
@@ -44,7 +59,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.version || github.event.release.tag_name }}
+  group: ${{ github.workflow }}-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
@@ -57,7 +72,7 @@ jobs:
     steps:
       - id: pick
         env:
-          RAW: ${{ inputs.version || github.event.release.tag_name }}
+          RAW: ${{ inputs.version }}
         run: |
           set -euo pipefail
           v="${RAW#v}"
