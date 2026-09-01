@@ -841,9 +841,13 @@ def cmd_triage_run(args, config) -> int:
         # only one a human sees, and this is the one run where it has something urgent to
         # say. Sending nothing here made the notice invisible to exactly the setup the
         # re-verdict is most dangerous for.
+        # `nudge`, not a second copy of the sentence. The push body carried "Run it again
+        # to apply" unconditionally, so a dry run pushed an instruction that would never
+        # come true -- the same defect `nudge` exists to fix, on the one channel an
+        # unattended install actually reads.
         _notify_reporting(
             f"job-sluice triage: WROTE NOTHING -- {len(report.reverdict_pending)} lead(s) "
-            "are judged differently by this version (#223). Run it again to apply.",
+            f"are judged differently by this version (#223). {nudge}",
             config=config, label="triage-summary")
         return 0
     print(f"triage: {report.counts} judged={report.judged} "

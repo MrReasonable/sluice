@@ -92,9 +92,24 @@ def test_the_sweep_finds_the_constructions_it_is_checking():
 def test_the_sweep_does_not_match_an_unrelated_class_by_substring():
     """`core/app.py` constructs `StaleLead(...)`, which ends in `Lead` and has nothing to
     do with this. A substring matcher would report it as an unnormalising origin, and the
-    fix a reader would then reach for is to widen the exemption rather than the sweep."""
-    assert "StaleLead" in (_PKG / "core/app.py").read_text(encoding="utf-8")
-    assert not [c for c in _constructions() if c[2] == "stale_leads"]
+    fix a reader would then reach for is to widen the exemption rather than the sweep.
+
+    Asserted against the MATCHER, on synthetic source. An earlier version filtered
+    `_constructions()` for the enclosing function `stale_leads` -- but `StaleLead` is
+    built inside `expire_report`, so that filter matched nothing whether the matcher was
+    AST-bound or substring-based, and the row could not fail. The live protection is
+    `test_the_sweep_finds_the_constructions_it_is_checking`, which would see
+    `("core/app.py", "expire_report")` appear in its pinned set.
+    """
+    unrelated = ast.parse("from sluice.core.app import StaleLead\n"
+                          "def f():\n    return StaleLead(a=1)\n")
+    real = ast.parse("from sluice.core.leads import Lead\n"
+                     "def g():\n    return Lead(source='x')\n")
+    # The pair is what makes this falsifiable. A matcher keyed on the string "Lead"
+    # collects BOTH -- "Lead" is a substring of "StaleLead" -- so a single row proves
+    # nothing about which matcher is in use.
+    assert _calls(unrelated, _local_names(unrelated, _TARGET)) == []
+    assert len(_calls(real, _local_names(real, _TARGET))) == 1
 
 
 @pytest.mark.parametrize(

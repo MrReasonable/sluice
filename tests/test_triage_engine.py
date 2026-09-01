@@ -2107,10 +2107,15 @@ def test_the_held_run_and_the_applied_run_are_distinguishable(tmp_path, monkeypa
 
     # ...and the arm where the marker could not be recorded, on a fresh vault so the
     # notice fires again.
+    # A DISTINCT `reverdict_scope`, so the notice fires again. The scope is injected by
+    # `Sluice.triage` rather than read off the store -- `Store` does not declare `dir`,
+    # and reaching through the seam for it raised `AttributeError` on any injected
+    # non-`Vault` store.
     monkeypatch.setattr(reverdict, "acknowledge", lambda *a, **kw: False)
     v2 = Vault(str(tmp_path / "vault2"))
     _note(v2, "acme.md", _legacy_fields())
-    applied = run(v2, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    applied = run(v2, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+                  reverdict_scope=str(tmp_path / "vault2"))
     assert applied.reverdict_pending and applied.reverdict_deferred is False
     assert v2.read_leads()[0].status == "dismiss"
 
@@ -2122,3 +2127,261 @@ def test_a_dry_run_is_held_rather_than_applied(tmp_path):
     report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
                  dry_run=True)
     assert report.reverdict_deferred is True
+
+
+# ── CodeRabbit round 1 on PR #227 ────────────────────────────────────────────
+
+
+def test_a_standing_conflict_is_recorded_once_not_once_per_run(tmp_path):
+    """The conflict arm changes nothing, so the next run recomputes it identically.
+
+    The run-summary line SHOULD repeat -- the disagreement is still live and a user who
+    has not acted on it should keep seeing it. The durable entry must not: on a nightly
+    cron that is one audit row per conflicted lead per day, for ever, and the user cannot
+    clear it except by editing the note. An unbounded run of identical rows makes the one
+    that matters harder to find.
+    """
+    fm = _rt_fields("Analyst", role_type="permanent", source="declared")
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", fm)
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / "vault"))
+    # `new` AND `shortlist`: the judge moves the lead on the first run, so a selection of
+    # `new` alone reads nothing on runs 2 and 3 and the assertion below would hold
+    # vacuously -- the loop would prove the dedupe works by never reaching it.
+    for _ in range(3):
+        report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD),
+                     audit, statuses=("new", "shortlist"))
+        assert len(report.role_type_conflicts) == 1        # said every run
+    entries = [json.loads(line) for line
+               in open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()]
+    assert len([e for e in entries if e.get("stage") == "role_type"]) == 1
+
+
+def test_a_conflict_that_CHANGES_is_recorded_again(tmp_path):
+    """A DIFFERENT disagreement on the same lead reaches the log.
+
+    This is what makes the dedupe key the disagreement's identity rather than the lead's
+    slug. An earlier version of this test changed the stored value to `contract` and then
+    re-ran against `_CONTRACT_JD` -- so the posting AGREED, no conflict was raised at all,
+    and a regression keyed on `slug` alone would have passed it. The second pass now runs
+    a PERMANENT observation against a declared `contract`, which is a genuinely new
+    disagreement.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / "vault"))
+    first = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
+                statuses=("new",))
+    assert len(first.role_type_conflicts) == 1        # observed contract vs declared permanent
+
+    # The user edits their declaration, and the posting now reads the other way.
+    note_path = tmp_path / "vault" / "Job Applications" / "Job Leads" / "acme.md"
+    note_path.write_text(
+        note_path.read_text().replace('role_type: "permanent"', 'role_type: "contract"'),
+        encoding="utf-8")
+    # A SEPARATE cache root for the second run. `_JdCache` puts its store under
+    # `<root>/dos` and `DossierCache` keys on the lead's url hash with a 7-day TTL, so
+    # re-using `tmp_path` serves run 1's CONTRACT dossier and the new JD is never read --
+    # which made this row report `confirmed` instead of a conflict.
+    second = run(v, TriageConfig(), _Backend(),
+                 _JdCache(tmp_path / "second", _PERMANENT_JD), audit,
+                 statuses=("new", "shortlist"))
+    assert len(second.role_type_conflicts) == 1       # observed permanent vs declared contract
+
+    entries = [json.loads(line) for line
+               in open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()]
+    rows = [e for e in entries if e.get("stage") == "role_type"]
+    assert len(rows) == 2, "a dedupe keyed on the lead alone would suppress the second"
+    assert {(r["observed_role_type"], r["role_type"]) for r in rows} == {
+        ("contract", "permanent"), ("permanent", "contract")}
+
+
+def test_the_reverdict_scope_is_injected_not_read_off_the_store(tmp_path):
+    """`Store` does not declare `dir`. Reaching through the seam for it raised
+    `AttributeError` on every triage run against an injected non-`Vault` store -- the
+    exact class of break the seam exists to prevent, introduced by the fix for a
+    different one."""
+    class _StoreWithoutDir:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def read_leads(self, statuses=None):
+            return self._inner.read_leads(statuses)
+
+        def update_fields(self, *a, **kw):
+            return self._inner.update_fields(*a, **kw)
+
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    bare = _StoreWithoutDir(v)
+    assert not hasattr(bare, "dir")
+    report = run(bare, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+                 reverdict_scope=str(tmp_path / "vault"))
+    assert len(report.reverdict_pending) == 1
+
+
+def test_the_reverdict_scope_is_never_empty(tmp_path):
+    """A store without `dir` must still get a distinct acknowledgement key.
+
+    An earlier version passed `getattr(store, "dir", "")` straight through, so EVERY
+    store lacking a `dir` -- every future non-directory implementation -- resolved to
+    `""` and all of them shared one acknowledgement: the first to acknowledge silenced
+    #223's notice for the rest, including the `dismiss` writes it exists to hold back.
+    That is the per-vault harm the key exists to prevent, reintroduced through the fix
+    for the store-seam violation.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.core.vault import Vault
+
+    class _NoDir:
+        pass
+
+    app = Sluice(Config(vault_dir=str(tmp_path / "v")))
+    assert app._reverdict_scope(_NoDir()) != ""
+    # ...and a real vault's scope is its own directory, so two vaults never collide.
+    a = app._reverdict_scope(Vault(str(tmp_path / "a")))
+    b = app._reverdict_scope(Vault(str(tmp_path / "b")))
+    assert a != b and a != "" and b != ""
+
+
+def test_two_dir_less_stores_of_different_kinds_do_not_share_a_scope(tmp_path):
+    # The identity falls back to the CONFIGURED store name, so a future second
+    # implementation gets its own key rather than inheriting the vault's.
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    class _NoDir:
+        pass
+
+    vault_app = Sluice(Config(vault_dir=str(tmp_path / "v")))
+    other = Config(vault_dir=str(tmp_path / "v"))
+    other.store = "somethingelse"
+    other_app = Sluice(other)
+    assert vault_app._reverdict_scope(_NoDir()) != other_app._reverdict_scope(_NoDir())
+
+
+def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
+    # The wiring, not just the helper: `run()` defaults to a SHARED bucket, so the whole
+    # protection is that the application boundary overrides it on every real call.
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    import sluice.triage.engine as eng
+
+    seen = {}
+
+    def _fake_run(store, cfg, backend, cache, audit, **kw):
+        seen.update(kw)
+        return eng.TriageReport()
+
+    monkeypatch.setattr(eng, "run", _fake_run)
+    Sluice(Config(vault_dir=str(tmp_path / "v"))).triage(no_llm=True)
+    assert seen.get("reverdict_scope"), "triage() passed no scope, so every store shares one"
+    assert str(tmp_path / "v") in seen["reverdict_scope"]
+
+
+def test_two_notes_sharing_a_slug_each_get_their_own_conflict_row(tmp_path):
+    """The de-duplication is keyed on the store's REF, not on the filename-derived slug.
+
+    The scan walks subdirectories (#1), so two notes in different folders can carry the
+    same slug -- which is why this function runs `index_by_slug` and refuses ambiguous
+    pairs outright. That refusal covers a single run; the de-duplication reads the DURABLE
+    log across runs, so a note that conflicted once and was later merged away can suppress
+    a different note that inherits its slug. Keyed on `slug`, the second row below never
+    reaches the log.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"),
+          subdir="one")
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / "vault"))
+    first = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
+                statuses=("new",))
+    assert len(first.role_type_conflicts) == 1
+
+    # A DIFFERENT note, same filename, different folder -- and the first one removed, so
+    # `index_by_slug` sees no ambiguity within this run.
+    os.remove(os.path.join(v.dir, "Job Applications", "Job Leads", "one", "acme.md"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"),
+          subdir="two")
+    second = run(v, TriageConfig(), _Backend(),
+                 _JdCache(tmp_path / "second", _CONTRACT_JD), audit, statuses=("new",))
+    assert len(second.role_type_conflicts) == 1
+
+    rows = [json.loads(line) for line
+            in open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()
+            if json.loads(line).get("stage") == "role_type"]
+    assert len(rows) == 2, "keyed on the slug, the second note's row is suppressed"
+    assert len({r["lead_ref"] for r in rows}) == 2
+    assert len({r["slug"] for r in rows}) == 1      # ...and the slugs really do collide
+
+
+class _RacingCache(DossierCache):
+    """A human edits the note WHILE the dossier is being fetched.
+
+    That window is real and seconds long: `read_leads` snapshots `note.fm`, the dossier
+    build makes a network call, and only then does the write-back run. Simulated by
+    mutating the note from inside `get_or_build`, which is exactly where the time goes.
+    """
+    def __init__(self, tmp_path, note_path, markdown, edit):
+        super().__init__(str(tmp_path / "dos"), 7,
+                         lambda lead: {"jd": {"markdown": markdown}, "glassdoor": {}},
+                         clock=lambda: datetime(2026, 7, 7))
+        self._note_path = note_path
+        self._edit = edit
+
+    def get_or_build(self, fm):
+        d = super().get_or_build(fm)
+        text = open(self._note_path).read()
+        for old, new in self._edit:
+            text = text.replace(old, new)
+        open(self._note_path, "w").write(text)
+        return d
+
+
+def test_a_human_edit_during_the_dossier_fetch_is_not_clobbered(tmp_path):
+    """Never-clobber, on the write #223 adds.
+
+    Measured before `require_unchanged` existed: a note read BLANK, a human typed
+    `role_type: permanent` / `role_type_source: declared` into Obsidian during the fetch,
+    and the run overwrote both with `contract` / `observed`. Worse than the general case,
+    because the stale snapshot read blank -- so the write took the `filled` path and the
+    rule that a `declared` value is never overwritten never engaged. The decision not to
+    overwrite was itself made against the snapshot the edit invalidated.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="", source=""))
+    note_path = tmp_path / "vault" / "Job Applications" / "Job Leads" / "acme.md"
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / "vault"))
+    cache = _RacingCache(tmp_path, str(note_path), _CONTRACT_JD,
+                         [('role_type: ""', 'role_type: "permanent"'),
+                          ('role_type_source: ""', 'role_type_source: "declared"')])
+    report = run(v, TriageConfig(), _Backend(), cache, audit, statuses=("new",))
+
+    fresh = Vault(str(tmp_path / "vault")).read_leads()[0]
+    assert fresh.fm["role_type"] == "permanent"        # the human's, not the posting's
+    assert fresh.fm["role_type_source"] == "declared"
+    # ...and nothing is COUNTED for a write the vault refused, matching the discipline
+    # `resolved`/`_audit` already follow: a count that includes a refused write claims
+    # something that never happened.
+    assert report.observed_role_types["filled"] == 0
+
+
+def test_an_untouched_note_still_gets_its_observation(tmp_path):
+    # The other half. A guard that refused every write would satisfy the row above and
+    # silently kill the feature -- `update_fields` returns False for a refusal and a
+    # no-op alike, so nothing downstream could tell.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _rt_fields("Analyst", role_type="", source=""))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    reverdict.acknowledge(str(tmp_path / "vault"))
+    report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
+                 statuses=("new",))
+    fresh = Vault(str(tmp_path / "vault")).read_leads()[0]
+    assert fresh.fm["role_type"] == "contract"
+    assert fresh.fm["role_type_source"] == "observed"
+    assert report.observed_role_types["filled"] == 1

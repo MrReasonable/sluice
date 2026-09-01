@@ -55,6 +55,12 @@ _log = get_logger("triage.engine")
 # "resolve_backend is None" gate rather than a second gate here.
 _LLM_BREAKER_THRESHOLD = 3
 
+# How far back to look for an already-recorded role_type disagreement (#223 §2.5). Long,
+# because the conflict persists until a human resolves it and re-recording it a year on
+# would restart exactly the unbounded growth this bounds. `AuditLog.read_recent` treats an
+# undated entry as in-range, so a hand-edited log stays covered.
+_CONFLICT_LOOKBACK_DAYS = 3650
+
 
 @dataclass
 class TriageReport:
@@ -106,7 +112,23 @@ class TriageReport:
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
         statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False, no_llm=False,
-        get_source=None, resolve_backend=None):
+        get_source=None, resolve_backend=None, reverdict_scope=""):
+    """`reverdict_scope` identifies WHICH lead store #223's one-shot notice is about, so
+    acknowledging on one vault cannot silence it for another.
+
+    INJECTED rather than read off the store, and that is the point. An earlier version
+    reached for `vault.dir`, which `Store` does not declare -- so an injected non-`Vault`
+    store raised `AttributeError` on every triage run, through the very seam the engine
+    exists on the other side of. `Sluice.triage` supplies it, because that is where the
+    concrete `Vault` is constructed and its directory is a fact.
+
+    The default `""` is a SHARED bucket: every caller that supplies no identity acknowledges
+    on behalf of every other. That is fine for the suite, where conftest gives each test its
+    own `XDG_STATE_HOME`, and it is why `Sluice.triage` -- the only production caller --
+    computes a stable NON-EMPTY scope rather than passing a store attribute through. See
+    `Sluice._reverdict_scope`; a caller driving two stores must supply distinct scopes or
+    the first to acknowledge silences the notice for the second.
+    """
     report = TriageReport()
     today = date.today().isoformat()
     notes = vault.read_leads(set(statuses))
@@ -123,7 +145,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     # `dry_run` prints the notice and does NOT acknowledge it, because a dry run writes
     # nothing and that has to include this marker: a user who happens to preview first
     # must still get the notice on their real run.
-    if not reverdict.acknowledged(vault.dir):
+    if not reverdict.acknowledged(reverdict_scope):
         # Over every status triage OWNS, and BEFORE `--limit` -- never over `notes`,
         # which both have already narrowed. The acknowledgement covers a whole VAULT, so
         # its scope has to be the vault rather than this run's selection. Measured on the
@@ -146,7 +168,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if dry_run:
                 report.reverdict_deferred = True
                 return report          # writes nothing, the marker included
-            if reverdict.acknowledge(vault.dir):
+            if reverdict.acknowledge(reverdict_scope):
                 report.reverdict_deferred = True
                 return report          # recorded, so the next run applies it
             # The marker did NOT land (a read-only state dir, a full disk). Returning
@@ -183,6 +205,43 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         if not dry_run:
             audit.append(entry)
 
+    # The identity of a role-type disagreement: which lead, what the posting read as, and
+    # what the note holds. `ts` is deliberately OUT -- including it would make every
+    # entry unique by construction and the deduplication inert, which is the shape this
+    # repo keeps finding in its own guards.
+    #
+    # Keyed on `lead_ref`, NOT on `slug`. A slug is filename-derived and the scan walks
+    # subdirectories (#1), so two notes in different folders can carry the same one --
+    # which is why this very function runs `index_by_slug` and refuses ambiguous pairs
+    # outright. Within one run that refusal keeps colliding notes away from here, but the
+    # de-duplication reads the DURABLE log across runs: a note that conflicted last month
+    # and has since been merged away can suppress a different note that inherits its slug
+    # today. `ref` is the store's own opaque handle and is unique by construction; it is
+    # COMPARED here, never parsed, which is what its contract permits. `slug` stays in the
+    # entry because it is the name a human recognises.
+    _CONFLICT_IDENTITY = ("lead_ref", "observed_role_type", "role_type",
+                          "role_type_source")
+
+    def _role_type_conflict_is_new(entry) -> bool:
+        """Has this exact disagreement already been recorded for this lead?
+
+        Reads the durable log rather than only this run's entries: the repeat that
+        matters is across RUNS, and a nightly cron is where it accumulates. Read
+        failures answer True -- writing a duplicate row is a cosmetic cost, while
+        swallowing the first record of a real conflict is the loud one.
+        """
+        wanted = tuple(entry[k] for k in _CONFLICT_IDENTITY)
+        try:
+            seen = audit.read_recent(_CONFLICT_LOOKBACK_DAYS)
+        except Exception as e:                       # pragma: no cover - defensive
+            _log.warning("triage: could not read the audit log to de-duplicate a "
+                         "role_type conflict (%s); recording it again", e)
+            return True
+        return not any(
+            e.get("stage") == "role_type"
+            and tuple(e.get(k) for k in _CONFLICT_IDENTITY) == wanted
+            for e in seen)
+
     def _report_role_type_conflict(note, observed, previous, previous_source) -> None:
         """Say that the posting disagrees with what the user declared, and change nothing.
 
@@ -196,13 +255,23 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             f"role-type {note.ref}: the posting reads as {observed!r}, but this lead "
             f"carries {previous!r} as {previous_source!r} -- KEPT, because it is yours. "
             "Your search's premise may not hold for this posting")
-        _resolve_audit({"ts": today, "slug": note.slug, "stage": "role_type",
-                        "observed_role_type": observed, "role_type": previous,
-                        "role_type_source": previous_source,
-                        "role": note.fm.get("role", ""),
-                        "url": note.fm.get("url", ""),
-                        "reason": "the posting contradicts the declared role type; "
-                                  "the declaration was kept"})
+        # The RUN-SUMMARY line above repeats every run, and should: the disagreement is
+        # still live, and a user who has not acted on it should keep seeing it. The
+        # DURABLE entry must not. Nothing here changes the note, so the conflict
+        # recomputes identically on the next run -- on a nightly cron that is one audit
+        # row per conflicted lead per day, for ever, and the user cannot clear it except
+        # by editing the note. An unbounded run of identical rows makes the one that
+        # matters harder to find, which is the opposite of what the log is for.
+        entry = {"ts": today, "slug": note.slug, "lead_ref": str(note.ref),
+                 "stage": "role_type",
+                 "observed_role_type": observed, "role_type": previous,
+                 "role_type_source": previous_source,
+                 "role": note.fm.get("role", ""),
+                 "url": note.fm.get("url", ""),
+                 "reason": "the posting contradicts the declared role type; "
+                           "the declaration was kept"}
+        if _role_type_conflict_is_new(entry):
+            _resolve_audit(entry)
 
     def _observe_role_type(note, dossier) -> None:
         """#223 §2.4/§2.5: write what the POSTING said about pay basis onto the note.
@@ -310,7 +379,20 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                     note.ref,
                     {"role_type": f'"{safe_role_type}"',
                      "role_type_source": f'"{safe_source}"'},
-                    require_status=frozenset(_status.TRIAGE_OWNED))
+                    require_status=frozenset(_status.TRIAGE_OWNED),
+                    # Never-clobber, decided against the FRESH note rather than the
+                    # snapshot this function is holding. A dossier fetch spends seconds
+                    # between `read_leads` and here, and a human typing their own
+                    # role_type into Obsidian in that window must win -- measured before
+                    # this guard: they were overwritten, and because the stale snapshot
+                    # read blank the write took the `filled` path, so the rule that a
+                    # `declared` value is never overwritten did not even engage.
+                    #
+                    # RAW values, not the folded `previous`: `require_unchanged` compares
+                    # against `_fm_value`, so a normalised expectation would never match
+                    # a stored `Contract` and the write would silently never land.
+                    require_unchanged={"role_type": note.fm.get("role_type") or "",
+                                       "role_type_source": previous_source})
             except VaultConflict as e:
                 # Isolated, exactly as the two sibling write sites are: a human editing
                 # in Obsidian won the race, and one lead's lost observation must not
