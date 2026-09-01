@@ -54,7 +54,8 @@ all **reject**; `£1,200/day` keeps.
 **`£65 per hour` and `£250 per week` do NOT belong in that list, and an earlier draft of this
 section put them there.** Measured, they **keep** today: both are under `_MIN_CREDIBLE_SALARY =
 1000`, so the annual branch abstains rather than rejecting. They are a different problem with the
-opposite sign — see §2.3 and §9.
+opposite sign — and one these two samples hide, because both happen to sit under that guard while
+every realistic weekly figure does not. `£2,000 per week` rejects. See §2.3 and §9.
 
 So provenance alone is insufficient: a genuine contract lead found by a *correctly* tagged search
 survives today on the label, and demoting the label without settling the pay basis flips it to
@@ -192,25 +193,50 @@ small unmarked numbers land, so the **low** threshold manufactures rejects. (One
 keeping the low threshold *because* it "can only fail open"; the probe above is why that was not
 taken. Right diagnosis, inverted fix.) The high threshold is inert. Both go.
 
-**No hourly or weekly basis, and no `per hour`/`per week` markers.** A later draft added them "as
-their own bases" — which the two-valued signature cannot represent, so they would route to `day`.
-Measured, three reviewers independently:
+**Hourly and weekly ARE their own bases, each with its own floor.** This reverses an earlier
+draft of this section, on the owner's decision (2026-09-01), and the reversal is narrower than it
+looks. That draft measured a real harm:
 
 ```text
 £65 per hour     today=keep    as-day=reject   <-- NEW REJECT
 £250 per week    today=keep    as-day=reject   <-- NEW REJECT
 ```
 
-No new number is added; two existing ones are **re-scoped**, because the applicable credibility
-floor swaps from `_MIN_CREDIBLE_SALARY=1000` to `_MIN_CREDIBLE_DAY_RATE=50` and the reject window
-moves down onto exactly those values. That is the same bidirectional harm the magnitude step was
-deleted for, three paragraphs later, in the same section. Every realistic hourly rate sits below a
-day floor, so this is systematic rather than an edge case. Real hourly/weekly support needs
-per-basis floors or hours-per-day conversion constants — new shipped numbers, a separate decision.
-**They stay unrecognised, and §9 names it as a residual.**
+...and drew the wrong conclusion from it. No new number was added there; two existing ones were
+**re-scoped**, because a two-valued signature routes hourly and weekly to `day`, swapping the
+applicable credibility floor from `_MIN_CREDIBLE_SALARY=1000` to `_MIN_CREDIBLE_DAY_RATE=50` and
+moving the reject window down onto exactly those values. **The harm was reusing the DAY floor, not
+parsing the basis** — so the fix is a floor per basis, not silence.
 
-Consequence: §2.3 introduces **no new tunable numbers**, so no `*Config` field and no
-`sluice.yaml.example` entry. The marker vocabularies are parsing facts — they encode how boards
+Silence had a cost the draft understated: an unparsed basis does not abstain, it falls to
+`perm_floor_gbp`, and §9's measurement shows `£2,000 per week` — about £104k a year — rejected as a
+sub-floor salary. That is the 672ad2a silent-rejection class, live, against the pay a user is most
+likely to have configured a floor for.
+
+So: `_BASES` maps each of `hour|day|week|annual` to its own markers, its own credibility floor and
+its own config key, and `_pay_reject` is a lookup in that table. A basis is judged against its own
+floor or against none. `contract_floor_gbp_hour` and `contract_floor_gbp_week` join the two
+existing keys, all four defaulting to 0 = no floor, so an unconfigured install ABSTAINS on hourly
+and weekly rather than binning them — strictly better than today for a user who configures nothing.
+
+**Four floors rather than a day floor plus conversion constants**, which was the other candidate.
+A conversion needs shipped hours-per-day and days-per-week numbers, and those are an assumption
+about someone's working pattern — a preference wearing the clothes of a parsing fact, and wrong for
+anyone on a four-day week. A floor per basis asks the user for the number they actually have an
+opinion about, and abstains until they give it.
+
+**An advert naming two bases abstains**, the same rule §2.4's observer follows. First-match-wins
+would be an arbitrary precedence between two things the advert said, and the cost is asymmetric:
+the day branch's reject window sits exactly where an hourly figure lands.
+
+Consequence: §2.3 introduces **two new tunable numbers**, both in `TriageConfig` and
+`sluice.yaml.example`, both neutral at 0. The two new credibility floors
+(`_MIN_CREDIBLE_HOURLY_RATE`, `_MIN_CREDIBLE_WEEKLY_RATE`) are NOT tunables and stay module
+constants beside the two that already exist, on a property that makes the claim checkable rather
+than asserted: each appears only inside its branch's reject CONJUNCTION, so it is monotone and can
+turn a reject into an abstain but never the reverse. A number that cannot manufacture a reject
+cannot encode an opinion about which jobs are good. The marker vocabularies are parsing facts —
+they encode how boards
 SPELL pay, not which pay is desirable, a claim round 1 checked and accepted — and are named
 module-level constants carrying a comment that they are English/UK-board idiom, so a non-UK board's
 spellings are a visible gap rather than a silent misread.
@@ -233,8 +259,10 @@ caller cannot distinguish them: the write is therefore **best-effort and unrepor
 the next run. Stated because an earlier draft named `require_status` without saying what happens
 when it refuses.
 
-**Ordering limit, stated not closed:** classify runs at `triage/engine.py:118`, the dossier build at
-`:291`. An observation cannot reach the gate on the run that fetches it, and a lead the gate
+**Ordering limit, stated not closed:** `triage/engine.py`'s classify pass runs BEFORE its dossier
+build — named rather than cited by line, because the `:118`/`:291` this said were true of
+`origin/main` and neither survived the branch that implemented it (#191).
+An observation cannot reach the gate on the run that fetches it, and a lead the gate
 dismisses never reaches the dossier. §2.3 is what makes that acceptable.
 
 ### 2.5 Declared vs. observed: precedence
@@ -242,11 +270,27 @@ dismisses never reaches the dossier. §2.3 is what makes that acceptable.
 Neither round settled what happens when a `declared` value and a later `observed` one (§2.4)
 disagree on the same lead, and §2.4's write-back cannot be planned without an answer.
 
-**The ladder is `observed` > `declared` > `assumed` > `""`.** The posting is ground truth about what
-the job IS; a `declared` value is the user's assertion about a SEARCH, and §1.1's premise is that a
-search label is not a fact about a posting — a contract-tagged search can return a permanent role.
-So a JD observation overrides an earlier declaration. `declared` still outranks `assumed`; nothing
-here revises §2.1's table.
+**The ladder is `observed` > `declared` > `assumed` > `""` FOR THE VALUE, with one exception the
+implementation measured into existence: an observation may not overwrite a `declared` value.**
+
+The original reasoning still holds as far as it goes — the posting is ground truth about what the
+job IS, a `declared` value is the user's assertion about a SEARCH, and §1.1's premise is that a
+search label is not a fact about a posting. What it assumed was that the observation is RELIABLE.
+Three review rounds measured it: **37% recall on realistic contract adverts, and a residual
+false-positive rate on adverts whose SUBJECT is contracting** — recruitment, payroll, bid work,
+procurement. Each round narrowed the vocabulary and the next found more, because "does this prose
+describe THIS role's basis, or what the role is about?" is not a lexical question.
+
+Overriding a declaration on that basis writes a lexical guess over something the user actually
+typed, permanently, and stickily: a later run sees the value agreeing with itself and skips, so a
+hand correction is overwritten again.
+
+So an observation FILLS a blank and CORRECTS the tool's own `assumed` guess — both cases where the
+user expressed no opinion — and a contradiction with a `declared` value is surfaced and the note
+left alone. The user keeps their assertion and learns their search's premise may not hold for this
+posting; choosing between the two is theirs, and they are the only party who can. Decision taken by
+the owner against the measurement, 2026-09-01. `declared` still outranks `assumed`; nothing here
+revises §2.1's table.
 
 Two obligations on whoever implements this, and no more than two, because the rest cannot be
 specified honestly in prose:
@@ -443,7 +487,9 @@ forbids filesystem vocabulary, so neither carries a `skipif`.
   said rather than implied: an unconfigured source still runs a shipped role-and-city filter instead
   of abstaining, which is the one place this codebase inverts empty-config-abstains. Direction 3 is
   where that gets decided; the reasoning is recorded on the issue.
-- Hourly and weekly pay bases (§2.3, §9).
+- ~~Hourly and weekly pay bases (§2.3, §9).~~ **Brought back INTO scope** on the owner's decision,
+  2026-09-01, once §9's measurement showed the gap was a live silent rejection rather than a benign
+  abstention. Delivered in PR 2 with §2.
 - Building `fetch_mutates_remote` for #216. `CarouselSource` was retired at #217 with its last
   producer, and no shipped source performs a deliberate write-back: grepping `sluice/ingest/` for
   browser verbs (`click`, `type`, `fill`, `submit`, `press`, `select_option`) returns two hits, a
@@ -549,11 +595,12 @@ and `stat` raise and the distinction disappears.
 
 ## 9. Accepted residuals
 
-- **Hourly and weekly pay are unrecognised** (§2.3) -- and unrecognised is NOT abstained, which is
-  what an earlier draft of this line claimed. The basis is never parsed: neither matches the contract
-  branch (`"contract" in role_type`, `/day`, `per day`), so both fall through to the ANNUAL branch
-  and the bare number is compared against `perm_floor_gbp`. What decides the outcome is therefore
-  MAGNITUDE, not basis. Executed against `classify` with `perm_floor_gbp=80000`:
+- **~~Hourly and weekly pay are unrecognised~~ — FIXED, not a residual** (§2.3, owner's decision
+  2026-09-01). This entry is kept rather than deleted because it records the measurement that
+  forced the reversal. Before the fix, the basis was never parsed: neither matched the contract
+  branch (`"contract" in role_type`, `/day`, `per day`), so both fell through to the ANNUAL branch
+  and the bare number met `perm_floor_gbp`. What decided the outcome was MAGNITUDE, not basis.
+  Executed against `classify` with `perm_floor_gbp=80000`:
 
   ```text
   £65 per hour      ->  keep     (65 < _MIN_CREDIBLE_SALARY, so the floor is skipped)
@@ -564,10 +611,15 @@ and `stat` raise and the distinction disappears.
   £1,500 per hour   ->  reject
   ```
 
-  So §2.3's `£65 per hour`/`£250 per week` keep because they sit under `_MIN_CREDIBLE_SALARY`
-  (1000), not because anything abstains on their behalf; every realistic WEEKLY figure clears that
-  guard and is then judged against an ANNUAL floor it cannot meet. Real support needs new shipped
-  constants; until then this is a live silent-rejection risk, not a benign gap.
+  So `£65 per hour`/`£250 per week` kept because they sat under `_MIN_CREDIBLE_SALARY` (1000), not
+  because anything abstained on their behalf; every realistic WEEKLY figure cleared that guard and
+  was then judged against an ANNUAL floor it could not meet. That is the 672ad2a silent-rejection
+  class, live. Each basis now carries its own floor and its own credibility guard, both neutral at
+  0, so an unconfigured install abstains on hourly and weekly instead.
+- **A user upgrading is told, before it is applied.** The change is bidirectional — weekly leads
+  stop being binned, and a `role_type` the gate no longer trusts moves others the other way — so
+  §2.1's re-verdict notice covers both. Leads already at `dismiss` are NOT re-selected by a later
+  run, so recovering them needs a deliberate `--status dismiss` sweep; the notice says so.
 - **A bare unmarked amount is judged as annual** (§2.3). Today's behaviour, deliberately unchanged
   rather than improved by a guess.
 - **`role_type` is correct one run late** (§2.4). The gate still DEPENDS on it: with
@@ -579,8 +631,17 @@ and `stat` raise and the distinction disappears.
 - **§2.4's write-back is best-effort and unreported** — `update_fields` cannot distinguish a refusal
   from a no-op. Retried next run.
 - **Ingest refuses on wedged pairs until repair runs** (§3.1). Loud rather than silent.
-- **A declared/observed disagreement's surfacing mechanism is unspecified** (§2.5) — only that the
-  write-back must not be silent about the CONFLICT case is required here; whether that is a note
-  field, a run-summary line or a log record is PR 2's decision.
+- **A declared/observed disagreement is surfaced and the declaration KEPT** (§2.5) — settled by
+  PR 2, which is where §2.5 deferred it, and then revised against measurement. A run-summary line
+  per lead (`role_type_conflicts`, printed separately from `failures` because nothing failed) plus
+  a durable audit entry at `stage: "role_type"`. Correcting an `assumed` value is COUNTED and not
+  announced: that is the tool correcting its own guess, and on the population §1.1 describes it is
+  most leads, so a line each would bury the summary. `observed_role_types`'s four buckets record
+  the distinction — `filled`, `confirmed`, `corrected`, `conflicted`.
+- **The observer's precision is the accepted residual now, in place of its authority.** 37% recall
+  and a non-zero false-positive rate on adverts whose subject is contracting. Bounded rather than
+  closed: an observation can no longer overwrite what the user declared, so a false one costs a
+  spurious conflict line rather than a corrupted note. Three rounds of narrowing did not converge,
+  and a fourth was not attempted for that reason.
 - **An all-caps company keeps its casing** (§3.2). Cosmetic; the alternative corrupts acronyms at a
   measured 552-to-380 ratio.

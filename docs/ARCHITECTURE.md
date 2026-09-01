@@ -53,6 +53,36 @@ Shared by every sub-app:
   `unjudgeable` belongs in it because that IS the retry: the cache no longer
   persists a fetch that produced no JD (see `dossier.py` below), so the next
   run refetches.
+- `roletype.py` (#223): the `role_type` closed set, its provenance ladder, and
+  `observe_role_type`, which reads a pay basis off a job description. Pure apart
+  from one thing, named because this page qualifies purity precisely everywhere
+  else: `normalise_role_type` WARNS on an unrecognised value, and it runs in
+  ingest's per-row loop and in classify's read path. Nothing else here touches
+  the disk, the network or a clock.
+  `normalise_role_type` folds every spelling a real vault holds to
+  `contract | permanent | ""` and WARNS on anything else -- deliberately the
+  opposite of `status.py:normalize`, which passes an unrecognised status through
+  untouched so a genuinely new state is never silently rewritten. A status is a
+  state a human chose; a role_type is a two-valued fact about pay basis, and the
+  gate's contract branch was a SUBSTRING test, so `contract-to-perm` -- a value
+  whose whole meaning is "both" -- took the contract branch on its first eight
+  characters.
+
+  The ladder is `observed > declared > assumed > ""`: the posting's own words,
+  then the user's assertion (a search they configured, or a lead they typed),
+  then the tool's guess (a shipped example search, a source's `extra`). Only the
+  top two are consulted by the relevance gate -- #223's complaint is that
+  `role_type` recorded which SEARCH found a lead and was then read as a fact
+  about the job. A note with no `role_type_source` key reads as `assumed`, which
+  fails toward not trusting.
+
+  `observe_role_type`'s vocabulary is high-precision and low-recall on purpose,
+  and the asymmetry is the design: an observation outranks every other origin, so
+  a wrong one overwrites the user's own declaration, while a blank one leaves
+  today's behaviour in place. "Full-time" is absent for exactly that reason --
+  it describes HOURS, not basis, and contract adverts carry it routinely. The
+  markers are English/UK-board idiom; another market's spellings abstain, which
+  is a visible gap rather than a silent misread.
 - `paths.py`: where every path sluice owns lives (#80). One `resolve()`, one
   order -- env var, then config key, then the XDG base directory for that
   `kind` (`config`/`state`/`cache`, validated against that closed set). It
@@ -442,6 +472,50 @@ whichever neighbour it was written next to:
    decision that actually landed -- a lead whose write was refused (already
    application-owned, or a status change mid-run) is logged nowhere, so the
    audit never claims a decision that was not applied.
+
+   `classify.py`'s pay gate reads a BASIS rather than a role label (#223).
+   `_pay_basis` asks the salary's own markers first (`/day`, `per hour`,
+   `per annum`, ...), so the posting's own words beat everything; only an
+   UNMARKED salary consults `role_type`, and only when the note records the
+   value as `observed` or `declared`. An advert naming TWO bases abstains, the
+   same rule the JD observer follows. An advert naming none falls through to the
+   annual branch, byte-for-byte the pre-#223 behaviour for a bare amount.
+
+   `_BASES` maps each of `hour|day|week|annual` to its own markers, its own
+   credibility floor and its own config key, and `_pay_reject` is a lookup in
+   that table — so a basis is judged against its own floor or against none.
+   That table is what makes hourly and weekly safe to parse. An earlier draft
+   left them unrecognised because a two-valued signature routed them to `day`,
+   moving the applicable credibility floor from 1000 down to 50 and opening the
+   reject window exactly where realistic hourly and weekly figures sit; the harm
+   was reusing the DAY floor, not parsing the basis. Silence was not free: an
+   unparsed basis does not abstain, it falls to `perm_floor_gbp`, and `£2,000
+   per week` — about £104k a year — was rejected as a sub-floor salary. All four
+   floors default to 0 = no floor, so an unconfigured install abstains.
+   Conversion constants were the other candidate and were declined: shipped
+   hours-per-day and days-per-week numbers are an assumption about someone's
+   working pattern, wrong for anyone on a four-day week, and a preference
+   wearing the clothes of a parsing fact.
+
+   The enrich pass writes an `observed` role_type back from the fetched JD,
+   `require_status`-guarded like its two sibling writes, best-effort and
+   unreported (`update_fields` cannot distinguish a refusal from a no-op, and
+   "the note already says this" is the common case). It fills a blank and
+   corrects the tool's own `assumed` guess. It does NOT overwrite a `declared`
+   value: that disagreement is announced, in the run summary and the durable
+   audit log, and the user's value stands. §2.5 originally put `observed` above
+   `declared` outright; three review rounds measured the observer at 37% recall
+   with a residual false-positive rate on adverts whose SUBJECT is contracting,
+   and a lexical guess should not silently replace something a user typed.
+
+   `reverdict.py` is a one-shot migration marker, not a store. Notes written
+   before provenance existed read as `assumed`, so the gate stops consulting
+   their `role_type` -- a BATCH re-verdict on the first run after upgrade, and
+   `dismiss` is not re-selected, so a lead dismissed that way is never seen
+   again. The first run that would apply it names the affected leads and writes
+   nothing; re-invoking applies it. Unlike the two dedup stores, a missing or
+   corrupt marker must fail LOUD rather than refuse: it means "show the notice
+   again", which costs one skipped run.
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
    a closed set, compose a tailored CV against that bundle (an LLM call
    over `core.backends`), gate it, render (by default `template`: fill the
