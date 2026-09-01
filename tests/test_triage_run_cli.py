@@ -320,3 +320,22 @@ def test_a_dry_run_is_told_to_re_run_without_dry_run(monkeypatch, tmp_path, caps
     err = capsys.readouterr().err
     assert "without --dry-run" in err.lower()
     assert "run it again to apply them" not in err.lower()
+
+
+def test_a_dry_run_push_does_not_promise_that_re_running_applies(monkeypatch, tmp_path):
+    # The stderr wording already split for `--dry-run`; the push body did not, so a dry
+    # run pushed "Run it again to apply" on every run and nothing ever applied. That is
+    # the same defect `nudge` exists to fix, on the one channel an unattended install
+    # actually reads.
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(
+        reverdict_pending=["acme: pay was judged as day, now judged as annual"],
+        reverdict_deferred=True))
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm", "--dry-run"])
+    assert cmd_triage_run(args, Config()) == 0
+    assert len(sent) == 1
+    assert "without --dry-run" in sent[0].lower()
+    assert "run it again to apply" not in sent[0].lower()

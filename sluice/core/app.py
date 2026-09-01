@@ -1232,10 +1232,40 @@ class Sluice:
                     "this run: %s", e)
         cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days,
                                    self.config.min_jd_chars)
-        return _triage_run(self.store(), tcfg, backend, cache, audit,
+        store = self.store()
+        return _triage_run(store, tcfg, backend, cache, audit,
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm, get_source=sources.get,
-                           resolve_backend=resolve_backend)
+                           resolve_backend=resolve_backend,
+                           reverdict_scope=self._reverdict_scope(store))
+
+    def _reverdict_scope(self, store) -> str:
+        """A stable, NON-EMPTY identity for the lead store #223's notice is about.
+
+        The notice is a claim about one store's accumulated notes, so acknowledging it
+        must not silence it for a different one. Resolved here, at the application
+        boundary, because `Store` does not declare `dir` and the engine sits on the far
+        side of that seam.
+
+        Non-empty is the load-bearing part. An earlier version passed `getattr(store,
+        "dir", "")` straight through, so ANY store without a `dir` -- every future
+        non-directory implementation -- resolved to `""`, and all of them shared one
+        acknowledgement: the first to acknowledge silenced the notice for the rest,
+        including the `dismiss` writes it exists to hold back. That is the per-vault harm
+        this key exists to prevent, reintroduced through the fix for the seam violation.
+
+        So the fallback is built from what the application knows rather than from the
+        store object: the configured store NAME plus the same `VAULT_DIR`-then-config
+        precedence `stores/vault.py`'s factory itself uses. Two dir-less stores of the
+        same name under the same config ARE the same store and correctly share a key;
+        two of different names do not.
+        """
+        named = getattr(store, "dir", "")
+        if named:
+            return f"vault:{named}"
+        kind = getattr(self.config, "store", "vault")
+        configured = os.environ.get("VAULT_DIR") or getattr(self.config, "vault_dir", "")
+        return f"{kind}:{configured}"
 
     def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
                     no_serve=False, backend_role="auto", include_stale=False):

@@ -1325,12 +1325,21 @@ class Vault:
                       note_tag: str | None = None,
                       require_status: frozenset | None = None,
                       require_blank: frozenset | None = None,
-                      blank_values: frozenset | None = None) -> bool:
+                      blank_values: frozenset | None = None,
+                      require_unchanged: dict | None = None) -> bool:
         """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
         intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
         is present, so re-runs are idempotent). Routed through _cas_write: the edit is
         re-derived from the CURRENT note on each attempt, so a concurrent writer's other
         keys and body survive. May raise VaultConflict on sustained conflict (#16).
+
+        `require_unchanged` (#223): a {key: expected} map re-read from the FRESH note;
+        the write is refused unless every key still holds exactly what the caller read.
+        `require_blank` asks "is this still empty", which fits a caller filling a hole;
+        this fits one REPLACING a value. Values are compared RAW, so pass what
+        `note.fm[key]` gave you rather than a normalised form -- a folded value would
+        compare against the stored spelling and never match, and the refusal is
+        indistinguishable from a no-op to the caller.
 
         `require_status` (#9): when given, re-read the status from the FRESH note and
         write nothing unless it is in that set. Returns whether a write happened.
@@ -1395,6 +1404,26 @@ class Vault:
             if require_blank is not None and any(
                     not _counts_as_blank(_fm_value(inner, key), blank_values)
                     for key in require_blank):
+                return text
+            # Third guard, same freshness rule and the same reason (#223). `require_blank`
+            # asks "is this still empty"; this asks "is this still EXACTLY what I read",
+            # which is what a caller needs when it is replacing a value rather than
+            # filling a hole. Measured before it existed: triage's role_type write-back
+            # spends seconds on a dossier fetch between reading the note and writing it,
+            # and a human typing their own `role_type` into Obsidian in that window was
+            # overwritten -- including the `declared` provenance that is otherwise never
+            # overwritten, because the decision not to overwrite was itself made against
+            # the stale snapshot.
+            #
+            # RAW comparison against `_fm_value`, so callers pass the value they READ
+            # rather than a normalised form: `_fm_value` and `_fm_dict` strip quotes
+            # identically, so `note.fm[key]` and this read agree on a well-formed note.
+            # A caller that passed a folded value would compare `contract` against a
+            # stored `Contract` and the write would never land -- silently, which is the
+            # dangerous direction for a guard that reports refusal and no-op alike.
+            if require_unchanged is not None and any(
+                    _fm_value(inner, key) != expected
+                    for key, expected in require_unchanged.items()):
                 return text
             for key, literal in fields.items():
                 inner = _set_fm(inner, key, literal)

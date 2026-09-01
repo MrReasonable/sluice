@@ -7,6 +7,8 @@ them again. A marker that reads as absent when it is present costs one skipped r
 """
 import os
 
+import pytest
+
 from sluice.core import paths
 from sluice.triage import reverdict
 
@@ -84,6 +86,12 @@ def test_a_corrupt_marker_is_replaced_rather_than_merged_into(tmp_path):
     assert reverdict.acknowledged(_VAULT, str(path)) is True
 
 
+# `getattr`, not a bare call: `os.geteuid` does not exist on Windows, the package
+# declares `Operating System :: OS Independent`, and pytest evaluates this decorator at
+# IMPORT -- so a bare call fails COLLECTION of the whole module rather than skipping one
+# row. The fallback is a non-zero uid, i.e. "not root, run the test".
+@pytest.mark.skipif(getattr(os, "geteuid", lambda: 1)() == 0,
+                    reason="mode 0o500 does not stop root")
 def test_a_marker_that_cannot_be_written_says_so_rather_than_raising(tmp_path):
     """The livelock guard, and the whole reason this returns a bool.
 

@@ -1507,7 +1507,12 @@ def test_every_evidence_add_flag_is_documented(kind):
 # silently: a field was added to the printed line and the doc kept describing the old
 # one, with nothing red. Restating a format string in prose IS the drift surface, so the
 # key names are derived from `cli.py` and compared.
-_TRIAGE_SUMMARY_KEY = re.compile(r"(\w+)=\{report\.")
+# `\{(?:[a-z_]+\()?report\.` -- the optional call wrapper matters. The summary prints
+# `failures={len(report.failures)}`, which a bare `=\{report\.` never matched, so
+# `failures` fell out of the derived set silently. The scope assertion below pinned the
+# five keys that DID match and passed, certifying a doc claim about five of six keys --
+# an anti-vacuity check that agreed with the bug it was there to catch.
+_TRIAGE_SUMMARY_KEY = re.compile(r"(\w+)=\{(?:[a-z_]+\()?report\.")
 
 
 def _printed_summary_keys():
@@ -1529,7 +1534,8 @@ def test_the_summary_key_extraction_is_not_vacuous():
     Pins the known keys rather than a floor, so one key silently replacing another
     cannot pass."""
     assert _printed_summary_keys() == {
-        "judged", "resolved", "llm_calls", "observed_role_types", "backend"}, (
+        "judged", "resolved", "llm_calls", "observed_role_types", "backend",
+        "failures"}, (
         "the triage summary line changed. Update this set AND the "
         "`job-sluice triage: ...` sentence in docs/USAGE.md that it guards.")
 
