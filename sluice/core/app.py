@@ -1773,6 +1773,7 @@ class Sluice:
         untouched (decision 11) -- a later genuine scrape of the same posting is not
         silently skipped by this manual entry."""
         from sluice.core.leads import Lead, is_http_url
+        from sluice.core.roletype import DECLARED, normalise_role_type
         from sluice.core.vault import frontmatter_safe
         fields = {"title": title, "company": company, "location": location,
                  "salary": salary, "job_type": job_type, "source": source}
@@ -1791,9 +1792,24 @@ class Sluice:
                 f"unsafe or invalid field(s): {bad} (must be printable, contain no "
                 f"\" or \\, and url must be present and http(s))")
         store = self.store()
+        # #223 §2.1's third origin. This is the case where `job_type` is UNAMBIGUOUSLY
+        # the user's -- they typed it into `leads create` or the MCP write tool -- so it
+        # is `declared`, the provenance the relevance gate is allowed to act on. The
+        # stamp is repeated here rather than centralised in `_row_to_lead` because this
+        # path never touches it: `create_lead` builds the `Lead` by hand and calls
+        # `store.upsert` directly (decision 11, so seen.db is untouched).
+        #
+        # `normalise_role_type` warns and blanks an unrecognised value rather than
+        # raising, unlike the `bad` check above. Deliberate: that check guards fields
+        # whose loss changes WHICH note is created or whether the blank-identity gate
+        # refuses, and none of them has a closed set to fall back to. A job_type that is
+        # neither contract nor permanent has one -- "unstated" -- and the lead is still
+        # worth creating without it.
+        job_type = normalise_role_type(job_type)
         result = store.upsert(Lead(source=source, search="", title=title,
                                    company=company, url=url, location=location,
-                                   salary=salary, job_type=job_type))
+                                   salary=salary, job_type=job_type,
+                                   job_type_source=DECLARED if job_type else ""))
         if result.outcome not in ("created", "updated", "merged"):
             return CreateLeadResult(outcome=result.outcome)
         return CreateLeadResult(outcome=result.outcome, slug=result.slug)

@@ -2978,13 +2978,20 @@ class Vault:
     def _render_new(self, lead: Lead) -> str:
         first = lead.first_seen or _today()
         last = lead.last_seen or first
-        # decision 7: location/salary/role_type/url/source are the 5 non-identity
-        # interpolated fields -- company/role are guarded separately, one call up,
-        # inside upsert's own new pre-check (see there), since they're the vault's
-        # IDENTITY key and must refuse the whole create rather than abstain-and-blank.
+        # decision 7: location/salary/role_type/role_type_source/url/source are the 6
+        # non-identity interpolated fields -- company/role are guarded separately, one
+        # call up, inside upsert's own new pre-check (see there), since they're the
+        # vault's IDENTITY key and must refuse the whole create rather than
+        # abstain-and-blank.
         location = self._safe_or_blank(lead.location, "location", lead.dedup_key)
         salary = self._safe_or_blank(lead.salary, "salary", lead.dedup_key)
         role_type = self._safe_or_blank(lead.job_type, "role_type", lead.dedup_key)
+        # Guarded like the rest even though every value sluice itself writes here comes
+        # from a four-member closed set (#223 §2.1): `upsert` is public and takes a
+        # `Lead` any caller built, so a `"` in this field would open a second
+        # frontmatter key exactly as one in `salary` would.
+        role_type_source = self._safe_or_blank(
+            lead.job_type_source, "role_type_source", lead.dedup_key)
         url = self._safe_or_blank(lead.url, "url", lead.dedup_key)
         source = self._safe_or_blank(lead.source, "source", lead.dedup_key)
         inner = "\n".join([
@@ -2997,6 +3004,11 @@ class Vault:
             f'source: "{source}"',
             f'salary: "{salary}"',
             f'role_type: "{role_type}"',
+            # Written even when blank (#223 §2.1). A missing key and a blank one both
+            # read as `assumed`, so this is not a correctness difference; it is that a
+            # note whose schema varies by lead is one a human cannot scan, and the
+            # five keys above already ship blank rather than being omitted.
+            f'role_type_source: "{role_type_source}"',
             f'url: "{url}"',
             'glassdoor_rating: ""',
             'culture_flags: ""',
