@@ -1,4 +1,5 @@
 import json
+import os
 from datetime import datetime, timedelta
 from sluice.core.dossier import DossierCache, slim
 
@@ -282,3 +283,60 @@ def test_census_buckets_are_cumulative_over_real_files(tmp_path):
 
     assert cache.census() == {"total": 5, "unreadable": 1,
                               "empty": 1, "under_200": 2, "under_800": 3}
+
+
+# ── #223 §2.4: the posting's own words, read off the fetched JD ──────────────
+def _dc(tmp_path, markdown):
+    return DossierCache(str(tmp_path), ttl_days=7,
+                        fetcher=lambda lead: {"jd": {"markdown": markdown}},
+                        clock=_clock(datetime(2026, 7, 7)))
+
+
+_LEAD = {"company": "Acme", "role": "Analyst", "location": "Palmerburgh",
+         "role_type": "permanent"}
+
+
+def test_the_dossier_records_what_the_posting_says_about_basis(tmp_path):
+    jd = "x" * 400 + " This is a 6-month contract, outside IR35."
+    assert _dc(tmp_path, jd).get_or_build(_LEAD)["role_type_observed"] == "contract"
+
+
+def test_a_posting_that_states_no_basis_records_no_observation(tmp_path):
+    jd = "x" * 400 + " You will own the deployment pipeline."
+    assert _dc(tmp_path, jd).get_or_build(_LEAD)["role_type_observed"] == ""
+
+
+def test_the_observation_reads_the_same_text_the_judge_is_shown(tmp_path):
+    # Via `jd_text`, not a second reader: an observation derived from a different slice
+    # of the payload than the one the pipeline treats as THE job description could
+    # disagree with what a human reads back off the dossier.
+    jd = "x" * 400 + " A permanent position, 85,000 per annum."
+    assert _dc(tmp_path, jd).get_or_build(_LEAD)["role_type_observed"] == "permanent"
+
+
+def test_an_observation_is_not_derived_from_the_notes_own_role_type(tmp_path):
+    # `_LEAD` carries `role_type: permanent`, and the JD says contract. If the
+    # observation were seeded from the note rather than read off the posting, this row
+    # would answer `permanent` -- which is the entire defect #223 is about, reproduced
+    # one layer in.
+    jd = "x" * 400 + " A 6-month contract, inside IR35."
+    assert _dc(tmp_path, jd).get_or_build(_LEAD)["role_type_observed"] == "contract"
+
+
+def test_a_cached_dossier_predating_the_key_still_parses(tmp_path):
+    # No schema_version bump, matching how `page_title`/`structured_data` were added:
+    # every consumer reads this with `.get(...) or ""`, so an old cache entry is not
+    # invalidated for a field that is optional by construction.
+    #
+    # The FETCHER's JD says `contract` while the cached entry's says nothing, and that
+    # asymmetry is the whole test. An earlier draft gave both the same basis-free text,
+    # so a REBUILD answered `""` too and the row could not tell a served cache entry from
+    # a rebuilt one: deleting `get_or_build`'s freshness short-circuit reddened three
+    # pre-existing tests and left this one green.
+    dc = _dc(tmp_path, "x" * 400 + " This is a 6-month contract, outside IR35.")
+    os.makedirs(str(tmp_path), exist_ok=True)
+    stale = {"schema_version": 2, "lead_id": dc.cache_key(_LEAD),
+             "jd": {"markdown": "x" * 400}, "built_at": "2026-07-07T00:00:00"}
+    open(dc._path(_LEAD), "w").write(json.dumps(stale))
+    assert dc.get_or_build(_LEAD).get("role_type_observed", "") == "", (
+        "a cache entry written before the key existed was discarded and refetched")
