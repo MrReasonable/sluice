@@ -506,6 +506,93 @@ def test_example_config_ships_min_jd_chars_off():
     assert "min_jd_chars" in text, "the knob must be documented in the example config"
 
 
+# dossier_settle_ms (#228) carries its own guards for the same reason, plus one more: it is the
+# first int knob here whose default is NON-ZERO, so "0 == abstain" is not even the claim being
+# made about it. Every assertion below was written against a mutation that SURVIVED the whole
+# suite -- deleting the `Config(...)` wiring left the key dead (validated, then discarded, the
+# exact hazard load_config's own comment names), deleting the bool term let `yes` load as a 1ms
+# budget, and deleting the negative term let a negative value silently disable the settle.
+
+def test_dossier_settle_ms_dataclass_default_is_on():
+    # NON-ZERO deliberately: waiting for a page to finish loading is not a judgement about
+    # which jobs are good, so the abstain rule the rest of this file enforces does not reach
+    # it -- the same exception the dossier cache's own `ttl_days: int = 7` already takes.
+    assert Config().dossier_settle_ms == 5000
+
+
+def test_dossier_settle_ms_loader_default_matches_the_dataclass(monkeypatch):
+    # load_config names every field explicitly, so its default is an INDEPENDENT literal.
+    # The two drifting apart would mean a config FILE and no config file behaved differently.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).dossier_settle_ms == Config().dossier_settle_ms
+
+
+def test_dossier_settle_ms_absent_key_keeps_the_default(tmp_path, monkeypatch):
+    p = tmp_path / "c.yaml"
+    p.write_text("store: vault\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).dossier_settle_ms == 5000
+
+
+def test_dossier_settle_ms_configured_value_round_trips(tmp_path, monkeypatch):
+    # THE WIRING TEST. Deleting `dossier_settle_ms=raw_settle` from load_config's Config(...)
+    # call made the key DEAD, and every other test passed -- they all build a Config() by hand
+    # and set the attribute directly, so none of them crosses the loader at all.
+    p = tmp_path / "c.yaml"
+    p.write_text("dossier_settle_ms: 1234\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).dossier_settle_ms == 1234
+
+
+def test_dossier_settle_ms_zero_is_accepted_and_turns_the_settle_off(tmp_path, monkeypatch):
+    # 0 is legitimate here rather than rejected: it restores the pre-#228 single read, which
+    # is what an operator sets to establish that the settle is what changed a result.
+    p = tmp_path / "c.yaml"
+    p.write_text("dossier_settle_ms: 0\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_config(None).dossier_settle_ms == 0
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", "True"])
+def test_dossier_settle_ms_rejects_yaml_booleans(tmp_path, monkeypatch, value):
+    # bool subclasses int and PyYAML resolves yes/on/true to True, so without the bool check
+    # `dossier_settle_ms: yes` -- the natural spelling to turn a wait ON -- loads as a ONE
+    # MILLISECOND budget: off in every way that matters, on the one knob added to stop a page
+    # being read too early.
+    p = tmp_path / "c.yaml"
+    p.write_text(f"dossier_settle_ms: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="dossier_settle_ms"):
+        load_config(None)
+
+
+def test_example_config_documents_dossier_settle_ms():
+    # Its sibling `min_jd_chars` has this row and this key did not, so the 18 lines added to
+    # sluice.yaml.example were deletable with the suite green. tests/test_config_example.py
+    # sweeps the four SUB-APP sections only, so nothing pinned that a ROOT key stays documented.
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "dossier_settle_ms" in text, "the knob must be documented in the example config"
+    active = [ln for ln in text.splitlines()
+              if ln.strip().startswith("dossier_settle_ms:")]
+    assert not active, (
+        "dossier_settle_ms must ship COMMENTED: an uncommented value is a second place the "
+        "default lives, free to drift from sluice/core/config.py")
+
+
+@pytest.mark.parametrize("value", ["-1", "-5000", "1.5", "abc", "'200'", "[200]"])
+def test_dossier_settle_ms_rejects_negatives_and_non_ints(tmp_path, monkeypatch, value):
+    # A NEGATIVE is rejected at LOAD, so the settle loop never sees one -- the point is that a
+    # value which reads as "configured on" cannot mean anything else. (An earlier version of
+    # this comment claimed `max(1, negative // 250)` would silently yield one poll; that path
+    # is unreachable precisely because this validator exists, so the comment described a
+    # mechanism its own test prevents.)
+    p = tmp_path / "c.yaml"
+    p.write_text(f"dossier_settle_ms: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="dossier_settle_ms"):
+        load_config(None)
+
+
 # ── #80: the two root path keys ──────────────────────────────────────────────
 # vault_dir and dossier_dir are str-typed, so the value-keyed sweep above misses them
 # BY DESIGN (it is list-only, and deliberately so -- see the #9 note). They carry two

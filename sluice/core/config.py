@@ -113,6 +113,25 @@ class Config:
     # different floors over one directory means whichever sub-app ran last decides
     # whether an entry exists.
     min_jd_chars: int = 0
+    # How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
+    # in milliseconds, waiting for it to stop changing. It does not pause before the first
+    # read -- it reads immediately, then re-reads until two consecutive reads match or this
+    # budget is spent, so a page that was already complete pays one extra read (two
+    # `evaluate` round trips: the read, plus the landed-url check that precedes it). `create_tab` awaits `page.goto(waitUntil='domcontentloaded')`, which
+    # fires when the HTML is parsed -- a single-page app has not mounted by then, so the body
+    # read immediately after came back empty for two live ATS vendors on EVERY lead, and `cv run`
+    # composed against the bundle alone with no job description at all.
+    #
+    # NON-ZERO by default, unlike the preference gates around it, and the distinction is the
+    # one `CLAUDE.md` already draws for the dossier cache's own `ttl_days: int = 7`: waiting a
+    # bounded moment for a page to finish loading is not an opinion about which jobs are good,
+    # so `0 == abstain` does not apply. It costs one extra `evaluate` and one short wait on a
+    # page that was already complete, because the loop stops as soon as the text is unchanged
+    # rather than spending this budget.
+    #
+    # `0` turns it off and restores the pre-#228 single read exactly, which is the value to set
+    # to prove the settle is what changed a result.
+    dossier_settle_ms: int = 5000
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -699,6 +718,17 @@ def load_config(path: str | None = None) -> Config:
             f"min_jd_chars must be a non-negative integer (0 = off), got "
             f"{_safe_scalar_repr(raw_floor)}")
 
+    # #228. Identical shape and identical reason: `dossier_settle_ms: yes` is the natural
+    # spelling to turn a wait ON, and bool SUBCLASSES int, so without the bool check first it
+    # would load as a ONE MILLISECOND budget -- a settle that is off in every way that matters
+    # while reading as on, on the exact knob added to stop a page being read too early.
+    raw_settle = data.get("dossier_settle_ms")
+    raw_settle = 5000 if raw_settle is None else raw_settle
+    if isinstance(raw_settle, bool) or not isinstance(raw_settle, int) or raw_settle < 0:
+        raise ValueError(
+            f"dossier_settle_ms must be a non-negative integer (0 = off), got "
+            f"{_safe_scalar_repr(raw_settle)}")
+
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
     # here is therefore dead: it loads as its default whatever the YAML says, silently.
@@ -731,4 +761,5 @@ def load_config(path: str | None = None) -> Config:
                   lead_ttl_days=raw_ttl,
                   lead_layout=raw_layout or "",
                   min_jd_chars=raw_floor,
+                  dossier_settle_ms=raw_settle,
                   dossier_allow_hosts=allow)

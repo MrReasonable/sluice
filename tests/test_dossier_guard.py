@@ -2,6 +2,7 @@
 import pytest
 
 from sluice.core import urlguard
+from sluice.core import app as app_mod
 from sluice.core.app import Sluice, _LD_JSON_JS
 from sluice.core.config import Config
 from tests.harness.config import FIXTURE_ADDR as GLOBAL_ADDR   # the ONE sanctioned
@@ -70,13 +71,42 @@ def role(titles):
 def _cache(tmp_path, fetcher, *, resolve=None, allow=()):
     cfg = Config()
     cfg.dossier_allow_hosts = list(allow)
-    app = Sluice(cfg, fetcher=fetcher,
+    # sleep= injected: without it `Sluice._sleep` is None and #228's settle falls back to the
+    # real `time.sleep`, which put ~9.75s of genuine sleeping into an offline suite that had
+    # none. A test that waits is a test nobody runs.
+    app = Sluice(cfg, fetcher=fetcher, sleep=lambda _s: None,
                  resolve_host=resolve or (lambda h: [GLOBAL_ADDR]))
     return app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)
 
 
 def test_an_allowed_url_fetches_and_probes_in_order(tmp_path, role):
-    """The positive control every absence assertion below is paired with."""
+    """The positive control every absence assertion below is paired with.
+
+    The body is read TWICE and that is load-bearing, not slack in the assertion: #228's settle
+    re-reads until two consecutive reads agree, because `waitUntil='domcontentloaded'` fires
+    before a client-rendered posting has painted. `_Tab` serves a constant body, so the second
+    read matches the first and the loop stops there -- which is exactly the claim that a page
+    needing no settle pays one extra probe rather than the whole `dossier_settle_ms` budget.
+
+    THE INTERLEAVING IS THE SECURITY PROPERTY. EVERY probe whose result reaches the dossier is
+    immediately preceded by a `location.href` check, so the check-to-read window is one
+    `evaluate` throughout -- not just for the first body read. Checking once and then settling
+    for up to `dossier_settle_ms` would leave a multi-second window in which the page can move
+    under the guard (a meta refresh, a JS `location =`, a late client-side route), and a
+    client-rendered posting -- the very kind the settle exists for -- is the kind most likely
+    to do it.
+
+    The JSON-LD probe is in that roster and was NOT at first. It was best-effort metadata until
+    #228 made `structured_data` a JD source, and the first version of this guard scoped itself
+    to `document.body.innerText`, so a tab moving after the settle's last check had its JSON-LD
+    read from the new location and returned AS THE JD with no refusal. The roster is the whole
+    claim; scoping it to one probe was the defect.
+
+    The sequence is spelled out ENTIRELY rather than pattern-matched, and its churn is the
+    point: a new probe cannot be added without a human reading this list and deciding whether
+    it needs the guard. `test_every_dossier_probe_is_preceded_by_a_landed_url_check` derives
+    the same invariant without a literal, so the two cannot both go stale quietly.
+    """
     tab = _Tab()
     d = _cache(tmp_path, tab).get_or_build({"url": "https://jobs.invalid/x",
                                             "company": "Aye", "role": role})
@@ -85,7 +115,11 @@ def test_an_allowed_url_fetches_and_probes_in_order(tmp_path, role):
         ("create_tab", "https://jobs.invalid/x"),
         ("evaluate", "location.href"),
         ("evaluate", "document.body.innerText"),
+        ("evaluate", "location.href"),
+        ("evaluate", "document.body.innerText"),
+        ("evaluate", "location.href"),
         ("evaluate", "document.title"),
+        ("evaluate", "location.href"),
         ("evaluate", _LD_JSON_JS),
         ("close_tab", "tab-1"),
     ]
@@ -368,7 +402,7 @@ def test_dossier_blocked_carries_no_host_or_url(tmp_path, role):
     assert "secret-host" not in msg and "token" not in msg and "://" not in msg
 
 
-def test_a_production_shaped_sluice_fetches(tmp_path, role):
+def test_a_production_shaped_sluice_fetches(tmp_path, role, monkeypatch):
     """cli.py builds `Sluice(config)` -- no injected collaborators at all.
 
     The closure must touch nothing that is None in production. A previous draft
@@ -378,6 +412,10 @@ def test_a_production_shaped_sluice_fetches(tmp_path, role):
     tab = _Tab()
     cfg = Config()
     app = Sluice(cfg, fetcher=tab)          # no sleep=, today=, resolve_host=
+    # The settle's `sleep=None -> time.sleep` fallback is the point of this test, so it is
+    # kept and the CLOCK is neutered instead of injecting `sleep=`. Injecting would select the
+    # other branch and silently drop the only coverage the production fallback has.
+    monkeypatch.setattr(app_mod.time, "sleep", lambda _s: None)
     cache = app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)
     # The real resolver would be used, so the DNS guard fires -- that is the point:
     # it proves the closure got all the way to resolution without an attribute error.
@@ -418,6 +456,7 @@ def _triage_run(tmp_path, monkeypatch, role, *, resolve, landed="https://jobs.in
     monkeypatch.setattr(tengine, "judge", lambda dossiers, backend, **kw: [
         {"lead_id": d["lead_id"], "verdict": "shortlist", "relevance_score": 90,
          "fit_reasoning": "synthetic"} for d in dossiers])
+    monkeypatch.setattr(app_mod.time, "sleep", lambda _s: None)
     app = Sluice(Config(), fetcher=_Tab(landed=landed),
                  backend=object(), resolve_host=resolve)
     report = app.triage(statuses=("new",))

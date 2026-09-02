@@ -56,7 +56,11 @@ def _track_config(tmp_path, monkeypatch):
     return seen_db
 
 
-def test_dossier_cache_fetches_jd_via_the_fetcher_seam(tmp_path, titles):
+def test_dossier_cache_fetches_jd_via_the_fetcher_seam(tmp_path, titles, monkeypatch):
+    # Neuter the clock rather than inject `sleep=`: the bare-Sluice path selects the real
+    # `time.sleep` fallback, and injecting would test the other branch.
+    from sluice.core import app as _app_mod
+    monkeypatch.setattr(_app_mod.time, "sleep", lambda _s: None)
     app = Sluice(Config(), fetcher=_FakeTab(),
                  resolve_host=lambda h: [FIXTURE_ADDR])
     cache = app.dossier_cache(str(tmp_path), ttl_days=7, min_jd_chars=0)

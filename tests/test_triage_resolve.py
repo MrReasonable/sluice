@@ -3,6 +3,7 @@ import json
 import pytest
 
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING
+from sluice.core import dossier
 from sluice.triage import resolve
 
 
@@ -242,23 +243,23 @@ def test_a_jsonld_node_at_the_depth_cap_is_still_read():
     # The control for the abstain test below, and it is what makes that test mean
     # anything: a payload this walk was never going to read for some OTHER reason
     # (malformed, wrong @type) would abstain too, and prove nothing about the cap.
-    # `_iter_nodes` is entered at depth 0 on the outermost value and increments once
+    # `iter_ld_nodes` is entered at depth 0 on the outermost value and increments once
     # per array, so a node wrapped in _MAX_DEPTH arrays sits exactly ON the boundary.
-    payload = _wrap_in_lists(_JOBPOSTING, resolve._MAX_DEPTH)
+    payload = _wrap_in_lists(_JOBPOSTING, dossier.LD_MAX_DEPTH)
     assert resolve._hiring_org_from_jsonld(json.dumps(payload)) == "Example Co"
 
 
 def test_a_jsonld_node_one_level_past_the_depth_cap_is_not_read():
     # ONE level deeper than the test above, so the ONLY difference between them is the
-    # cap. Derived from `resolve._MAX_DEPTH` rather than written as a literal: the cap
+    # cap. Derived from `dossier.LD_MAX_DEPTH` rather than written as a literal: the cap
     # is a tuning number, and a copied literal here would go stale the day it changes
     # while still passing, which is how the guard came to have no coverage at all.
-    payload = _wrap_in_lists(_JOBPOSTING, resolve._MAX_DEPTH + 1)
+    payload = _wrap_in_lists(_JOBPOSTING, dossier.LD_MAX_DEPTH + 1)
     assert resolve._hiring_org_from_jsonld(json.dumps(payload)) is None
 
 
 def test_an_adversarially_nested_payload_abstains_rather_than_blowing_the_stack():
-    # WHY the cap is there, not just where it sits. `_iter_nodes` recurses through
+    # WHY the cap is there, not just where it sits. `iter_ld_nodes` recurses through
     # `yield from`, so an untrusted payload nested past the interpreter's recursion
     # limit raises RecursionError -- which is not a ValueError/TypeError, so
     # `_hiring_org_from_jsonld`'s own except cannot see it, and it would surface as one
@@ -266,7 +267,7 @@ def test_an_adversarially_nested_payload_abstains_rather_than_blowing_the_stack(
     # JSON string on purpose: at this depth `json.loads` has its own recursion ceiling
     # that varies by interpreter version, and this test is about the walk, not the parser.
     payload = _wrap_in_lists(_JOBPOSTING, 1500)
-    assert list(resolve._iter_nodes(payload)) == []
+    assert list(dossier.iter_ld_nodes(payload)) == []
 
 
 def test_from_dossier_skips_a_block_that_failed_to_parse_in_the_page():

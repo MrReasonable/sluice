@@ -1738,14 +1738,30 @@ Four points in the config are the seams for pluggable adapters.
   requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server). The dossier
-  fetch closure built from it (`Sluice.dossier_cache`) reads
-  `document.body.innerText` for the JD, and -- for triage's tier-2 company
-  resolution (#109) -- also `document.title` and EVERY
+  fetch closure built from it (`Sluice.dossier_cache`) POLLS
+  `document.body.innerText` for the JD -- `waitUntil='domcontentloaded'` fires
+  before a client-rendered posting has painted, so a single read returned an
+  empty body on every lead for some ATS vendors (#228). It re-reads until two
+  consecutive reads agree or `dossier_settle_ms` is spent, and returns the
+  LONGEST read, because a settled page can then be overlaid by a cookie banner
+  and the last read is the banner. It also captures `document.title` and EVERY
   `script[type="application/ld+json"]` tag, parsed in the page and returned as
   one JSON array (a board's own JobPosting schema is routinely not the first
-  such tag), in the same already-open tab. The JD read is a hard refusal on an
-  unreadable body; the two resolution-only captures are best-effort and degrade
-  to `""` instead.
+  such tag), in the same already-open tab.
+
+  The JSON-LD capture is no longer resolution-only: when its `JobPosting`
+  description yields more text than the settled body, it becomes the JD (#228),
+  which is what stops a page settling into navigation chrome from being cached
+  as a job description. `core/dossier.py` owns that extraction and the walk over
+  it, shared with triage's tier-2 resolution so one blob cannot get two answers.
+
+  The JD read is a hard refusal on an unreadable body. The metadata captures are
+  best-effort about their RESULT -- a missing, malformed or raising probe
+  degrades to `""` -- but not about their LOCATION: the landed-url guard is
+  re-applied before EVERY read, including the metadata ones, because settling
+  turned a one-`evaluate` check-to-read window into a multi-second one and a
+  client-rendered page is the kind most likely to navigate late. A refusal there
+  propagates rather than degrading.
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
   A source may optionally implement `company_from_url(url) -> str | None`
   (#109), the same optional-member shape as `Store.preflight`/

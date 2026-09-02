@@ -68,6 +68,27 @@ baseline_rel: My CV/CV.md
 # an entry exists.
 # min_jd_chars: 200   # <- uncomment and set YOUR OWN
 
+# How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
+# in milliseconds, waiting for it to stop changing. It does not pause before the first
+# read -- it reads immediately, then re-reads until two reads match or the budget is
+# spent. A page that was already complete costs one extra read, not the whole budget. The browser reports a page "loaded" when its HTML is parsed, which
+# is before a single-page app has fetched and painted the job -- so the body was read
+# too early and came back EMPTY for some ATS vendors on every lead, and `cv run`
+# composed a CV against no job description at all.
+# Its CODE DEFAULT is 5000, unlike the preference GATES in this file, which default to
+# empty or 0: waiting a bounded moment for a page to finish loading is not an opinion
+# about which jobs are good, so there is nothing here for a copier to inherit from
+# someone else's taste. (This file is NOT wholly commented -- `relevance_keep`,
+# `accept_titles` and the pay floors below ship ACTIVE, which is exactly the trap that
+# makes copying it a mistake. The point here is narrower: this key is not one of those.)
+# The line below stays commented because an uncommented value would be a SECOND place
+# the default lives, free to drift from the one in sluice/core/config.py -- and because
+# leaving it commented is what keeps this key out of the active set above. It stops as soon as the
+# text stops changing, so a page that was already complete costs one extra read, not
+# the whole budget. 0 turns it off and restores a single immediate read, which is the
+# setting to use to prove the wait is what changed a result.
+# dossier_settle_ms: 5000
+
 # Hosts the dossier fetcher may reach even though they are not globally routable.
 # The fetcher follows lead urls scraped off job boards, so by default it refuses
 # non-http(s) schemes and any address that is not globally routable (loopback,

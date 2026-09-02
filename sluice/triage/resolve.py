@@ -23,6 +23,7 @@ import json
 import re
 
 from sluice.core.backends import BackendError
+from sluice.core.dossier import iter_ld_nodes, job_posting_types
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING, is_placeholder_company
 from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
@@ -145,10 +146,10 @@ def _company_from_role(role) -> str | None:
     return candidate
 
 
-# How deep `_iter_nodes` will walk board-authored JSON-LD before abstaining. Named
-# rather than inlined so the boundary test can be written AGAINST the cap instead of
-# against a copied literal that would drift silently the day this number changes.
-_MAX_DEPTH = 6
+# The JSON-LD walk and the JobPosting predicate live in `core/dossier.py`, shared with
+# `core/app.py`'s JD recovery (#228). They were briefly duplicated here, and the copies
+# measurably disagreed on `{"@type": "https://schema.org/JobPosting"}` -- one resolved
+# the page, the other abstained, from the same blob. One question, one answer.
 
 
 @dataclass(frozen=True)
@@ -228,35 +229,6 @@ PAGE DATA
 _RESOLVE_PROMPT_TAIL = "\nAnswer now with the hiring organisation's name on one line, or NONE.\n"
 
 
-def _iter_nodes(data, depth: int = 0):
-    """Every JSON object reachable in a JSON-LD payload, flattening arrays and `@graph`.
-
-    Recursive rather than one-level because the capture side hands over an ARRAY of
-    blocks (`core/app.py`'s `_LD_JSON_JS` collects every `ld+json` script tag, since the
-    page's JobPosting is often not the first), and any ONE of those blocks may itself be
-    a bare object, an array of nodes, or a `@graph` container -- so a JobPosting can sit
-    two levels down. A one-level walk reads a `@graph` wrapper's own (absent) `@type` and
-    abstains, silently, on a page that did publish what was asked for.
-
-    Anything that is neither a list nor a dict yields nothing, which is what skips the
-    `null` the capture writes for a block the page could not parse. Depth-capped
-    (`_MAX_DEPTH`) because this is board-authored, untrusted input: without the cap a
-    payload nested a few hundred levels deep raises RecursionError out of the `yield
-    from` chain, and the cap's value is well past the deepest real shape
-    (array -> block -> @graph -> node). A node deeper than that is not read at all, so
-    tier 2 abstains on it rather than resolving it."""
-    if depth > _MAX_DEPTH:
-        return
-    if isinstance(data, list):
-        for item in data:
-            yield from _iter_nodes(item, depth + 1)
-    elif isinstance(data, dict):
-        yield data
-        graph = data.get("@graph")
-        if isinstance(graph, (list, dict)):
-            yield from _iter_nodes(graph, depth + 1)
-
-
 def _hiring_org_from_jsonld(raw: str) -> str | None:
     """schema.org/JobPosting -> hiringOrganization.name, tolerating a bare object, a
     list of nodes, or a `@graph` array -- and any malformed/missing shape, which
@@ -270,10 +242,11 @@ def _hiring_org_from_jsonld(raw: str) -> str | None:
         data = json.loads(raw)
     except (ValueError, TypeError):
         return None
-    for node in _iter_nodes(data):
-        node_type = node.get("@type")
-        types = node_type if isinstance(node_type, list) else [node_type]
-        if "JobPosting" not in types:
+    for node in iter_ld_nodes(data):
+        # Shared predicate: the bare name, the fully-qualified url and the CURIE are all
+        # legal spellings, and the exact-membership test that stood here accepted only the
+        # first -- so tier 2 abstained on pages that had published exactly what it asked for.
+        if not job_posting_types(node):
             continue
         org = node.get("hiringOrganization")
         if isinstance(org, dict):
@@ -312,7 +285,7 @@ def _org_candidates(raw: str) -> list:
         return []
     seen = set()
     out = []
-    for node in _iter_nodes(data):
+    for node in iter_ld_nodes(data):
         names = []
         node_type = node.get("@type")
         types = node_type if isinstance(node_type, list) else [node_type]
