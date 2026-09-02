@@ -18,8 +18,9 @@ name: Post-release install check
 # to trigger on `release: published`, which reads as "after the release" and is not: release-
 # please cuts the GitHub release in its FIRST job, and every publishing job (`pypi`, `docker`,
 # `release-assets`) declares `needs: release-please` and therefore runs after it. The event
-# fired at the START of the publish fan-out and this workflow raced it -- measured red on
-# v2.2.1, v2.3.0 and v2.4.0, which is every release since it was added: "no matching
+# fired at the START of the publish fan-out and this workflow raced it -- measured red on every
+# release up to #231. Deliberately NO version list: the one that stood here enumerated three, went
+# stale the moment a fourth was cut, and was still being read as current. "no matching
 # distribution" from PyPI, 404 for the .deb and .rpm, "manifest unknown" for the image. A check
 # that fails on every release is a check nobody reads, which is worse than not having one --
 # the next genuine publish failure is indistinguishable from the noise. `release-please.yml`'s
@@ -121,11 +122,80 @@ jobs:
           work="$(mktemp -d)"; cd "$work"
           python -m venv v
           ./v/bin/pip install --quiet --upgrade pip
+
+          # Wheel and sdist differ ONLY in this flag, and the retry below is SHARED, so the two
+          # forms cannot drift into having different propagation tolerances. `--no-binary :all:`
+          # forces a real build from the sdist, which is how a missing build-time file surfaces.
+          #
+          # Positional parameters rather than a bash array: `"${arr[@]}"` on an EMPTY array is an
+          # unbound-variable error under `set -u` in bash 3.2 -- which is macOS's /bin/bash, and
+          # `tests/test_post_release_wiring.py` EXECUTES this script rather than reading it. `"$@"`
+          # is special-cased and expands to nothing. Measured both ways before choosing.
+          #
+          # EACH ARM PINS ITS FORM, and the `wheel` half is the one that is easy to leave off. A
+          # bare `pip install` prefers a wheel but FALLS BACK to building the sdist, and a
+          # partially propagated index is exactly the state where one form is present and the
+          # other is not -- so `pypi (3.x, wheel)` could report green having never installed a
+          # wheel, certifying a channel it did not exercise. That is the failure this whole
+          # workflow exists to catch, hiding inside the cell named after it.
           if [ "$FORM" = sdist ]; then
-            ./v/bin/pip install --quiet --no-binary :all: "job-sluice==${VERSION}"
+            set -- --no-binary :all:
           else
-            ./v/bin/pip install --quiet "job-sluice==${VERSION}"
+            set -- --only-binary :all:
           fi
+
+          # PyPI's simple index is eventually consistent across CDN nodes, so a version that
+          # uploaded successfully can still be ABSENT from the node this runner happens to reach.
+          # Measured on v2.4.2: the upload completed at 15:48:40Z and `pypi (3.13, sdist)` still
+          # got "No matching distribution" at 15:53:31Z -- ~5 minutes later -- while every sibling
+          # cell installed that same version in the same run. Exactly one cell has failed this
+          # way per release, a DIFFERENT one each time (v2.4.1 was `3.14, wheel`), which is the
+          # signature of a propagation lag rather than a broken artefact.
+          #
+          # A bounded retry with backoff rather than a blanket `sleep`: a sleep long enough to be
+          # safe is long enough to be wrong, and it hides how long propagation actually took.
+          # This REPORTS it -- every attempt logs its elapsed seconds, and a run that needed more
+          # than one raises a warning annotation, so the lag stays visible instead of being
+          # silently absorbed. That annotation is the only telemetry that can tell "the retry
+          # earned its place" from "the flake did not recur today".
+          #
+          # `--no-cache-dir` is LOAD-BEARING, not hygiene: WITHOUT IT THIS RETRY IS INERT. pip
+          # caches the simple index page on disk and serves it WITHOUT revalidating -- measured,
+          # with a populated cache and the network made unreachable, `pip install
+          # job-sluice==2.4.1` resolved entirely from cache and never requested
+          # `/simple/job-sluice/`, while the same command with `--no-cache-dir` failed at exactly
+          # that URL. So a retry that reuses the cache re-reads the SAME stale index and fails
+          # identically, attempt after attempt. It also makes every attempt fetch from the
+          # registry, which is the only thing this workflow exists to verify.
+          attempts=6
+          delay=15
+          start="$SECONDS"
+          installed=
+          for n in $(seq 1 "$attempts"); do
+            if ./v/bin/pip install --quiet --no-cache-dir "$@" "job-sluice==${VERSION}"; then
+              installed=1
+              elapsed=$(( SECONDS - start ))
+              echo "installed job-sluice ${VERSION} on attempt ${n}/${attempts} after ${elapsed}s"
+              if [ "$n" -gt 1 ]; then
+                echo "::warning::job-sluice ${VERSION} only became installable from PyPI on attempt ${n}, ${elapsed}s into this step -- the index lagged the upload"
+              fi
+              break
+            fi
+            if [ "$n" -lt "$attempts" ]; then
+              echo "attempt ${n}/${attempts} failed $(( SECONDS - start ))s in; retrying in ${delay}s"
+              sleep "$delay"
+              delay=$(( delay * 2 ))
+            fi
+          done
+          # Fails CLOSED. A retry loop that exhausts and falls through to the smoke run would
+          # turn a genuine publish failure GREEN, which is a worse outcome than the flake this
+          # was added to absorb -- the whole point of the check is to say a broken version is
+          # broken.
+          if [ -z "$installed" ]; then
+            echo "::error::job-sluice ${VERSION} was not installable from PyPI after ${attempts} attempts over $(( SECONDS - start ))s"
+            exit 1
+          fi
+
           PATH="${work}/v/bin:$PATH" ./v/bin/python "$smoke" "$VERSION" \
             --channel "pypi-${FORM}-py${PY}"
 

@@ -540,7 +540,8 @@ jobs:
     #
     # `post-release.yml` used to trigger on `release: published` and raced all three, because
     # the release is cut by `release-please` -- the FIRST job here -- and every publish hangs
-    # off it. It was red on v2.2.1, v2.3.0 and v2.4.0: every release since it was added.
+    # off it. It was red on every release up to #231 -- no version list here on purpose, the
+    # one that stood here had already gone stale.
     #
     # `homebrew` is deliberately absent. The check does not exercise that channel (this
     # workflow's own `homebrew` job renders, audits, installs and tests the formula before the
