@@ -28,7 +28,9 @@ imports were protecting: an offline command must never construct a browser, a st
 an LLM backend just by existing. `sluice triage run --no-llm` still touches no backend;
 `sluice ingest list-sources` still touches no vault.
 """
+import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -243,6 +245,134 @@ _BACKEND_SEAM = "backend"
 # Every seam a constructor override may name. Used to reject a misspelled key at
 # construction instead of dropping it silently (see Sluice.__init__).
 _SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
+
+# How often the settle loop below re-reads the body, in milliseconds. A constant rather than a
+# second config key: the BUDGET is the operator-meaningful number ("how long am I willing to wait
+# for a slow board"), while the interval is an implementation detail, and exposing both invites a
+# pair that cannot satisfy each other. 250ms is short enough that a stable page's confirming wait
+# is not felt and long enough that a slow SPA is not polled dozens of times.
+_SETTLE_INTERVAL_MS = 250
+
+
+def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host=""):
+    """Poll `document.body.innerText` until it stops changing, or the budget runs out.
+
+    Returns the LONGEST read seen, not the last, and that is a correctness rule rather than a
+    heuristic. A client-rendered page does not only GROW: measured, a posting that had fully
+    painted was then overlaid by a cookie banner, so the last read was
+    "We use cookies. Accept all. Manage preferences." while the complete JD had already been in
+    hand two reads earlier. Returning the last read made the shipped default STRICTLY WORSE than
+    `dossier_settle_ms: 0`, which is the opposite of what a settle is for. It is the same
+    "prefer whichever source yields more text" rule the caller applies between this body and the
+    page's JSON-LD, for the same reason: both candidates are the same page describing itself, so
+    taking the longer needs no judgement about what a posting should look like.
+
+    A non-string read is returned IMMEDIATELY and exactly as `evaluate` gave it. Settling must
+    not launder a malformed envelope into a string -- the fail-closed BODY_UNREADABLE path is
+    what stops a broken browser becoming a cached empty JD -- and a broken probe is a transport
+    failure, not a page that has not painted, so polling it cannot help.
+
+    `budget_ms <= 0` reads exactly once and never sleeps, byte-identical to the pre-#228
+    behaviour. That is deliberate: it is the setting an operator uses to establish that the
+    settle is what changed a result.
+
+    THE BUDGET BOUNDS THE SLEEPING, NOT THE WALL CLOCK, which is worth stating because the
+    config key is named in milliseconds. It is spent as `budget_ms // _SETTLE_INTERVAL_MS`
+    polls, so elapsed time is that much sleeping PLUS the `evaluate` round trips each poll
+    makes -- TWO per re-read, since every read is preceded by a guard call. A budget shorter
+    than one interval is rounded UP to a single poll rather than down to none:
+    `dossier_settle_ms: 1` asks for a settle, and answering it with the off behaviour would be
+    the quiet wrong default this codebase engineers out. A poll count rather than a monotonic
+    deadline, because a deadline plus an injected no-op sleep is a busy-wait that would spend
+    the budget in real seconds inside an offline test suite.
+
+    Two consecutive EQUAL reads is the stability test, and a blank body never counts as stable
+    -- an SPA that has not mounted yields "" (or whitespace) just as reliably as a genuinely
+    empty page does, and the two are indistinguishable from here. So a blank body always costs
+    the full budget, which is the right way round: the page that needs waiting for is exactly
+    the one that looks empty.
+
+    EXHAUSTION IS NOT STABILITY, and is logged rather than returned as if it were. A page still
+    painting when the budget runs out yields truncated mid-render text that reads exactly like a
+    settled short posting; before #228 it read as "" and was honestly reported as
+    `dossier_failed`. Nothing here can tell truncated-but-growing from finished-and-short
+    without a judgement about posting length -- which `min_jd_chars` deliberately does not ship
+    -- so the fact is recorded instead of guessed at.
+    """
+    try:
+        got = c.evaluate(tid, "document.body.innerText")
+    except Exception:
+        # `c` is the injected Fetcher seam and may RAISE (a dropped connection, a browser JS
+        # error). Converted to the same non-string a malformed envelope yields, so the caller
+        # refuses with BODY_UNREADABLE rather than receiving a bare browser exception that
+        # never became a DossierUnavailable. `_check_landed` already does this for its own
+        # `evaluate`; the body reads did not, and the asymmetry was the bug.
+        got = None
+    text = got.get("result") if isinstance(got, dict) else None
+    if not isinstance(text, str) or budget_ms <= 0:
+        return text
+    naptime = _SETTLE_INTERVAL_MS / 1000.0
+    nap = sleep if sleep is not None else time.sleep
+    best = text
+
+    def _read():
+        """One guarded body read.
+
+        `guard` re-applies the landed-url check (see `_check_landed`) and RAISES on a refusal,
+        so it must run before the read it protects rather than after -- the whole point is that
+        the bytes are never pulled from a location policy has not cleared. The caller has
+        already checked before the first read, so only the re-reads below go through here,
+        keeping the check-to-read window at exactly one `evaluate` for every read: the same
+        window this code had before it settled at all.
+        """
+        if guard is not None:
+            # OUTSIDE the try below: a POLICY refusal must propagate, never degrade.
+            guard()
+        try:
+            got = c.evaluate(tid, "document.body.innerText")
+        except Exception:
+            # Same rule as a malformed envelope: a transport raise is not a page that has not
+            # painted, and it must not discard a read already held. Returning a non-string
+            # routes it into the loop's existing arms -- keep `best` if one landed, refuse if
+            # none did -- instead of escaping `fetch` and losing the dossier outright.
+            return None
+        return got.get("result") if isinstance(got, dict) else None
+
+    settled = False
+    # `max(1, ...)`: a budget shorter than one interval gets a single confirming read rather
+    # than none, for the reason the docstring gives.
+    for _ in range(max(1, int(budget_ms) // _SETTLE_INTERVAL_MS)):
+        stable_candidate = text.strip() != ""
+        nap(naptime)
+        nxt = _read()
+        if not isinstance(nxt, str):
+            # A FIRST-read failure has nothing to lose and must still fail closed -- that is
+            # what stops a broken browser becoming a cached empty JD, and it is handled above
+            # this loop. Here a guarded string read has ALREADY landed, so refusing would
+            # discard a JD this fetch is holding, read from a location policy cleared. That is
+            # the same "settle is strictly worse than dossier_settle_ms: 0" failure the
+            # longest-read rule exists to prevent, arriving by a different route: measured,
+            # a good first read followed by one broken envelope returned the full posting at
+            # 0 and refused at 5000.
+            if not best.strip():
+                return nxt
+            _log.warning("dossier body probe failed mid-settle host=%s, keeping the longest "
+                         "read of %d chars", host or "?", len(best.strip()))
+            return best
+        if len(nxt.strip()) > len(best.strip()):
+            best = nxt
+        if stable_candidate and nxt == text:
+            settled = True
+            break
+        text = nxt
+    if not settled:
+        # Distinguishable in the log from "this board publishes nothing", which is the whole
+        # point: a truncated mid-render JD and a genuinely short posting are identical in the
+        # returned value and only this line separates them.
+        _log.warning("dossier body never settled within %dms host=%s, using the longest of "
+                     "%d chars", int(budget_ms), host or "?", len(best.strip()))
+    return best
+
 
 # Read once per successful dossier fetch, alongside document.body.innerText: JobPosting
 # structured data, when a board embeds it (#109 tier-2 company resolution).
@@ -583,8 +713,14 @@ class Sluice:
         pass `self.config.min_jd_chars` so triage and cv -- which share this one cache
         directory (#80, see `_dossier_dir` above) -- always agree on the floor below
         which a fetched JD is treated as not having arrived.
+
+        `dossier_settle_ms` (#228) is read off `self.config` inside the closure instead of
+        being a parameter, and the asymmetry is deliberate rather than an oversight: it
+        governs THIS fetch's transport and has a single consumer, while `min_jd_chars` is a
+        cache-ADMISSION floor two sub-apps sharing one directory must agree on. A caller
+        that wanted a different settle would be tuning a browser, not a shared store.
         """
-        from sluice.core.dossier import DossierCache
+        from sluice.core.dossier import DossierCache, jd_from_structured_data
         from sluice.core import urlguard
         # Parsed once per cache, not per fetch. Raises here if a Config was built by
         # hand with a malformed list (load_config validates the same way).
@@ -622,6 +758,7 @@ class Sluice:
         def fetch(lead: dict) -> dict:
             md, url = "", lead.get("url")
             page_title, structured_data = "", ""
+            landed_url = ""
             if url:
                 pre = urlguard.check_url(url, allow_hosts=allow, resolve=resolve)
                 if not pre.allowed:
@@ -648,28 +785,85 @@ class Sluice:
                     # Camofox's navigate awaits page.goto(waitUntil='domcontentloaded'),
                     # so the tab HAS navigated by now and HTTP redirects are already
                     # followed. The checks below assert that rather than trusting it.
-                    res = c.evaluate(tid, "location.href")
-                    landed = res.get("result") if isinstance(res, dict) else None
-                    if not isinstance(landed, str):
-                        _refuse(urlguard.LANDED_UNREADABLE, pre.host)
-                    if not landed or landed == "about:blank":
-                        _refuse(urlguard.NOT_SETTLED, pre.host)
-                    post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
-                    if not post.allowed:
-                        _refuse(urlguard.LANDED_BLOCKED, post.host)
+                    nonlocal_landed = [""]
+
+                    def _check_landed():
+                        """Re-derive the tab's CURRENT url and re-apply the guard. Raises.
+
+                        A closure rather than a straight-line block because #228's settle
+                        reads the body more than once, and every one of those reads must be
+                        preceded by a fresh check. Between a check and a read the page can
+                        move under us -- a meta refresh, a JS `location =`, a late
+                        client-side route -- and a client-rendered posting, which is exactly
+                        what the settle exists for, is the kind of page most likely to do it.
+                        Checking once and then reading for up to `dossier_settle_ms` would
+                        turn this guard's one-evaluate window into a multi-second one, and
+                        the body read after such a move comes from the NEW location: an SSRF
+                        past the check that #18 added, widened by the feature above.
+                        """
+                        # `c` is the injected Fetcher seam and is free to RAISE -- a browser
+                        # JS error, a timeout, a dropped connection. Left unwrapped, that
+                        # escaped `fetch` entirely as a bare RuntimeError and discarded a JD
+                        # already read from this tab, which is the harm `_probe`'s own
+                        # isolation exists to prevent. Converted to the slug that already
+                        # names this condition, so callers get the DossierUnavailable they
+                        # understand instead of an exception class from the browser layer.
+                        # A POLICY refusal below still propagates untouched: that is the
+                        # whole point of running this outside `_probe`'s try.
+                        try:
+                            res = c.evaluate(tid, "location.href")
+                        except Exception:
+                            _refuse(urlguard.LANDED_UNREADABLE, pre.host)
+                        landed = res.get("result") if isinstance(res, dict) else None
+                        if not isinstance(landed, str):
+                            _refuse(urlguard.LANDED_UNREADABLE, pre.host)
+                        if not landed or landed == "about:blank":
+                            _refuse(urlguard.NOT_SETTLED, pre.host)
+                        post = urlguard.check_url(landed, allow_hosts=allow, resolve=resolve)
+                        if not post.allowed:
+                            _refuse(urlguard.LANDED_BLOCKED, post.host)
+                        # Captured for the JSON-LD recovery below, which drops any node whose
+                        # own url names a DIFFERENT posting. Assigned on every check, so it
+                        # holds where the tab actually ended up.
+                        nonlocal_landed[0] = landed
+
+                    _check_landed()
                     # Only now is the body safe to pull into memory.
-                    body = c.evaluate(tid, "document.body.innerText")
-                    md = body.get("result") if isinstance(body, dict) else None
+                    #
+                    # SETTLE FIRST (#228). `create_tab` awaits page.goto with
+                    # waitUntil='domcontentloaded', which fires when the HTML document is
+                    # parsed -- a single-page app has not mounted, fetched or painted the
+                    # posting by then. Read immediately, two live ATS vendors returned an
+                    # empty body on EVERY lead, and `cv run` composed from the bundle with
+                    # no job description at all: a plausible PDF, violations=0, tailored to
+                    # nothing. The partial render is worse, because it is not even flagged --
+                    # chrome without the posting is a SHORT NON-EMPTY body, which `jd_arrived`
+                    # accepts at the shipped `min_jd_chars` of 0.
+                    #
+                    # Polls `evaluate` and NOTHING ELSE, so the four-member Fetcher Protocol is
+                    # untouched: no new seam member for an implementation to be missing, no
+                    # change to what tests/harness/browser.py must stand in for. Stops as soon
+                    # as two consecutive reads agree, so a page that was already complete pays
+                    # one extra evaluate and one interval -- not the whole budget, which would
+                    # be added to every dossier fetch in a run.
+                    md = _settle_body(c, tid, self.config.dossier_settle_ms,
+                                      self._sleep, guard=_check_landed, host=pre.host)
                     if not isinstance(md, str):
                         # Same reasoning as no-tab: a non-string body used to become a
                         # cached empty JD indistinguishable from a real empty one.
                         _refuse(urlguard.BODY_UNREADABLE, pre.host)
-                    # #109 tier-2 resolution: best-effort, unlike the JD body above --
-                    # a source that omits a page title or JSON-LD is common and not a
-                    # transport failure, so a non-string probe result degrades to ""
-                    # rather than refusing the whole (otherwise-good) dossier fetch.
+                    # #109 tier-2 resolution. BEST-EFFORT ABOUT CONTENT, NOT ABOUT
+                    # LOCATION, and the two halves are now different: a source that omits a
+                    # page title or JSON-LD is common and not a transport failure, so a
+                    # missing, malformed or raising probe still degrades to "" rather than
+                    # refusing an otherwise-good fetch -- but the landed-url check that runs
+                    # before each probe REFUSES, and that refusal propagates. `page_title`
+                    # inherits that guard even though it is genuinely resolution-only,
+                    # because both probes read from the same tab: one shared check is
+                    # cheaper than reasoning per-probe about which reads may cross a move.
                     def _probe(label: str, js: str) -> str:
-                        """One best-effort metadata probe, degrading to "" two ways.
+                        """One metadata probe: best-effort about its RESULT, guarded on
+                        its LOCATION.
 
                         A malformed RESULT SHAPE was the only degradation the first
                         draft handled, which made the promise above true of exactly
@@ -680,7 +874,21 @@ class Sluice:
                         this tab -- the whole dossier lost over a field nothing is
                         required to have. Each probe is wrapped on its own so one
                         raising cannot blank the other.
+
+                        The landed-url guard runs OUTSIDE this try, deliberately, so a
+                        policy refusal propagates rather than degrading to "". Its own
+                        `evaluate` is wrapped at the call site for the reason above, so a
+                        transport failure there is a DossierUnavailable rather than a bare
+                        browser exception escaping `fetch`.
                         """
+                        # GUARDED, and outside the try below so a refusal PROPAGATES rather
+                        # than degrading to "". This probe stopped being best-effort metadata
+                        # the moment `structured_data` became a JD source: a tab that moves
+                        # after the settle's last check would otherwise have its JSON-LD read
+                        # from the new location and that content returned AS THE JD, with no
+                        # refusal anywhere -- the same TOCTOU the body reads were just fixed
+                        # for, in the probe that was promoted into the JD path.
+                        _check_landed()
                         try:
                             res = c.evaluate(tid, js)
                         except Exception:
@@ -698,8 +906,36 @@ class Sluice:
 
                     page_title = _probe("page_title", "document.title")
                     structured_data = _probe("structured_data", _LD_JSON_JS)
+                    landed_url = nonlocal_landed[0]
                 finally:
                     c.close_tab(tid)
+            # PREFER WHICHEVER SOURCE YIELDS MORE TEXT (#228). The settled body is the primary
+            # JD; the page's own JSON-LD `JobPosting.description` is the fallback, and it is
+            # already in hand from the tier-2 probe above, so consulting it costs nothing.
+            #
+            # A LENGTH comparison, deliberately -- not a threshold, not a ratio, and not a list
+            # of client-rendered hosts. All three would be judgements about what a real posting
+            # looks like, which is exactly the judgement `min_jd_chars` refuses to ship
+            # uninvited (its default is 0 for that reason). Length is not such a judgement:
+            # both candidates are the same page's own description of itself, so taking the
+            # longer needs no opinion about jobs -- and no host list to go stale as vendors
+            # change their rendering.
+            #
+            # Measured on live postings from both ATS vendors in #228, one each way: one
+            # settles to a short run of navigation chrome while its JSON-LD carries the real
+            # posting, so without this the settle above would have converted an honest
+            # empty-and-flagged failure into a silent one -- the very case #228 was filed
+            # about. The other settles to the real posting and KEEPS it, its own JSON-LD being
+            # the same text as markup and no longer. Both directions are exercised in
+            # tests/test_dossier_structured_jd.py, which carries the figures.
+            ld_jd = jd_from_structured_data(structured_data, landed_url=landed_url, log=_log)
+            if len(ld_jd) > len(md or ""):
+                # Named when it happens: without this line a JD substituted from metadata is
+                # indistinguishable in the cache from one the page rendered, so a wrong
+                # substitution leaves no trace for an operator to find.
+                _log.info("dossier JD taken from JSON-LD (%d chars) over the rendered body "
+                          "(%d chars) host=%s", len(ld_jd), len(md or ""), pre.host or "?")
+                md = ld_jd
             return {"jd": {"markdown": md or ""}, "glassdoor": {},
                     "page_title": page_title, "structured_data": structured_data}
 
@@ -1428,7 +1664,6 @@ class Sluice:
         resolve), aborted (confirm declined), promoted | discarded | collision | stale
         (the store's own verdict, threaded through verbatim), or conflict (a sustained
         write race, #16, never an unhandled traceback)."""
-        import json
 
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict

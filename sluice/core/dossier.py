@@ -4,10 +4,12 @@ lead snapshot), cached on disk with a TTL so re-runs skip network I/O. The fetch
 tested offline. Schema mirrors the legacy schema_version 2 so the existing cached
 dossiers are reused as-is."""
 import hashlib
+import html
 import json
 import os
 import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from sluice.core.roletype import observe_role_type
 
@@ -267,3 +269,189 @@ class DossierCache:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(dossier, f, ensure_ascii=False)
         return dossier
+
+
+# ── JSON-LD: the ONE walk and the ONE JobPosting predicate ───────────────────────────
+# Shared because there were briefly TWO of each over the SAME `structured_data` field --
+# `core/app.py`'s JD recovery (#228) and `triage/resolve.py`'s tier-2 company resolution
+# (#109) -- and they measurably disagreed: for `{"@type": "https://schema.org/JobPosting"}`
+# one returned the posting and the other abstained, on one page, from one blob. Two
+# answers to one question is the drift this file exists to prevent, and the depth cap was
+# a second copy of the same invariant with nothing asserting the copies agreed.
+#
+# Lives HERE rather than in app.py because it is dossier SEMANTICS -- what a page said
+# about itself -- with no browser, no tab and no seam in sight. `_settle_body` stays in
+# app.py for the mirror-image reason: it drives the Fetcher seam and is transport.
+LD_MAX_DEPTH = 6
+
+
+def iter_ld_nodes(data, depth: int = 0):
+    """Every JSON object reachable in a JSON-LD payload, flattening arrays and `@graph`.
+
+    Recursive rather than one-level because the capture side hands over an ARRAY of blocks
+    (a real board emits several ld+json tags and the page's own JobPosting is often not the
+    first), and any ONE block may itself be a bare object, an array, or a `@graph`
+    container -- so a JobPosting can sit two levels down. A one-level walk reads a `@graph`
+    wrapper's own (absent) `@type` and abstains, silently, on a page that did publish what
+    was asked for.
+
+    DEPTH-CAPPED because this is board-authored, untrusted input: `json.loads` survives
+    nesting that a recursive walk does not, so without the cap a deeply nested payload
+    raises RecursionError out of the `yield from` chain on a document the parser accepted.
+    The cap is well past the deepest real shape (array -> block -> @graph -> node).
+    """
+    if depth > LD_MAX_DEPTH:
+        return
+    if isinstance(data, list):
+        for item in data:
+            yield from iter_ld_nodes(item, depth + 1)
+    elif isinstance(data, dict):
+        yield data
+        graph = data.get("@graph")
+        if graph is not None:
+            yield from iter_ld_nodes(graph, depth + 1)
+
+
+def is_job_posting(kind) -> bool:
+    """Is this `@type` value a schema.org JobPosting?
+
+    Three spellings are legal and all three appear in the wild: the bare `JobPosting`, the
+    fully-qualified `https://schema.org/JobPosting`, and the CURIE `schema:JobPosting`
+    against a prefixed `@context`. An `endswith` test admitted all three and also admitted
+    `NotAJobPosting`, letting an arbitrary node's content through; an exact `== "JobPosting"`
+    rejects the two namespaced forms, which abstains on pages that did publish a posting.
+    So the value is reduced to its last segment across all three separators and compared
+    exactly -- the only form that accepts what schema.org allows and nothing that merely
+    ends in the word.
+    """
+    if not isinstance(kind, str):
+        return False
+    last = kind.rsplit("/", 1)[-1].rsplit("#", 1)[-1].rsplit(":", 1)[-1]
+    return last.strip() == "JobPosting"
+
+
+def job_posting_types(node) -> bool:
+    """`@type` is legally a LIST as well as a string, and a scalar check walks past
+    `["JobPosting", "Thing"]`."""
+    kind = node.get("@type") if isinstance(node, dict) else None
+    kinds = kind if isinstance(kind, list) else [kind]
+    return any(is_job_posting(k) for k in kinds)
+
+
+def strip_html(raw: str) -> str:
+    """HTML -> readable text. Block-level tags become newlines so lists stay legible.
+
+    Stdlib only, and deliberately not a parser: this runs on a JSON-LD `description`, which
+    is the page's own prose with light markup, not a document to be understood. The known
+    limits of that choice are real and accepted -- an unclosed `<script>` leaks its source,
+    an attribute containing `>` leaks its tail, CDATA leaks `]]>` -- and none is a
+    regression, because this field was not text-extracted at all before.
+    """
+    # `</script >` and `</script\n>` are legal, and a pattern demanding the exact `</script>`
+    # left the element's CODE in the text handed to the judge.
+    text = re.sub(r"(?is)<(script|style)\b.*?</\s*\1\s*>", " ", raw)
+    text = re.sub(r"(?i)<\s*(br|/p|/div|/li|/h[1-6]|/tr)\s*/?>", "\n", text)
+    # TAG-SHAPED only: a name, a closing slash, a comment/declaration, or a processing
+    # instruction. A bare `<[^>]*>` also eats ordinary prose -- a description reading
+    # "teams of < 10 people" lost everything up to the next `>`, silently deleting real
+    # content from a JD.
+    text = re.sub(r"(?s)<(?:/\s*[A-Za-z][^>]*|[A-Za-z][^>]*|!--.*?--|![^>]*|\?[^>]*)>",
+                  " ", text)
+    # Unescape LAST so a tag written as entities (`&lt;script&gt;`) is not decoded into
+    # markup ahead of the strip above and then matched by it. What it yields is TEXT: a `<`
+    # that survives is a literal character in the posting, and nothing downstream parses
+    # this string as HTML. Running it FIRST silently deletes real content -- measured, a
+    # description mentioning `&amp;lt;canvas&amp;gt;` loses the word entirely.
+    text = html.unescape(text)
+    text = text.replace("\xa0", " ")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\s*\n\s*", "\n", text)
+    return text.strip()
+
+
+def _same_posting(node_url, landed_url) -> bool:
+    """Does a JSON-LD node's own url plausibly name the page we fetched?
+
+    Compared on host + path only, case-folded, trailing slash ignored: a canonical url in
+    metadata routinely differs from the landed one by query string, fragment, tracking
+    parameters or scheme. A node with NO url is not judged here at all -- absence is not
+    evidence, and most real postings omit it.
+    """
+    if not isinstance(node_url, str) or not node_url.strip() or not landed_url:
+        return True
+    def key(u):
+        try:
+            parts = urlsplit(u.strip())
+        except ValueError:
+            return None
+        if not parts.netloc:
+            return None
+        return (parts.netloc.lower(), parts.path.rstrip("/").lower())
+    a, b = key(node_url), key(landed_url)
+    if a is None or b is None:
+        return True
+    return a == b
+
+
+def jd_from_structured_data(raw, landed_url: str = "", log=None) -> str:
+    """The JD carried by a page's own JSON-LD `JobPosting`, as text -- "" when there is none.
+
+    WHY THIS EXISTS (#228). A client-rendered posting can settle into NAVIGATION CHROME
+    rather than the job: measured on a live posting from one of the two ATS vendors in the
+    issue, the settled body was a short run of navigation text while the same page's JSON-LD
+    carried the real description, an order of magnitude longer. Chrome is non-empty, so
+    `jd_arrived` accepts it at the shipped `min_jd_chars` of 0 -- the settle turned an honest
+    empty-and-flagged failure into a silent one, and this takes it back. The blob is already
+    fetched for #109, so recovery costs no extra probe, no HTTP client and no per-host list.
+
+    TIED TO THE LEAD BY URL. `_LD_JSON_JS` collects EVERY ld+json block, and a posting page
+    routinely carries a neighbour's JobPosting -- a related-roles rail, a board widget. A
+    node whose OWN `url`/`@id` names a different posting is dropped: it carries the evidence
+    that disqualifies it, and without this a single such node became the lead's JD and
+    silently tailored a CV to another job. Url-less nodes stay eligible, since most real
+    postings omit the field and absence is not evidence.
+
+    ABSTAINS ON AMBIGUITY. With two distinct descriptions still standing there is no way to
+    tell the lead's from a neighbour's, so it returns "" rather than guessing. One candidate
+    is an answer; two is a question.
+
+    BEST-EFFORT, like the probe that captured it: every malformed shape degrades to "". This
+    runs inside the dossier fetch, and raising would discard a JD already read from the page.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    try:
+        doc = json.loads(raw)
+    except Exception as exc:
+        # `except Exception`, not a two-type tuple: this promises to degrade rather than
+        # raise, and it is called outside the caller's `finally`, so an escaping exception
+        # discards a JD ALREADY read. Which end raises is interpreter-specific -- measured,
+        # `json.loads` parses 20000 levels on CPython 3.14's iterative C scanner and raises
+        # on 3.12/3.13 -- so this defends the contract rather than one build's behaviour.
+        if log:
+            log.warning("dossier JSON-LD did not parse (%s), no JD recovered from it",
+                        type(exc).__name__)
+        return ""
+
+    found = []
+    for node in iter_ld_nodes(doc):
+        if not job_posting_types(node):
+            continue
+        if not _same_posting(node.get("url") or node.get("@id"), landed_url):
+            continue
+        desc = node.get("description")
+        if not isinstance(desc, str):
+            continue
+        text = strip_html(desc)
+        if text and text not in found:
+            found.append(text)
+
+    if len(found) == 1:
+        return found[0]
+    if len(found) > 1 and log:
+        # Named rather than silent: the page DID publish postings and the code declined to
+        # choose, which is a state a human could resolve and would otherwise never hear
+        # about -- the same "degrading, but not silently" posture the probes take.
+        log.warning("dossier JSON-LD carried %d distinct JobPosting descriptions and none "
+                    "could be tied to this lead; abstaining rather than guessing", len(found))
+    return ""
