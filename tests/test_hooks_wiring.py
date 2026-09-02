@@ -7,10 +7,15 @@ guarding the wiring was prose -- and prose failing is the whole reason the guard
 
 Every rulesync failure mode here is SILENT. Feed it Claude Code's native PascalCase/nested
 shape and it skips the event, drops the command, writes a hook with no `command` key, and
-prints "All done!". Omit the top-level `hooks` record and it prints a Zod error, exits 0,
-and -- re-measured on the pinned version -- writes every other output anyway, leaving ONLY
-.claude/settings.json missing under an ordinary "All done!" summary. An exit-code check
-would pass all of it, and so would a glance at the tree. So these assert the shape.
+prints "All done!". Omit the top-level `hooks` record and it prints a Zod error and
+writes every other output anyway, leaving ONLY .claude/settings.json un-rewritten. A glance
+at the tree would pass both. So these assert the shape.
+
+An exit-code check would once have passed both too; on 16.18.0 it no longer would for the
+second, which now EXITS 1 with no summary line. That is the one thing here that has moved
+across a bump, and it moved in the safe direction. It changes nothing about these tests:
+mode 1 still exits 0 under an ordinary "All done!", so the shape assertions below remain the
+only offline defence.
 
 This docstring used to say that second mode CHANGED SHAPE across a version bump -- that the
 previously pinned rulesync wrote nothing and printed "All files are up to date". RE-MEASURED
@@ -18,15 +23,18 @@ ON A FRESH TREE, IT DOES NOT REPRODUCE: every version tested behaves as describe
 rulesync skips writing a file whose content already matches, so an ALREADY-GENERATED tree
 prints that line whatever the input says -- the likeliest origin of the original report, and
 the reason a measurement here is worthless unless the outputs are wiped first. Re-run this on
-the next bump regardless: both modes exit 0 under an ordinary summary, and that is what makes
-a change invisible -- not any history of having moved.
+the next bump regardless: MODE 1 still exits 0 under an ordinary summary, and that is what
+makes a change in it invisible -- not any history of having moved.
 `.rulesync/hooks.json`'s own comment records the same measurement, and the drift guard plus
 `scripts/guard_emitted_outputs.py` on the emitted settings.json are what actually catch it.
 That second one is a STRUCTURAL check, not a grep: it requires a command that runs the guard
 at `hooks.PreToolUse[*].hooks[*]` with type `command`, the one path Claude Code executes.
 
-WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is gitignored and produced
-by `npm run rulesync`, which needs node and network. CI DOES now run the generator, in the
+WHY THE SOURCE AND NOT THE GENERATED FILE: `.claude/settings.json` is produced by
+`npm run rulesync`, which needs node and network. (It is TRACKED rather than gitignored, unlike
+every other rulesync output -- it also carries Claude Code's hand-authored `enabledPlugins`
+key; `scripts/reset_tracked_hooks.py` has the reasoning. This sentence said "gitignored" until
+that changed under it.) CI DOES now run the generator, in the
 separate `rulesync` job -- but this suite must stay offline and hermetic, so asserting the
 generated artifact here still could not work. `.rulesync/hooks.json` is the tracked input, and
 the schema is what actually goes wrong. The conclusion is unchanged; only its reason moved.

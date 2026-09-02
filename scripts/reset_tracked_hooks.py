@@ -19,7 +19,8 @@ settings.json that is already correct produces `Written 11 file(s) total (2 rule
 subagents + 4 skills)` -- `hooks` silently OMITTED from the summary rather than printed as
 `0 hooks` -- which mismatches `guard_rulesync_drift.py`'s pinned `EXPECTED["hooks"] = 1` on
 every single healthy run. And if generation were ever silently broken instead (the
-`.rulesync/hooks.json` failure mode that exits 0 and drops only settings.json, documented
+`.rulesync/hooks.json` failure mode that drops only settings.json -- exit 0 until 16.18.0,
+which exits 1; the stale-copy hazard below is the same either way -- documented
 there and in `tests/test_hooks_wiring.py`), the stale checked-out copy would sit there looking
 structurally valid, and `guard_emitted_outputs.py` -- which checks structure, not whether this
 run actually produced it -- would pass having verified nothing about the current run at all.
