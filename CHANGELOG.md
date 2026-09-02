@@ -40,6 +40,81 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.4.2](https://github.com/MrReasonable/sluice/compare/v2.4.1...v2.4.2) (2026-09-02)
+
+### What you need to do
+
+**Look at any lead still sitting at `applied`.** Until this release, an automated
+rejection from an enterprise ATS was classified as a *receipt* — an acknowledgement that
+your application arrived — because `receipt` was the only one of the seven mail types the
+classifier prompt actually defined, and an auto-rejection matches that description read
+loosely. Typed that way, the lead never advanced, so it stayed at `applied` and the
+rejection surfaced only as a manual-review row that is easy to leave sitting.
+
+The fix applies to mail read **from now on**. It does not revisit your existing leads:
+`track run` skips any message id already in `seen.db`, so a rejection that has already been
+read will not be re-classified. Nothing is wrong with those notes — they are simply
+recording an application as live when it is not, which is the one number this tool exists
+to get right. Review them by hand and `job-sluice track confirm --lead "<slug>" --to
+rejected` where appropriate.
+
+No config key changes meaning and no new keys were added, but see the note on
+`calendar_assumed_timezone` below: an existing setting now does a second job.
+
+### Also worth knowing
+
+- **A calendar invite that states two different dates is no longer booked at all.** These
+  exist: an ATS sent an invite whose structured `When:` header said one day while its own
+  message body said another, and the header was the wrong one. sluice used to pick one and
+  book it, which is the worst outcome this tool has — a confidently wrong appointment stops
+  you looking. It now books nothing and files a `calendar-date-conflict` row telling you to
+  read the message and set the date by hand. **Expect slightly fewer automatic bookings and
+  one more thing in the review queue**; the ones you lose are the ones that were a coin
+  flip. Only the *day* is arbitrated: the header remains authoritative for the time of day,
+  and the lead still advances, because the interview genuinely was scheduled.
+- **Any `interview_date` already on a note is never overwritten or cleared by that
+  conflict.** That field has no record of who wrote it — sluice, your own
+  `track confirm --when`, or you editing the note in Obsidian all look identical
+  afterwards — so a value sluice cannot prove it owns is left alone and reported instead.
+- **A superseded invite can no longer move an appointment backwards.** Two invites arriving
+  moments apart on one thread, the second correcting the first, were applied in whatever
+  order the mail search returned them, so the older one could rewrite the event to a date
+  that had already passed while reporting success. Revisions are now ordered by `SEQUENCE`
+  and then `DTSTAMP`, per RFC 5545. The result is order *independence*: neither arrival
+  order nor search order changes the outcome.
+- **One slot no longer collects several events.** Calendar dedup keyed on the invite's
+  `UID` alone, so several messages from one thread, each with its own `UID`, each inserted
+  an event at the same time. It only showed up when a run cleared a backlog, and the run
+  counted every insert as a success. There is now a second `(lead, start)` identity that
+  governs inserts.
+- **Two new dead-letter reasons.** `calendar-date-conflict` is the disputed-date case
+  above. `calendar-unorderable` means an invite reschedules an entry sluice booked but its
+  revision cannot be ordered against the existing one, so nothing was moved and the
+  existing entry is still at the old time — deliberately distinct from
+  `calendar-unresolved`, which means the entry could not be found and tells you to add it,
+  advice that would double-book you here.
+- **`calendar_assumed_timezone` now does a second job.** It has always supplied the zone for
+  an invite whose `DTSTART` states none. It is now also the zone in which an invite's header
+  and body are compared to decide whether they name the same *day* — and that comparison
+  converts both sides, so it applies to invites that *do* state a zone. Near midnight, a
+  different setting can change whether a conflict is reported. `DTSTAMP` is deliberately
+  excluded: RFC 5545 specifies that field in UTC, so a zone-less one is malformed rather
+  than floating. `docs/CONFIGURATION.md` carries the detail.
+- **A cached job description stamped with a UTC offset is no longer re-fetched every run.**
+  Subtracting it from the naive clock raised `TypeError`, which was caught by the same
+  handler that exists for a corrupt file, so a perfectly good entry was reported stale
+  permanently — and nothing rewrote it, so it was re-read and re-rejected for ever. sluice's
+  own clock is naive, so it never wrote such an entry itself: this affects caches repaired
+  or written by anything else.
+
+
+
+### Bug Fixes
+
+* **dossier:** compare an aware built_at against the naive clock ([9164191](https://github.com/MrReasonable/sluice/commit/9164191c46bb25a0f5b43432b84bb1c03cd02513))
+* **track:** arbitrate invite revisions, and never book a disputed date ([99fa9fb](https://github.com/MrReasonable/sluice/commit/99fa9fb67e72caf4f7e110b37141c8703101ddc0))
+* **track:** define every classified type, not only receipt ([b0d1981](https://github.com/MrReasonable/sluice/commit/b0d1981f13aeaa0523f215eec970eae8e0da2758))
+
 ## [2.4.1](https://github.com/MrReasonable/sluice/compare/v2.4.0...v2.4.1) (2026-09-02)
 
 
