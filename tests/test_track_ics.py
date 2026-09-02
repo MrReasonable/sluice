@@ -200,3 +200,58 @@ def test_a_WELL_FORMED_sequence_is_still_read():
     ics = parse_ics("BEGIN:VCALENDAR\r\nBEGIN:VEVENT\r\nUID:u1\r\nSEQUENCE:3\r\n"
                     "DTSTART:20260715T100000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n")
     assert ics.sequence == 3
+
+
+def test_dtstamp_is_parsed_as_the_revisions_own_timestamp():
+    """#202: SEQUENCE orders two revisions of one UID, but plenty of senders never
+    increment it and ship every revision as 0. DTSTAMP is RFC 5545's second arbiter and
+    was not read at all, so those threads stayed order-dependent -- whichever message the
+    search happened to return last won.
+    """
+    stamped = _REQUEST.replace("SEQUENCE:0\r\n", "SEQUENCE:0\r\nDTSTAMP:20260710T090000Z\r\n")
+    e = parse_ics(stamped)
+    assert e.dtstamp is not None
+    assert (e.dtstamp.year, e.dtstamp.month, e.dtstamp.day) == (2026, 7, 10)
+
+
+def test_an_absent_dtstamp_is_None_rather_than_a_guess():
+    """Absent must stay distinguishable from any real value: the arbitration reads None as
+    "cannot compare, so apply", and a substituted default would silently order revisions
+    by a timestamp nobody sent."""
+    assert parse_ics(_REQUEST).dtstamp is None
+
+
+def test_an_unparseable_dtstamp_does_not_sink_the_whole_invite():
+    """Same tolerance the rest of this parser has, for the same reason: `parse_ics` runs
+    inside `engine.run`'s per-message handler, so a raise here would cost the
+    classification, the status advance and the calendar write -- the entire invite, over
+    a field used only to break a tie."""
+    bad = _REQUEST.replace("SEQUENCE:0\r\n", "SEQUENCE:0\r\nDTSTAMP:not-a-stamp\r\n")
+    e = parse_ics(bad)
+    assert e.dtstamp is None
+    assert e.start is not None and e.uid == "abc-123@example.invalid"
+
+
+def test_an_unreadable_sequence_is_FLAGGED_not_just_coerced():
+    """`SEQUENCE:1.0` is coerced to 0 so one mangled line cannot sink the whole invite --
+    right, and inert until something started COMPARING sequences (#202). A coerced 0 then
+    loses to any recorded revision, so a real reschedule was refused silently.
+
+    The flag is the same shape as `tzid_unresolved` beside it, and for the same reason:
+    "stated but unreadable" is a different fact from "not stated", and only the caller can
+    decide what to do about it. RFC 5545 makes an ABSENT sequence genuinely 0, so the
+    coercion stays -- what was missing is a way to tell the two apart.
+    """
+    bad = _REQUEST.replace("SEQUENCE:0", "SEQUENCE:1.0")
+    e = parse_ics(bad)
+    assert e.sequence == 0, "the tolerant coercion still stands"
+    assert e.sequence_unreadable is True
+
+
+def test_an_absent_or_valid_sequence_is_not_flagged_unreadable():
+    """Both controls. An absent SEQUENCE is genuinely 0 per RFC 5545 -- it must NOT be
+    flagged, or every invite without one would stop being comparable."""
+    assert parse_ics(_REQUEST).sequence_unreadable is False
+    absent = _REQUEST.replace("SEQUENCE:0\r\n", "")
+    e = parse_ics(absent)
+    assert e.sequence == 0 and e.sequence_unreadable is False

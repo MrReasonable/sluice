@@ -80,6 +80,29 @@ _NEEDS_REVIEW_HINT = {
         "already covers that slot, so booking would have duplicated it. The lead was still "
         "advanced -- check the slot is really your interview, then "
         "`job-sluice track dismiss --id {mid}`)",
+    # The only reason here that is NOT a `sync_event` outcome: it is decided before the
+    # calendar is touched at all, so it says "nothing was booked" rather than reporting on
+    # a write that was attempted. Interpolates nothing but `{mid}`, like its four
+    # neighbours -- quoting the two dates would put counterparty-derived text into a row
+    # that is printed to stderr AND persisted indefinitely, which is the rule this table's
+    # header already states for the iCalendar UID.
+    # Deliberately NOT folded into `calendar-unresolved`. That one means the entry could
+    # not be created or verified, so it says "add it by hand" -- which here would book a
+    # SECOND entry, because one of ours is already at the old time. What is unknown is
+    # only which of two times is right.
+    "calendar-unorderable":
+        "(this invite reschedules an entry sluice already booked, but its revision cannot "
+        "be ordered against the existing one -- the invite's SEQUENCE is unreadable and "
+        "its timestamp does not settle it -- so nothing was moved. The EXISTING entry is "
+        "still at the OLD time. Check the message for the real time and correct the entry "
+        "by hand, then `job-sluice track dismiss --id {mid}`)",
+    "calendar-date-conflict":
+        "(this invite gives two different dates -- its calendar header and its own message "
+        "body disagree on the DAY -- so nothing was booked and no date was recorded, rather "
+        "than picking one and being confidently wrong. Any interview_date already on the "
+        "note is UNCHANGED and may pre-date this invite. The lead was still advanced. Read "
+        "the message, then add the entry and set the date by hand, then "
+        "`job-sluice track dismiss --id {mid}`)",
 }
 
 

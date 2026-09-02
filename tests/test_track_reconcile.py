@@ -479,3 +479,228 @@ def test_receipt_auto_advance_race_reports_the_stamps_real_result_not_a_hardcode
     assert res.receipt_stamped is False    # THIS call wrote no new evidence -- it was already there
     text = pathlib.Path(path).read_text()
     assert text.count("## Application receipt") == 1   # still exactly one section, not doubled
+
+
+def test_a_body_that_names_a_different_day_than_the_header_books_nothing():
+    """#202 defect 2: on the invite that misfiled an interview, the structured `When:`
+    header said day A while the message's own rendered body said day B -- and the header
+    was the wrong one. That was true of the FIRST message on its own, before any question
+    of ordering, so a run that saw only it still had the correct date available and threw
+    it away.
+
+    Neither source is trusted over the other, because a coin-flip reproduces the failure
+    half the time. Nothing is booked and the run says so. The status advance still
+    happens: an interview genuinely was scheduled, and that half is not in doubt -- the
+    same split the `unresolved`/`foreign` arm beside this one already makes.
+    """
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    c = FakeGoogleClient(events=[])
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(),                       # header: 2026-07-20
+               when="2026-07-23T10:00:00+00:00")  # body: three days later
+    res = R.reconcile(ev, notes, v, TrackConfig(), c)
+
+    assert not c.inserted and not c.updated, "booked an appointment on a disputed date"
+    assert res.needs_review == "calendar-date-conflict"
+    assert res.action == "applied" and res.status_to == "interview"
+
+
+def test_a_body_agreeing_with_the_header_books_normally():
+    """The control. Same shape, same fields -- only the body's day matches."""
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    c = FakeGoogleClient(events=[])
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(), when="2026-07-20T10:00:00+00:00")
+    res = R.reconcile(ev, notes, v, TrackConfig(), c)
+    assert res.calendar == "created" and res.needs_review in (None, "")
+    assert c.inserted
+
+
+def test_a_body_time_on_the_same_day_is_not_a_conflict():
+    """Only the DAY is arbitrated. The header is authoritative for the time of day, and
+    treating a differing minute as unsettled would refuse nearly every real invite --
+    the model reads a rendered body, not a clock.
+    """
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    c = FakeGoogleClient(events=[])
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(), when="2026-07-20T16:45:00+00:00")
+    res = R.reconcile(ev, notes, v, TrackConfig(), c)
+    assert res.calendar == "created" and c.inserted
+
+
+def test_an_unreadable_body_datetime_is_not_a_conflict():
+    """`when` is model output, so it can be anything. Unreadable means we cannot compare,
+    which is not the same as a disagreement -- refusing there would block bookings on a
+    parse failure and reintroduce the harm from the other side."""
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    c = FakeGoogleClient(events=[])
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(), when="next Tuesday afternoon")
+    res = R.reconcile(ev, notes, v, TrackConfig(), c)
+    assert res.calendar == "created" and c.inserted
+
+
+def test_a_disputed_date_is_not_stamped_onto_the_note_either():
+    """The calendar refusal is worth nothing if the same disputed date is written to the
+    note instead -- and the note is the MORE durable of the two.
+
+    `_advance` prefers `ev.when` over the ics start, so the conflict arm was stamping the
+    model's reading of the body as `interview_date` while reporting that nothing was
+    booked. It is irreversible: the lead is already at `interview`, so
+    `can_advance("interview", "interview")` is False and no later run, and no
+    `track confirm`, can correct it.
+
+    NEITHER date is written, not "the header one" -- both are disputed, and picking the
+    header here would be the same coin-flip the calendar arm refuses to make.
+    """
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    c = FakeGoogleClient(events=[])
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(), when="2026-07-22T14:00:00+00:00")
+    res = R.reconcile(ev, notes, v, TrackConfig(), c)
+
+    text = pathlib.Path(path).read_text()
+    assert "interview_date" not in text, (
+        "a date nobody can vouch for was written to the note while the run reported "
+        "that nothing was booked")
+    # The advance itself is still right: an interview genuinely was scheduled.
+    assert "status: interview" in text
+    assert res.needs_review == "calendar-date-conflict"
+
+
+def test_an_undisputed_interview_still_stamps_its_date():
+    """The control -- withholding the stamp must be scoped to the conflict, or every
+    ordinary invite loses its date."""
+    v, notes, path = _vault_with("Example Tidal - EM", "applied")
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               ics=_ics(), when="2026-07-20T10:00:00+00:00")
+    R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert "interview_date" in pathlib.Path(path).read_text()
+
+
+def _floating_conflict_event():
+    """A floating (zone-less) header against an aware body reading, one hour earlier.
+
+    Whether those two name the same DAY depends entirely on which zone the floating
+    header is read in -- which is the point.
+    """
+    ics = IcsEvent(uid="u1", summary="Screen", start=datetime(2026, 7, 15, 23, 30))
+    return Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+                 ics=ics, when="2026-07-15T22:30:00+00:00")
+
+
+def test_the_date_conflict_follows_the_configured_zone_not_the_hosts():
+    """A floating DTSTART has no zone, so SOMETHING has to supply one, and it must be
+    `calendar_assumed_timezone` -- the knob this module already uses for exactly that --
+    rather than whatever `astimezone()` picks up from the machine.
+
+    Reading it from the host made the same invite under the same config book on one
+    machine and route to a human on another, and it is invisible in CI, which runs UTC.
+
+    The two configs must DISAGREE on this pair, or the assertion would pass on a check
+    that never consults the config at all.
+    """
+    v, notes, _ = _vault_with("Example Tidal - EM", "applied")
+    utc = TrackConfig(); utc.calendar_assumed_timezone = "UTC"
+    gulf = TrackConfig(); gulf.calendar_assumed_timezone = "Asia/Dubai"
+
+    # Read as UTC the two land on the same day; read as UTC+4 the body crosses midnight.
+    r_utc = R.reconcile(_floating_conflict_event(), notes, v, utc, FakeGoogleClient(events=[]))
+    v2, notes2, _ = _vault_with("Example Tidal - EM", "applied")
+    r_gulf = R.reconcile(_floating_conflict_event(), notes2, v2, gulf, FakeGoogleClient(events=[]))
+
+    assert r_utc.needs_review in (None, ""), "same day under UTC -- nothing to arbitrate"
+    assert r_gulf.needs_review == "calendar-date-conflict"
+
+
+def _vault_with_fields(slug, status, extra):
+    root = tempfile.mkdtemp()
+    leads = pathlib.Path(root, "Job Applications", "Job Leads"); leads.mkdir(parents=True)
+    (leads / f"{slug}.md").write_text(
+        f'---\ncompany: "X"\nrole: "Analyst"\nstatus: {status}\n{extra}\n---\n\nBODY\n')
+    v = Vault(root)
+    note = [n for n in v.read_leads() if n.slug == slug][0]
+    return v, {slug: note}, str(leads / f"{slug}.md")
+
+
+def test_a_disputed_date_leaves_an_existing_value_alone():
+    """A conflict must not become a licence to DELETE.
+
+    An earlier round cleared `interview_date` here, reasoning that a value carried over
+    from a previous stage is misleading under the new status. It cannot tell that value
+    apart from one a human typed in Obsidian or an operator set with
+    `track confirm --when`: there is no provenance key on this field, and all three
+    writers look identical afterwards. Measured, it destroyed an operator-typed date, and
+    nothing could restore it -- `can_advance("interview", "interview")` is False, so no
+    later invite reaches `_advance`, and `track confirm --to interview` refuses.
+
+    Never-clobber decides it: the vault is the user's own directory and hand-editing it is
+    a first-class workflow, so a value sluice cannot prove it owns is not sluice's to
+    remove. The staleness this replaced was a REPORTING problem, and it is answered by
+    reporting -- the hint now says the existing date is untouched and may pre-date the
+    invite. A visible stale value is recoverable; a deleted one is not.
+    """
+    v, notes, path = _vault_with_fields("Example Tidal - EM", "phone_screen",
+                                        'interview_date: "2026-07-10T09:00:00"')
+    ics = IcsEvent(uid="u1", summary="Screen",
+                   start=datetime(2026, 8, 21, 10, 0, tzinfo=timezone.utc))
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=ics,
+               when="2026-08-24T14:00:00+00:00")
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+
+    text = pathlib.Path(path).read_text()
+    assert res.needs_review == "calendar-date-conflict"
+    assert 'interview_date: "2026-07-10T09:00:00"' in text, (
+        "a value sluice cannot prove it wrote was destroyed")
+    assert "2026-08-21" not in text and "2026-08-24" not in text, (
+        "neither disputed candidate may be recorded")
+    assert "status: interview" in text
+
+
+def test_a_date_conflict_does_not_ALSO_come_out_as_a_proposal():
+    """Round 2. `_NEEDS_REVIEW_HINT`'s own comment records why there is no collision
+    guard at the record site: "every reason here comes from a branch that files nothing
+    else". `calendar-date-conflict` broke that -- it leaves `calendar` at `none`, so a
+    lead that cannot advance took the `proposed` arm too, and engine.run recorded twice
+    for one message: the calendar row overwrote the proposal row, while `rep.proposed`
+    had already counted a proposal no row records.
+
+    Restore the invariant at the source rather than adding the guard back.
+
+    Named for the ACTION, which is what it inspects. The row COUNT it originally claimed
+    never differed either way -- `_record_replacing` replaces by message_id, so the
+    calendar row silently overwrote the proposal row -- and what actually differs is the
+    `rep.proposed` counter, which only `engine.run` produces. That is asserted by
+    `tests/test_track_unresolved_routing.py::test_a_date_conflict_on_a_lead_that_cannot
+    _advance_counts_no_proposal`.
+    """
+    v, notes, _ = _vault_with("Example Tidal - EM", "shortlist")   # cannot advance
+    ics = IcsEvent(uid="u1", summary="Screen",
+                   start=datetime(2026, 8, 21, 10, 0, tzinfo=timezone.utc))
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=ics,
+               when="2026-08-24T14:00:00+00:00")
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+
+    assert res.needs_review == "calendar-date-conflict"
+    assert res.action != "proposed", (
+        "a conflict must not ALSO file a proposal -- two rows for one message, and the "
+        "second overwrites the first")
+
+
+def test_a_disputed_date_does_not_destroy_an_operator_typed_date():
+    """The case that settles it, driven through the field an operator actually sets.
+
+    `track confirm --when` and a human editing the note in Obsidian both land in
+    `interview_date` with no marker distinguishing them from a value sluice wrote. If a
+    conflict may clear the field, it may delete either of those, irreversibly and without
+    saying so -- the hint speaks only about the calendar.
+    """
+    v, notes, path = _vault_with_fields("Example Tidal - EM", "applied",
+                                        'interview_date: "2026-09-25T15:00:00"')
+    ics = IcsEvent(uid="u1", summary="Screen",
+                   start=datetime(2026, 8, 21, 10, 0, tzinfo=timezone.utc))
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9, ics=ics,
+               when="2026-08-24T14:00:00+00:00")
+    R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert 'interview_date: "2026-09-25T15:00:00"' in pathlib.Path(path).read_text()

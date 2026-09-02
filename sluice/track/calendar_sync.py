@@ -38,6 +38,31 @@ _UID_KEY = "sluice-track-uid"
 # status quo fails for a SINGLE long UID and fails on every run.
 _UID_VALUE_MAX = 1024
 
+# The lead an event was created for. Hoisted to a constant when `_ours_at_start` became
+# its first READER (#203) -- `_event_body` had been writing the literal since before
+# that, so the pair is a writer and a reader, not two readers. Same reason as `_UID_KEY`
+# above: two sites that must agree. Drift the reader and the same-slot rule silently
+# stops matching, which is the duplicate-insert defect reinstated inside its own fix.
+_LEAD_KEY = "sluice-track-lead"
+
+# The ics SEQUENCE the event was last written from (#202). RFC 5545 makes SEQUENCE the
+# arbiter between two VEVENTs sharing a UID, and `parse_ics` already reads it -- nothing
+# used it. Two invites 96 seconds apart, the second an `Updated:` carrying the corrected
+# day, were applied in whatever order the message search returned them, so the OLDER one
+# could rewrite the event back to the superseded day and report success.
+#
+# Stored as a STRING because that is what Google's private properties hold; read back
+# through `_seq_of`, which answers None for absent or unparseable. None must mean "cannot
+# compare, so apply": every event already in a user's calendar predates this tag, and
+# refusing those would freeze them against real reschedules.
+_SEQ_KEY = "sluice-track-seq"
+
+# The DTSTAMP the event was last written from (#202) -- RFC 5545's SECOND arbiter, used
+# only to break a SEQUENCE tie. Written only when the invite carried one, so "absent"
+# survives the round trip and keeps meaning "cannot compare": plenty of senders ship every
+# revision as SEQUENCE:0, and for those this is the only thing that orders them.
+_STAMP_KEY = "sluice-track-stamp"
+
 
 def _uid_tag(uid):
     """The tag value for `uid` -- what we WRITE and what we SEARCH FOR, one definition."""
@@ -149,6 +174,16 @@ def _event_start(ev):
         return None
 
 
+def _private(ev):
+    """`ev`'s private extended properties, or {} -- the ONE spelling of this access.
+
+    Four readers walk the same three levels, each of which can be absent or None on a real
+    Google payload. Repeating it is the "two sites must agree" hazard this module already
+    hoists key names to avoid, one level down.
+    """
+    return ((ev.get("extendedProperties") or {}).get("private") or {})
+
+
 def _uid_of(ev):
     """Our tag on `ev`, or None if it carries none. An EMPTY tag counts as none.
 
@@ -163,8 +198,87 @@ def _uid_of(ev):
     Returning None also tells `_foreign_at_start` the truth: an event whose tag is empty is
     indistinguishable from an untagged one, so it counts as foreign and SUPPRESSES a duplicate
     insert at the same slot rather than being quietly double-booked."""
-    tag = (ev.get("extendedProperties", {}).get("private", {}) or {}).get(_UID_KEY)
+    tag = _private(ev).get(_UID_KEY)
     return tag or None
+
+
+def _seq_of(ev):
+    """The revision we last wrote this event from, or None when it cannot be read.
+
+    None on BOTH absent and unparseable, and both mean "apply" at the call site -- an
+    event we cannot date is one we have no grounds to refuse an update for. That is the
+    same direction `ics.py` takes with an unparseable SEQUENCE on the wire.
+    """
+    raw = _private(ev).get(_SEQ_KEY)
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp_of(ev):
+    """The DTSTAMP we last wrote this event from, or None when it cannot be read.
+
+    None on absent, empty and malformed alike -- all three mean the tie cannot be broken,
+    and the call site applies rather than refuses.
+    """
+    raw = _private(ev).get(_STAMP_KEY)
+    try:
+        return datetime.fromisoformat(str(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _revision_delta(ics, ours):
+    """How `ics` orders against the revision `ours` was written from: -1 older, 0 same,
+    +1 newer -- or None when the two CANNOT be compared.
+
+    RFC 5545 orders revisions of one UID by SEQUENCE, then DTSTAMP. None is returned for
+    every case where that order cannot be established. What the CALLER does with None
+    depends on why it could not: it applies -- refusing on an unanswerable question is how
+    a real reschedule gets discarded -- EXCEPT where the invite's own SEQUENCE was
+    unreadable and the start has moved, which is surfaced as `unorderable` instead. An
+    earlier version of this sentence said every caller treats None as "apply"; the arm
+    below falsifies it.
+
+    None is not interchangeable with a real 0, and it arises where the order genuinely
+    cannot be established: the event carries no recorded revision (it predates the tag);
+    or SEQUENCE ties -- or is unreadable, so it cannot be compared at all -- and DTSTAMP
+    is missing from either side, leaving nothing to break the tie.
+
+    Deliberately NO COUNT of those. This sentence said "three" while the code had two,
+    within one commit of the arm being removed, which is this repo's most-repeated
+    finding shape applied to a function whose whole job is arbitration. A number here is
+    a drift surface with no reader that benefits from it.
+
+    An unreadable SEQUENCE does NOT return early: the coerced 0 must not be compared (it
+    would rank a mangled line as the earliest revision and lose to everything), but
+    DTSTAMP can still settle the order, and abstaining before asking it is how a
+    superseded invite got applied.
+    """
+    if not ics.sequence_unreadable:
+        seen = _seq_of(ours)
+        if seen is None:
+            return None
+        if ics.sequence != seen:
+            return 1 if ics.sequence > seen else -1
+    # Falls through on a TIE, and on an unreadable SEQUENCE -- which is a reason to skip
+    # the SEQUENCE compare, never a reason to skip the arbitration. Returning early here
+    # abstained on a tie DTSTAMP could settle, so a late copy of the original invite
+    # (`SEQUENCE:1.0`, older DTSTAMP) read as uncomparable, fell through to `moved`, and
+    # moved a corrected interview back to the old day.
+    prev, now = _stamp_of(ours), ics.dtstamp
+    if prev is None or now is None:
+        return None
+    # UTC, NOT `assumed_zone(cfg)`. RFC 5545 §3.8.7.2 specifies DTSTAMP in UTC and iTIP
+    # requires it, so one arriving without a `Z` is malformed and UTC is the only reading
+    # with a basis behind it. That is the opposite of DTSTART, where floating time is
+    # legal and the configured zone is the right guess -- the two fields look alike and
+    # take different answers. Reading this one in the configured zone made the SAME pair
+    # of revisions order one way under `UTC` and the other under `Asia/Dubai`, which is
+    # the host-timezone defect from one function over, wearing a config for a hat.
+    a, b = _aware(now, timezone.utc), _aware(prev, timezone.utc)
+    return 0 if a == b else (1 if a > b else -1)
 
 
 def _trunc(dt, tz=timezone.utc):
@@ -376,7 +490,42 @@ def _foreign_at_start(events, cfg, ics):
     return False
 
 
-def _event_body(cfg, lead_slug, ics):
+def _ours_at_start(events, cfg, ics, lead_slug):
+    """True if an event WE created for THIS lead already sits at ics.start under a
+    DIFFERENT invite id (#203).
+
+    `_foreign_at_start` is the mirror of this and deliberately does not cover it: it
+    fires only for events carrying no tag of ours. So N messages on one thread with N
+    distinct UIDs each read as "ours under another identity" -- `_find_ours` matched
+    none of them, nothing suppressed the insert, and one slot collected N events while
+    `calendar_added` reported the inflated count as success. The UID identity stays
+    authoritative for updates and cancellations; this is a SECOND, weaker identity of
+    (lead, instant) that governs the INSERT alone.
+
+    Scoped by lead, because two applications can genuinely hold one slot and suppressing
+    there would silently drop a real interview.
+
+    Compares the START INSTANT, not `calendar_match_minutes` proximity -- the same
+    comparison the update arm already makes. Proximity would swallow a genuine reschedule
+    inside the window and leave the calendar showing the OLD time with nothing said; a
+    visible second event at the new time is the failure to prefer. It also deliberately
+    ignores `end`: requiring both would let a duration-only change insert a second event
+    at the same instant, which is the duplicate being removed.
+    """
+    tz = assumed_zone(cfg)[0]
+    want = _trunc(ics.start, tz)
+    for ev in events:
+        if _uid_of(ev) is None:
+            continue                    # untagged -- `_foreign_at_start`'s business
+        priv = _private(ev)
+        if priv.get(_LEAD_KEY) != lead_slug:
+            continue
+        if want is not None and _trunc(_event_start(ev), tz) == want:
+            return True
+    return False
+
+
+def _event_body(cfg, lead_slug, ics, prior_seq=None):
     # An AWARE start carries its own offset in `dateTime`, so its zone is a fact, not a
     # guess -- `timezone.utc` (a `Z`-suffixed DTSTART) has no `.key` and is UTC by
     # definition, and stamping the CONFIGURED zone on it instead would misbook a genuinely
@@ -386,19 +535,45 @@ def _event_body(cfg, lead_slug, ics):
         tz = assumed
     else:
         tz = getattr(ics.start.tzinfo, "key", None) or "UTC"
+    private = {_UID_KEY: _uid_tag(ics.uid), _LEAD_KEY: lead_slug}
+    if not ics.sequence_unreadable:
+        private[_SEQ_KEY] = str(ics.sequence)
+    elif prior_seq is not None:
+        # An unreadable SEQUENCE must not become the baseline every LATER invite is judged
+        # against. `parse_ics` coerces `SEQUENCE:1.0` to 0 so one mangled line cannot sink
+        # an invite, and `sequence_unreadable` stops that 0 being COMPARED -- writing it
+        # put it back, one run later and wearing the authority of a recorded value.
+        # Measured: an event at seq=5 took a mangled invite, had its tag rewritten to
+        # "0", and a genuinely superseded SEQUENCE:3 then read as newer and moved the
+        # appointment to the stale day.
+        #
+        # So the stored value is carried forward, and on an INSERT (no prior) the key is
+        # omitted entirely -- exactly what `_STAMP_KEY` below already does rather than
+        # invent one. Absent reads back as None, which `_revision_delta` treats as "cannot
+        # compare", which is the truth.
+        private[_SEQ_KEY] = str(prior_seq)
+    if ics.dtstamp is not None:
+        # Only when the invite HAD one. Writing a placeholder would make every event look
+        # comparable and order revisions by a time nobody sent.
+        private[_STAMP_KEY] = ics.dtstamp.isoformat()
     return {
         "summary": ics.summary or "Interview",
         "location": ics.location or "",
         "description": (ics.url or ""),
         "start": {"dateTime": ics.start.isoformat() if ics.start else None, "timeZone": tz},
         "end": {"dateTime": (ics.end or ics.start).isoformat() if ics.start else None, "timeZone": tz},
-        "extendedProperties": {"private": {
-            _UID_KEY: _uid_tag(ics.uid), "sluice-track-lead": lead_slug}},
+        "extendedProperties": {"private": private},
     }
 
 
 def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
-    """One of: created | updated | cancelled | present | unresolved | foreign.
+    """One of: created | updated | cancelled | present | unresolved | unorderable | foreign.
+
+    `unorderable` (#202) is the newest and the narrowest: an entry of OURS sits at the
+    slot, this invite moves it, and nothing can say which revision is later -- the
+    invite's own SEQUENCE is unreadable and DTSTAMP either agrees or is absent. Distinct
+    from `unresolved`, which means we could not establish what is there at all; here we
+    know exactly what is there, and only which of two times is right is in doubt.
 
     `unresolved` is the answer to a question we could not ASK, asked over a window we know was
     incomplete, or -- since #146 -- asked and ACTED ON without being able to confirm the action
@@ -414,7 +589,8 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
     create -- routinely the sender's own invite, auto-added by Google -- and deliberately left
     it alone; the calendar work is therefore unfinished and a human has to look. Both are
     distinct from `present`, which means we searched a complete window and there was nothing
-    of ours.
+    of ours, or an entry of ours already sits at that instant -- under this UID, or since
+    #203 under any UID for the same lead.
 
     Keeping this list current is load-bearing, not tidiness: it is the contract every caller
     branches on, and the paragraph below records what a value matching NO branch in reconcile
@@ -534,6 +710,18 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
             # useless here: the operator's calendar still shows a cancelled interview and
             # nothing tells them. Distinct value so it can reach a human.
             return "foreign"
+        if _ours_at_start(events, cfg, ics, lead_slug):
+            # An entry of OURS holds this instant under a different UID (#203's same-slot
+            # rule is exactly what puts one there: it suppresses the second UID's insert,
+            # so the event at the slot carries the FIRST). `present` says "nothing of
+            # ours, and nothing else at that slot", which is then false, and the message
+            # is consumed with the cancelled interview still in the calendar.
+            #
+            # Not deleted: the UID does not match, so nothing shows that entry belongs to
+            # THIS invite, and a wrong delete removes a real appointment. Reported instead,
+            # which is what `unresolved` is for on this arm -- the cancel could not be
+            # completed and a human has to look.
+            return "unresolved"
         return "present"  # nothing of ours, and nothing else at that slot
     if len(mine) > 1:
         # Several entries carry this UID and only a human can say which is real. Moving an
@@ -561,16 +749,95 @@ def sync_event(client, cfg, *, lead_slug, ics, dry_run=False) -> str:
         return "unresolved"
     if mine:
         ours = mine[0]
+        rev = _revision_delta(ics, ours)
+        if rev is not None and rev < 0:
+            # A SUPERSEDED revision (#202). RFC 5545 orders revisions of one UID, so this
+            # invite is older than what the event already holds and applying it would
+            # rewrite a corrected time back to the stale one -- the worst shape this tool
+            # has, because a confidently wrong appointment stops you looking.
+            #
+            # `present`, not a new outcome: the calendar already holds the newer truth, so
+            # there is nothing to do and nothing for a human to settle. Discarding a
+            # superseded invite is routine on any thread that carries an update.
+            #
+            # Scoped to the SCHEDULING arm. The cancel path above is deliberately
+            # unchanged: a stale CANCEL deleting a rescheduled event is a real hazard of
+            # this same class, but removal there is reasoned about for COMPLETENESS and is
+            # a separate change rather than a side effect of this one.
+            return "present"
         # Same zone the body was stamped with, or the instant we booked and the instant we
         # compare differ by that offset and every run reports `updated` and re-writes it.
         tz = assumed_zone(cfg)[0]
-        if _trunc(_event_start(ours), tz) != _trunc(ics.start, tz):
+        moved = _trunc(_event_start(ours), tz) != _trunc(ics.start, tz)
+        if moved and ics.sequence_unreadable and rev in (None, 0):
+            # Nothing ORDERS these -- the invite's own SEQUENCE is unreadable, so the
+            # only appeal is DTSTAMP, and it either says nothing or says the two objects
+            # were created at the same moment, which for two different start times is
+            # contradictory rather than conclusive. `rev == 0` therefore joins `None`
+            # here, and is NOT the same case as an equal READABLE sequence, which still
+            # applies: there the sender stated a revision and merely never increments it,
+            # a known habit rather than evidence against itself.
+            #
+            # The instant has MOVED, so applying and refusing
+            # are both guesses with a real cost: one moves a correct appointment, the
+            # other discards a real reschedule. The honest answer is to write nothing AND
+            # say so.
+            #
+            # `unorderable`, NOT `unresolved`, even though both mean "a human must look".
+            # This arm sits inside `if mine:` with a moved start, so an entry of OURS is
+            # provably at the OLD instant -- while `calendar-unresolved` means the entry
+            # could not be created or verified and tells the operator to add it by hand.
+            # Following that here books a duplicate and leaves the stale one. One reason
+            # covering two situations becomes a false statement in the place a human
+            # actually reads, which `_NEEDS_REVIEW_HINT`'s header records happening twice
+            # already.
+            #
+            # Scoped to an UNREADABLE sequence, NOT to every uncomparable pair, so an
+            # event carrying no recorded revision -- every entry booked before this branch
+            # -- still applies on an ordinary invite rather than filing a row on its first
+            # reschedule.
+            #
+            # Stated precisely, because the loose version of this claim is false: the
+            # scoping is on the INCOMING invite, and says nothing about the stored side.
+            # A legacy event meeting an unreadable-SEQUENCE invite that moves the start
+            # DOES land here. That is the right answer for it -- nothing can order the two
+            # -- but "legacy events still apply" is not what this condition guarantees.
+            return "unorderable"
+        if moved or rev == 1:
+            # `rev == 1` as well as `moved`, or the recorded revision goes STALE. It used
+            # to be written only by the two arms that change the start, so an ordinary
+            # same-instant revision -- a corrected location or title -- returned without
+            # advancing it, and the next genuinely superseded invite then cleared a bar
+            # that had never moved. Measured: seq0 booked, seq5 at the same instant, then
+            # seq1 carrying the old day won and moved the appointment back.
+            #
+            # Reported as `updated` rather than `present` because a write genuinely
+            # happened: the body carries the summary, location and url this revision may
+            # have changed, and answering "nothing to do" after calling `update_event` is
+            # the same positive-claim-over-a-different-action shape as #138.
+            #
+            # ACCEPTED COST, measured rather than assumed: RFC 5545 makes DTSTAMP the
+            # iCalendar OBJECT's creation time, so an unchanged re-send of the same event
+            # carries the same SEQUENCE and a FRESH DTSTAMP. That reads as strictly newer,
+            # so it writes and `calendar_added` counts it, even though nothing visible
+            # changed. Refreshing the tag anyway is the deliberate choice: leaving it at
+            # the older stamp lets a stale invite whose own stamp sits between the two
+            # read as newer and move the appointment -- a wrong time, against a digest
+            # count that is merely flattering.
             if not dry_run:
-                client.update_event(ours["id"], _event_body(cfg, lead_slug, ics))
+                client.update_event(
+                    ours["id"], _event_body(cfg, lead_slug, ics, prior_seq=_seq_of(ours)))
             # The id is known here whether or not we wrote -- it is the entry we FOUND -- so a
             # dry run can still name what it would have touched.
             _warn_if_floating(cfg, ics, "updated", lead_slug, ours.get("id"), dry_run)
             return "updated"
+        return "present"
+    if _ours_at_start(events, cfg, ics, lead_slug):
+        # An entry of ours already holds this instant under another UID (#203). Ahead of
+        # both branches below: this is a POSITIVE identification of our own event at the
+        # slot, so it settles the question that `truncated` would otherwise defer and it
+        # outranks `foreign`, which reports calendar work left unfinished. Here the work
+        # is done -- the appointment is booked at the right time.
         return "present"
     if _foreign_at_start(events, cfg, ics):
         # A foreign event covers this slot, so we do NOT insert or touch it -- that safety

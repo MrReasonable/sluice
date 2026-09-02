@@ -96,7 +96,7 @@ def test_the_tag_query_asks_for_the_KEY_THE_BODY_IS_WRITTEN_WITH():
     # The KEY SET, not its order -- insertion order is incidental, and pinning it would make
     # this red for a rearrangement that harms nobody while still catching a rename.
     assert set(c.inserted[0]["extendedProperties"]["private"]) == \
-        {"sluice-track-uid", "sluice-track-lead"}
+        {"sluice-track-uid", "sluice-track-lead", "sluice-track-seq"}
     assert c.tag_queries == [("sluice-track-uid", "u1")]
 
 
@@ -551,15 +551,26 @@ def test_the_tag_VALUE_cap_matches_googles_own_limit():
         "rest; searching for more than it stored makes our own event unfindable")
 
 
-def test_the_tag_KEY_fits_inside_googles_own_limit():
+def test_every_private_property_KEY_fits_inside_googles_own_limit():
     """Google silently DROPS a private-property key over 44 characters -- no error, the tag
     simply never lands, and every lookup then reads as "we never created this". A rename is
     the only way to trip this, and a rename is exactly the change that would not think to
-    check."""
-    from sluice.track.calendar_sync import _UID_KEY
+    check.
 
-    assert len(_UID_KEY) <= 44, (
-        f"_UID_KEY is {len(_UID_KEY)} chars; Google drops keys over 44 SILENTLY")
+    DERIVED from the module rather than naming `_UID_KEY`, which is all it used to check.
+    `_LEAD_KEY` and `_SEQ_KEY` are written into the same mapping by the same call and are
+    dropped by the same rule, so a hand-listed guard would have gone quietly out of date
+    the moment either was added -- and a key that is silently not written is exactly the
+    failure this test exists to catch.
+    """
+    from sluice.track import calendar_sync as cs
+
+    keys = {n: v for n, v in vars(cs).items()
+            if n.endswith("_KEY") and isinstance(v, str)}
+    assert keys, "found no private-property key constants to check -- the sweep is inert"
+    for name, value in sorted(keys.items()):
+        assert len(value) <= 44, (
+            f"{name} is {len(value)} chars; Google drops keys over 44 SILENTLY")
 
 
 # ---- through engine.run, because a return value is not an outcome --------------------------

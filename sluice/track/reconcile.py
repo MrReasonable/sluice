@@ -3,11 +3,14 @@ Auto-applies only high-confidence/structured signals under the never-regress gua
 everything else is proposed. Additive actions (calendar, materials, stamp) run on a
 confident lead match even when the status change is only proposed."""
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sluice.core import status as _status
 from sluice.core.vault import frontmatter_safe
-from sluice.track.calendar_sync import floating_start, sync_event
+# `_aware` is private to calendar_sync and imported deliberately rather than re-spelled
+# here: its docstring requires the SAME zone `_event_body` stamps, and a second copy of
+# those two lines is the drift this module's neighbours hoist constants to avoid.
+from sluice.track.calendar_sync import _aware, assumed_zone, floating_start, sync_event
 
 _SCHEDULE_TARGET = {"phone_screen": "phone_screen", "interview": "interview"}
 
@@ -60,6 +63,48 @@ def _assumed_tz(outcome, ics):
     would-be writes, so both counters report what the run WOULD do and the CLI changes the
     verb instead of the count."""
     return outcome in ("created", "updated") and floating_start(ics)
+
+
+def _header_body_date_conflict(event, cfg) -> bool:
+    """Do the invite's structured header and its rendered body name different DAYS?
+
+    #202: an ATS invite's `When:` header said day A while its own body said day B, and
+    the header was the wrong one. `classify` already extracts the body's datetime into
+    `when` (falling back to the header when the model finds none, so the two are equal by
+    construction in that case) -- so both readings are in hand and nothing compared them.
+
+    Neither is trusted over the other. Picking one silently reproduces the failure half
+    the time, and a confidently wrong appointment is worse than none because it stops you
+    looking.
+
+    Only the DAY is arbitrated. The header stays authoritative for the time of day: the
+    model reads rendered prose, not a clock, and treating a differing minute as unsettled
+    would refuse nearly every real invite.
+
+    Everything that cannot be compared answers False -- no `when`, no start, an
+    unparseable one. That is not agreement, it is the absence of a disagreement, and
+    refusing there would block real bookings on a parse failure.
+
+    A floating value on either side is read in `calendar_assumed_timezone`, the knob this
+    module already uses for exactly that, and BOTH sides are then compared in that one
+    zone. Reading it from the host instead -- which a bare `astimezone()` does -- made the
+    same invite under the same config book on one machine and route to a human on another,
+    and CI runs UTC, so neither direction showed.
+
+    Residual, stated rather than hidden: an invite whose body states a time in a THIRD
+    zone, close enough to midnight to land on another date, can still read as a conflict.
+    That costs a booking a human has to make; the failure it guards costs an interview.
+    """
+    ics = getattr(event, "ics", None)
+    head = getattr(ics, "start", None) if ics is not None else None
+    if head is None or not event.when:
+        return False
+    try:
+        body = datetime.fromisoformat(str(event.when))
+    except (TypeError, ValueError):
+        return False
+    tz = assumed_zone(cfg)[0]
+    return _aware(head, tz).astimezone(tz).date() != _aware(body, tz).astimezone(tz).date()
 
 
 def _stamp_materials(vault, note, ev, dry_run=False):
@@ -133,7 +178,18 @@ def _skip_with_evidence(r, vault, note, event, dry_run, *, stamped=None) -> Reco
     return r
 
 
-def _advance(vault, note, target, ev, dry_run=False):
+def _advance(vault, note, target, ev, dry_run=False, stamp_when=True):
+    """`stamp_when=False` withholds `interview_date` only (#202).
+
+    For a header/body date conflict the advance is still right -- an interview genuinely
+    was scheduled -- but NEITHER stated date can be vouched for, so neither is written.
+    Anything the note already carried is left ALONE: this field has no provenance, so a
+    value here may be an operator's or a human's, and never-clobber protects it.
+    Not "write the header one": choosing here would be the same coin-flip the calendar
+    arm refuses, made in the more durable of the two places. It is also irreversible,
+    because the lead is at `interview` by the time anyone reads the note and
+    `can_advance("interview", "interview")` is False.
+    """
     fields = {"status": target, "last_signal": date.today().isoformat()}
     # #141. `ev.when` is the MODEL's `when` falling back to the parsed DTSTART --
     # `classify.py` builds it as `data.get("when") or ics.start.isoformat()` -- so it is
@@ -152,7 +208,29 @@ def _advance(vault, note, target, ev, dry_run=False):
     # DTSTART wrote NO date at all -- discarding the junk and the authoritative value
     # together, which is the outcome the paragraph above says is the worse one.
     safe_when = frontmatter_safe(ev.when) if ev.when else None
-    if safe_when:
+    if not stamp_when:
+        # Both candidates are disputed, so the fallback below is withheld too -- an
+        # `elif` reached because the first was skipped would write the header date and
+        # call it settled.
+        #
+        # And WITHHELD is all it is: whatever the note already holds is left exactly as
+        # it is. An earlier round cleared it here, reasoning that a value carried from a
+        # previous stage reads as settled under the new status. That reasoning cannot
+        # survive the fact that this field has NO provenance: `_advance`, `engine.confirm`
+        # (an operator's `--when`) and a human editing the note in Obsidian all write it
+        # and look identical afterwards. Measured, the clear destroyed an operator-typed
+        # date, unrecoverably -- `can_advance("interview", "interview")` is False, so no
+        # later invite reaches `_advance`, and `track confirm --to interview` refuses --
+        # and silently, since the hint speaks only about the calendar.
+        #
+        # Never-clobber decides it: the vault is the user's own directory, hand-editing it
+        # is a first-class workflow, and a value sluice cannot prove it wrote is not
+        # sluice's to delete. The staleness that motivated the clear is a REPORTING
+        # problem and is answered by reporting -- `calendar-date-conflict`'s hint says the
+        # existing date is untouched and may pre-date this invite. A visible stale value
+        # is recoverable by hand; a deleted one is not.
+        pass
+    elif safe_when:
         fields["interview_date"] = f'"{safe_when}"'
     elif ev.ics and ev.ics.start:
         fields["interview_date"] = f'"{ev.ics.start.date().isoformat()}"'
@@ -317,10 +395,20 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, receipt
     # Scheduling with a structured signal.
     if event.type in _SCHEDULE_TARGET and (event.ics is not None or event.when) \
             and event.confidence >= cfg.auto_status_min:
-        if event.ics is not None and event.ics.start is not None:
+        if _header_body_date_conflict(event, cfg):
+            # The two dates this invite states disagree (#202). Book NOTHING and say so.
+            # Routed through the same `needs_review` channel the calendar outcomes below
+            # use, so it reaches the operator by the one path they already read.
+            #
+            # The status advance still happens, exactly as it does for
+            # `unresolved`/`foreign`: an interview genuinely was scheduled and that half
+            # is not in doubt. What is unsettled is only WHEN, so that is the only part
+            # withheld.
+            r.needs_review = "calendar-date-conflict"
+        elif event.ics is not None and event.ics.start is not None:
             r.calendar = sync_event(client, cfg, lead_slug=event.lead_slug, ics=event.ics, dry_run=dry_run)
             r.calendar_assumed_tz = _assumed_tz(r.calendar, event.ics)
-            if r.calendar in ("unresolved", "foreign"):
+            if r.calendar in ("unresolved", "unorderable", "foreign"):
                 # The cancel branch above learned this and the scheduling branch did not, so a
                 # refused insert advanced the status to `interview`, booked NOTHING, wrote no
                 # row, and let `seen.add` consume the message. `failures=0 calendar_added=0`
@@ -337,11 +425,27 @@ def reconcile(event, note_by_slug, vault, cfg, client, dry_run=False, *, receipt
         r.materials_written = _stamp_materials(vault, note, event, dry_run=dry_run)
         target = _SCHEDULE_TARGET[event.type]
         if _status.can_advance(note.status, target):
-            _advance(vault, note, target, event, dry_run=dry_run)
+            # A disputed date is withheld from the note as well as from the calendar
+            # (#202). The hint tells the operator nothing was booked; it would be a false
+            # statement if the note quietly carried one of the two dates anyway.
+            _advance(vault, note, target, event, dry_run=dry_run,
+                     stamp_when=r.needs_review != "calendar-date-conflict")
             r.action = "applied"
             r.status_to = target
         else:
-            r.action = "calendar" if r.calendar != "none" else "proposed"
+            # `needs_review` counts as calendar work, even though `calendar` stays `none`
+            # for a date conflict -- the arm refuses BEFORE `sync_event` is reached, so
+            # there is no outcome to read. Without it a lead that cannot advance took the
+            # `proposed` arm as well, and `engine.run` filed two rows for one message: the
+            # calendar row overwrote the proposal row, while `rep.proposed` had already
+            # counted a proposal that no row records.
+            #
+            # Fixed here rather than by restoring the collision guard at the record site.
+            # `_NEEDS_REVIEW_HINT`'s own comment explains that guard was removed because
+            # "every reason here comes from a branch that files nothing else" -- so the
+            # repair is to make that true again, not to re-admit the case it excludes.
+            r.action = ("calendar" if (r.calendar != "none" or r.needs_review)
+                        else "proposed")
         return r
 
     # Offer.
