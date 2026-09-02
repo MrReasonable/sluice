@@ -205,3 +205,45 @@ def test_none_valued_headers_never_reach_the_receipt_evidence():
     ev2 = C.classify({"headers": None, "body_text": None, "thread_id": "t", "attachments": []},
                      leads, be, TrackConfig(), ics=None)
     assert ev2.type == "receipt" and ev2.sender == "" and ev2.subject == ""
+
+
+def test_every_classified_type_carries_a_definition_that_reaches_the_prompt():
+    """#204: `receipt` was the ONLY one of the seven types given a definition, and the
+    other six reached the model as bare enum members. An enterprise-ATS auto-rejection
+    then classified as `receipt` -- it is automated, it is about an application that was
+    submitted, so it satisfies the receipt wording read loosely, and nothing competed.
+    Typed `receipt`, `reconcile`'s auto-advance to `rejected` is never reached and the
+    lead sits at `applied`, which misreports how many applications are actually live.
+
+    Both ends are DERIVED -- the roster from `_TYPES`, the text from the table itself --
+    so a type added later with no definition fails here, and so does a definition that
+    stops being rendered. Restating the prose would only assert this test's own copy.
+    """
+    assert set(C._TYPE_RULES) == C._TYPES, (
+        "every classified type needs a definition; a bare enum member is #204's defect")
+    prompt = C.build_prompt(_msg(), [_lead("Example", "Analyst")], TrackConfig())
+    for name, rule in C._TYPE_RULES.items():
+        assert rule in prompt, f"{name}'s definition never reaches the model"
+
+
+def test_the_rejection_rule_names_receipt_so_a_decline_cannot_be_read_as_an_ack():
+    """The discriminating case is an email that does BOTH -- acknowledges the
+    application and declines it. Defining the six missing types is not enough on its
+    own: an auto-rejection still matches the receipt definition honestly, so rejection
+    has to be stated as dominant over receipt rather than merely present beside it.
+    """
+    assert "receipt" in C._TYPE_RULES["rejection"].lower(), (
+        "the rejection rule must resolve the overlap with receipt explicitly")
+
+
+def test_the_unknown_company_clause_is_scoped_to_the_receipt_rule():
+    """That clause was written for the lead-is-null case, but as free-floating prompt
+    prose it read as a general tiebreak TOWARD receipt ("rather than forcing another
+    type") with nothing pulling the other way. It stays -- scoped to the type it
+    governs, and out of every other rule.
+    """
+    assert "not in the list" in C._TYPE_RULES["receipt"]
+    for name, rule in C._TYPE_RULES.items():
+        if name != "receipt":
+            assert "not in the list" not in rule, (
+                f"the unlisted-company allowance leaked into {name}'s rule")
