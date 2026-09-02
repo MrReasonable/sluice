@@ -13,6 +13,44 @@ _log = get_logger("track.classify")
 
 _TYPES = {"phone_screen", "interview", "rejection", "offer", "update", "receipt", "not_job"}
 
+# type -> the definition the model is given for it. ONE table, so a type cannot reach
+# the model as a BARE ENUM MEMBER with nothing to tell it apart (#204). `receipt` used
+# to be the only elaborated definition, and an enterprise-ATS auto-rejection is a
+# partial match for it read loosely -- it IS automated, it IS about an application that
+# was submitted -- so an unambiguous decline classified as `receipt`, `reconcile`'s
+# auto-advance to `rejected` was never reached, and the lead sat at `applied`.
+#
+# Deliberately NOT derived from `_TYPES`, and `_TYPES` not derived from this: they are
+# two independent statements of the roster, and a test asserts they agree. Deriving
+# either from the other would make that guard unfalsifiable.
+#
+# `rejection` leads because the ordering is what the model reads first, and it is the
+# type that has to win the one genuinely overlapping case.
+_TYPE_RULES = {
+    "rejection": ("the application has been declined, however politely and however "
+                  "warmly it thanks you for applying. An email that BOTH acknowledges "
+                  "the application AND declines it is a rejection, never a receipt -- "
+                  "the decline is the message, the acknowledgement is only its "
+                  "preamble."),
+    "receipt": ("a receipt is an automated acknowledgement that an application was "
+                "submitted or received (for example \"we received your application\" "
+                "or \"thanks for applying\") and says NOTHING about the outcome. "
+                "Classify it as receipt even when its company is not in the list "
+                "below, setting lead to null in that case rather than forcing another "
+                "type -- that allowance is about the lead field, not about preferring "
+                "this type over a better-fitting one."),
+    "phone_screen": ("an invitation to, or the arranging of, an initial screening "
+                     "call, usually with a recruiter rather than the hiring team."),
+    "interview": ("an invitation to, or the arranging of, an interview beyond the "
+                  "initial screen, including take-home exercises and panel stages."),
+    "offer": "a job offer is being extended, or its terms are being set out.",
+    "update": ("progress on a live application that neither declines it, offers it, "
+               "nor schedules anything -- for example a delay, or a change of "
+               "recruiter."),
+    "not_job": ("not about one of this person's own applications at all -- job alerts, "
+                "marketing, newsletters, or a recruiter approaching them cold."),
+}
+
 
 @dataclass
 class Event:
@@ -63,19 +101,17 @@ def build_prompt(msg, leads, cfg):
     ics_present = "yes" if any(
         (a.get("filename", "").lower().endswith(".ics") or "calendar" in a.get("mime", "").lower()) for a in atts
     ) else "no"
+    type_rules = "\n".join(f"- {name}: {rule}" for name, rule in _TYPE_RULES.items())
     return (
         "You track a job seeker's live applications. Classify this email against the "
         "in-flight applications below. Return ONLY a JSON object with keys: lead (the "
         "company name of the matching application, or null), type (one of "
-        "phone_screen, interview, rejection, offer, update, receipt, not_job), confidence "
+        f"{', '.join(_TYPE_RULES)}), confidence "
         "(0..1), when (ISO datetime of any interview, or null), links (array of URLs), "
         "materials (array of short descriptions of any attachments or prep links), "
         "summary (one short line). Only match an application actually listed. Do not "
-        "invent a company. A receipt is an automated acknowledgement that an application "
-        "was submitted or received (for example \"we received your application\" or "
-        "\"thanks for applying\") -- classify it as receipt even when its company is not "
-        "in the list below, setting lead to null in that case rather than forcing another "
-        "type.\n\n"
+        "invent a company.\n\n"
+        f"WHAT EACH TYPE MEANS:\n{type_rules}\n\n"
         f"IN-FLIGHT APPLICATIONS:\n{inflight}\n\n"
         f"EMAIL:\nFrom: {h.get('from') or ''}\nSubject: {h.get('subject') or ''}\n\n"
         f"Attachments: {att_names}\nCalendar invite attached: {ics_present}\n\n"
