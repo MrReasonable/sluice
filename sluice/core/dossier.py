@@ -176,7 +176,27 @@ class DossierCache:
             return False
         try:
             cached = json.loads(open(path, encoding="utf-8").read())
-            age = self.clock() - datetime.fromisoformat(cached.get("built_at"))
+            now = self.clock()
+            built = datetime.fromisoformat(cached.get("built_at"))
+            # Reconcile the two before subtracting (#229). The production clock is
+            # `datetime.now`, which is NAIVE local time, while a `built_at` written by
+            # anything else -- a hand-repaired entry, or any writer reaching for the
+            # `datetime.now(timezone.utc)` spelling -- carries an offset. Subtracting
+            # across that boundary raises TypeError, which the handler below caught
+            # alongside its genuine corrupt-file cases and reported as "not fresh".
+            # That verdict was PERMANENT and silent: `get_or_build` only persists a
+            # refetch that produced a JD, so nothing ever rewrote the entry and a good
+            # file was re-read and re-rejected every run while looking healthy on disk.
+            #
+            # `astimezone()` on a NAIVE datetime reads it as local, which is exactly the
+            # meaning `datetime.now` already gives it -- so no verdict changes for the
+            # naive/naive pair that is today's only production shape. TypeError stays in
+            # the handler below: it is still what catches a `built_at` key that is
+            # missing entirely, which IS a corrupt file.
+            if (built.tzinfo is None) != (now.tzinfo is None):
+                built = (built.astimezone().replace(tzinfo=None) if now.tzinfo is None
+                         else built.astimezone())
+            age = now - built
         except (OSError, ValueError, TypeError):
             return False
         if age.days >= self.ttl_days:

@@ -340,3 +340,58 @@ def test_a_cached_dossier_predating_the_key_still_parses(tmp_path):
     open(dc._path(_LEAD), "w").write(json.dumps(stale))
     assert dc.get_or_build(_LEAD).get("role_type_observed", "") == "", (
         "a cache entry written before the key existed was discarded and refetched")
+
+
+def _write_cached(dc, lead, built_at: str, jd: str = "A real job description."):
+    """Seat a cache entry for `lead` stamped with a literal `built_at` string.
+
+    A literal rather than a `clock()` round-trip: the shape #229 is about is an entry
+    whose stamp carries a UTC OFFSET, and the production clock (`datetime.now`) cannot
+    produce one, so building the file through it could not reproduce the defect.
+    """
+    body = {"schema_version": 2, "lead_id": dc.cache_key(lead), "jd": {"markdown": jd},
+            "built_at": built_at}
+    with open(dc._path(lead), "w", encoding="utf-8") as fh:
+        json.dump(body, fh)
+
+
+def test_a_timezone_aware_built_at_within_the_ttl_is_a_fresh_hit(tmp_path):
+    """#229: an AWARE `built_at` must not read as stale against the NAIVE production
+    clock. Subtracting the two raises TypeError, which `_fresh` caught alongside its
+    corrupt-file cases and reported as not-fresh -- silently, and for ever: the entry
+    stays on disk looking healthy, so it is re-read and re-rejected on every run.
+    """
+    calls = []
+    def fetcher(lead):
+        calls.append(lead["company"])
+        return {"jd": {"markdown": "refetched"}}
+
+    now = datetime(2026, 7, 7, 12, 0, 0)                    # naive, as `datetime.now` is
+    dc = DossierCache(str(tmp_path), ttl_days=7, fetcher=fetcher, clock=_clock(now))
+    lead = {"company": "Acme", "role": "Analyst", "location": "Palmerburgh"}
+    _write_cached(dc, lead, "2026-07-07T11:00:00+00:00")    # aware, one hour old
+
+    got = dc.get_or_build(lead)
+
+    assert calls == [], "an aware built_at one hour into a 7-day TTL was re-fetched"
+    assert got["jd"]["markdown"] == "A real job description."
+
+
+def test_a_timezone_aware_built_at_outside_the_ttl_is_still_stale(tmp_path):
+    """The other direction, so the fix cannot be "treat every aware stamp as fresh".
+    Same aware shape, same naive clock -- only the age differs, and it must re-fetch.
+    """
+    calls = []
+    def fetcher(lead):
+        calls.append(lead["company"])
+        return {"jd": {"markdown": "refetched"}}
+
+    now = datetime(2026, 7, 7, 12, 0, 0)
+    dc = DossierCache(str(tmp_path), ttl_days=7, fetcher=fetcher, clock=_clock(now))
+    lead = {"company": "Acme", "role": "Analyst", "location": "Palmerburgh"}
+    _write_cached(dc, lead, "2026-06-20T11:00:00+00:00")    # aware, 17 days old
+
+    got = dc.get_or_build(lead)
+
+    assert calls == ["Acme"], "an aware built_at 17 days into a 7-day TTL was served"
+    assert got["jd"]["markdown"] == "refetched"
