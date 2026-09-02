@@ -70,9 +70,27 @@ class IcsEvent:
     method: str = ""
     uid: str = ""
     sequence: int = 0
+    # Was a SEQUENCE stated that we could NOT read? Same shape as `tzid_unresolved` below,
+    # and for the same reason: "stated but unreadable" and "not stated" are different
+    # facts, and collapsing them costs something as soon as anyone compares (#202). RFC
+    # 5545 makes an absent SEQUENCE genuinely 0, so the tolerant coercion stays and this
+    # flag is what lets a comparer abstain instead of treating a mangled line as revision
+    # zero -- which loses to every recorded revision and discards a real reschedule.
+    sequence_unreadable: bool = False
     status: str = ""
     start: "datetime | None" = None
     end: "datetime | None" = None
+    # When the SENDER produced this revision (#202). RFC 5545's second arbiter between two
+    # VEVENTs sharing a UID, after SEQUENCE. It IS written to the calendar body, as the
+    # private `sluice-track-stamp` tag that makes the next run's comparison possible -- what
+    # it never becomes is a BOOKING instant: `start` alone fills `start`/`end`, and this
+    # never moves an appointment. An earlier draft of this comment said "never written to
+    # the calendar body", which `_event_body` falsifies on the line that stores it.
+    #
+    # None when absent or unreadable, and the two need not be told apart: both mean the
+    # tie cannot be broken, and the caller applies rather than refuses. A default stamp
+    # would be worse than none, silently ordering revisions by a time nobody sent.
+    dtstamp: "datetime | None" = None
     summary: str = ""
     location: str = ""
     url: str = ""
@@ -179,8 +197,11 @@ def parse_ics(text: str):
             try:
                 ev.sequence = int(value.strip() or 0)
             except ValueError:
-                _log.warning("track: unparseable SEQUENCE %r -- treating it as 0", value)
+                _log.warning("track: unparseable SEQUENCE %r -- treating it as 0 and "
+                             "marking it unreadable, so revision arbitration abstains "
+                             "rather than reading it as the earliest revision", value)
                 ev.sequence = 0
+                ev.sequence_unreadable = True
         elif name == "STATUS":
             ev.status = value.strip()
         elif name == "DTSTART":
@@ -190,6 +211,14 @@ def parse_ics(text: str):
             ev.start, ev.tzid_unresolved = _parse_dt(value, params)
         elif name == "DTEND":
             ev.end, _ = _parse_dt(value, params)
+        elif name == "DTSTAMP":
+            # `_parse_dt` already answers None on anything it cannot read, which is the
+            # tolerance the whole module needs: this runs inside `engine.run`'s
+            # per-message handler, so raising over a tiebreak field would cost the
+            # classification, the status advance and the calendar write -- the entire
+            # invite. No `tzid_unresolved` is recorded: that flag drives a warning about
+            # a GUESSED booking instant, and this field never books anything.
+            ev.dtstamp, _ = _parse_dt(value, params)
         elif name == "SUMMARY":
             ev.summary = value.strip()
         elif name == "LOCATION":

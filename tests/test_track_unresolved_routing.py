@@ -419,13 +419,29 @@ def test_every_needs_review_REASON_has_a_hint():
     from sluice.track.engine import _NEEDS_REVIEW_HINT
 
     src = inspect.getsource(R.reconcile)
-    # `r.needs_review = f"cancel-{r.calendar}"` -- prefix is literal, suffix is the outcome.
-    prefixes = set(re.findall(r'needs_review\s*=\s*f?"([a-z]+)-\{', src))
-    assert prefixes, "the scan found no needs_review assignment -- it has drifted from the code"
-    outcomes = set(re.findall(r'r\.calendar in \(([^)]*)\)', src))
-    assert outcomes, "could not read the calendar outcomes that trigger a review"
-    values = {v.strip().strip('"') for group in outcomes for v in group.split(",") if v.strip()}
-    expected = {f"{p}-{v}" for p in prefixes for v in values}
+    # Each `needs_review = f"<prefix>-{r.calendar}"` is paired with the outcome tuple of
+    # the `if r.calendar in (...)` it sits under, walking in source order.
+    #
+    # It used to cross EVERY prefix with EVERY outcome found anywhere in the function.
+    # That over-approximates once the two arms stop listing the same outcomes: the cancel
+    # path returns before the scheduling arm, so it cannot emit `unorderable`, and the
+    # blanket cross demanded a `cancel-unorderable` hint for a reason nothing can produce.
+    # Writing that hint would have put a sentence in the table describing a situation that
+    # never happens -- the exact kind of untrue prose the table exists to prevent.
+    #
+    # Pairing is STRICTLY tighter than the cross product, so nothing this used to catch
+    # escapes: a prefix still demands a hint for every outcome ITS OWN guard admits.
+    expected, current = set(), None
+    for line in src.splitlines():
+        m_guard = re.search(r'r\.calendar in \(([^)]*)\)', line)
+        if m_guard:
+            current = {v.strip().strip('"') for v in m_guard.group(1).split(",") if v.strip()}
+            continue
+        m_reason = re.search(r'needs_review\s*=\s*f"([a-z]+)-\{', line)
+        if m_reason:
+            assert current, f"a reason with no preceding outcome guard: {line.strip()!r}"
+            expected |= {f"{m_reason.group(1)}-{v}" for v in current}
+    assert expected, "the scan found no needs_review assignment -- it has drifted from the code"
     missing = expected - set(_NEEDS_REVIEW_HINT)
     assert not missing, f"reasons reconcile can emit with no hint: {sorted(missing)}"
 
@@ -443,3 +459,165 @@ def test_no_needs_review_hint_offers_a_runnable_confirm():
     for reason, template in _NEEDS_REVIEW_HINT.items():
         assert "--to " not in template, f"{reason} offers a status advance: {template}"
         assert "dismiss --id" in template, f"{reason} has no lever to clear it: {template}"
+
+
+_INTERVIEW_BODY_DISAGREES = json.dumps(
+    {"lead": "Example Tidal - Analyst", "type": "interview", "confidence": 0.9,
+     # The header (_ICS above) says 2026-07-15. The body says three days later, which is
+     # the shape #202 was filed on -- and there the HEADER was the wrong one.
+     "when": "2026-07-18T10:00:00+00:00", "links": [], "materials": [],
+     "summary": "invite"})
+
+
+def test_a_header_body_date_conflict_is_RECORDED_and_books_nothing():
+    """#202 defect 2, end to end -- the half a unit test on `reconcile` cannot see.
+
+    `needs_review` is rendered through `_NEEDS_REVIEW_HINT[reason]`, a direct lookup that
+    raises KeyError at the record site for a reason with no hint. A new reason is
+    therefore not wired until the table knows it, and reconcile's own tests never reach
+    that code. This is the same gap this module's docstring was written about.
+    """
+    rep, dl, seen, note = _run(_TruncatedClient(truncated=False),
+                               backend_json=_INTERVIEW_BODY_DISAGREES)
+    assert rep.calendar_added == 0, "booked an appointment on a disputed date"
+    assert "status: interview" in note, "the interview is real, so the advance is right"
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows, "the disputed date was never recorded anywhere"
+    assert rows[0].proposal == "calendar-date-conflict"
+    assert rows[0].hint, "a reason with no hint is the KeyError this table exists to force"
+    # Same rule as every other row here: never hand the operator a runnable command that
+    # would book the very thing whose date is in dispute.
+    assert "confirm --to" not in rows[0].hint
+
+
+def test_every_literal_needs_review_reason_has_a_hint():
+    """The trap that caught this branch, closed so it cannot catch the next one.
+
+    `_NEEDS_REVIEW_HINT[reason]` is a direct lookup, and the table's own header calls that
+    deliberate: a reason with no hint raises KeyError, "loud, local and immediate". Loud
+    it is -- but only on the path that RENDERS the row, which no test of `reconcile`
+    reaches. So `calendar-date-conflict` was added, four unit tests went green, and every
+    real run of it aborted the message.
+
+    Sweeps reconcile.py's own AST for the constant reasons it assigns, rather than
+    restating a list here that would go stale exactly when someone adds one. The two
+    f-string reasons (`cancel-{outcome}`, `calendar-{outcome}`) are not constants and are
+    covered by the end-to-end tests above.
+    """
+    import ast
+    import inspect
+
+    from sluice.track import engine as _E
+    from sluice.track import reconcile as _R
+
+    tree = ast.parse(inspect.getsource(_R))
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for tgt in node.targets:
+            if (isinstance(tgt, ast.Attribute) and tgt.attr == "needs_review"
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                found.add(node.value.value)
+
+    # Assert on the SCOPE first: a sweep that discovers nothing satisfies every assertion
+    # over it, and this one walks a module whose shape it does not control.
+    assert found, ("found no constant needs_review assignment in reconcile.py -- the sweep "
+                   "is matching nothing and would certify any table at all")
+    missing = sorted(found - set(_E._NEEDS_REVIEW_HINT))
+    assert not missing, (
+        f"needs_review reason(s) {missing} have no hint; _NEEDS_REVIEW_HINT is a direct "
+        "lookup, so every message carrying one dies with KeyError at the record site")
+
+
+def test_no_hint_interpolates_anything_but_the_message_id():
+    """`_NEEDS_REVIEW_HINT`'s header states TWO rules. Only one of them was executable.
+
+    "No hint may offer `confirm --to <status>`" is asserted by the row tests above. "None
+    may name the inbound iCalendar UID" was prose only -- and it guards the more expensive
+    mistake: these rows are printed to stderr AND persisted in the dead-letter store
+    indefinitely, so counterparty-supplied text placed there outlives the mailbox it came
+    from. A UID sometimes encodes the sender's domain.
+
+    Asserting the interpolation SET rather than hunting for the word "uid" is what makes it
+    a real guard: any future `{ics_uid}`, `{subject}` or `{sender}` fails here, including
+    ones nobody thought to grep for. `{mid}` is sluice's own identifier and is already on
+    the rendered line.
+    """
+    import string
+
+    from sluice.track.engine import _NEEDS_REVIEW_HINT
+
+    assert _NEEDS_REVIEW_HINT, "no hints to check -- the sweep is inert"
+    for reason, template in sorted(_NEEDS_REVIEW_HINT.items()):
+        fields = {name for _lit, name, _spec, _conv
+                  in string.Formatter().parse(template) if name}
+        assert fields <= {"mid"}, (
+            f"{reason}'s hint interpolates {sorted(fields - {'mid'})}; a hint may carry "
+            "only sluice's own message id, never counterparty-supplied text")
+
+
+def test_a_date_conflict_on_a_lead_that_cannot_advance_counts_no_proposal():
+    """END TO END, because the unit test on `reconcile` cannot see this -- the same gap
+    this module's docstring was written about, arriving through a new door.
+
+    A date conflict leaves `calendar` at `none`, so a lead that cannot advance took the
+    `proposed` arm as well and the run counted a proposal. The ROW count never differed
+    (`_record_replacing` replaces by message_id, so the calendar row silently overwrote
+    the proposal row) -- what differed is `rep.proposed`, a digest counter reporting work
+    that no row records. Asserting the counter is the only way to see it.
+    """
+    rep, dl, seen, note = _run(_TruncatedClient(truncated=False),
+                               backend_json=_INTERVIEW_BODY_DISAGREES, status="interview")
+    assert rep.calendar_added == 0, "booked an appointment on a disputed date"
+    assert rep.proposed == 0, (
+        "counted a proposal for a message whose only row is the calendar one")
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert len(rows) == 1, f"one message, one row -- got {[r.proposal for r in rows]}"
+    assert rows[0].ev_type == EV_TYPE_CALENDAR
+    assert rows[0].proposal == "calendar-date-conflict"
+
+
+_ICS_UNORDERABLE = (b"BEGIN:VCALENDAR\r\nMETHOD:REQUEST\r\nBEGIN:VEVENT\r\nUID:u1\r\n"
+                    b"SEQUENCE:1.0\r\nDTSTART:20260718T100000Z\r\nSUMMARY:Screen\r\n"
+                    b"END:VEVENT\r\nEND:VCALENDAR\r\n")
+
+
+class _OursAtOldTimeClient(OneMsgClient):
+    """Our own event sits at the OLD instant; the invite moves it but cannot be ordered."""
+
+    def __init__(self):
+        super().__init__()
+        self.events = [{"id": "ev1", "start": {"dateTime": "2026-07-15T10:00:00+00:00"},
+                        "extendedProperties": {"private": {
+                            "sluice-track-uid": "u1", "sluice-track-lead": "Example Tidal - Analyst",
+                            "sluice-track-seq": "3"}}}]
+
+    def get_message(self, mid):
+        msg = super().get_message(mid)
+        msg["attachments"] = [{"filename": "invite.ics", "mime": "text/calendar",
+                               "data": _ICS_UNORDERABLE}]
+        return msg
+
+
+def test_an_unorderable_reschedule_does_not_borrow_the_add_it_by_hand_hint():
+    """The `unresolved` arm added for #202 fires INSIDE `if mine:` with a moved start, so
+    an entry of ours provably sits at the old instant. It borrowed
+    `calendar-unresolved`, whose hint says the entry "could NOT be created or verified --
+    add it by hand". Following that books a DUPLICATE and leaves the stale entry.
+
+    `_NEEDS_REVIEW_HINT`'s own header records why that matters: one sentence covering two
+    reasons became a false statement the moment the second arrived. This is the third
+    time, so the case gets its own reason rather than a re-worded shared one.
+    """
+    rep, dl, seen, note = _run(_OursAtOldTimeClient())
+    rows = [e for e in dl.open_entries() if e.message_id == "m1"]
+    assert rows, "an unorderable reschedule recorded nothing"
+    assert rows[0].proposal == "calendar-unorderable"
+    hint = rows[0].hint
+    assert "add it by hand" not in hint, (
+        "told the operator to create an entry that already exists at the old time")
+    assert "old" in hint.lower() or "existing" in hint.lower(), (
+        "the hint must say an entry of ours is already there, at a time now in doubt")
+    assert rep.calendar_added == 0

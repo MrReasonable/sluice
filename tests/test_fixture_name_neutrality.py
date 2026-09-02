@@ -226,6 +226,12 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
     "Human Typed Co", "N-A", "Unknown", "Widget", "X",
     "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead",
+    # Structural slugs, not names: they mean "this lead" and "a different lead", and the
+    # #203 same-slot rule needs two distinguishable ones to express its lead scoping.
+    # `other-lead` reached this roster because the fixture kwarg was renamed to
+    # `lead_slug=`, the position this file's collector actually sweeps -- it had been
+    # sitting in an unswept `lead=` kwarg.
+    "other-lead",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",
 })

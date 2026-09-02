@@ -123,13 +123,42 @@ def test_an_unsafe_model_date_with_NO_ics_still_abstains_without_blocking_the_ad
 def test_a_safe_model_date_still_WINS_over_the_ics_date():
     # The model's `when` is the more specific signal when it is usable; the fallback must not
     # become an override.
+    #
+    # The two now name the same DAY at different times, which is what this test has always
+    # been about -- which SOURCE wins, not what happens when they disagree about when the
+    # interview is. Its fixture used to say 16 July against a 15 July DTSTART; since #202 a
+    # day disagreement is arbitrated before this precedence rule is ever reached (neither
+    # date is written, and nothing is booked), so that fixture would have been exercising
+    # the conflict path under a name that promises precedence. The test below pins that
+    # newer rule explicitly.
+    v, notes, path = _vault()
+    ics = IcsEvent(uid="u1", summary="Screen",
+                   start=datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc))
+    ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
+               when="2026-07-15T09:00:00", ics=ics)
+    R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    assert 'interview_date: "2026-07-15T09:00:00"' in path.read_text()
+
+
+def test_a_model_date_on_a_DIFFERENT_DAY_no_longer_wins_it_is_withheld():
+    """The boundary between the precedence rule above and #202's arbitration.
+
+    Precedence answers "which source is more specific". It cannot answer "which source is
+    RIGHT", and on the invite #202 was filed for the structured header was the wrong one --
+    so preferring either silently is a coin-flip that reproduces the failure half the time.
+    A day disagreement therefore stops being a precedence question: nothing is booked, and
+    neither date is written to the note.
+    """
     v, notes, path = _vault()
     ics = IcsEvent(uid="u1", summary="Screen",
                    start=datetime(2026, 7, 15, 10, 0, tzinfo=timezone.utc))
     ev = Event(lead_slug="Example Tidal - EM", type="interview", confidence=0.9,
                when="2026-07-16T09:00:00", ics=ics)
-    R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
-    assert 'interview_date: "2026-07-16T09:00:00"' in path.read_text()
+    res = R.reconcile(ev, notes, v, TrackConfig(), FakeGoogleClient(events=[]))
+    text = path.read_text()
+    assert res.needs_review == "calendar-date-conflict"
+    assert "interview_date" not in text, "a disputed date must reach neither the calendar nor the note"
+    assert "status: interview" in text, "the advance is still right -- only WHEN is unsettled"
 
 
 # ---- confirm() is the third write site ----------------------------------------------------
