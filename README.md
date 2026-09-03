@@ -17,6 +17,44 @@ this repository.
 Installed as the `job-sluice` command — see [Install](#install), and [Naming](#naming) for why
 it isn't `sluice`.
 
+## Start today
+
+Two ways in. Both reach judged leads and a tailored CV the same day.
+
+### Let an AI set it up for you
+
+Point a coding agent (Claude Code, Codex, Gemini CLI, whichever you use) at this repository and
+paste:
+
+> Read `docs/AI-SETUP.md` and set sluice up for me.
+
+It installs sluice, interviews you for your judging criteria and your CV details, proposes your
+evidence entries from your existing CV, and runs the first pass.
+[`docs/AI-SETUP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/AI-SETUP.md) is the
+contract it follows, and it is worth skimming yourself: it is mostly a list of things the agent is
+forbidden to do on your behalf. Three stay yours by design, because each is a decision no tool
+should make under your name: logging into job boards, verifying your evidence, and pressing send.
+
+Working from an install rather than a clone? Any agent that can fetch a URL can read that file
+without one.
+
+### Or run it yourself
+
+[Quickstart](#quickstart) is four offline commands and takes a few minutes. Then work back through
+[What it costs to run](#what-it-costs-to-run) for whichever stages you want.
+
+### What to have ready
+
+| | Needed for | If you skip it |
+|---|---|---|
+| Your current CV, as markdown | tailored CVs | triage still works; `cv` does not |
+| Ten minutes of answers about what you want | the judge | every gate abstains, so nothing is filtered out |
+| An LLM backend: the `claude` CLI, or an API key | the judge, the composer | `triage run --no-llm` still classifies deterministically |
+| Docker, and one `make build` | scraping job boards | paste job ads in by hand instead |
+
+Nothing here is a hard stop. Skipping all four still leaves a working lead store you can file by
+hand, which is why `doctor` reports what is missing rather than refusing to start.
+
 ## What you end up with
 
 Plain markdown in your own vault, editable in Obsidian, which sluice reads back on the next run.
@@ -160,8 +198,9 @@ Everything below is offline. No backend, no browser, no credentials.
 
 ```console
 $ job-sluice init --no-input --vault ./vault
-  wrote   ~/jobhunt/sluice.local.yaml
+  wrote   ~/.config/sluice/config.yaml
   wrote   ~/jobhunt/vault/Job Applications/Judging Profile.md
+  wrote   ~/jobhunt/vault/Job Applications/Job Leads/Job Leads.base
 
 created a new vault directory at ~/jobhunt/vault
 if you meant an existing one, re-run with --vault pointing at it
@@ -171,10 +210,18 @@ if you meant an existing one, re-run with --vault pointing at it
 (`init` prints those paths fully resolved, and goes on to summarise your config and list what to
 do next; `~` above stands in for your home directory, and `...` for output cut for length.)
 
+The config lands in the XDG config directory. Export `SLUICE_CONFIG` with a path of your own to
+keep it beside your vault instead, before every command rather than just `init`.
+
+`Job Leads.base` is an Obsidian Bases view: open it in Obsidian and your leads are a sortable,
+filterable table rather than a folder of files. Every lead note sluice writes links to it.
+
 `init` never overwrites an existing artefact, so re-running it is safe. Every question is optional
 except where your vault is, and a blank answer leaves that gate **unset** — which passes every lead
 through. Drop `--no-input` to be asked. The config it writes has every unanswered key commented
 out, so it is field-for-field equivalent to having no config file at all except for `vault_dir`.
+Answering nothing also means no Candidate Profile is written, and `cv run` and `apply prep` both
+need one; re-run without `--no-input` when you want to fill it in.
 
 Do **not** copy `sluice.yaml.example` into place instead. It is a catalogue to read, not a
 template: it ships illustrative values *active*, so a verbatim copy arrives with its title,
@@ -184,56 +231,70 @@ relevance and pay gates already closed and nothing saying so.
 
 ```console
 $ job-sluice doctor --offline
-claude-max  claude-sonnet-4-5  ok        primary: triage, cv, track
-deepseek    deepseek-v4-flash  degraded  fallback: ...  DEEPSEEK_API_KEY unset - primary-only
+job-sluice doctor  (offline)
 
-renderer  cv.renderer         dead    renderer 'template' could not load its rendering backend...  blocks: cv
-store     baseline_rel        dead    baseline CV not found at the configured path  blocks: cv
-store     Judging Profile     ok      found
-store     Experience Library  notice  0 verified / 0 total entries -- only verified entries are citable
-store     Candidate Profile   dead    no name or no contact details  blocks: cv
-gates     TriageConfig.accept_titles   notice  abstaining (empty)
+claude-max  claude-sonnet-4-5    ok        primary: triage, cv, track  (offline: not round-tripped)
+deepseek    deepseek-v4-flash    degraded  fallback: triage, cv, track  DEEPSEEK_API_KEY unset - primary-only
+
+1 ok, 1 degraded, 0 dead
+
+renderer     cv.renderer                      dead      renderer 'template' could not load its ...
+store        baseline_rel                     dead      baseline CV not found at the configured path ...
+store        Judging Profile                  ok        found
+store        Experience Library               notice    0 verified / 0 total entries -- only verified ...
+...
+store        Candidate Profile                dead      no name or no contact details -- cv run refuses ...
+...
+gates        Config.dossier_allow_hosts       notice    no exceptions granted (empty)
+...
+gates        TriageConfig.accept_titles       notice    abstaining (empty)
 ...
 1 ok, 1 degraded, 3 dead, 19 notice
 ```
 
-Dead components on a fresh install are the expected state, not a fault. Each names the command it
+Dead components on a fresh install are the expected state, not a fault, though `doctor` still exits
+non-zero while any component is dead, so a fresh install exits `1`. Each names the command it
 blocks, so you only fix what you need — above, every one of them blocks `cv`, while `ingest` and
 `triage` need none of them.
 
-Your backend rows will differ: that capture had the `claude` CLI on `$PATH`, so `claude-max` reads
-`ok`. Without it you get `dead  CLI 'claude' not on PATH` and a correspondingly different summary
-line, which is the same information arriving one row earlier.
+There are two summary lines, and they count different things: the first totals the backends above
+it, the second totals the components below it. Both move with your machine, so treat the capture
+as one install rather than as the answer. That one had the `claude` CLI on `$PATH`, so
+`claude-max` reads `ok`; without it you get `dead  CLI 'claude' not on PATH` and a backend total
+of `0 ok, 1 degraded, 1 dead`. It also had no `render` extra, which is why the renderer is `dead`
+— install that and the component totals move too, exactly as they do when you add a baseline CV.
 
-The `gates` rows are a generic sweep of every **list-valued** setting reporting its posture, not a
-list of preference gates — most are gates, where `abstaining (empty)` means every lead passes, but
-a few are not: `dossier_allow_hosts` is a security allowlist where empty means *no exceptions
-granted*, and `cv.slop_allow` empty leaves the full phrase list **active**. The numeric pay floors
-(`contract_floor_gbp_day`, `perm_floor_gbp`) are genuine preference gates that get no row here at
-all; they default to `0`, which is off.
+The `gates` rows sweep every **list-valued** setting and report what its current value means:
+`abstaining (empty)` for a preference gate, and its own posture for the settings where empty
+means something else, of which there is more than one kind. The numeric pay floors (`contract_floor_gbp_day`, `perm_floor_gbp`) get no
+row here at all; they default to `0`, which is off.
 
 **3. Look at the boards.**
 
 ```console
 $ job-sluice ingest list-sources
-bayt             browser   enabled
+bayt             browser   enabled EXAMPLE-SEARCH(1/1)
 bwork            browser   disabled
-cord             browser   enabled
+cord             browser   enabled EXAMPLE-SEARCH(1/1)
 ...
-wttj             browser   enabled
+wttj             browser   enabled EXAMPLE-SEARCH(1/1)
 ```
 
 Boards ship enabled by default; a few are disabled, each module recording why and the date its
 retirement was last checked against the live web. Add `--health` for per-source scrape state once
 you have run something. Each source ships one neutral example search; your real searches belong in
-`sources.<id>.searches` in your config.
+`sources.<id>.searches` in your config. `EXAMPLE-SEARCH(n/m)` says `n` of that source's `m` searches
+are still the shipped example rather than yours, so a fresh install shows it on every enabled board.
 
-**4. Triage what you have.**
+**4. Give it a lead, then triage.**
+
+Nothing has scraped yet, so the vault holds no leads and triage would have nothing to classify.
+Save the note from [What you end up with](#what-you-end-up-with) as
+`vault/Job Applications/Job Leads/Example Systems - Senior Engineer.md`, then:
 
 ```console
 $ job-sluice triage run --no-llm
-triage: {'keep': 1, 'shortlist': 0, 'research': 0, 'dismiss': 0, 'needs_review': 0,
-         'skipped': 0, 'unjudgeable': 0} judged=0 resolved={...} llm_calls=0 backend=None failures=0
+triage: {'keep': 1, 'shortlist': 0, 'research': 0, 'dismiss': 0, 'needs_review': 0, 'skipped': 0, ...
 ```
 
 `--no-llm` runs the deterministic tiers only — no backend call, nothing billed. On an unconfigured
@@ -281,7 +342,7 @@ hard to undo.
 
 | Command | Purpose |
 |---|---|
-| `job-sluice init` | scaffold a config, a Judging Profile and a Candidate Profile |
+| `job-sluice init` | scaffold a config, a Judging Profile, and a Candidate Profile when answered interactively |
 | `job-sluice doctor` | preflight backends, renderer, cv identity, store artefacts, gate posture |
 | `job-sluice ingest` | scrape configured boards into the lead store (`list-sources`, `run`, `test-source`, `enable`, `disable`) |
 | `job-sluice triage` | classify leads: deterministic rules, then an LLM judge (`run`, `normalize-status`) |
@@ -350,6 +411,7 @@ is what you asked them to do.)
 
 | | |
 |---|---|
+| [`docs/AI-SETUP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/AI-SETUP.md) | the contract an AI agent follows to set sluice up for you, and what it may never do |
 | [`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md) | per-channel install, extras, system libraries, Camofox, credentials |
 | [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md) | command reference: flags, exit codes, output streams |
 | [`docs/CONFIGURATION.md`](https://github.com/MrReasonable/sluice/blob/main/docs/CONFIGURATION.md) | config keys by block |
