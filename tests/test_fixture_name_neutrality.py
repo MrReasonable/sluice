@@ -212,12 +212,22 @@ _SELF = Path(__file__).name
 # hand-list and started covering `test_onboard_questions.py` -- a placeholder employer
 # probing the employers gate's case-sensitivity, same `Example <Word>` construction as the
 # rest of this roster. Owner's ruling, 2026-08-24: invented.
+# `EXAMPLE CO`/`example co` (#205): NOT new identities. They are casings of `Example Co`,
+# already on this roster, and #205's subject is precisely that a board renders one employer
+# several ways -- so a fixture for it cannot be written without both spellings. They are
+# listed rather than folded into the comparison because the ruling this roster records is
+# "does this name a real firm", and that ruling was already made for `Example Co`; case
+# cannot change its answer. Folding the SWEEP instead (so any casing of a reviewed value
+# passes) would be the same one-identity-many-spellings fix this issue applies to the vault,
+# one rung out, and is deliberately left as its own decision rather than ridden in on this
+# branch -- widening a neutrality gate is not a side effect worth taking silently.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
     "D", "Delta", "E", "Epsilon", "Example", "Example Alpha", "Example Analytics",
     "Example Beta",
     "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
-    "Example Co", "Example Data", "Example Decoy", "Example Leverage",
+    "Example Co", "EXAMPLE CO", "example co",
+    "Example Data", "Example Decoy", "Example Leverage",
     "Example Location", "Example Practitioner", "Example Publication",
     "Example Robotics", "Example Scrum",
     "Example Synergy", "Example University",

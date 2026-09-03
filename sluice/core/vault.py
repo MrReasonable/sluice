@@ -417,6 +417,35 @@ def _is_note_file(path: str) -> bool:
         return False
 
 
+def _fold_note_name(name: str) -> str:
+    """The identity fold for a note NAME: two names that fold equal name one lead (#205).
+
+    THREE consumers, and the reason this is a function rather than a `.casefold()` at each:
+    `_locate` (so a re-scrape under a different company casing resolves to the note already
+    on disk instead of minting a sibling), `_archived_match` (so the same re-scrape cannot
+    walk past a merged-away loser and RESURRECT it), and `read_leads`' collision report (so
+    what the read path calls a collision is exactly what the write path calls one identity).
+    A second copy of this rule kept in step by a comment is the #30 failure mode; here it
+    would be worse than usual, because the three disagree SILENTLY -- a `_locate` that folds
+    against an `_archived_match` that does not is measurably a resurrection.
+
+    CASE ONLY, deliberately, and this is the line not to blur. `_norm_location` folds case
+    AND applies NFKD AND drops combining marks AND collapses non-word runs, because it
+    compares two values for whether they describe the same PLACE. This compares two
+    FILENAMES for whether they are the same note, and every widening past case is a claim
+    that two differently-spelled names are one job -- which, applied to a name, silently
+    merges two real postings and is unrecoverable in the direction that matters. Unicode
+    normalization is a real and SEPARATE axis (a macOS filesystem may hand back NFD for a
+    name written NFC), left alone here rather than folded in on the way past: it needs its
+    own measurement against a real store, and #205 is about case.
+
+    `casefold`, not `lower`: `lower` is a per-character map that leaves the German sharp s
+    alone, so a company written "STRASSE" and one written "Straße" would answer as two
+    identities under `lower` and one under `casefold`. Matching `_norm_location`'s choice
+    also means the two folds cannot disagree on a value they both see."""
+    return name.casefold()
+
+
 def _holds_a_note(path: str) -> bool:
     """Does `path` hold a `.md` file at ANY depth? The symlink warning's probe.
 
@@ -722,10 +751,66 @@ class Vault:
         beside the code. A deep hierarchy on a slow mount is where this design is worst, and
         nothing adapts. (_name_max already acknowledges such mounts, for pathconf.)"""
         found = []
-        for dirpath in self._scan_dirs():
+        dirs = self._scan_dirs()
+        for dirpath in dirs:
             path = os.path.join(dirpath, f"{name}.md")
             if _is_note_file(path):
                 found.append(path)
+        if found:
+            return found
+        # #205: nothing at the EXACT name. Before letting the walk conclude "absent" --
+        # the branch that creates, and the branch that records a merged_away in seen.db --
+        # look again for a note whose name folds equal (see _fold_note_name). Boards render
+        # one employer several ways, the note name is built from the company string
+        # verbatim, and without this each spelling seats its own note with its own status:
+        # the reported store held one spelling at `shortlist` score 86 while its twin held
+        # a `dismiss`, so a dismissal recorded under one spelling did not stop the role
+        # returning as `new` under the other. It also wedged replication -- a
+        # case-insensitive filesystem cannot hold the pair, and Syncthing reports the folder
+        # `state=idle` while never delivering either note.
+        #
+        # AFTER the exact probe, never instead of it, and the ordering is what keeps this
+        # affordable. A steady-state run is overwhelmingly notes that already exist at the
+        # name being asked for, and those never reach here: measured over a 3190-note store
+        # on a case-sensitive filesystem, the exact hit stays ~7us while this listing costs
+        # ~1.9ms (~5.5ms at 10000 notes), scaling with the note count rather than the
+        # directory count the stat probe scales with. So the cost lands on the MISS arm --
+        # a genuinely new lead, or the case-variant this exists to catch -- which is also
+        # the arm already paying _archived_match's listdir.
+        #
+        # The ordering has a consequence worth stating rather than discovering: when the
+        # exact name IS present and a case-variant of it also exists, this never runs, so
+        # `upsert` updates the exact one and says nothing about its twin. That state is a
+        # store that predates this fix, and it is REPORTED by read_leads (which walks
+        # anyway) rather than refused here -- refusing would mean folding on every lookup
+        # including the steady-state hit, and `job-sluice leads dedupe` already clusters
+        # such a pair and offers the merge (measured), so the remedy exists and only the
+        # signal was missing.
+        #
+        # Lists LIVE, like the stat probe above and for the same reason: `upsert`'s
+        # create-race loop terminates only because a re-resolve can SEE a note a concurrent
+        # writer created since the last attempt. A cached name index would hide it, every
+        # retry would re-derive the same absent candidate, and the loop would exhaust into
+        # a refusal for a lead that was perfectly writable. Only the DIRECTORY list is
+        # cached (see _scan_dirs), which is what `_resolve_path` re-derives around.
+        #
+        # `_is_note_file` on the entry, not `e.is_file()`: scandir's own predicate swallows
+        # every OSError and answers False, which would read an unstatable path as absent --
+        # the exact trap `_is_note_file` exists to close, on the exact branch where reading
+        # absent-for-present creates a duplicate or records an irreversible seen.db row.
+        want = _fold_note_name(f"{name}.md")
+        for dirpath in dirs:
+            try:
+                with os.scandir(dirpath) as it:
+                    entries = [e.path for e in it if _fold_note_name(e.name) == want]
+            except OSError:
+                # A directory that listed a moment ago and cannot now -- deleted, or
+                # permissions changed mid-walk. Skipped rather than propagated, because
+                # this is a SECOND look at a set the exact probe above has already reported
+                # on: raising here would turn a lookup that legitimately found nothing into
+                # a failure, on the arm where the exact-name answer is already in hand.
+                continue
+            found.extend(p for p in entries if _is_note_file(p))
         return found
 
     # ── paths ────────────────────────────────────────────────────────────────
@@ -883,7 +968,14 @@ class Vault:
             # matters most.
             return None
         for name in names:
-            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z")
+            # IGNORECASE for #205, and it is the PRE-FILTER that takes it -- this is the
+            # "cheap superset" the docstring above describes, so widening it cannot admit a
+            # decision, only more candidates for the seated-name comparison below to rule
+            # on. Without it the fold on that comparison would be unreachable for exactly
+            # the population it exists for: an archived loser seated at `EXAMPLE CO - X.md`
+            # never matches a `Example Co - X` pattern, so the entry is skipped before its
+            # name is ever compared.
+            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z", re.IGNORECASE)
             for entry in entries:
                 if not pattern.match(entry):
                     continue
@@ -935,11 +1027,27 @@ class Vault:
                 seated = _archived_from(inner)
                 if seated is None:
                     seated = entry[:-len(".md")]
-                if seated != name:
+                if _fold_note_name(seated) != _fold_note_name(name):
                     # A collision counter appended to a DIFFERENT note's name, or a legacy
                     # entry whose counter cannot be told from a title that genuinely ends
                     # in `.` plus digits. Either way this archive is not this candidate.
                     continue
+                # FOLDED (#205), and this arm is the more serious half of that issue rather
+                # than a tidy-up alongside it. Measured on shipped code: merge a lead away,
+                # then re-scrape it with the company spelled `EXAMPLE CO` instead of
+                # `Example Co` -- outcome `created`. The exact-casing control suppresses
+                # correctly, so the guard was working and the re-scrape simply walked past
+                # it. That is a silent breach of non-resurrection: it undoes a human's merge
+                # decision, and where the surviving twin was already `applied` it means a
+                # second application under the user's name.
+                #
+                # Widening this comparison can only SUPPRESS more, never resurrect more, so
+                # it moves in the safe direction by construction. What it must not do is
+                # widen what gets RECORDED, and it does not: the `seen.db` arm below is
+                # gated on `url_proven` -- a matching non-empty url -- which no amount of
+                # name folding can manufacture. A fold-widened match that is not url-proven
+                # lands on the UNPROVEN arm, writes nothing, records nothing, and re-reports
+                # every run until a human acts.
                 action, url_proven = self._reconcile(fm, lead, capped)
                 # The RECORDED arm is gated on url-proof, NOT on the bare SAME verdict.
                 # `same_opportunity` returns SAME from a matching url OR from a location
@@ -1318,6 +1426,52 @@ class Vault:
                 self._warned_dup_slugs.add(key)
                 _log.warning("vault: slug %r is claimed by %d notes (%s); consumers keyed on "
                              "it will see only one", slug, len(refs), ", ".join(sorted(refs)))
+        # #205, and a DIFFERENT fact from the one above with a different consequence and a
+        # different remedy, which is why it is a second sweep and a second message rather
+        # than a widening of the first. Above: several notes at ONE name, so a consumer
+        # keyed on slug sees one of them and the others are invisible. Here: several notes
+        # whose names differ ONLY by case, so every consumer sees them ALL, as separate
+        # leads -- with separate status. That is the harm #205 reports: one spelling held a
+        # live `shortlist` at score 86 while its twin held a `dismiss`, so dismissing the
+        # role under one spelling did not stop it returning as `new` under the other. It
+        # also wedges replication, silently: a case-insensitive filesystem cannot hold the
+        # pair, and Syncthing keeps reporting the folder `state=idle` while delivering
+        # neither note.
+        #
+        # REPORTED here rather than refused at the write path. `_locate` probes the exact
+        # name first and only folds on a miss (see there), so a store that already holds a
+        # pair keeps updating whichever twin the scrape names, silently. Making the write
+        # path notice instead would mean folding on every lookup including the steady-state
+        # hit -- ~7us to ~1.9ms over a 3190-note store, on every lead. This walk is already
+        # being paid, so the report costs one grouping over a list that exists.
+        #
+        # The remedy already ships and is NOT new UX: `cluster_duplicates` normalizes
+        # company and role through `_norm_tokens`, which casefolds, so `job-sluice leads
+        # dedupe` already puts such a pair in one cluster and offers `--merge` (measured).
+        # Only the signal was missing, so the message names that command rather than
+        # describing a repair the user has to invent.
+        #
+        # Keyed on the FOLD of the slug (`_fold_note_name`, the same rule `_locate` and
+        # `_archived_match` resolve by), so what the read path calls a collision is exactly
+        # what the write path calls one identity. Groups are reported only when they hold
+        # more than one DISTINCT slug: a group whose slugs are all identical is the
+        # first sweep's fact, already said above, and saying it twice in two vocabularies
+        # would teach a reader to skip both.
+        by_fold: dict = {}
+        for note in out:
+            by_fold.setdefault(_fold_note_name(note.slug), set()).add(note.slug)
+        for folded, slugs in by_fold.items():
+            if len(slugs) < 2:
+                continue
+            key = ("case", folded, tuple(sorted(slugs)))
+            if key in self._warned_dup_slugs:
+                continue
+            self._warned_dup_slugs.add(key)
+            _log.warning(
+                "vault: %d notes differ only by capitalisation (%s); they are one job held "
+                "as separate leads with separate status, and a case-insensitive filesystem "
+                "cannot sync the set. `job-sluice leads dedupe` clusters them and `--merge` "
+                "resolves it", len(slugs), ", ".join(sorted(slugs)))
         return out
 
     def update_fields(self, ref, fields: dict, *,
