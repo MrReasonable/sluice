@@ -40,6 +40,14 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.5.1](https://github.com/MrReasonable/sluice/compare/v2.5.0...v2.5.1) (2026-09-03)
+
+
+### Documentation
+
+* **changelog:** drop a comma before an essential because clause ([7964b24](https://github.com/MrReasonable/sluice/commit/7964b24343f99c1fa7959af2921e43fbfb8c9f35))
+* **changelog:** give 2.5.0 the migration note it shipped without ([4a67b84](https://github.com/MrReasonable/sluice/commit/4a67b845b1b797987f27f399dec532f4ff3eea64))
+
 ## [2.5.0](https://github.com/MrReasonable/sluice/compare/v2.4.2...v2.5.0) (2026-09-03)
 
 ### What you need to do
