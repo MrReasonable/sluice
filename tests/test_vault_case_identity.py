@@ -554,12 +554,47 @@ def test_a_target_differing_from_its_own_name_only_by_case_is_not_its_own_blocke
     the merits: under the equivalence the target and the current name are one identity, so
     there is nothing to rename to."""
     v = Vault(str(tmp_path / "vault"))
-    # Seated at the sanitized placeholder name; the frontmatter re-derives the same name
-    # up to case, which is what the exact comparison could not see.
-    _seat_at(v.leads_dir, "N-A - Widget Analyst", company="n/a", status="new",
+    # The fixture has to REACH the self-skip, which is narrower than it looks and is what an
+    # earlier version of this row got wrong -- it seated `company: n/a`, which
+    # `is_placeholder_company` answers True for, so `_frontmatter_name` returned "nothing
+    # better to rename to" and the note went to `unresolved` without ever reaching the
+    # comparison. The mutant survived, i.e. the row was inert.
+    #
+    # Three conditions at once: the seated HEAD must be a placeholder head (`N-A` is --
+    # `_sanitize` renders "n/a" that way), the frontmatter company must NOT be a placeholder
+    # (`N-a` is not: only "n/a"/"na" are members, never "n-a"), and the two must fold equal.
+    _seat_at(v.leads_dir, "N-A - Widget Analyst", company="N-a", status="new",
              role="Widget Analyst")
 
     rep = v.reconcile_names(apply=False)
 
     assert rep["collisions"] == [], f"the note was reported as its own blocker: {rep}"
-    assert rep["renames"] == []
+    assert rep["renames"] == [], f"a pure case re-seat is not a rename worth making: {rep}"
+    assert rep["unresolved"] == [], f"the fixture never reached the self-skip: {rep}"
+
+
+def test_the_capitalisation_report_survives_a_status_filtered_read(tmp_path, caplog):
+    """The report must sweep every lead note WALKED, not the list `read_leads` RETURNS.
+
+    #205's shape is one twin `shortlist` and the other `dismiss`, so a status-filtered read
+    surfaces exactly ONE of them -- and `read_leads({"shortlist"})` is among the commonest
+    calls in this codebase. Swept over the returned list, the report said nothing about the
+    very pair it exists for. Every other row here reads unfiltered, where the two sweeps are
+    indistinguishable, so without this one the distinction is untested: measured, reverting
+    to the returned list leaves all of them green."""
+    _require_case_sensitive_fs(tmp_path)
+    v = Vault(str(tmp_path / "vault"))
+    _seat_at(v.leads_dir, "Example Co - Engineering Manager", company="Example Co",
+             status="shortlist")
+    _seat_at(v.leads_dir, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
+             status="dismiss", score=2)
+
+    with caplog.at_level("WARNING"):
+        notes = v.read_leads({"shortlist"})
+
+    assert len(notes) == 1, "the filter itself still applies; only the report is unfiltered"
+    hits = [r.getMessage() for r in caplog.records
+            if "differ only by capitalisation" in r.getMessage()]
+    assert len(hits) == 1, [r.getMessage() for r in caplog.records]
+    assert "EXAMPLE CO - Engineering Manager" in hits[0], (
+        "the filtered-out twin must still be named in the report")
