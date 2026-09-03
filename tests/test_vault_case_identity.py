@@ -29,7 +29,7 @@ from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _fold_note_name
-from tests.conftest import LOCATIONS
+from tests.conftest import LOCATIONS, UNREADABLE_DIR
 
 
 def _lead(company, **kw):
@@ -503,6 +503,7 @@ def test_dedupe_clusters_a_case_variant_pair_but_merges_only_when_status_agrees(
 
 
 # ── the fold must bind every path that resolves a lead, not just the read one ──
+@UNREADABLE_DIR
 def test_the_folded_probe_does_not_read_an_unlistable_directory_as_absent(tmp_path):
     """`[]` is not a neutral answer on this path: it is the `if not found:` branch, which
     CREATES and which lets `_archived_match` record a `merged_away` in `seen.db` -- a store
@@ -516,7 +517,15 @@ def test_the_folded_probe_does_not_read_an_unlistable_directory_as_absent(tmp_pa
     same shape without the permissions.
 
     The warm `_scan_dirs` cache is what makes it reachable and is set up explicitly here:
-    `_walk`'s `onerror=_reraise` would otherwise have raised during the walk itself."""
+    `_walk`'s `onerror=_reraise` would otherwise have raised during the walk itself.
+
+    `@UNREADABLE_DIR` because the whole fixture is a mode bit, and a mode bit binds neither
+    uid 0 nor Windows: as root `os.scandir` succeeds regardless of `0o111`, so `_locate`
+    returns normally and the `pytest.raises` fails -- reporting a defect that is not there.
+    The shared marker rather than a local `os.geteuid()` check, which is what the review
+    suggested: `tests/conftest.py` already owns this predicate, it covers the Windows arm
+    too, and a second copy of a platform rule kept in step by a comment is the drift this
+    very file argues against elsewhere."""
     v = Vault(str(tmp_path / "vault"))
     sub = os.path.join(v.leads_dir, "Active")
     os.makedirs(sub, exist_ok=True)
@@ -652,3 +661,34 @@ def test_the_fold_is_a_full_casefold_not_a_per_character_lowering(tmp_path):
         "the fixture no longer discriminates: pick a pair where casefold and lower disagree")
     # And it must NOT reach past case: two genuinely different names stay different.
     assert _fold_note_name("Example Co - A") != _fold_note_name("Example Co - B")
+
+
+def test_no_code_in_the_vault_module_case_folds_with_a_regex_flag(tmp_path):
+    """Module-WIDE, and the reason it exists beside the roster check above rather than
+    inside it: that check is a hand-listed set of functions, and a hand list is exactly what
+    went stale on this branch -- `reconcile_names` was missing from it while that function
+    was minting the pair the fold prevents. This one needs no roster. It asks the whole
+    module a question with one right answer.
+
+    `re.IGNORECASE` is a per-character case mapping, so it is a SECOND and NARROWER
+    equivalence than `_fold_note_name` wherever a fold changes length. There is no
+    legitimate use of it in this module -- every case comparison here is about whether two
+    names are one identity -- so a new one anywhere is the drift, wherever it appears.
+
+    Comments are tokenized out: the archive pre-filter carries a long comment explaining why
+    the flag is NOT used, and a raw text sweep would fail on the very code that is correct,
+    forcing the deletion of the explanation that stops the flag coming back."""
+    import io
+    import tokenize
+
+    import sluice.core.vault as vault_module
+
+    with open(vault_module.__file__, encoding="utf-8") as f:
+        src = f.read()
+    code = "\n".join(t.string for t in tokenize.generate_tokens(io.StringIO(src).readline)
+                     if t.type != tokenize.COMMENT)
+    assert "IGNORECASE" not in code, (
+        "core/vault.py case-folds with a regex flag somewhere; that is a second, narrower "
+        "equivalence than _fold_note_name and shipped once already as a resurrection")
+    # SCOPE: the sweep must actually have read the module, or it passes over nothing.
+    assert "_fold_note_name" in code and len(code) > 10_000, "the sweep read nothing"
