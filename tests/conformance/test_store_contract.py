@@ -661,9 +661,13 @@ def test_an_identity_equivalence_binds_the_archive_probe_too(store_name, tmp_pat
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.upsert(_lead(url="https://example.invalid/1")).outcome == "created"
 
-    # ANTECEDENT: does this store fold case on the CREATE path?
-    variant = store.upsert(_lead(company="EXAMPLE FOUNDRY", title="ANALYST",
-                                 url="https://example.invalid/1"))
+    # ANTECEDENT: does this store fold case on the CREATE path? Probed with an EMPTY url,
+    # deliberately. Carrying the first lead's url would let a store keyed on synthetic ids
+    # answer "not created" from the url alone, satisfying the antecedent without having any
+    # NAME equivalence at all -- and this row would then demand archive-fold behaviour of a
+    # store that folds nothing. Blank, the only thing that can make this anything but
+    # `created` is an equivalence over the name.
+    variant = store.upsert(_lead(company="EXAMPLE FOUNDRY", title="ANALYST", url=""))
     folds_on_create = variant.outcome != "created"
     if not folds_on_create:
         # No case equivalence, so nothing to bind. Recorded rather than skipped, so the

@@ -203,7 +203,12 @@ testpaths = ["tests"]
 # `--cov` is deliberately NOT here. addopts applies to every invocation, so a coverage run
 # would be forced on `pytest -k one_test` and on the mutation-testing loop, where the report is
 # noise and the tracer is pure overhead. CI opts in explicitly; see .github/workflows/ci.yml.
-addopts = "-q"
+# `-rs` lists SKIP REASONS in the short summary. Not cosmetic: under bare `-q` a skip
+# prints as a lone `s` and the reason is never displayed, so a guard that skipped itself
+# for a real reason -- `tests/test_vault_case_identity.py`'s rows need a case-sensitive
+# filesystem, and are vacuous without one -- reads to a developer as an ordinary pass.
+# Today those are the only skips in the suite, so this adds exactly one line of output.
+addopts = "-q -rs"
 
 # Coverage REPORTS, it does not gate. There is deliberately no `fail_under` here: a threshold
 # invites tests written to raise the number rather than to catch bugs, which is the failure mode
