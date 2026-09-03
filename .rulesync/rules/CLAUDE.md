@@ -420,9 +420,11 @@ away and re-scraping it as `EXAMPLE CO` rather than `Example Co` returned `creat
 exact-casing control suppressed correctly — the guard worked and the re-scrape walked past it.
 Folding can only suppress MORE, never resurrect more, and it does not widen `seen.db`, since that
 arm stays gated on `url_proven`, which no name folding can manufacture. The fold has ONE home,
-`core/vault.py`'s `_fold_note_name`, shared with `_locate` and `read_leads`' collision report: a
-`_locate` that folds against an `_archived_match` that does not is measurably a resurrection, so
-these are not three independent `.casefold()` calls. It is CASE only — Unicode normalization is a
+`core/vault.py`'s `_fold_note_name`, and EVERY path that resolves a lead by name goes through it —
+`_locate`, `_archived_match`, `read_leads`' report and `reconcile_names`. Do not restate that as a
+count; it shipped as three and was stale inside the same branch. A `_locate` that folds against an
+`_archived_match` that does not is measurably a resurrection, and a `reconcile_names` that does not
+measurably mints the pair, so these are not independent `.casefold()` calls. It is CASE only — Unicode normalization is a
 separate axis, and every widening past case claims two differently spelled names are one job.
 `_merged/` is load-bearing retention, not
 scratch: do not prune it. The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME

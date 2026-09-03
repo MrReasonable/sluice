@@ -420,14 +420,21 @@ def _is_note_file(path: str) -> bool:
 def _fold_note_name(name: str) -> str:
     """The identity fold for a note NAME: two names that fold equal name one lead (#205).
 
-    THREE consumers, and the reason this is a function rather than a `.casefold()` at each:
-    `_locate` (so a re-scrape under a different company casing resolves to the note already
-    on disk instead of minting a sibling), `_archived_match` (so the same re-scrape cannot
-    walk past a merged-away loser and RESURRECT it), and `read_leads`' collision report (so
-    what the read path calls a collision is exactly what the write path calls one identity).
+    Every path that resolves a lead by NAME goes through it, and that is the obligation
+    rather than a list: `_locate` (so a re-scrape under a different company casing resolves
+    to the note already on disk instead of minting a sibling), `_archived_match` (so the same
+    re-scrape cannot walk past a merged-away loser and RESURRECT it), `read_leads`' collision
+    report (so what the read path calls a collision is what the write path calls one
+    identity), and `reconcile_names` (so the rename pass neither MINTS a pair nor reports a
+    note as its own blocker). Deliberately not stated as a count: it shipped saying THREE and
+    was stale within the same branch, which is this repo's most-repeated finding applied to
+    its own docstring. `tests/test_vault_case_identity.py` sweeps the roster instead.
+
     A second copy of this rule kept in step by a comment is the #30 failure mode; here it
-    would be worse than usual, because the three disagree SILENTLY -- a `_locate` that folds
-    against an `_archived_match` that does not is measurably a resurrection.
+    would be worse than usual, because the consumers disagree SILENTLY -- a `_locate` that
+    folds against an `_archived_match` that does not is measurably a resurrection, and a
+    `reconcile_names` that does not is measurably a newly-minted pair. Both were live on this
+    branch before review.
 
     CASE ONLY, deliberately, and this is the line not to blur. `_norm_location` folds case
     AND applies NFKD AND drops combining marks AND collapses non-word runs, because it
@@ -599,13 +606,21 @@ class Vault:
         # exhaustion on every scan. Per STORE, because one command walks several times and
         # a link must not say the same thing a dozen times in one run.
         self._probed_symlinks: set = set()
-        # Duplicate slugs already reported by read_leads, on the same discipline as the
-        # symlink set above -- but NOT for the same measured reason: no shipped command
-        # reads one status set twice through a single store, so this suppresses nothing
-        # today and is forward-looking (see read_leads for the enumeration, and for why
-        # this is kept where `track/receipt.py` deleted its own unreachable guard). Keyed on
-        # (slug, refs), never the slug alone: a LATER read whose filter surfaces a different
-        # set of twins at that slug is a different fact and must still be said.
+        # Collisions already reported by read_leads, on the same discipline as the symlink
+        # set above -- but NOT for the same measured reason: no shipped command reads one
+        # status set twice through a single store, so this suppresses nothing today and is
+        # forward-looking (see read_leads for the enumeration, and for why this is kept
+        # where `track/receipt.py` deleted its own unreachable guard).
+        #
+        # It holds TWO key shapes, for the two sweeps read_leads runs, and the reason both
+        # live in one set is that both answer the same question -- "have I already said this
+        # exact thing about this store?" -- so a second set would be a second thing to reset.
+        # Neither is ever the bare name: `(slug, refs)` for the duplicate-slug sweep, because
+        # a LATER read whose filter surfaces a different set of twins at that slug is a
+        # different fact and must still be said; and `("case", folded, slugs)` for #205's
+        # capitalisation sweep, tagged so the two cannot collide on a store where one slug
+        # is also a fold key. That tag is why this comment no longer says "keyed on (slug,
+        # refs)" full stop, which it did until the second sweep landed beside it.
         self._warned_dup_slugs: set = set()
 
     def _slug_for(self, path: str) -> str:

@@ -1167,9 +1167,12 @@ per spelling, each with its own status — one spelling holding a live `shortlis
 held a `dismiss`, so dismissing the role under one did not stop it returning as `new` under the
 other. It also wedged replication silently: a case-insensitive filesystem cannot hold the pair,
 and Syncthing reports the folder `state=idle` while delivering neither note. `_fold_note_name` is
-the one fold, shared by `_locate`, `_archived_match` and `read_leads`' report — a `_locate` that
-folds against an `_archived_match` that does not is measurably a **resurrection**, so they cannot
-be allowed to drift. It is CASE only: Unicode normalization is a real and separate axis (a macOS
+the one fold, and every path that resolves a lead by NAME goes through it — `_locate`,
+`_archived_match`, `read_leads`' report, and `reconcile_names`. Stated as that obligation rather
+than a roster, because the roster shipped as three and was stale inside the same branch. They
+cannot be allowed to drift: a `_locate` that folds against an `_archived_match` that does not is
+measurably a **resurrection**, and a `reconcile_names` that does not measurably **mints** the pair
+— both were live here before review. It is CASE only: Unicode normalization is a real and separate axis (a macOS
 filesystem may return NFD for a name written NFC), and every widening past case claims two
 differently spelled names are one job.
 
