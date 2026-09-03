@@ -2,7 +2,7 @@
 ways ("Example Co", "EXAMPLE CO", "example co"), the note name is built from the company
 string VERBATIM, and `_locate` probes a CONSTRUCTED path -- so on a case-sensitive
 filesystem each spelling seats its own note, with its own status. In the reported store
-one spelling held a live shortlist at score 86 while its twin held a dismissal, and the
+one spelling held a live shortlist while its twin held a dismissal, and the
 pair also wedged Syncthing on the case-insensitive machine, which had never received a
 version of either note.
 
@@ -118,9 +118,9 @@ def test_lowercase_and_mixed_case_company_are_one_identity(tmp_path):
     _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
 
-    v.upsert(_lead("Example Co", title="Head of Data & AI", search="Head of Data & AI"))
-    second = v.upsert(_lead("example co", title="head of data & ai",
-                            search="head of data & ai", url="https://ex.invalid/2"))
+    v.upsert(_lead("Example Co", title="Widget Analyst & XY", search="Widget Analyst & XY"))
+    second = v.upsert(_lead("example co", title="widget analyst & xy",
+                            search="widget analyst & xy", url="https://ex.invalid/2"))
 
     assert second.outcome != "created", (
         f"a case-variant company minted a second note: {_notes(v)}")
@@ -240,9 +240,9 @@ def test_read_leads_reports_a_pair_that_differs_only_by_capitalisation(tmp_path,
     _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=86)
+          status="shortlist", score=1)
     _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=0)
+          status="dismiss", score=2)
 
     with caplog.at_level("WARNING"):
         notes = v.read_leads()
@@ -265,7 +265,7 @@ def test_the_capitalisation_report_is_not_raised_for_notes_at_one_name(tmp_path,
     v = Vault(str(tmp_path / "vault"))
     os.makedirs(os.path.join(v.leads_dir, "Active"), exist_ok=True)
     _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=86)
+          status="shortlist", score=1)
     dup = os.path.join(v.leads_dir, "Active", "Example Co - Engineering Manager.md")
     with open(dup, "w", encoding="utf-8") as f:
         f.write(f"---\ncompany: Example Co\nrole: Engineering Manager\nstatus: new\n"
@@ -286,9 +286,9 @@ def test_the_capitalisation_report_is_raised_once_per_store(tmp_path, caplog):
     _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=86)
+          status="shortlist", score=1)
     _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=0)
+          status="dismiss", score=2)
 
     with caplog.at_level("WARNING"):
         v.read_leads()
@@ -301,16 +301,16 @@ def test_the_capitalisation_report_is_raised_once_per_store(tmp_path, caplog):
 # ── the fast path, and the one fold ───────────────────────────────────────────
 def test_an_exact_name_wins_over_a_case_variant_on_disk(tmp_path):
     """`_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the
-    steady-state lookup at its previous cost (~7us against ~1.9ms for the folded listing over a
-    3190-note store). Pinned as BEHAVIOUR rather than as a timing: with both spellings on disk,
+    steady-state lookup at its previous cost (~7us against ~2ms for the folded listing over a
+    3000-note benchmark store). Pinned as BEHAVIOUR rather than as a timing: with both spellings on disk,
     a lookup for one of them returns THAT one alone -- never the pair, which would refuse, and
     never the other, which would write to the wrong twin."""
     _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     exact = _seat(v, "Example Co - Engineering Manager", company="Example Co",
-                  status="shortlist", score=86)
+                  status="shortlist", score=1)
     _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=0)
+          status="dismiss", score=2)
 
     assert v._locate("Example Co - Engineering Manager") == [exact]
 
@@ -355,8 +355,40 @@ def test_which_casings_of_an_existing_pair_reach_the_ambiguous_refusal(tmp_path,
     _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=86)
+          status="shortlist", score=1)
     _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=0)
+          status="dismiss", score=2)
 
     assert v.upsert(_lead(scraped)).outcome == expected
+
+
+def test_the_archive_pre_filter_folds_as_widely_as_the_decision_it_gates(tmp_path):
+    """The pre-filter over `_merged/` must be at least as wide as the seated-name comparison
+    it gates, or that comparison never runs for the population it exists to serve -- the
+    entry is dropped before its recorded name is ever read, and the lead is re-created.
+
+    `re.IGNORECASE` looks like it delivers that and does not. It is a simple per-character
+    case mapping while `_fold_note_name` is a full `casefold`, and the two disagree wherever
+    a fold changes LENGTH: measured, candidate `... Widget SS Analyst` against entry
+    `... Widget ss-ligature Analyst.md` does not match under IGNORECASE and does match under
+    casefold. So the flag left the pre-filter NARROWER than the decision on that population,
+    which is a resurrection produced by the half-measure meant to prevent one. Found by
+    CodeRabbit CLI on this branch; this row is what stops it coming back.
+
+    FS-independent: `_merged/` entries are compared as Python strings, and the two spellings
+    do not collide as filenames on any filesystem -- they differ by more than case."""
+    v = Vault(str(tmp_path / "vault"))
+    _merge_away(v,
+                loser=_lead("Example Co", title="Widget ß Analyst",
+                            search="Widget ß Analyst", url="https://ex.invalid/2"),
+                survivor=_lead("Example Co", title="Widget Analyst II",
+                               search="Widget Analyst II", url="https://ex.invalid/1"))
+
+    # The same posting, re-scraped with the sharp s written out. `casefold` folds both to
+    # "...widget ss analyst"; a per-character case map does not.
+    again = v.upsert(_lead("Example Co", title="Widget SS Analyst",
+                           search="Widget SS Analyst", url="https://ex.invalid/2"))
+
+    assert again.outcome == "merged_away", (
+        f"the archive pre-filter is narrower than the comparison it gates: {_notes(v)}")
+    assert not any("SS Analyst" in n for n in _notes(v))

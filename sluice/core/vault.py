@@ -980,16 +980,31 @@ class Vault:
             # matters most.
             return None
         for name in names:
-            # IGNORECASE for #205, and it is the PRE-FILTER that takes it -- this is the
-            # "cheap superset" the docstring above describes, so widening it cannot admit a
-            # decision, only more candidates for the seated-name comparison below to rule
-            # on. Without it the fold on that comparison would be unreachable for exactly
-            # the population it exists for: an archived loser seated at `EXAMPLE CO - X.md`
-            # never matches a `Example Co - X` pattern, so the entry is skipped before its
-            # name is ever compared.
-            pattern = re.compile(re.escape(name) + r"(?:\.\d+)?\.md\Z", re.IGNORECASE)
+            # FOLDED on BOTH sides for #205, rather than the same pattern with
+            # `re.IGNORECASE`. The pre-filter has to stay the "cheap superset" the docstring
+            # above describes -- widening it cannot admit a decision, only more candidates
+            # for the seated-name comparison below to rule on -- and it must be at least as
+            # wide as that comparison, or the fold there is unreachable for exactly the
+            # population it exists for: an archived loser seated at `EXAMPLE CO - X.md`
+            # skipped here is never compared at all.
+            #
+            # `re.IGNORECASE` looked like it did that and does NOT, which is why this is a
+            # fold rather than a flag. IGNORECASE is a simple per-character case mapping
+            # while `_fold_note_name` is a full `casefold`, and the two disagree wherever a
+            # fold changes LENGTH -- a sharp s against a written-out double s is the
+            # reachable case. Measured: the flag left the pre-filter NARROWER than the
+            # decision on that population, so the entry was dropped before its recorded name
+            # was read and the lead was re-created. That is a resurrection produced by the
+            # half-measure meant to prevent one. Folding both sides restores "superset by
+            # construction" as a property rather than an assertion.
+            #
+            # The `.md` suffix folds with everything else, so an entry named `.MD` now
+            # matches where the original literal pattern did not. Sluice never writes one;
+            # a hand-made one fails toward SUPPRESSION, the recoverable direction, and the
+            # recorded-name comparison below still gates every decision.
+            folded = re.compile(re.escape(_fold_note_name(name)) + r"(?:\.\d+)?\.md\Z")
             for entry in entries:
-                if not pattern.match(entry):
+                if not folded.match(_fold_note_name(entry)):
                     continue
                 path = os.path.join(merged_dir, entry)
                 # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
