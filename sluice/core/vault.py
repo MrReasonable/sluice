@@ -732,20 +732,32 @@ class Vault:
         must not read as an absent one here, because absent is the branch that creates and
         that records a merged_away in seen.db. See there for the measured failure.
 
-        Stats LIVE on every call. The obvious optimisation -- a name->paths index built from
-        the same `_walk` `_scan_dirs` already runs, turning this into a dict lookup -- would
-        be a BUG, not a saving. `upsert`'s create-race loop terminates only because a
-        re-resolve can SEE a note a concurrent writer (another `ingest run`, or a human in
-        Obsidian) created since the last attempt; against a cached filename index that note
-        stays invisible, every retry re-derives the same absent candidate, and the loop
-        exhausts into a refusal for a lead that was perfectly writable. So only the
-        DIRECTORY list is cached, because the set of FOLDERS is what is expensive to
+        Matches a name up to CASE (#205), because a board renders one employer several ways
+        and the note name is built from the company string verbatim. Two probes, in this
+        order: the exact name, then -- only if that found nothing -- a folded listing. See
+        the body for why the order is what makes the second affordable, and for the one
+        state it leaves unreported.
+
+        Reads LIVE on every call, both probes. The obvious optimisation -- a name->paths
+        index built from the same `_walk` `_scan_dirs` already runs, turning this into a
+        dict lookup -- would be a BUG, not a saving. `upsert`'s create-race loop terminates
+        only because a re-resolve can SEE a note a concurrent writer (another `ingest run`,
+        or a human in Obsidian) created since the last attempt; against a cached filename
+        index that note stays invisible, every retry re-derives the same absent candidate,
+        and the loop exhausts into a refusal for a lead that was perfectly writable. So only
+        the DIRECTORY list is cached, because the set of FOLDERS is what is expensive to
         rediscover while its staleness has one bounded consequence, which `_resolve_path`
         then closes on the create arm.
 
-        The cost of this lookup scales with the DIRECTORY count, not the note count: one
-        stat per candidate per scanned directory. Measured figures (local disk, and what
-        they become on a network or FUSE mount where a stat costs ~1ms) are in
+        The cost is now TWO different shapes, and conflating them is how the cheap half gets
+        argued away. The exact probe scales with the DIRECTORY count, not the note count:
+        one stat per candidate per scanned directory. The folded probe scales with the NOTE
+        count, since it lists each scanned directory -- ~1.9ms against a 3190-note store and
+        ~5.5ms at 10000, where the stat probe stays ~7us at both. That second shape is why
+        the fold runs SECOND: a steady-state run is overwhelmingly notes that already exist
+        at the name being asked for, and those return from the exact probe having listed
+        nothing. Earlier measured figures (local disk, and what they become on a network or
+        FUSE mount where a stat costs ~1ms) are in
         `docs/superpowers/specs/2026-08-01-vault-subfolders-design.md`; they are a
         single-machine measurement no test pins, so they live with the design rather than
         beside the code. A deep hierarchy on a slow mount is where this design is worst, and
@@ -1269,11 +1281,29 @@ class Vault:
             found = self._locate(name)
             if len(found) > 1:
                 # Two notes claim one identity, so there is no safe write: bumping either
-                # one's last_seen leaves the other to rot unnoticed. Nothing sluice does
-                # produces this -- creates go to one directory and (PR B) reconcile refuses
-                # a colliding move -- so it arrives by hand, from a copied note or a
-                # part-way manual reorganisation. Refuse loudly and let the sink keep the
-                # lead out of seen.db so it re-reports until a human merges or renames.
+                # one's last_seen leaves the other to rot unnoticed. Refuse loudly and let
+                # the sink keep the lead out of seen.db so it re-reports until a human
+                # merges or renames.
+                #
+                # WHERE the pair comes from used to be answerable with "nothing sluice does
+                # produces this -- it arrives by hand, from a copied note or a part-way
+                # manual reorganisation". That is no longer true: sluice's own pre-#205
+                # creates produced exactly this pair whenever a board changed an employer's
+                # capitalisation, because `_locate` compared the name byte-for-byte and each
+                # spelling seated its own note. Every store predating the fix still holds
+                # those notes.
+                #
+                # How OFTEN such a pair reaches this arm is narrower than "now it resolves
+                # here", which is what an earlier draft of this comment claimed. Measured
+                # against a seeded pair: `_locate` probes the exact name FIRST, so a scrape
+                # whose casing matches either note on disk returns one path and UPDATES
+                # (silently -- the twin is untouched and unmentioned). Only a THIRD casing,
+                # matching neither, falls through to the folded probe, sees both, and
+                # refuses. A board that keeps sending the spelling that created the note
+                # therefore never reaches this line, which is why the standing report on
+                # such pairs lives in `read_leads` (walked every command, names `leads
+                # dedupe --merge`, which already clusters them) rather than resting on a
+                # refusal that fires only on a casing change.
                 #
                 # "Writes nothing" includes last_seen, and that reaches further than the
                 # incoming lead: BOTH notes on disk stop being refreshed -- the real one as

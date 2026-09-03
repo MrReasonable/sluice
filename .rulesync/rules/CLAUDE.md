@@ -414,12 +414,42 @@ comparison) -- measured on BOTH arms. Either is on the allowlist, so the count s
 contract states the obligation as bounded, not absolute: a merged-away loser must remain
 discoverable through the identity the store RECORDED at merge time, and a re-scrape whose identity
 has drifted past that (for the vault, past every name candidate) is outside the guarantee and is
-created — a visible duplicate, the direction to fail in. `_merged/` is load-bearing retention, not
+created — a visible duplicate, the direction to fail in. That recorded name is compared up to CASE
+(#205), and the fold was a LIVE BREACH rather than a tidy-up: measured before it, merging a lead
+away and re-scraping it as `EXAMPLE CO` rather than `Example Co` returned `created` while the
+exact-casing control suppressed correctly — the guard worked and the re-scrape walked past it.
+Folding can only suppress MORE, never resurrect more, and it does not widen `seen.db`, since that
+arm stays gated on `url_proven`, which no name folding can manufacture. The fold has ONE home,
+`core/vault.py`'s `_fold_note_name`, shared with `_locate` and `read_leads`' collision report: a
+`_locate` that folds against an `_archived_match` that does not is measurably a resurrection, so
+these are not three independent `.casefold()` calls. It is CASE only — Unicode normalization is a
+separate axis, and every widening past case claims two differently spelled names are one job.
+`_merged/` is load-bearing retention, not
 scratch: do not prune it. The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME
 (`_PRIVATE_SUBDIRS`, at the TOP LEVEL only) rather than by the accident that a flat `os.listdir` never descended into
 it -- deleting that prune resurfaces every archived loser and undoes this invariant outright.
 See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
 `tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
+
+**A lead's identity is its note name UP TO CASE (#205), and the fold has one home.** Boards render
+one employer several ways and the name is built from the company string verbatim, so a byte-for-byte
+match seated a note per spelling, each with its own status — one holding a live `shortlist` at score
+86 while its twin held a `dismiss`, so dismissing the role under one spelling did not stop it
+returning as `new` under the other. It also wedged replication silently: a case-insensitive
+filesystem cannot hold the pair and Syncthing reports the folder `state=idle` while delivering
+neither note. Do NOT reach for a title-caser here — the issue's own suggestion, and measured before
+it was rejected, an acronym-safe one converges 1 of the 5 reported pairs, leaves `Example
+Co`/`EXAMPLE CO` (the shortlist-vs-dismiss pair) apart, and turns `ai` into `Ai`, which is the
+corruption the acronym rule exists to avoid; casing NORMALIZATION cannot fix a dedup problem,
+case-insensitive RESOLUTION does. `_locate` probes the exact name FIRST and folds only on a miss,
+which is what keeps the cost where it was (~7µs steady-state hit against ~1.9ms for the folded
+listing over a 3190-note store) — do not "simplify" that into an unconditional fold. Its
+consequence is stated rather than closed: against a pair a pre-#205 store already holds, a scrape
+matching either spelling updates that one silently and only a THIRD casing reaches the ambiguous
+refusal, so the standing signal is `read_leads`' own warning, which names `leads dedupe --merge` —
+already a working remedy, since `cluster_duplicates` normalizes through `_norm_tokens`, which
+casefolds. No note is ever RENAMED by this: renaming orphans `track_deadletter.lead`, which holds
+the note stem.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss/unjudgeable` (the last,

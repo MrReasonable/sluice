@@ -596,6 +596,19 @@ class Store(Protocol):
         exercises only the location-split shape, so it does not police that residual; the
         contract does, by naming it. See tests/conformance/test_store_contract.py.
 
+        A store MAY match that recorded identity up to an equivalence of its own, and it
+        MUST then apply the SAME equivalence on every path that resolves a lead -- the
+        create walk as well as the archive probe. The vault matches note names up to CASE
+        (#205, `_fold_note_name`), because a board renders one employer several ways.
+        Applying it in one place and not the other is not a partial improvement, it is a
+        RESURRECTION: measured on the vault before the fold reached the archive probe, a
+        `EXAMPLE CO` re-scrape of a lead merged away as `Example Co` returned "created"
+        while the exact-casing control suppressed. Widening the equivalence can only
+        suppress more, never resurrect more, so the direction is safe -- but it MUST NOT
+        widen what enters the dedup store, which for the vault stays gated on a matching
+        non-empty url that no name equivalence can manufacture. A match reached only by
+        the equivalence, without that proof, is "merged_away_unproven".
+
         `result.slug` is the slug of the note this call resolved to -- populated for
         "created"/"updated"/"merged", empty for "refused"/"merged_away"/
         "merged_away_unproven" (the latter two are a MATCH against an archived note,
