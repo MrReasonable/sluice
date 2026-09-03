@@ -1311,7 +1311,8 @@ def cmd_init(args, config, *, asker=None) -> int:
     from sluice.core.app import Sluice
     from sluice.core.candidate import has_any_declared
     from sluice.core.paths import config_file
-    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CRITERIA_RELPATH
+    from sluice.core.protocols import (CANDIDATE_PROFILE_RELPATH, CRITERIA_RELPATH,
+                                       LEADS_VIEW_RELPATH)
     from sluice.core.vault import DEFAULT_VAULT, parse_candidate_profile
     from sluice.onboard.ask import (MissingAnswer, NoInputAsker, TtyAsker, collect, collect_candidate,
                                     collect_profile, collect_sources)
@@ -1615,6 +1616,10 @@ def cmd_init(args, config, *, asker=None) -> int:
             written.append(handle)
         else:
             skipped.append(profile_dest)
+        # The Obsidian Bases view (#240). No interview feeds it and nothing can be lost by not
+        # writing it, so it gets the plain never-overwrite treatment and none of the
+        # park-it-beside handling the two interviewed artefacts need: there is no user prose to
+        # rescue, and a view the user has since edited is theirs.
         if not handle and profile_answers:
             # The user typed prose into an interview and the profile turned up already there. Do
             # NOT overwrite it, and do not silently bin what they wrote: park it beside the real
@@ -1632,6 +1637,22 @@ def cmd_init(args, config, *, asker=None) -> int:
                               f"move that file aside and re-run")
     except OSError as exc:
         failed.append(f"{profile_dest}: {exc}")
+
+    # OUTSIDE the Judging Profile's try, not merely in a nested one. Sharing that block
+    # meant an OSError writing the VIEW was reported against `profile_dest` -- naming a
+    # file that had just been written successfully. Nesting fixed the attribution but not
+    # the ordering: an OSError from the PROFILE write then skipped the view entirely, so a
+    # transient failure on one artefact silently withheld an unrelated one. They are
+    # independent artefacts and neither should gate the other.
+    try:
+        view_handle = store.write_document(LEADS_VIEW_RELPATH, plan.view_text,
+                                           only_if_absent=True)
+        if view_handle:
+            written.append(view_handle)
+        else:
+            skipped.append(os.path.join(vault_dir, LEADS_VIEW_RELPATH))
+    except OSError as exc:
+        failed.append(f"{os.path.join(vault_dir, LEADS_VIEW_RELPATH)}: {exc}")
 
     # CONDITIONAL, unlike the Judging Profile block immediately above -- the one deliberate
     # difference, and load-bearing rather than cosmetic. `_render_profile` always emits its
@@ -1769,12 +1790,31 @@ def cmd_init(args, config, *, asker=None) -> int:
 
     print("\nNext:")
     print("  1. fill in the headings in your Judging Profile")
-    # Worded to cover BOTH shapes with one line: a note that landed with some fields still blank
-    # (fill in the REST), and a decline-everything run that wrote no note at all (nothing to fill
-    # in yet -- naming the path tells that reader what to create, and naming `init` tells them the
-    # interview asks again rather than being a one-shot chance they already missed).
-    print(f"  2. fill in {CANDIDATE_PROFILE_RELPATH} yourself, or answer its five questions on a "
-         f"later `job-sluice init` -- cv run and apply prep read it")
+    # SPLIT rather than worded to straddle both shapes (#244). One line covering both had to say
+    # "fill in <path>", and on the shape the documented quickstart actually produces
+    # (`--no-input`, which declares nothing, so the write below is gated off) there is no file at
+    # that path to fill in. `doctor` then reports the same note dead and blocking `cv`, so the
+    # first thing a new user is told to do names a file that does not exist and the second thing
+    # confirms it is missing. The run knows which shape it is in, so it says so.
+    #
+    # `candidate_exists` is the START-of-run probe and `candidate_declared` is what this run
+    # wrote, so the disjunction is "has anything been declared". Deliberately not a fresh store
+    # read: the answer is already known, and a re-probe would report on a window this message
+    # does not own.
+    #
+    # The negative arm says "add ... to" rather than "create", and that is forced by the seam
+    # rather than chosen for tone. `core/protocols.py`'s Store contract requires only an
+    # all-blank profile for a MISSING document and says nothing about how a present one parses,
+    # so `has_any_declared` cannot distinguish "no file" from "a file with every field blank" --
+    # and a hand-made blank stub is exactly the second. "create" would be wrong for that reader
+    # in the same way "fill in" was wrong for the `--no-input` reader. "add your name and contact
+    # details to <path>" is true of both, and still tells someone with no file what to make.
+    if candidate_exists or candidate_declared:
+        print(f"  2. fill in the rest of {CANDIDATE_PROFILE_RELPATH} "
+              f"-- cv run and apply prep read it")
+    else:
+        print(f"  2. add your name and contact details to {CANDIDATE_PROFILE_RELPATH}, or answer "
+              f"its five questions on a later `job-sluice init` -- cv run and apply prep read it")
     print("  3. job-sluice ingest list-sources --health")
     print("  4. job-sluice triage run --no-llm")
 

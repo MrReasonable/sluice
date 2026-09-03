@@ -63,6 +63,7 @@ class InitPlan:
     config_text: str
     profile_text: str
     candidate_text: str = ""
+    view_text: str = ""
     notes: tuple = ()
 
 
@@ -394,6 +395,108 @@ def _notes(answers):
     return tuple(out)
 
 
+# The Obsidian Bases view over the lead notes (#240), written verbatim: it takes no answers,
+# so unlike the other three artefacts there is nothing to render. It lives here anyway so
+# `cmd_init` writes all four through one uniform path.
+#
+# `note["base"] == link("Job Leads.base")` is the membership predicate, and it is the reason
+# `core/vault.py` stamps `base: "[[Job Leads.base]]"` into every lead note it creates. The two
+# have to agree: change the filename and every note already in the vault falls out of the view.
+#
+# NEUTRALITY. This ships to every user, so it names no place, employer or role preference --
+# the same rule `sluice.yaml.example` and the golden fixtures live under. That is a real
+# constraint rather than a theoretical one: a hand-built view of this kind naturally grows a
+# tab per city the author is searching, and those tabs are exactly the "hunt geography" #27 is
+# about. Views here are keyed on sluice's OWN status vocabulary instead, which is neutral by
+# construction because `core/status.py` defines it.
+#
+# Every filter uses `==` only. Bases supports more, but each construct used here is one
+# observed working in a real vault; inventing syntax would fail silently, since a view whose
+# filter does not parse renders as an empty table rather than an error.
+LEADS_VIEW_TEXT = """filters:
+  and:
+    - note["base"] == link("Job Leads.base")
+properties:
+  company:
+    displayName: Company
+  role:
+    displayName: Role
+  location:
+    displayName: Location
+  status:
+    displayName: Status
+  score:
+    displayName: Score
+  salary:
+    displayName: Salary
+  role_type:
+    displayName: Type
+  source:
+    displayName: Source
+  last_seen:
+    displayName: Last seen
+  url:
+    displayName: Job URL
+views:
+  - type: table
+    name: All leads
+    order:
+      - company
+      - role
+      - location
+      - status
+      - score
+      - salary
+      - last_seen
+    groupBy:
+      property: status
+      direction: ASC
+    sort:
+      - property: score
+        direction: DESC
+  - type: table
+    name: Shortlist
+    filters:
+      and:
+        - status == "shortlist"
+    order:
+      - company
+      - role
+      - location
+      - score
+      - salary
+      - url
+    sort:
+      - property: score
+        direction: DESC
+  - type: table
+    name: Needs review
+    filters:
+      and:
+        - status == "needs_review"
+    order:
+      - company
+      - role
+      - location
+      - score
+      - relevance_notes
+  - type: table
+    name: Applied
+    filters:
+      and:
+        - status == "applied"
+    order:
+      - company
+      - role
+      - location
+      - salary
+      - last_seen
+    sort:
+      - property: last_seen
+        direction: DESC
+"""
+
+
 def build_plan(answers, *, profile_answers=None, candidate_answers=None, sources=None) -> InitPlan:
     """The artefacts `sluice init` writes, as text.
 
@@ -412,4 +515,5 @@ def build_plan(answers, *, profile_answers=None, candidate_answers=None, sources
     return InitPlan(config_text=_render_config(answers, sources),
                     profile_text=_render_profile(profile_answers),
                     candidate_text=_render_candidate(candidate_answers),
+                    view_text=LEADS_VIEW_TEXT,
                     notes=_notes(answers))

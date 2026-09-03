@@ -48,6 +48,16 @@ _NOT_PROSE = {
     # other rendered artefact, so there is no transitive-coverage argument here, only the
     # vocabulary-table one.
     ("sluice.onboard.plan", "_CANDIDATE_KEY_BY_ANSWER"),
+    # `LEADS_VIEW_TEXT` is swept as the ARTEFACT it renders into (`rendered:view_text`, in
+    # `rendered_artefacts()` above), so it is exempt HERE the way the other rendered constants
+    # are -- from the constant-level roster, not from the taxonomy check.
+    #
+    # It was previously exempt with no such coverage, on the argument that
+    # `test_leads_view.py` guards it. That was half true and the wrong half: that guard checks
+    # FILTERS and currency tokens and says in its own comment that a place name in a view's
+    # NAME would pass. Measured, a role-and-culture phrase planted as a tab name left the whole
+    # suite green, in bytes `init` writes into a stranger's vault.
+    ("sluice.onboard.plan", "LEADS_VIEW_TEXT"),
     # `EVIDENCE_KINDS` (core/protocols.py) is a registry of relpaths and frontmatter FIELD NAMES --
     # "Company", "Proficiency", "Signal Value" and the like -- same shape as
     # `_CANDIDATE_FIELD_ORDER` above: identifiers a store reads as keys, never prose a user reads
@@ -65,8 +75,8 @@ _SOURCES_FIXTURE = {"example_source": {
 
 
 def rendered_artefacts():
-    """[(label, text), ...] for the THREE files `sluice init` writes (Task 6 added the third: the
-    Candidate Profile note).
+    """[(label, text), ...] for the FOUR files `sluice init` writes (Task 6 added the Candidate
+    Profile note; #240 added the Obsidian Bases view).
 
     NOTHING IS STRIPPED, and BOTH arms of every branch are rendered. Two holes lived here:
 
@@ -91,7 +101,14 @@ def rendered_artefacts():
     return [("rendered:config_text(sources walked)", walked.config_text),
             ("rendered:config_text(sources skipped -- the DEFAULT path)", default.config_text),
             ("rendered:profile_text", walked.profile_text),
-            ("rendered:candidate_text", walked.candidate_text)]
+            ("rendered:candidate_text", walked.candidate_text),
+            # The FOURTH artefact (#240). It went into `_NOT_PROSE` on the grounds that
+            # `test_leads_view.py` guards it, and that was only half true: that guard checks
+            # FILTERS and currency tokens and says in its own comment that a place name in a
+            # view's NAME would pass. Measured -- planting a role-and-culture phrase as a tab
+            # name left the FULL SUITE green, in bytes `init` writes into a stranger's vault.
+            # The taxonomy sweep is the check that reads names.
+            ("rendered:view_text", walked.view_text)]
 
 
 def terminal_transcript():
