@@ -818,12 +818,45 @@ class Vault:
             try:
                 with os.scandir(dirpath) as it:
                     entries = [e.path for e in it if _fold_note_name(e.name) == want]
-            except OSError:
-                # A directory that listed a moment ago and cannot now -- deleted, or
-                # permissions changed mid-walk. Skipped rather than propagated, because
-                # this is a SECOND look at a set the exact probe above has already reported
-                # on: raising here would turn a lookup that legitimately found nothing into
-                # a failure, on the arm where the exact-name answer is already in hand.
+            except (FileNotFoundError, NotADirectoryError):
+                # ONLY the two that genuinely mean "no directory there" -- a subfolder
+                # deleted, or replaced by a file, since the walk that filled `_scan_dirs`.
+                # The same pair `_is_note_file` answers False for, chosen for the same
+                # reason and deliberately not widened to `except OSError`.
+                #
+                # A bare `except OSError` here shipped on this branch and was WRONG, with
+                # the exact harm this module documents one rung up. It rested on "the exact
+                # probe above has already reported on this directory", which is false: that
+                # probe reports the STATABILITY OF ONE PATH, not the LISTABILITY of the
+                # directory, and the two come apart. Measured on a directory left executable
+                # but not readable, with `_scan_dirs` warm from an earlier walk (the cache
+                # is what makes this reachable -- `_walk`'s `onerror=_reraise` would have
+                # raised during the walk itself): `os.stat` of a known path inside it
+                # succeeds, `os.scandir` of it raises EACCES, and a note that IS present
+                # under a case variant came back `[]`. A transient EIO on a network mount is
+                # the same shape without the permissions.
+                #
+                # `[]` is not a neutral answer on this path. It is the `if not found:`
+                # branch, which CREATES, and which lets `_archived_match` return
+                # `merged_away` -- a `seen.db` row with no removal path, suppressing the
+                # lead permanently with its `last_seen` frozen. Propagating instead reaches
+                # the ingest sink's own `except OSError`, which counts the lead `skipped`
+                # and keeps it out of `seen.db` for a retry next run: the recoverable
+                # direction, and the same route `_archived_match` documents for an
+                # unreadable archive entry.
+                #
+                # How far the swallow actually REACHED is worth stating exactly, because two
+                # reviewers of this branch measured it differently and both were partly
+                # right. Through `upsert` a PERSISTENT failure was already contained by
+                # accident: `_resolve_path` re-derives the directory list whenever `missed`
+                # is set, and that re-walk raises through `_walk`'s `onerror=_reraise` --
+                # measured, `upsert` raised PermissionError rather than answering. A
+                # TRANSIENT one is not contained, because the re-walk then succeeds, the
+                # directory set compares equal, and the stale answer stands; a flaky network
+                # mount is exactly that shape. And `_locate`'s other callers have no such
+                # net at all -- `reconcile_names`' layer-1 precheck calls it directly. So
+                # the narrow catch is not defence in depth over a closed hole; it is what
+                # closes the arms the re-derive never covered.
                 continue
             found.extend(p for p in entries if _is_note_file(p))
         return found
@@ -1397,6 +1430,7 @@ class Vault:
             return out
         want = {_status.normalize(s) for s in statuses} if statuses else None
         paths = []
+        every_slug: list = []   # every lead note seen, unfiltered (the case sweep's input)
         for dirpath, filenames in self._walk():
             paths.extend(os.path.join(dirpath, n) for n in filenames if n.endswith(".md"))
         for path in sorted(paths):
@@ -1408,6 +1442,8 @@ class Vault:
             if not _is_lead_note(fm):
                 continue
             st = _status.normalize(fm.get("status", ""))
+            # BEFORE the status filter, deliberately -- see the case-collision sweep below.
+            every_slug.append(self._slug_for(path))
             if want is not None and st not in want:
                 continue
             out.append(LeadNote(ref=path, slug=self._slug_for(path),
@@ -1509,11 +1545,16 @@ class Vault:
         # human judgement a conflict exists to demand), but a message claiming `--merge`
         # resolves it would be false on exactly the case the same sentence calls the harm.
         #
-        # This report also only sees twins that BOTH survive the caller's filter, because it
-        # groups over the list about to be returned: a `read_leads({"shortlist"})` whose twin
-        # is `dismiss` sees one note and says nothing -- and that is the shape #205 reports.
-        # So it is a standing signal on the UNFILTERED reads, not something every command
-        # emits.
+        # Swept over every lead note WALKED, never over the list about to be returned -- the
+        # one difference between this and the sibling sweep above, which is deliberately
+        # per-RETURNED-list because a slug a caller cannot index is not its problem. Here the
+        # opposite holds: the pair is a property of the STORE, and the shape #205 actually
+        # reports is one twin `shortlist` and the other `dismiss`, so every status-filtered
+        # read surfaces exactly ONE of them. Grouping over `out` made
+        # `read_leads({"shortlist"})` -- among the commonest calls in this codebase -- say
+        # nothing about the very pair this exists to report. That was the first version of
+        # this sweep, and it was measured wrong rather than reasoned wrong. The notes
+        # themselves are still filtered normally; only what the report LOOKS at is not.
         #
         # Keyed on the FOLD of the slug (`_fold_note_name`, the same rule `_locate` and
         # `_archived_match` resolve by), so what the read path calls a collision is exactly
@@ -1522,8 +1563,8 @@ class Vault:
         # first sweep's fact, already said above, and saying it twice in two vocabularies
         # would teach a reader to skip both.
         by_fold: dict = {}
-        for note in out:
-            by_fold.setdefault(_fold_note_name(note.slug), set()).add(note.slug)
+        for slug in every_slug:
+            by_fold.setdefault(_fold_note_name(slug), set()).add(slug)
         for folded, slugs in by_fold.items():
             if len(slugs) < 2:
                 continue
@@ -1532,9 +1573,10 @@ class Vault:
                 continue
             self._warned_dup_slugs.add(key)
             _log.warning(
-                "vault: %d notes differ only by capitalisation (%s); they are one job held "
-                "as separate leads with separate status, and a case-insensitive filesystem "
-                "cannot sync the set. `job-sluice leads dedupe` clusters them; `--merge` "
+                "vault: %d note names differ only by capitalisation (%s); they are one job "
+                "held as separate leads with separate status, and a case-insensitive "
+                "filesystem cannot sync the set. `job-sluice leads dedupe` clusters them; "
+                "`--merge` "
                 "completes only where their statuses agree and reports `conflict` "
                 "otherwise, so a disagreeing pair needs a human to pick the surviving "
                 "status first", len(slugs), ", ".join(sorted(slugs)))
@@ -2805,7 +2847,18 @@ class Vault:
                     (n.slug, "note is a symlink; this pass does not reorganise a "
                              "structure the user deliberately built"))
                 continue
-            if target == n.slug:
+            if _fold_note_name(target) == _fold_note_name(n.slug):
+                # FOLDED (#205) to stay in step with layer 1 below, which reaches the vault
+                # through `_locate` and therefore matches up to case. Left exact, a note
+                # whose re-derived target differs from its own name ONLY in capitalisation
+                # slips past this skip, reaches layer 1, and `_locate` hands back the note
+                # ITSELF -- reported as its own blocker, on every run, for ever. That is the
+                # phantom self-collision this branch already exists to avoid, arriving
+                # through the new equivalence; measured on this branch before the fold.
+                # Skipping is also the right answer on its merits: under that equivalence
+                # the target and the current name ARE one identity, so there is nothing to
+                # rename to.
+                #
                 # The re-derivation reproduced the note's OWN current name -- reachable when
                 # the frontmatter company folds to the SANITIZED spelling of a placeholder
                 # (e.g. `_sanitize` renders "N/A" as "N-A", which `_frontmatter_name`'s
@@ -2845,18 +2898,37 @@ class Vault:
         # Layer 2: the within-run precheck. Grouped AFTER layer 1 and BEFORE any move executes,
         # so two notes racing to the same target are compared against EACH OTHER, never against
         # whichever one happened to move first.
+        # Keyed on the FOLD of the target (#205), never the target itself, and the real
+        # target rides along in the value. Grouped exactly, two notes whose companies differ
+        # only in capitalisation resolve to targets that differ only in capitalisation, land
+        # in separate groups, and BOTH rename -- so this pass MINTS the case pair the fold in
+        # `_locate` exists to stop, reporting `renames` for both and `collisions: []`. Layer
+        # 1 does not catch it either: it runs against the PRE-sweep vault, where neither
+        # target is occupied yet. Measured on this branch before the key was folded.
+        #
+        # This is the contract obligation `core/protocols.py` states, applied to the sibling
+        # path in the same file: a store's identity equivalence binds EVERY path that
+        # resolves a lead, and a rename that lands two notes on one identity is that
+        # equivalence going unapplied on a WRITE.
         by_target: dict = {}
         for n, target in survivors:
-            by_target.setdefault(target, []).append(n)
+            by_target.setdefault(_fold_note_name(target), []).append((n, target))
         to_move = []
-        for target, group in by_target.items():
+        for group in by_target.values():
             if len(group) > 1:
-                for n in group:
-                    summary["collisions"].append(
-                        (n.slug, target,
-                         "two notes in this sweep both resolve to this target"))
+                # The two shapes share a group but not a diagnosis, so the message
+                # distinguishes them. Identical targets are the original case and keep the
+                # original wording; targets that differ only in capitalisation are #205's,
+                # and saying "the same target" of two visibly different strings would send
+                # an operator looking for a match they can see is not there.
+                same = len({t for _n, t in group}) == 1
+                reason = ("two notes in this sweep both resolve to this target" if same else
+                          "two notes in this sweep resolve to names differing only in "
+                          "capitalisation, which are one identity")
+                for n, target in group:
+                    summary["collisions"].append((n.slug, target, reason))
                 continue
-            to_move.append((group[0], target))
+            to_move.append(group[0])
 
         # Phase 2: execute. Layer 3 (_reserve_and_move's own O_EXCL) is the LAST word -- a
         # collision surviving to here is a genuine race against a writer OUTSIDE this sweep's

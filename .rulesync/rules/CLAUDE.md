@@ -455,9 +455,10 @@ which already CLUSTERS such a pair (`cluster_duplicates` normalizes through `_no
 casefolds) — but do not upgrade that to "`--merge` resolves it", which was the first wording and is
 false on the reported pair: `resolve_merge_status` returns `conflict` for two distinct non-`new`
 triage states, so a `shortlist`/`dismiss` twin pair clusters and refuses to merge (measured), which
-is correct because picking the survivor is the human judgement a conflict demands. The report is
-bounded too — it groups over the list `read_leads` returns, so a status-filtered read surfacing one
-twin says nothing. No note is RENAMED by any of this, and the reason is SCOPE, not orphaned tracker
+is correct because picking the survivor is the human judgement a conflict demands. The report sweeps
+every lead note WALKED rather than the list `read_leads` returns — unlike the duplicate-slug sweep
+beside it — because the pair is a property of the store and a `shortlist`/`dismiss` pair shows only
+one twin to any status-filtered read. No note is RENAMED by any of this, and the reason is SCOPE, not orphaned tracker
 state: casing normalization does not fix dedup, and `Sluice.rename` (#151) already refiles
 dead-letter rows via `DeadLetterDb.rename_lead` and refuses upfront if that store is unreachable.
 
