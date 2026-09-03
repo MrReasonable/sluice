@@ -1174,14 +1174,22 @@ filesystem may return NFD for a name written NFC), and every widening past case 
 differently spelled names are one job.
 
 `_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the cost
-where it was — the steady-state hit stays ~7µs while the folded listing costs ~2ms over a
-3000-note benchmark store, so the fold is paid on the create/miss arm that already pays `_archived_match`'s
-listdir. One consequence follows and is REPORTED rather than closed: against a pair a pre-#205
+where it was — the exact probe does not move as the store grows, while the folded listing is about
+three orders of magnitude dearer and scales with the note count, so the fold is paid on the
+create/miss arm that already pays `_archived_match`'s listdir. One consequence follows and is REPORTED rather than closed: against a pair a pre-#205
 store already holds, a scrape whose casing matches either note returns that one and updates
 silently; only a third casing, matching neither, reaches the ambiguous refusal. So the standing
-signal on such pairs is `read_leads`' own warning, which every command that reads leads emits and
-which names `leads dedupe --merge` — a remedy that already works, since `cluster_duplicates`
-normalizes company and role through `_norm_tokens`, which casefolds. Only the signal was missing.
+signal on such pairs is `read_leads`' own warning, which names `leads dedupe` — `cluster_duplicates`
+normalizes company and role through `_norm_tokens`, which casefolds, so such a pair already
+clusters. Only the signal was missing.
+
+What `--merge` then does is conditional, and the warning says so rather than promising a
+resolution the pass refuses: `resolve_merge_status` returns `conflict` for two distinct non-`new`
+triage states, so the pair #205 actually reports — one twin `shortlist`, the other `dismiss` —
+clusters and does **not** merge (measured), while twins that agree merge normally. That refusal is
+correct, since picking the surviving status is exactly the human judgement a conflict demands. The
+report is likewise bounded: it groups over the list `read_leads` is about to return, so a
+status-filtered read that surfaces only one twin says nothing.
 
 **The scan set and the write folder are two different things** (#1). The scan set is
 every directory a lead may be READ from; the **write folder** is the ONE directory a

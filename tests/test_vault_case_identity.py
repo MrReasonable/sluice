@@ -25,6 +25,8 @@ import os
 
 import pytest
 
+from sluice.core.app import Sluice
+from sluice.core.config import Config
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault
 from tests.conftest import LOCATIONS
@@ -252,6 +254,9 @@ def test_read_leads_reports_a_pair_that_differs_only_by_capitalisation(tmp_path,
     hits = [m for m in msgs if "differ only by capitalisation" in m]
     assert len(hits) == 1, msgs
     assert "leads dedupe" in hits[0], "the report must name the remedy that already ships"
+    assert "conflict" in hits[0], (
+        "the report must not promise that --merge RESOLVES the pair: on the pair #205 "
+        "reports it returns conflict and merges nothing (pinned below)")
     assert "Example Co - Engineering Manager" in hits[0]
     assert "EXAMPLE CO - Engineering Manager" in hits[0]
 
@@ -301,8 +306,9 @@ def test_the_capitalisation_report_is_raised_once_per_store(tmp_path, caplog):
 # ── the fast path, and the one fold ───────────────────────────────────────────
 def test_an_exact_name_wins_over_a_case_variant_on_disk(tmp_path):
     """`_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the
-    steady-state lookup at its previous cost (~7us against ~2ms for the folded listing over a
-    3000-note benchmark store). Pinned as BEHAVIOUR rather than as a timing: with both spellings on disk,
+    steady-state lookup at its previous cost (the folded listing is orders of magnitude dearer;
+    see `_locate`). Pinned as BEHAVIOUR rather than as a timing, which nothing could pin: with both
+    spellings on disk,
     a lookup for one of them returns THAT one alone -- never the pair, which would refuse, and
     never the other, which would write to the wrong twin."""
     _require_case_sensitive_fs(tmp_path)
@@ -322,18 +328,41 @@ def test_the_three_consumers_share_one_fold(tmp_path):
     is measurably a resurrection (the case this file's archive rows pin). Asserted on the
     SOURCE, because no fixture can witness a drift that has not happened yet."""
     import inspect
+    import io
+    import tokenize
 
     import sluice.core.vault as vault_module
+
+    def _code_only(fn):
+        """The function's source with COMMENTS removed, so this guard reads what runs.
+
+        Load-bearing rather than tidy: `_archived_match`'s comment explains at length why
+        `re.IGNORECASE` is NOT used here, and a raw `inspect.getsource` sweep matches that
+        prose and fails on the very code that is correct. A guard that cannot tell an
+        explanation from a use would force the explanation to be deleted, which is the one
+        thing that must not happen -- the comment is what stops the flag being reinstated.
+        Tokenizing rather than splitting on `#`, because a `#` inside a string literal would
+        truncate a real line and quietly shrink what this sweep looks at."""
+        src = inspect.getsource(fn)
+        out = []
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type != tokenize.COMMENT:
+                out.append(tok.string)
+        return "\n".join(out)
 
     for fn in (vault_module.Vault._locate,
                vault_module.Vault._archived_match,
                vault_module.Vault.read_leads):
-        src = inspect.getsource(fn)
-        assert "_fold_note_name" in src, (
+        code = _code_only(fn)
+        assert "_fold_note_name" in code, (
             f"{fn.__qualname__} must fold through _fold_note_name, not its own casefold()")
-        assert ".casefold()" not in src, (
+        assert ".casefold()" not in code, (
             f"{fn.__qualname__} folds inline; that is the second copy the helper exists to "
             "prevent")
+        assert "IGNORECASE" not in code, (
+            f"{fn.__qualname__} uses re.IGNORECASE, which is a NARROWER equivalence than "
+            "_fold_note_name wherever a fold changes length -- and it shipped past the two "
+            "checks above, because neither of them can see a regex flag")
 
 
 @pytest.mark.parametrize("scraped,expected", [
@@ -392,3 +421,43 @@ def test_the_archive_pre_filter_folds_as_widely_as_the_decision_it_gates(tmp_pat
     assert again.outcome == "merged_away", (
         f"the archive pre-filter is narrower than the comparison it gates: {_notes(v)}")
     assert not any("SS Analyst" in n for n in _notes(v))
+
+
+# ── what the report's named remedy actually does ──────────────────────────────
+@pytest.mark.parametrize("status_a,status_b,expected", [
+    ("shortlist", "dismiss", "conflict"),   # the pair #205 reports
+    ("new", "new", "merged"),
+    ("shortlist", "shortlist", "merged"),
+])
+def test_dedupe_clusters_a_case_variant_pair_but_merges_only_when_status_agrees(
+        tmp_path, monkeypatch, status_a, status_b, expected):
+    """`read_leads`' report names `job-sluice leads dedupe`, so what that command DOES on a
+    case-variant pair is part of the claim the message makes and has to be pinned, not
+    assumed. The first wording said "`--merge` resolves it" and was FALSE on exactly the
+    pair the same sentence calls the harm: `resolve_merge_status` returns `conflict` for two
+    distinct non-`new` triage states, `dedupe_merge` refuses the cluster, and both notes stay
+    on disk. The row that asserted the message only checked that the string `leads dedupe`
+    appeared, so the false half was certified green -- which is why this runs the real pass
+    instead.
+
+    The refusal is CORRECT and is asserted as the desired behaviour, not as a defect:
+    choosing which of a live shortlist and a dismissal survives is the human judgement a
+    conflict exists to demand, and a tool that picked would be deciding it silently. What
+    had to change was the message, not the pass.
+
+    Clustering holds in every row -- that is the half `_norm_tokens`' casefold delivers --
+    so the parametrization separates "does dedupe SEE the pair" from "does --merge finish
+    it"."""
+    _require_case_sensitive_fs(tmp_path)
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    v = Vault(str(tmp_path / "vault"))
+    _seat(v, "Example Co - Widget Analyst", company="Example Co", status=status_a, score=1)
+    _seat(v, "EXAMPLE CO - Widget Analyst", company="EXAMPLE CO", status=status_b, score=2)
+
+    app = Sluice(Config())
+    report = app.dedupe_report()
+    assert len(report) == 1, f"dedupe did not cluster the case-variant pair: {report}"
+    cid = report[0].id
+
+    assert app.dedupe_merge([cid]) == [(cid, expected)]
+    assert len(_notes(v)) == (2 if expected == "conflict" else 1)
