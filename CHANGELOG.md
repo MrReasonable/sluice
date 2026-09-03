@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.5.0](https://github.com/MrReasonable/sluice/compare/v2.4.2...v2.5.0) (2026-09-03)
+
+
+### Features
+
+* **dossier:** settle client-rendered postings and recover the JD from JSON-LD ([e78687d](https://github.com/MrReasonable/sluice/commit/e78687ddcfb3cf16688e16568f60b3e81fb92ad6))
+
 ## [2.4.2](https://github.com/MrReasonable/sluice/compare/v2.4.1...v2.4.2) (2026-09-02)
 
 ### What you need to do
