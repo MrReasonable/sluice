@@ -1174,8 +1174,8 @@ filesystem may return NFD for a name written NFC), and every widening past case 
 differently spelled names are one job.
 
 `_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the cost
-where it was — the steady-state hit stays ~7µs while the folded listing costs ~1.9ms over a
-3190-note store, so the fold is paid on the create/miss arm that already pays `_archived_match`'s
+where it was — the steady-state hit stays ~7µs while the folded listing costs ~2ms over a
+3000-note benchmark store, so the fold is paid on the create/miss arm that already pays `_archived_match`'s
 listdir. One consequence follows and is REPORTED rather than closed: against a pair a pre-#205
 store already holds, a scrape whose casing matches either note returns that one and updates
 silently; only a third casing, matching neither, reaches the ambiguous refusal. So the standing

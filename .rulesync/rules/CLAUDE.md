@@ -438,12 +438,15 @@ match seated a note per spelling, each with its own status — one holding a liv
 returning as `new` under the other. It also wedged replication silently: a case-insensitive
 filesystem cannot hold the pair and Syncthing reports the folder `state=idle` while delivering
 neither note. Do NOT reach for a title-caser here — the issue's own suggestion, and measured before
-it was rejected, an acronym-safe one converges 1 of the 5 reported pairs, leaves `Example
-Co`/`EXAMPLE CO` (the shortlist-vs-dismiss pair) apart, and turns `ai` into `Ai`, which is the
-corruption the acronym rule exists to avoid; casing NORMALIZATION cannot fix a dedup problem,
-case-insensitive RESOLUTION does. `_locate` probes the exact name FIRST and folds only on a miss,
-which is what keeps the cost where it was (~7µs steady-state hit against ~1.9ms for the folded
-listing over a 3190-note store) — do not "simplify" that into an unconditional fold. Its
+it was rejected. An acronym-safe one (leave a token that is all-caps or has an internal capital
+untouched, minor words lowercase) converges only the all-lowercase↔mixed-case shape: it leaves an
+ALL-CAPS spelling apart from its mixed-case twin, which is the shortlist-vs-dismiss pair that did
+the damage, and leaves a CamelCase brand apart from its all-caps spelling. And on lowercase input
+it turns `ai` into `Ai` — the corruption the acronym rule exists to prevent, since the rule can only
+preserve an acronym that arrives already capitalised. Casing NORMALIZATION cannot fix a dedup
+problem; case-insensitive RESOLUTION does. `_locate` probes the exact name FIRST and folds only on a miss,
+which is what keeps the cost where it was (~7µs steady-state hit against ~2ms for the folded
+listing over a 3000-note benchmark store) — do not "simplify" that into an unconditional fold. Its
 consequence is stated rather than closed: against a pair a pre-#205 store already holds, a scrape
 matching either spelling updates that one silently and only a THIRD casing reaches the ambiguous
 refusal, so the standing signal is `read_leads`' own warning, which names `leads dedupe --merge` —
