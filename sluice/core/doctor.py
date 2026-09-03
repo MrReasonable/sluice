@@ -320,11 +320,14 @@ def classify_store(facts: dict | None) -> list:
     "nothing is configured" and never invents an opinion, so triage still
     runs; it just judges nothing preferentially until the profile exists. Each of
     the three evidence corpora (#164: Experience Library, Skills Inventory, STAR
-    Stories) gets its own NOTICE row. For a corpus the gate actually READS
-    (`EvidenceKind.cited_by_gate` -- `experience` alone today), zero verified
-    entries means every CV bullet citing it would fail the fabrication gate's
-    citation check, which is worth knowing before a compose, not a defect in the
-    store. The other two say so rather than claiming a citability they do not have,
+    Stories) gets its own row -- NOTICE, with one exception. For a corpus the gate
+    actually READS (`EvidenceKind.cited_by_gate` -- `experience` alone today), zero
+    verified entries is DEAD and `blocks=("cv",)` (#242): `cv run` refuses such a
+    vault outright, once for the run and before any fetch or backend call, so a
+    NOTICE row would call the install fine about the exact thing that stops the next
+    command. That reverses this docstring's earlier reading -- "worth knowing before
+    a compose, not a defect in the store" -- which was true only while the compose
+    still attempted and failed later. The other two say so rather than claiming a citability they do not have,
     and since #165 they differ from each other: `skills` is READ by the composer as
     framing (`read_by_composer`) while remaining uncitable, so its row says that rather
     than either "citable" or "nothing reads this". In every case a non-zero
@@ -356,7 +359,7 @@ def classify_store(facts: dict | None) -> list:
     if not facts.get("baseline_exists"):
         out.append(ComponentCheck(
             "store", "baseline_rel", DEAD,
-            "baseline CV not found at the configured path -- cv run cannot "
+            "baseline CV not found, or empty, at the configured path -- cv run cannot "
             "compose without it", blocks=("cv",)))
     else:
         out.append(ComponentCheck("store", "baseline_rel", OK, "found"))
@@ -399,7 +402,14 @@ def classify_store(facts: dict | None) -> list:
                 "store", label, DEAD, f"cannot be read -- {error}",
                 blocks=("cv",) if spec.cited_by_gate else ()))
             continue
-        verified = facts.get(f"{kind}_verified", 0)
+        # `_MISSING`, not a `0` default: since #242 a zero here is DEAD and contributes to the
+        # exit code, so defaulting an ABSENT fact to zero would manufacture the very
+        # "read failure reported as an empty count" that `Vault.preflight` forbids. Not
+        # reachable through `Vault` (it always supplies the triple, or the `<kind>_error` arm
+        # above fires instead), but a second store need only omit the key to trip it.
+        verified = facts.get(f"{kind}_verified")
+        fact_missing = verified is None
+        verified = verified or 0
         total = facts.get(f"{kind}_total", 0)
         pending = facts.get(f"{kind}_pending", 0)
         # Keyed on the registry's own `cited_by_gate`, not printed for every kind:
@@ -429,7 +439,20 @@ def classify_store(facts: dict | None) -> list:
             # whole value of this row -- a count nobody can act on is just noise.
             detail += (f"; {pending} proposed and awaiting review "
                        f"(job-sluice {kind} verify)")
-        out.append(ComponentCheck("store", label, NOTICE, detail))
+        # DEAD, not NOTICE, when a CITABLE corpus has nothing verified in it (#242): `cv run`
+        # now refuses such a vault outright, before any spend, so a NOTICE row here would say
+        # the install is fine about the very thing that makes the next command exit 2. The
+        # Candidate Profile row below is the precedent -- the same shape, DEAD, naming the
+        # refusal it predicts -- and predicting which commands are blocked is what this report
+        # is for. Only for `cited_by_gate`: an empty `skills` or `stories` corpus blocks
+        # nothing, so those stay NOTICE and say so in their own wording above.
+        if spec.cited_by_gate and not verified and not fact_missing:
+            out.append(ComponentCheck(
+                "store", label, DEAD,
+                detail + " -- cv run refuses to compose without at least one",
+                blocks=("cv",)))
+        else:
+            out.append(ComponentCheck("store", label, NOTICE, detail))
     if not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
         out.append(ComponentCheck(
             "store", "Candidate Profile", DEAD,
