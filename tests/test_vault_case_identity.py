@@ -328,12 +328,17 @@ def test_an_exact_name_wins_over_a_case_variant_on_disk(tmp_path):
     assert v._locate("Example Co - Engineering Manager") == [exact]
 
 
-def test_the_three_consumers_share_one_fold(tmp_path):
-    """`_locate`, `_archived_match` and `read_leads`' report must fold identically. A second
-    copy of the rule kept in step by a comment is this repo's #30 failure mode, and here the
-    three disagree SILENTLY: a `_locate` that folds against an `_archived_match` that does not
-    is measurably a resurrection (the case this file's archive rows pin). Asserted on the
-    SOURCE, because no fixture can witness a drift that has not happened yet."""
+def test_every_name_resolving_path_shares_one_fold(tmp_path):
+    """Every path that resolves a lead by NAME must fold identically. A second copy of the
+    rule kept in step by a comment is this repo's #30 failure mode, and here the consumers
+    disagree SILENTLY -- a `_locate` that folds against an `_archived_match` that does not is
+    measurably a resurrection, and a `reconcile_names` that does not measurably MINTS a pair.
+    Both were live on this branch before review, which is also why this roster is not the
+    three it shipped as: `reconcile_names` was missing from it while that function was busy
+    creating the exact state the fold exists to prevent.
+
+    Asserted on the SOURCE, because no fixture can witness a drift that has not happened
+    yet -- the behaviour rows elsewhere in this file cover the drifts that HAVE."""
     import inspect
     import io
     import tokenize
@@ -359,7 +364,8 @@ def test_the_three_consumers_share_one_fold(tmp_path):
 
     for fn in (vault_module.Vault._locate,
                vault_module.Vault._archived_match,
-               vault_module.Vault.read_leads):
+               vault_module.Vault.read_leads,
+               vault_module.Vault.reconcile_names):
         code = _code_only(fn)
         assert "_fold_note_name" in code, (
             f"{fn.__qualname__} must fold through _fold_note_name, not its own casefold()")
