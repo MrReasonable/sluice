@@ -752,8 +752,11 @@ class Vault:
         The cost is now TWO different shapes, and conflating them is how the cheap half gets
         argued away. The exact probe scales with the DIRECTORY count, not the note count:
         one stat per candidate per scanned directory. The folded probe scales with the NOTE
-        count, since it lists each scanned directory -- ~1.9ms against a 3190-note store and
-        ~5.5ms at 10000, where the stat probe stays ~7us at both. That second shape is why
+        count, since it lists each scanned directory. Measured on a case-sensitive volume
+        over synthetic stores of 3000 and 10000 notes, it is roughly THREE ORDERS OF
+        MAGNITUDE dearer than the stat probe, and grows with the note count while the stat
+        probe stays flat. The absolute figures move with the machine and nothing pins them,
+        so the ratio and the scaling are the claim, not a number. That second shape is why
         the fold runs SECOND: a steady-state run is overwhelmingly notes that already exist
         at the name being asked for, and those return from the exact probe having listed
         nothing. Earlier measured figures (local disk, and what they become on a network or
@@ -783,10 +786,10 @@ class Vault:
         #
         # AFTER the exact probe, never instead of it, and the ordering is what keeps this
         # affordable. A steady-state run is overwhelmingly notes that already exist at the
-        # name being asked for, and those never reach here: measured over a 3190-note store
-        # on a case-sensitive filesystem, the exact hit stays ~7us while this listing costs
-        # ~1.9ms (~5.5ms at 10000 notes), scaling with the note count rather than the
-        # directory count the stat probe scales with. So the cost lands on the MISS arm --
+        # name being asked for, and those never reach here at all. This listing is about
+        # three orders of magnitude dearer than the stat probe and grows with the note
+        # count, where the stat probe stays flat -- the docstring carries the measurement
+        # and the reason no exact figure is quoted. So the cost lands on the MISS arm --
         # a genuinely new lead, or the case-variant this exists to catch -- which is also
         # the arm already paying _archived_match's listdir.
         #
@@ -1317,7 +1320,7 @@ class Vault:
                 # refuses. A board that keeps sending the spelling that created the note
                 # therefore never reaches this line, which is why the standing report on
                 # such pairs lives in `read_leads` (walked every command, names `leads
-                # dedupe --merge`, which already clusters them) rather than resting on a
+                # dedupe`, which already clusters them) rather than resting on a
                 # refusal that fires only on a casing change.
                 #
                 # "Writes nothing" includes last_seen, and that reaches further than the
@@ -1487,14 +1490,30 @@ class Vault:
         # name first and only folds on a miss (see there), so a store that already holds a
         # pair keeps updating whichever twin the scrape names, silently. Making the write
         # path notice instead would mean folding on every lookup including the steady-state
-        # hit -- ~7us to ~1.9ms over a 3190-note store, on every lead. This walk is already
-        # being paid, so the report costs one grouping over a list that exists.
+        # hit, which `_locate` measures at about three orders of magnitude dearer, on every
+        # lead. This walk is already being paid, so the report costs one grouping over a
+        # list that exists.
         #
         # The remedy already ships and is NOT new UX: `cluster_duplicates` normalizes
         # company and role through `_norm_tokens`, which casefolds, so `job-sluice leads
-        # dedupe` already puts such a pair in one cluster and offers `--merge` (measured).
-        # Only the signal was missing, so the message names that command rather than
-        # describing a repair the user has to invent.
+        # dedupe` already puts such a pair in one cluster (measured). Only the signal was
+        # missing, so the message names that command rather than describing a repair the
+        # user has to invent.
+        #
+        # What that command then DOES is conditional, and the message says so rather than
+        # promising a resolution the pass refuses. `resolve_merge_status` returns `conflict`
+        # for two distinct non-`new` triage states and `dedupe_merge` refuses the cluster, so
+        # the very pair #205 reports -- one twin `shortlist`, the other `dismiss` -- clusters
+        # and does NOT merge: measured, `conflict`, with both notes still on disk. Twins that
+        # agree merge normally. The refusal is CORRECT (picking which status survives is the
+        # human judgement a conflict exists to demand), but a message claiming `--merge`
+        # resolves it would be false on exactly the case the same sentence calls the harm.
+        #
+        # This report also only sees twins that BOTH survive the caller's filter, because it
+        # groups over the list about to be returned: a `read_leads({"shortlist"})` whose twin
+        # is `dismiss` sees one note and says nothing -- and that is the shape #205 reports.
+        # So it is a standing signal on the UNFILTERED reads, not something every command
+        # emits.
         #
         # Keyed on the FOLD of the slug (`_fold_note_name`, the same rule `_locate` and
         # `_archived_match` resolve by), so what the read path calls a collision is exactly
@@ -1515,8 +1534,10 @@ class Vault:
             _log.warning(
                 "vault: %d notes differ only by capitalisation (%s); they are one job held "
                 "as separate leads with separate status, and a case-insensitive filesystem "
-                "cannot sync the set. `job-sluice leads dedupe` clusters them and `--merge` "
-                "resolves it", len(slugs), ", ".join(sorted(slugs)))
+                "cannot sync the set. `job-sluice leads dedupe` clusters them; `--merge` "
+                "completes only where their statuses agree and reports `conflict` "
+                "otherwise, so a disagreeing pair needs a human to pick the surviving "
+                "status first", len(slugs), ", ".join(sorted(slugs)))
         return out
 
     def update_fields(self, ref, fields: dict, *,

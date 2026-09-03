@@ -445,14 +445,21 @@ the damage, and leaves a CamelCase brand apart from its all-caps spelling. And o
 it turns `ai` into `Ai` — the corruption the acronym rule exists to prevent, since the rule can only
 preserve an acronym that arrives already capitalised. Casing NORMALIZATION cannot fix a dedup
 problem; case-insensitive RESOLUTION does. `_locate` probes the exact name FIRST and folds only on a miss,
-which is what keeps the cost where it was (~7µs steady-state hit against ~2ms for the folded
-listing over a 3000-note benchmark store) — do not "simplify" that into an unconditional fold. Its
+which is what keeps the cost where it was (the folded listing is about three orders of magnitude
+dearer than the stat probe and scales with the note count) — do not "simplify" that into an
+unconditional fold. Its
 consequence is stated rather than closed: against a pair a pre-#205 store already holds, a scrape
 matching either spelling updates that one silently and only a THIRD casing reaches the ambiguous
-refusal, so the standing signal is `read_leads`' own warning, which names `leads dedupe --merge` —
-already a working remedy, since `cluster_duplicates` normalizes through `_norm_tokens`, which
-casefolds. No note is ever RENAMED by this: renaming orphans `track_deadletter.lead`, which holds
-the note stem.
+refusal, so the standing signal is `read_leads`' own warning. That warning names `leads dedupe`,
+which already CLUSTERS such a pair (`cluster_duplicates` normalizes through `_norm_tokens`, which
+casefolds) — but do not upgrade that to "`--merge` resolves it", which was the first wording and is
+false on the reported pair: `resolve_merge_status` returns `conflict` for two distinct non-`new`
+triage states, so a `shortlist`/`dismiss` twin pair clusters and refuses to merge (measured), which
+is correct because picking the survivor is the human judgement a conflict demands. The report is
+bounded too — it groups over the list `read_leads` returns, so a status-filtered read surfacing one
+twin says nothing. No note is RENAMED by any of this, and the reason is SCOPE, not orphaned tracker
+state: casing normalization does not fix dedup, and `Sluice.rename` (#151) already refiles
+dead-letter rows via `DeadLetterDb.rename_lead` and refuses upfront if that store is unreachable.
 
 **Never-regress (status).** One `status` frontmatter key, two lifecycles with separate owners
 (`core/status.py`). Triage owns `new/shortlist/research/needs_review/dismiss/unjudgeable` (the last,
