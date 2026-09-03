@@ -2547,7 +2547,10 @@ class Sluice:
         # values. Most swept fields are preference gates in the #26/#63 sense;
         # a few (Config.dossier_allow_hosts, the noise-word lists) are not --
         # see classify_gate's docstring for why that is fine, since every row
-        # is NOTICE regardless. SourceConfig.searches is deliberately excluded: it is a
+        # is NOTICE for every field that declares a gate_role, which is every field the
+        # sweep reaches (#245 made the undeclared case DEGRADED, and that is reachable
+        # only from a user's YAML putting a list on a scalar setting).
+        # SourceConfig.searches is deliberately excluded: it is a
         # per-source override living inside `sources: {id: {...}}`, not a flat
         # field on one of these instances, so this generic sweep cannot reach
         # it without also loading and iterating the sources dict. NOT reported
@@ -2572,8 +2575,8 @@ class Sluice:
         for cfg in gate_cfgs:
             owner = type(cfg).__name__
             components.extend(
-                _doctor.classify_gate(owner, name, value)
-                for name, value in _doctor.list_typed_fields(cfg))
+                _doctor.classify_gate(owner, name, value, role)
+                for name, value, role in _doctor.list_typed_fields(cfg))
 
         # Cached-JD length distribution (Task 8, #169). See classify_dossier_cache's
         # own docstring for why this is a DISTRIBUTION rather than a threshold verdict

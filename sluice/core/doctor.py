@@ -535,7 +535,8 @@ def list_typed_fields(cfg) -> list:
     sweep can apply (`lead_ttl_days`'s own bool-subclasses-int hazard is the
     sharpest example) -- CLAUDE.md states this sweep must not be widened to
     ints, and each of those already carries its own named guard elsewhere."""
-    return [(f.name, getattr(cfg, f.name)) for f in fields(cfg)
+    return [(f.name, getattr(cfg, f.name), f.metadata.get("gate_role"))
+            for f in fields(cfg)
             if isinstance(getattr(cfg, f.name), list)]
 
 
@@ -592,7 +593,9 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
     a single good JD in it. Reading the printed numbers as a partition would make a
     healthy cache look like it had lost entries.
 
-    Always NOTICE, never DEGRADED/DEAD, for the same reason `classify_gate` is: a
+    Always NOTICE, never DEGRADED/DEAD, for the same reason `classify_gate`'s DECLARED-role
+    rows are (its undeclared-role row is the one exception, and describes a wrong-shaped
+    value rather than a gate posture): a
     short-JD-heavy cache is a fact about this install's own scraped data, not evidence
     the PIPELINE itself is broken, so it must never trip `--strict`'s exit code (see
     `DoctorReport.exit_code`'s own reasoning for why NOTICE is excluded by
@@ -661,7 +664,8 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
 
     NOTICE, never DEGRADED, so it cannot affect the exit code: `--strict` in a cron job
     failing because a negative overlaps an inventory is the 672ad2a class aimed at the
-    tool's own exit status. Same posture `classify_gate` takes.
+    tool's own exit status. Same posture `classify_gate` takes for a declared role; its
+    undeclared-role row is DEGRADED, but that is a wrong-shaped VALUE, not a gate posture.
 
     Abstains on either empty input, and on an inventory whose entries declare no domain at
     all -- an install with nothing to contradict must report nothing.
@@ -699,7 +703,8 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     purely as FRAMING (`EvidenceKind.read_by_composer`, cited_by_gate=False) with no
     requirement that any experience entry cite it back -- the spec's own words for this
     row are "framing-only, licensing nothing". So both directions are NOTICE, never
-    DEGRADED, the same posture `classify_negatives_vs_skills` and `classify_gate` take:
+    DEGRADED, the same posture `classify_negatives_vs_skills` and `classify_gate`'s
+    declared-role rows take:
     `--strict` in a cron job must not fail an install that simply has not (yet, or
     ever) linked the two corpora together (see `DoctorReport.exit_code`'s own
     reasoning for why NOTICE is excluded from the count by construction).
@@ -841,21 +846,98 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
     return out
 
 
-def classify_gate(owner: str, name: str, value: list) -> ComponentCheck:
+# What an EMPTY list means, per role (#245). The sweep is generic over every
+# list-typed field, and "empty" does not mean one thing across them, so before
+# this it reported one thing anyway.
+#
+# `abstaining (empty)` is right for a preference gate in the #26/#63 sense: an
+# unconfigured one passes every lead through. It is WRONG, in opposite
+# directions, for the two other shapes present in the config today, and both
+# were being labelled abstaining:
+#
+#   - `dossier_allow_hosts` is a security allowlist. Empty grants no exceptions,
+#     which is the most restrictive state, not an absent opinion.
+#   - `cv.slop_allow` SUBTRACTS from a hardcoded phrase list, so empty leaves
+#     that list fully enforced. Its own field comment in `cv/config.py` already
+#     names this ("NOT abstain-shaped ... the dossier_allow_hosts polarity").
+#
+# The cost of getting it wrong was paid in prose rather than in behaviour: the
+# README carried six lines explaining that the output the reader was looking at
+# meant two different things, naming two settings a new user has never heard of.
+# A label needing six lines of README is the bug.
+#
+# The role is declared as dataclass field METADATA where the field itself is
+# defined, never as a table here. A table in this module is a second copy of the
+# field list and drifts the moment a knob is added; the metadata cannot, because
+# it travels with the field. There is deliberately NO default: an unannotated
+# field is REPORTED below rather than silently inheriting a posture, which is the
+# whole failure this change exists to remove. (It used to raise; that broke doctor
+# on a user's YAML, see `classify_gate`.) `tests/test_doctor.py` pins that
+# every swept field declares one.
+GATE_ROLES = {
+    "abstain": "abstaining (empty)",
+    "no_exceptions": "no exceptions granted (empty)",
+    "no_normalisation": "nothing stripped (empty)",
+}
+
+
+def classify_gate(owner: str, name: str, value: list, role: str) -> ComponentCheck:
     """One posture NOTICE per list-typed field `list_typed_fields` swept from a
-    loaded config: abstaining (empty) or active (non-empty). Most of these are
-    preference gates in the #26/#63 sense (an unconfigured one passes every
-    lead through) -- but the sweep is generic over EVERY list-typed field, so
-    it also catches `Config.dossier_allow_hosts` (a security allowlist, empty
-    meaning "no exceptions granted") and the two noise-word normalization
-    lists, neither of which is a preference a lead is judged against. Calling
-    the row NOTICE rather than a stronger word is what keeps this harmless
-    even where the label overreaches: always NOTICE, never DEGRADED, so an
-    abstaining ANYTHING here (the shipped default, and legitimate -- the
-    672ad2a incident this whole invariant exists to prevent) never affects the
-    exit code or reads as a problem, only as a fact worth knowing before a
-    run."""
+    loaded config: the empty posture for its ROLE, or active (non-empty).
+
+    NOTICE for every DECLARED role, never DEGRADED, so an abstaining anything
+    here (the shipped default, and legitimate -- the 672ad2a incident this whole
+    invariant exists to prevent) never affects the exit code or reads as a
+    problem, only as a fact worth knowing before a run. The single exception is
+    the undeclared-role branch below, which is not a gate posture at all; see
+    its own paragraph. That posture is unchanged by #245; what
+    changed is that the row no longer says the same thing about three different
+    meanings of empty.
+
+    An unknown or missing role REPORTS rather than raises, and rather than picking a
+    posture. An earlier cut raised here on the fail-loudly-at-construction principle, and
+    that is the wrong principle for THIS call site: `doctor` is the command you run when the
+    config is already wrong, so it must never refuse. Measured on the raising version, a user
+    YAML slip putting a list on a non-gate field (`track.gmail_extra_query`) took
+    `doctor --offline` from a full report and exit 1 to
+    ZERO stdout and exit 2 -- the entire diagnostic destroyed by the field it was trying to
+    describe, with a message blaming sluice's own metadata for the user's config.
+    `load_track_config` states the rule this violated: a diagnostic that refuses to start is
+    the opposite of a diagnostic.
+
+    The sweep reaches here by runtime `isinstance`, so its roster is not the set of DECLARED
+    gates -- a user can put a list on any field at all, across every sub-app loader. Measured,
+    `cv.served_prefix` and `apply.neutral_name` both load a list and reach this function; the
+    loaders' `refuse_wrong_container` rejects a SCALAR on a container field, which is the
+    opposite direction and no help here. The fail-loudly property is still
+    bought, at the right time and against the right audience:
+    `test_every_swept_gate_declares_a_role` fails the BUILD when a real gate ships without a
+    role, which is developer error and catchable before release. What arrives here at runtime
+    is a user's config, and the honest row describes THEIR value, not sluice's metadata. It
+    must never say `abstaining`, which is a claim about a preference gate this field is not.
+
+    DEGRADED rather than NOTICE, and that is the one exception to the "always NOTICE" rule
+    stated above. The rule protects an ABSTAINING gate from affecting the exit code -- the
+    672ad2a class, where an unconfigured install must exit 0. A field holding a list it never
+    declared is not an abstaining gate; it is a value of the wrong shape, and it breaks things
+    downstream. Measured: `track.gmail_extra_query` as a list reaches
+    `track/engine.py`'s `q + " " + cfg.gmail_extra_query` and raises
+    `TypeError: can only concatenate str (not "list") to str`. Reporting that as NOTICE means
+    `--strict` exits 0 on an otherwise-healthy install whose `track run` will crash, which is
+    the no-silent-failures rule inverted. The developer case is meant to be caught before
+    release rather than here: `test_every_swept_gate_declares_a_role` fails the build when a
+    field the sweep reaches ships without a role, and `test_a_default_install_produces_no
+    _degraded_gate_row` closes that guard's own gap by asserting the property through the real
+    `Sluice.doctor` path -- the first is hand-listed, `app.py` builds its roster conditionally,
+    and a config present in one and not the other would otherwise let a valid install fail
+    `--strict`. With both, a DEGRADED row here describes a user's config in practice; it is not
+    structurally unable to describe anything else."""
     subject = f"{owner}.{name}"
+    if role not in GATE_ROLES:
+        return ComponentCheck(
+            "gates", subject, DEGRADED,
+            f"holds a list of {len(value)}, but this setting does not take a list -- check "
+            f"its type in your config; sluice cannot say what an empty one would mean here")
     if not value:
-        return ComponentCheck("gates", subject, NOTICE, "abstaining (empty)")
+        return ComponentCheck("gates", subject, NOTICE, GATE_ROLES[role])
     return ComponentCheck("gates", subject, NOTICE, f"active: {len(value)} value(s)")

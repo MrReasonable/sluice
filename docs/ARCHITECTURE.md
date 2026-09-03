@@ -814,7 +814,8 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   barred by the standard-library-only rule, so strings are always double-quoted —
   the one form with a total escape grammar.
 - **`plan.py`** (pure, with one deliberate exception -- see below): `build_plan(answers, ...) ->
-  InitPlan`, producing THREE artefact texts (`config_text`, `profile_text`, `candidate_text`)
+  InitPlan`, producing FOUR artefact texts (`config_text`, `profile_text`, `candidate_text`,
+  `view_text`)
   plus the notes the report prints. The config is RENDERED FROM THE
   CATALOGUE, which makes "every key the wizard can write appears in the file it
   writes" true by construction. An unanswered key is emitted COMMENTED; the block
@@ -873,8 +874,11 @@ hostile candidate answer re-asks the five candidate questions (or, with no termi
 on, blanks the answers and loops once more, since a blank value always round-trips) rather
 than losing the whole interview -- every preference question, the board walk, the five
 Judging Profile prompts -- to one bad answer in the last of three independent interviews.
+(Three interviews, four artefacts: the fourth, `view_text`, is the Obsidian Bases view
+and takes no answers at all, so no interview can corrupt it and it is written
+unconditionally under the same never-overwrite rule as the rest.)
 
-Of the three artefacts, the Candidate Profile is the only one written CONDITIONALLY, on
+Of the four artefacts, the Candidate Profile is the only one written CONDITIONALLY, on
 `has_any_declared(parse_candidate_profile(plan.candidate_text))` -- the rendered ARTEFACT,
 not the raw answer dict. That conditionality is load-bearing, not cosmetic: the Judging
 Profile always emits `DEFAULT_CRITERIA`'s own headings and prose, so its existence probe
@@ -1856,7 +1860,8 @@ three evidence corpora (#164: Experience Library, Skills Inventory, STAR Stories
 and -- #133/#107 -- the Candidate Profile note's own declared name/contact, checked
 here rather than as a separate identity-fields row, via the Store seam's OPTIONAL
 `preflight()` hook), track's Google adapter, the Camofox profile an ingest run will
-drive, the current posture (abstaining or active) of every list-typed preference gate,
+drive, the current posture of every list-typed setting -- abstaining, or its own role's
+equivalent, or active,
 and the shared dossier cache's cached-JD length distribution (#169) -- how many entries
 are empty, how many under 200 characters, how many under 800, and how many are
 unreadable outright (a broken cache file -- an interrupted write, a bad disk -- kept as
@@ -1890,11 +1895,16 @@ Inventory (unclaimed)` (an inventory skill no experience entry's `Skills:` claim
 each suppressed at zero and, the same posture, reporting only a COUNT rather than the
 skill's own name. Unlike the `cv.negatives[i]` check just named, it is not one of the
 `cv_cfg`-gated checks a few sentences up: it needs only both evidence corpora to be
-readable, so it still runs when `cv_cfg` failed to load. It NEVER
-affects `exit_code`, under `--strict` or otherwise, because an abstaining gate (an
-unconfigured preference simply passes every lead through) is the shipped default and
-legitimate -- grading it as a failure would be the 672ad2a class of bug (see Invariants)
-aimed at doctor's own exit status. Live round-trip by default; `--offline` for a
+readable, so it still runs when `cv_cfg` failed to load. A gate row whose role IS
+declared never affects `exit_code`, under `--strict` or otherwise, because an abstaining
+gate (an unconfigured preference simply passes every lead through) is the shipped default
+and legitimate -- grading it as a failure would be the 672ad2a class of bug (see
+Invariants) aimed at doctor's own exit status. The one row that does affect it is the
+undeclared-role branch (#245): the sweep is by runtime `isinstance`, so a user's YAML can
+put a list on a setting that takes a scalar, and that is a wrong-shaped VALUE rather than
+an abstaining gate -- measured, `track.gmail_extra_query` as a list raises `TypeError` in
+`track/engine.py`. It is DEGRADED, so `--strict` sees it; the developer case of a real
+gate shipping without a role cannot reach here, because the build fails first. Live round-trip by default; `--offline` for a
 config-only check (the component checks were already local, so `--offline` changes
 nothing about them); `--strict` to also fail on degraded. See `docs/USAGE.md` for every
 flag `doctor` and the rest of the CLI take, and `docs/CONFIGURATION.md` for every config

@@ -33,17 +33,20 @@ class CvConfig:
     # Empty by default: with no list configured, compose.py asks the model to
     # include every employer present in the source bundle instead of a fixed
     # list, and validate.py skips the per-employer completeness check.
-    employers: list = field(default_factory=list)
+    employers: list = field(default_factory=list,
+        metadata={"gate_role": "abstain"})
     # Strings the validate() gate treats as known-hallucination decoys (a HARD
     # FAIL if any appear in the composed CV). Empty by default; supply your own
     # via the `cv:` block of sluice.yaml.
-    fabrication_decoys: list = field(default_factory=list)
+    fabrication_decoys: list = field(default_factory=list,
+        metadata={"gate_role": "abstain"})
     # Prefix used for the served/staged PDF filename: "{served_prefix}_<sha1>.pdf".
     # Must match apply.config.ApplyConfig.served_prefix so apply/cvfile.py's
     # artifact regex recognizes files this module serves.
     served_prefix: str = "CV"
     prefix_map: dict = field(default_factory=lambda: dict(_PREFIX_MAP))
-    negatives: list = field(default_factory=lambda: list(_NEGATIVES))
+    negatives: list = field(default_factory=lambda: list(_NEGATIVES),
+        metadata={"gate_role": "abstain"})
     ttl_days: int = 7
     # Whether an `unsupported` profile audit flag WITHHOLDS the send-ready pointer until a
     # human signs off (`sluice cv signoff`), rather than auto-serving a possibly-fabricated
@@ -69,7 +72,8 @@ class CvConfig:
     # NB this is NOT abstain-shaped: it SUBTRACTS from a hardcoded list, so empty means
     # FULL enforcement -- the dossier_allow_hosts polarity. What makes the shipped
     # default safe is `style_hold` being off, not this list being empty.
-    slop_allow: list = field(default_factory=list)
+    slop_allow: list = field(default_factory=list,
+        metadata={"gate_role": "no_exceptions"})
     # NB no `dossier_dir` here: #80 retired it in favour of one root `dossier_dir`,
     # because triage and cv share this cache and two keys could split it.
     # load_cv_config RAISES on it rather than letting `hasattr` drop it in silence.

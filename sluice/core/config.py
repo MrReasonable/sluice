@@ -76,18 +76,23 @@ class Config:
     # because the address rule admits them, not this list. Lives on the root
     # Config, not TriageConfig/CvConfig, because dossier_cache is called from BOTH
     # sub-apps and a security policy that differs between them is a bug.
-    dossier_allow_hosts: list = field(default_factory=list)
+    dossier_allow_hosts: list = field(default_factory=list,
+        metadata={"gate_role": "no_exceptions"})
     notify: dict = field(default_factory=dict)
     # Coarse ingest title filter. Personal, so empty by default: an unconfigured
     # gate passes everything through rather than applying someone else's taste.
-    relevance_keep: list = field(default_factory=list)
-    relevance_drop: list = field(default_factory=list)
+    relevance_keep: list = field(default_factory=list,
+        metadata={"gate_role": "abstain"})
+    relevance_drop: list = field(default_factory=list,
+        metadata={"gate_role": "abstain"})
     # Words that decorate a location without locating it, subtracted before #5 compares
     # two postings for a split. Empty by default -> nothing subtracted (abstain).
-    location_noise_words: list = field(default_factory=list)
+    location_noise_words: list = field(default_factory=list,
+        metadata={"gate_role": "no_normalisation"})
     # Title-noise tokens stripped before #23's dedup clustering compares two roles. Empty by
     # default -> strictest clustering (nothing stripped), erring toward NOT merging (safe).
-    dedupe_title_noise_words: list = field(default_factory=list)
+    dedupe_title_noise_words: list = field(default_factory=list,
+        metadata={"gate_role": "no_normalisation"})
     # Days since a lead was last seen in a scrape before it counts as stale (#9). 0 = OFF,
     # and off is the shipped default: "stale" is a judgement, and a shipped non-zero would
     # bin leads on a stranger's idea of it -- the 672ad2a class, where a preference baked
