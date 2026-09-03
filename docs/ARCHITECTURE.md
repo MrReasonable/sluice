@@ -1187,9 +1187,14 @@ What `--merge` then does is conditional, and the warning says so rather than pro
 resolution the pass refuses: `resolve_merge_status` returns `conflict` for two distinct non-`new`
 triage states, so the pair #205 actually reports — one twin `shortlist`, the other `dismiss` —
 clusters and does **not** merge (measured), while twins that agree merge normally. That refusal is
-correct, since picking the surviving status is exactly the human judgement a conflict demands. The
-report is likewise bounded: it groups over the list `read_leads` is about to return, so a
-status-filtered read that surfaces only one twin says nothing.
+correct, since picking the surviving status is exactly the human judgement a conflict demands.
+
+The report itself sweeps every lead note WALKED, not the list `read_leads` returns — the one place
+it differs from the sibling duplicate-slug sweep beside it, which is deliberately per-returned-list.
+A case pair is a property of the store, and the shape #205 reports puts one twin at `shortlist` and
+the other at `dismiss`, so every status-filtered read surfaces exactly one of them; grouping over
+the returned list made `read_leads({"shortlist"})` say nothing about the very pair the report
+exists for.
 
 **The scan set and the write folder are two different things** (#1). The scan set is
 every directory a lead may be READ from; the **write folder** is the ONE directory a

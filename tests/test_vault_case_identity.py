@@ -221,15 +221,22 @@ def test_a_folded_archive_match_without_url_proof_is_not_recorded(tmp_path):
 
 
 # ── the report on pairs a pre-fix store already holds ─────────────────────────
-def _seat(v, name, *, company, status, score):
-    """Hand-seat a note at an exact filename, the way a pre-fix store holds one."""
-    os.makedirs(v.leads_dir, exist_ok=True)
-    path = os.path.join(v.leads_dir, f"{name}.md")
+def _seat_at(directory, name, *, company, status, role="Engineering Manager", score=1):
+    """Hand-seat a note at an exact filename in an exact directory -- the way a store that
+    predates this fix holds one, and now the only way to build a case-variant PAIR at all,
+    since the write path refuses to mint one."""
+    os.makedirs(directory, exist_ok=True)
+    path = os.path.join(directory, f"{name}.md")
     with open(path, "w", encoding="utf-8") as f:
-        f.write(f"---\ncompany: {company}\nrole: Engineering Manager\nstatus: {status}\n"
+        f.write(f"---\ncompany: {company}\nrole: {role}\nstatus: {status}\n"
                 f"score: {score}\nurl: https://ex.invalid/{score}\n"
                 f"location: {LOCATIONS[0]}\n---\n\nbody\n")
     return path
+
+
+def _seat(v, name, *, company, status, score):
+    """`_seat_at` rooted at the vault's own leads dir."""
+    return _seat_at(v.leads_dir, name, company=company, status=status, score=score)
 
 
 def test_read_leads_reports_a_pair_that_differs_only_by_capitalisation(tmp_path, caplog):
@@ -461,3 +468,98 @@ def test_dedupe_clusters_a_case_variant_pair_but_merges_only_when_status_agrees(
 
     assert app.dedupe_merge([cid]) == [(cid, expected)]
     assert len(_notes(v)) == (2 if expected == "conflict" else 1)
+
+
+# ── the fold must bind every path that resolves a lead, not just the read one ──
+def test_the_folded_probe_does_not_read_an_unlistable_directory_as_absent(tmp_path):
+    """`[]` is not a neutral answer on this path: it is the `if not found:` branch, which
+    CREATES and which lets `_archived_match` record a `merged_away` in `seen.db` -- a store
+    with no removal path, so the lead is suppressed for ever with its `last_seen` frozen.
+
+    A bare `except OSError` here shipped on this branch and was wrong, on a justification
+    that sounded right and was not: "the exact probe already reported on this directory". It
+    reports the STATABILITY OF ONE PATH, not the LISTABILITY of the directory, and the two
+    come apart on a directory left executable but not readable -- `os.stat` of a known path
+    inside it succeeds while `os.scandir` raises. A transient EIO on a network mount is the
+    same shape without the permissions.
+
+    The warm `_scan_dirs` cache is what makes it reachable and is set up explicitly here:
+    `_walk`'s `onerror=_reraise` would otherwise have raised during the walk itself."""
+    _require_case_sensitive_fs(tmp_path)
+    v = Vault(str(tmp_path / "vault"))
+    sub = os.path.join(v.leads_dir, "Active")
+    os.makedirs(sub, exist_ok=True)
+    _seat_at(sub, "EXAMPLE CO - Widget Analyst", company="EXAMPLE CO",
+             status="applied", role="Widget Analyst")
+
+    assert v._locate("Example Co - Widget Analyst"), "control: the fold finds it when listable"
+
+    os.chmod(sub, 0o111)   # executable, not readable: stat inside works, scandir raises
+    try:
+        v2 = Vault(str(tmp_path / "vault"))
+        v2._scan_dirs_cache = [v.leads_dir, sub]   # as a prior successful walk left it
+        with pytest.raises(OSError):
+            v2._locate("Example Co - Widget Analyst")
+    finally:
+        os.chmod(sub, 0o755)
+
+
+def test_a_vanished_scan_directory_is_still_skipped_not_raised(tmp_path):
+    """The other half of the same catch, and the reason it is not simply `raise`: a subfolder
+    DELETED since the walk that filled `_scan_dirs` genuinely means 'no directory there', and
+    must not turn an ordinary lookup into a failure. Exactly the pair `_is_note_file` answers
+    False for."""
+    v = Vault(str(tmp_path / "vault"))
+    sub = os.path.join(v.leads_dir, "Active")
+    os.makedirs(sub, exist_ok=True)
+    _seat(v, "Example Co - Widget Analyst", company="Example Co", status="new", score=1)
+    v._locate("warm")                       # a real walk, so the cache holds `sub`
+    os.rmdir(sub)
+
+    assert v._locate("EXAMPLE CO - WIDGET ANALYST")   # folds onto the note that remains
+
+
+def test_reconcile_names_refuses_to_mint_a_pair_differing_only_by_case(tmp_path):
+    """`reconcile_names` is the sibling WRITE path, and the contract obligation
+    `core/protocols.py` states -- a store's identity equivalence binds every path that
+    resolves a lead -- has to reach it too.
+
+    Layer 2 grouped by the exact target, so two placeholder-seated notes whose companies
+    differ only in capitalisation resolved to targets differing only in capitalisation,
+    landed in separate groups, and BOTH renamed: measured, two `renames` and `collisions:
+    []`, with the case pair newly on disk. Layer 1 does not catch it either -- it runs
+    against the pre-sweep vault, where neither target is occupied yet. So this pass MINTED
+    the pair `_locate`'s fold exists to stop, which also falsified the claim that such pairs
+    only predate the fix."""
+    _require_case_sensitive_fs(tmp_path)
+    v = Vault(str(tmp_path / "vault"))
+    _seat_at(v.leads_dir, "Unknown - Widget Analyst", company="Example Co",
+             status="new", role="Widget Analyst")
+    _seat_at(v.leads_dir, " - Widget Analyst", company="EXAMPLE CO",
+             status="new", role="Widget Analyst")
+
+    rep = v.reconcile_names(apply=True)
+
+    assert rep["renames"] == [], f"a case pair was minted by the rename pass: {rep}"
+    assert len(rep["collisions"]) == 2, rep
+    assert all("capitalisation" in r for _s, _t, r in rep["collisions"]), rep
+    assert len(_notes(v)) == 2
+
+
+def test_a_target_differing_from_its_own_name_only_by_case_is_not_its_own_blocker(tmp_path):
+    """The self-skip stayed exact while layer 1 reaches the vault through `_locate`, which
+    now folds. Left that way, a note whose re-derived target differs from its own name only
+    in capitalisation slips the skip, reaches layer 1, and `_locate` hands back the note
+    ITSELF -- reported as its own blocker on every run, for ever. Skipping is also right on
+    the merits: under the equivalence the target and the current name are one identity, so
+    there is nothing to rename to."""
+    v = Vault(str(tmp_path / "vault"))
+    # Seated at the sanitized placeholder name; the frontmatter re-derives the same name
+    # up to case, which is what the exact comparison could not see.
+    _seat_at(v.leads_dir, "N-A - Widget Analyst", company="n/a", status="new",
+             role="Widget Analyst")
+
+    rep = v.reconcile_names(apply=False)
+
+    assert rep["collisions"] == [], f"the note was reported as its own blocker: {rep}"
+    assert rep["renames"] == []
