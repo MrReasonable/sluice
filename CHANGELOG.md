@@ -57,7 +57,7 @@ when its JD never arrived, is already in the default set `triage run` reads.
 **What is worth looking at** is any CV composed for one of those leads before this release.
 `cv run` said so at the time — it reported `dossier_failed` and printed `N CV(s) composed
 blind` — but the PDF it produced was tailored to nothing, and it passed the fabrication
-gate correctly, because the gate checks bullets against your evidence bundle and the bundle
+gate correctly because the gate checks bullets against your evidence bundle and the bundle
 was fine. What was missing was the job.
 
 ### Also worth knowing
