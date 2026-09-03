@@ -226,6 +226,11 @@ def test_compose_cv_forwards_cv_compose_timeout_to_the_backend(monkeypatch, tmp_
     # a bare `except Exception: pass` lets a later regression pass this test with `seen`
     # already populated by the spy. Measured -- the dry run completes on an empty
     # shortlist, so there was never an exception for the handler to catch.
+    # #242: the refusal now precedes the backend, so an unset-up vault would never reach the
+    # spy at all -- which is the wiring under test, not the precondition.
+    from sluice.core.vault import Vault
+    from tests.conftest import make_composable
+    make_composable(Vault(str(tmp_path / "vault")))
     Sluice().compose_cv(all_shortlist=True, dry_run=True)
     assert seen.get("timeout") == 1234, (
         "compose_cv did not forward cv.compose_timeout to Sluice.backend()")

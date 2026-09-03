@@ -239,3 +239,30 @@ def _forbid_dns():
         yield
     finally:
         socket.getaddrinfo = real
+
+
+def make_composable(vault):
+    """Give a vault the two config-level preconditions `cv run` requires (#242).
+
+    A baseline CV and one verified `experience` entry. Before #242 an empty vault reached the
+    composer and failed later, so a test that only wanted to exercise compose_cv's WIRING
+    (backend threading, dossier paths, MCP tool shapes) could use a bare tmp_path. That is now
+    refused before any spend, correctly -- so those tests need a vault that could actually
+    produce a CV, which is also the more honest fixture.
+
+    Deliberately NOT keyed on `skills`/`stories`: the gate licenses nothing from them, so
+    `missing_prerequisites` does not require them and neither does this.
+    """
+    import os
+
+    os.makedirs(os.path.join(vault.dir, os.path.dirname(vault.baseline_rel)), exist_ok=True)
+    with open(os.path.join(vault.dir, vault.baseline_rel), "w", encoding="utf-8") as fh:
+        fh.write("# CV\n\nPROFILE\n\nWORK EXPERIENCE\n")
+    if vault.read_evidence("experience"):
+        return vault                       # idempotent: a second call must not re-propose
+    vault.propose_evidence("experience", name="alpha", fields={})
+    pending = {e["title"]: e for e in vault.read_pending_evidence("experience")}
+    with open(pending["alpha"]["path"], encoding="utf-8") as fh:
+        raw = fh.read()
+    vault.verify_evidence("experience", "alpha", today="2026-09-03", reviewed=raw)
+    return vault

@@ -299,6 +299,16 @@ class _StaleNoteStore(_FakeStore):
     def read_leads(self, statuses=None):
         return [self._note]
 
+
+    def read_baseline(self):
+        # MUST-support Store members (core/protocols.py: "NOT optional like
+        # preflight/precheck"), so the double implements them rather than cv/engine.py
+        # treating a required member as optional -- the precedent is _FakeStore gaining
+        # read_candidate_profile when Sluice.prep began calling it unconditionally.
+        return "# CV\n"
+
+    def read_evidence(self, kind, verified_only=True):
+        return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
     def read_candidate_profile(self):
         # #107: MUST-support -- test_compose_cv_include_stale_reaches_the_engine
         # bypasses the staleness gate via include_stale, so run_one reaches the
@@ -354,6 +364,16 @@ def _stale_apply_store():
 
         def read_leads(self, statuses=None):
             return [self._note]
+
+        def read_baseline(self):
+            # MUST-support Store members (core/protocols.py: "NOT optional like
+            # preflight/precheck"), so the double implements them rather than cv/engine.py
+            # treating a required member as optional -- the precedent is _FakeStore gaining
+            # read_candidate_profile when Sluice.prep began calling it unconditionally.
+            return "# CV\n"
+
+        def read_evidence(self, kind, verified_only=True):
+            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
     return S()
 
 

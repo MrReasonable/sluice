@@ -521,7 +521,18 @@ whichever neighbour it was written next to:
    over `core.backends`), gate it, render (by default `template`: fill the
    user's own Jinja2 template — or the packaged one — and write a PDF via
    WeasyPrint; `script` shells out to an external render script instead), and
-   serve under an opaque, cache-busted filename. The gate has two tiers
+   serve under an opaque, cache-busted filename.
+
+   Before any of that, `Sluice.compose_cv` refuses ONCE for the whole run if the vault
+   cannot compose at all (#242): no baseline CV at `baseline_rel` (missing, empty or
+   unreadable), or no verified entries in a `cited_by_gate` corpus. It is a property of
+   the INSTALL rather than of a lead, so it is not a per-lead `CvResult` -- it raises
+   through `main`'s usage-error path (exit 2) before the renderer, the backend and the
+   dossier fetch. That ordering is the point: the earlier per-lead behaviour spent a
+   browser fetch for both halves and, for the corpus half, two backend calls before the
+   gate rejected the result.
+
+   The gate has two tiers
    (#167). The HARD tier -- `cv/validate.py`'s fabrication/citation checks,
    `cv/engine.py`'s own inline STRUCTURAL guards beside them (the exact
    `WORK EXPERIENCE`/`PROFILE` headers, and the header/contact-block

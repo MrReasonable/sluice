@@ -14,7 +14,10 @@ subcommand.
 
 Thirteen top-level command groups. `main()` loads the config before dispatching to any command,
 so a retired or malformed key fails identically for all of them: `job-sluice: <message>` to
-stderr, exit code `2`, no traceback. That is deliberate rather than incidental — a clean usage
+stderr, exit code `2`, no traceback. The same channel carries a usage error a COMMAND raises
+once it has the config -- `cv run` uses it to refuse a vault that has nothing to compose from
+(#242) -- so exit 2 means "you have to fix something before this can run", not specifically
+"your config file is malformed". That is deliberate rather than incidental — a clean usage
 error, not a crash, is what lets you actually read what's wrong and re-run `init` or `doctor`
 to fix it, rather than a stack trace burying the message that would tell you how.
 
@@ -221,8 +224,15 @@ and composition proceeded blind. **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
 Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).
-Otherwise exit 0, including when a result is `needs-signoff` (the advisory audit withheld
-the send-ready pointer — see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
+**Exit 2** if the vault cannot compose at all: the baseline CV at `baseline_rel` is missing,
+empty, or unreadable (a permission problem, a refused symlink, or bytes that are not UTF-8), or
+the `experience` corpus has no verified entries or cannot be read (#242). Unreadable and absent
+are reported differently -- a read failure carries the underlying error rather than claiming the
+file is not there. That is a config problem rather than a per-lead outcome,
+so it is refused once for the whole run, before the renderer, the backend or any dossier fetch,
+and it reports through `main`'s usage-error path like a malformed config key. Otherwise exit 0,
+including when a result is `needs-signoff` (the advisory audit withheld the send-ready pointer
+— see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
 
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 

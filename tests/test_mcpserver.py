@@ -721,6 +721,16 @@ def _cv_app(store, cv_out="unused", audit_out="supported\tx\tSF1"):
     store= already uses) -- FakeBackend/FakeRenderer are imported from
     tests/test_cv_engine.py, this module's own established fakes for exactly
     this purpose, not reinvented here."""
+    # #242: compose_cv now refuses a vault that cannot compose, before any spend. These
+    # tests exercise the TOOL's shapes, not the CV outcome, so the vault has to satisfy
+    # the preconditions or every one of them reports the refusal instead.
+    from tests.conftest import make_composable
+    if hasattr(store, "dir"):
+        # A real Vault needs the two preconditions #242 checks before any spend. The minimal
+        # doubles below are NOT skipped -- they implement both Store members and are checked
+        # like any other store -- so they satisfy the corpus themselves; only a real Vault
+        # needs files written into it.
+        make_composable(store)
     from tests.test_cv_engine import FakeBackend, FakeRenderer
     return Sluice(Config(), store=store, backend=FakeBackend(cv_out, audit_out),
                  renderer=FakeRenderer())
@@ -777,7 +787,10 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
         def read_leads(self, statuses=None):
             return [note]
         def read_evidence(self, kind, verified_only=True):
-            return []
+            # Non-empty for the CITABLE kind only (#242): compose_cv refuses a run with no
+            # verified experience before any spend, and these tests are about the outcome
+            # AFTER that point (skipped-selection, skipped-needs-signoff), not about it.
+            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
         def read_baseline(self):
             return "BASELINE"
 
@@ -829,7 +842,10 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
                 return []
             return [note]
         def read_evidence(self, kind, verified_only=True):
-            return []
+            # Non-empty for the CITABLE kind only (#242): compose_cv refuses a run with no
+            # verified experience before any spend, and these tests are about the outcome
+            # AFTER that point (skipped-selection, skipped-needs-signoff), not about it.
+            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
         def read_baseline(self):
             return "BASELINE"
 

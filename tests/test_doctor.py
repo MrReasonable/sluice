@@ -60,7 +60,18 @@ def _harmless_components(monkeypatch):
     from sluice.core.app import Sluice
     from sluice.cv.config import CvConfig
 
-    monkeypatch.setattr(Sluice, "store", lambda self: object())
+    # A bare object() no longer suffices: `compose_cv` checks two MUST-support Store members
+    # (`read_baseline`, `read_evidence`) before any spend (#242). They are required by the
+    # Store contract, so the double supplies them rather than the production code treating a
+    # required member as optional -- core/protocols.py rules on exactly that shape.
+    class _MinStore:
+        def read_baseline(self):
+            return "# CV\n"
+
+        def read_evidence(self, kind, verified_only=True):
+            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
+
+    monkeypatch.setattr(Sluice, "store", lambda self: _MinStore())
     monkeypatch.setattr(Sluice, "renderer", lambda self, cvcfg: object())
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: CvConfig())
 

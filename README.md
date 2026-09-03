@@ -104,8 +104,8 @@ installing rather than after:
 | A vault directory | everything | `job-sluice init` creates one |
 | An LLM backend — an API key, or the `claude` CLI | `triage`'s judge, `cv`'s composer | `triage run --no-llm` still classifies deterministically |
 | A [Camofox](https://github.com/jo-inc/camofox-browser) browser server | `ingest run`, `ingest test-source`, and job-description fetches in `triage`/`cv` | no scraping; the rest of the pipeline works on leads already in the vault |
-| At least one **verified** experience entry | `cv run` | **not** checked up front: the run fetches the job description and calls the composer anyway, then fails the fabrication gate — so it costs tokens before telling you |
-| A baseline CV at `baseline_rel` (default `My CV/CV.md`) | `cv run` | also not checked up front. The run fetches the job description, then fails on the missing file — as a traceback under `--lead`, or as a per-lead `cv: error …` line and exit 0 under `--all-shortlist`. No composer call either way |
+| At least one **verified** experience entry | `cv run` | refused before any fetch or backend call, naming the two commands that fix it. It used to reach the composer first |
+| A baseline CV at `baseline_rel` (default `My CV/CV.md`) | `cv run` | same, and once for the run rather than once per lead. It never cost a composer call, but it did raise |
 | A Candidate Profile note with a name and contact details | `cv run`, `apply prep` | `cv run` refuses before any fetch or backend call (`skipped-config`); `apply prep` does not refuse — it builds the packet with your identity simply absent |
 | cairo, pango and gdk-pixbuf, plus the `render` extra | PDF output | set `cv.renderer: script` to shell out to your own renderer instead |
 | A [Google OAuth token](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#google-access-for-track), which you mint yourself | `track` | `track run` logs a failure and exits 0 |

@@ -360,6 +360,11 @@ def _app(tmp_path, monkeypatch, **kw):
     from sluice.core.config import Config
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.delenv("DOSSIER_DIR", raising=False)
+    # #242: compose_cv refuses a vault that cannot compose before any spend, so a bare
+    # tmp_path no longer reaches the dossier wiring these tests are about.
+    from sluice.core.vault import Vault
+    from tests.conftest import make_composable
+    make_composable(Vault(str(tmp_path / "vault")))
     return Sluice(Config(**kw))
 
 

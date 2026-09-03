@@ -1551,13 +1551,34 @@ class Sluice:
         before ever reaching here, so this is unreachable from the CLI in practice."""
         from sluice.core.backends import BackendError
         from sluice.cv.config import load_cv_config
-        from sluice.cv.engine import CvResult, run_batch, run_one
+        from sluice.cv.engine import (CvResult, missing_prerequisites, run_batch,
+                                      run_one)
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
 
         cvcfg = load_cv_config()
         if no_serve:
             cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
+
+        # #242: the two config-level preconditions, checked ONCE and FIRST. They are
+        # properties of the install rather than of a lead, so this is not in run_one: a
+        # per-lead check emits N identical lines for one fixable thing, and `--lead` used to
+        # surface a missing baseline as a TRACEBACK out of `_read`'s bare open.
+        #
+        # BEFORE the renderer and the backend, not merely before the dossier fetch. Measured:
+        # on a bare install the renderer raises first (`No module named 'weasyprint'`), so a
+        # check placed after it never runs for exactly the newcomer this exists to help, and
+        # they get a traceback about a rendering library instead of "you have no CV yet".
+        #
+        # ValueError, so `main`'s handler turns it into the clean exit-2 usage error
+        # docs/USAGE.md promises for a config problem. A dry run is refused too: previewing a
+        # run that cannot possibly compose is the false green this check exists to remove.
+        store = self.store()
+        prereqs = missing_prerequisites(store)
+        if prereqs:
+            raise ValueError(
+                "cv: this vault is not set up to compose yet:\n  - "
+                + "\n  - ".join(prereqs))
         if dry_run:
             # See the docstring: a dry run wants the renderer for its `precheck` alone,
             # and must survive a renderer it cannot build. The engine never calls
@@ -1584,7 +1605,6 @@ class Sluice:
             raise ValueError(str(e)) from e
         cache = self.dossier_cache(self._dossier_dir(), cvcfg.ttl_days,
                                    self.config.min_jd_chars)
-        store = self.store()
         # Built ONCE here and passed to both branches, so the single-lead and batch paths
         # cannot disagree about what stale means or about --include-stale (#9).
         policy = self.staleness(include_stale=include_stale)
