@@ -31,11 +31,16 @@ _REJECT_CO: list = []
 
 @dataclass
 class TriageConfig:
-    accept_titles: list = field(default_factory=lambda: list(_ACCEPT))
-    reject_titles: list = field(default_factory=lambda: list(_REJECT))
-    target_locations: list = field(default_factory=lambda: list(_TARGET_LOC))
-    reject_locations: list = field(default_factory=lambda: list(_REJECT_LOC))
-    reject_companies: list = field(default_factory=lambda: list(_REJECT_CO))
+    accept_titles: list = field(default_factory=lambda: list(_ACCEPT),
+        metadata={"gate_role": "abstain"})
+    reject_titles: list = field(default_factory=lambda: list(_REJECT),
+        metadata={"gate_role": "abstain"})
+    target_locations: list = field(default_factory=lambda: list(_TARGET_LOC),
+        metadata={"gate_role": "abstain"})
+    reject_locations: list = field(default_factory=lambda: list(_REJECT_LOC),
+        metadata={"gate_role": "abstain"})
+    reject_companies: list = field(default_factory=lambda: list(_REJECT_CO),
+        metadata={"gate_role": "abstain"})
     # One floor per pay BASIS, each judged only against its own (#223). All default 0 =
     # no floor, which is what makes a fresh install abstain rather than bin: a shipped
     # non-zero floor here is the 672ad2a silent-rejection class, and hourly/weekly are in

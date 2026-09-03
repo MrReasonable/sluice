@@ -810,15 +810,164 @@ def test_list_typed_fields_ignores_non_list_fields():
         floor: int = 0
 
     obj = _Sample(titles=["a", "b"], floor=3)
-    assert list_typed_fields(obj) == [("titles", ["a", "b"])]
+    # Third element is the declared `gate_role` (#245); this sample declares none, which is
+    # exactly what `classify_gate` refuses rather than guessing at. See
+    # `test_every_swept_gate_declares_a_role`.
+    assert list_typed_fields(obj) == [("titles", ["a", "b"], None)]
 
 
 def test_classify_gate_empty_is_abstaining_notice_nonempty_is_active_notice():
-    abstaining = classify_gate("TriageConfig", "accept_titles", [])
-    active = classify_gate("TriageConfig", "accept_titles", ["a", "b"])
+    abstaining = classify_gate("TriageConfig", "accept_titles", [], "abstain")
+    active = classify_gate("TriageConfig", "accept_titles", ["a", "b"], "abstain")
     assert abstaining.state == NOTICE and "abstaining" in abstaining.detail
     assert active.state == NOTICE and "2" in active.detail
     assert abstaining.subject == active.subject == "TriageConfig.accept_titles"
+
+
+def test_an_empty_list_reports_the_posture_of_its_own_role(): 
+    """#245: three roles, three meanings of empty. Before this, all three said "abstaining",
+    and for two of them that was wrong in the RESTRICTIVE direction -- the reader was told no
+    opinion was being applied while the strictest possible one was."""
+    from sluice.core.doctor import GATE_ROLES
+
+    postures = {role: classify_gate("Config", "x", [], role).detail for role in GATE_ROLES}
+    assert len(set(postures.values())) == len(GATE_ROLES), (
+        f"two roles report the same empty posture, so the distinction is inert: {postures}")
+    assert "abstain" in postures["abstain"]
+    assert "no exceptions" in postures["no_exceptions"]
+
+    # A non-empty list reads the same whatever the role: the count is the fact, and the
+    # polarity is only ambiguous when there is nothing there.
+    actives = {classify_gate("Config", "x", ["a"], role).detail for role in GATE_ROLES}
+    assert len(actives) == 1, f"role should not change the non-empty posture: {actives}"
+
+
+def test_classify_gate_reports_an_undeclared_role_rather_than_destroying_the_report():
+    """`doctor` is the command you run when the config is already wrong, so it must never refuse.
+
+    An earlier cut RAISED here, on fail-loudly-at-construction. That is the wrong principle for
+    this call site, and it was reachable from user YAML rather than only from developer error:
+    `list_typed_fields` sweeps by runtime `isinstance`, and the sub-app loaders are unguarded
+    `setattr` loops, so a type slip puts a list on a field that never declared a posture.
+    Measured on the raising version, `track: {gmail_extra_query: [...]}` took `doctor --offline`
+    from a full report and exit 1 to ZERO stdout and exit 2 -- the whole diagnostic destroyed by
+    the field it was describing.
+
+    The row must also not GUESS. Saying `abstaining (empty)` here would be a claim about a
+    preference gate, which this field is not, and inventing that claim is the original #245 bug
+    one level down."""
+    # BOTH value shapes. Every case here originally passed a NON-EMPTY list, and that left the
+    # branch order unguarded: moving the role check below `if not value` reddens nothing, while
+    # an EMPTY list with no role then raises KeyError and destroys the report again -- the exact
+    # regression this test exists to prevent, reproduced with the whole suite green.
+    for bad in (None, "", "preference", "abstaining"):
+      for value in ([], ["x"], ["x", "y"]):
+        row = classify_gate("Config", "served_prefix", value, bad)
+        # DEGRADED, not NOTICE: this is a wrong-shaped VALUE, not an abstaining gate, and it
+        # breaks things downstream -- `track.gmail_extra_query` as a list raises TypeError in
+        # track/engine.py. NOTICE never affects the exit code, so `--strict` would exit 0 on an
+        # otherwise-healthy install whose `track run` will crash.
+        assert row.state == DEGRADED, f"role {bad!r} value {value!r} produced {row.state}"
+        assert "abstain" not in row.detail, (
+            f"role {bad!r} value {value!r} guessed an abstaining posture: {row.detail!r}")
+        # The row must describe the USER's config, not sluice's own field metadata. Blaming
+        # internal metadata for a user's YAML is the framing this branch removed once already.
+        for internal in ("metadata", "gate_role", "dataclass", "declares no posture"):
+            assert internal not in row.detail, (
+                f"the row exposes sluice's internals to a user: {row.detail!r}")
+        assert "does not take a list" in row.detail
+
+
+def test_doctor_still_reports_when_user_yaml_puts_a_list_on_a_non_gate_field(tmp_path,
+                                                                            monkeypatch):
+    """End to end through the REAL loader, because the unit above passes even if the row never
+    reaches a report, and because the loader is the thing that admits the bad shape: the four
+    sub-app loaders are `hasattr`-filtered `setattr` loops. `load_track_config` is the one
+    with no container guard at all -- `refuse_wrong_container` rejects a SCALAR on a container
+    field, never a list on a scalar one, and `core/config.py` returns early when a field's
+    DEFAULT is neither list nor dict, so a list lands verbatim on a str-defaulted field.
+    `cv.served_prefix` and `apply.neutral_name` reach the sweep the same way. The `track:` key
+    is used below only because it is the shape whose downstream TypeError is already measured."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import load_config
+
+    cfg_file = tmp_path / "sluice.yaml"
+    cfg_file.write_text(
+        f'vault_dir: "{tmp_path / "vault"}"\n'
+        'track:\n'
+        '  gmail_extra_query: []\n', encoding="utf-8")   # EMPTY: the shape that regressed
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg_file))
+
+    rep = Sluice(load_config()).doctor(offline=True)
+    gates = {c.subject: c.detail for c in rep.components if c.component == "gates"}
+    assert len(gates) > 5, (
+        f"the report collapsed to {sorted(gates)}; doctor must describe a bad config, not "
+        "refuse to run because of one")
+    assert "TrackConfig.gmail_extra_query" in gates, (
+        "the offending field is not even reported, so the user has no way to find it")
+    assert "abstain" not in gates["TrackConfig.gmail_extra_query"]
+
+    # ...and it must reach the exit code, because this config genuinely breaks `track run`.
+    states = {c.subject: c.state for c in rep.components if c.component == "gates"}
+    assert states["TrackConfig.gmail_extra_query"] == DEGRADED, (
+        "a wrong-shaped value is reported but cannot affect --strict, so an otherwise-healthy "
+        "install whose `track run` will raise TypeError still exits 0")
+
+
+def test_every_swept_gate_declares_a_role():
+    """The anti-drift guard. A new list-typed knob must declare what an empty value MEANS,
+    where the field is defined, or `doctor` reports it as a wrong-shaped value -- rather than inheriting
+    `abstaining` and mislabelling itself the way `dossier_allow_hosts` did for its whole life.
+
+    Derived from the real dataclasses via the real sweep, so it cannot go stale, and asserted
+    on SCOPE first: a derivation that enumerated nothing would satisfy the loop vacuously."""
+    from sluice.apply.config import ApplyConfig
+    from sluice.core.config import Config
+    from sluice.core.doctor import GATE_ROLES
+    from sluice.cv.config import CvConfig
+    from sluice.track.config import TrackConfig
+    from sluice.triage.config import TriageConfig
+
+    swept = [(type(cfg).__name__, name, role)
+             for cfg in (Config(), TriageConfig(), CvConfig(), TrackConfig(), ApplyConfig())
+             for name, _, role in list_typed_fields(cfg)]
+    assert len(swept) >= 14, f"the sweep found only {len(swept)} list-typed fields"
+
+    undeclared = [f"{o}.{n}" for o, n, role in swept if role not in GATE_ROLES]
+    assert not undeclared, (
+        f"{undeclared} do not declare a valid `gate_role` in their field metadata. An empty "
+        f"list does not mean the same thing for a preference gate, a security allowlist and a "
+        f"noise-word list; pick one of {sorted(GATE_ROLES)} where the field is defined.")
+
+    # The two known non-preference fields, pinned by name. Derivation proves every field has
+    # SOME role; only naming these proves the roles are not all the same one.
+    by_key = {f"{o}.{n}": role for o, n, role in swept}
+    assert by_key["Config.dossier_allow_hosts"] == "no_exceptions"
+    assert by_key["CvConfig.slop_allow"] == "no_exceptions"
+
+
+def test_a_default_install_produces_no_degraded_gate_row(tmp_path, monkeypatch):
+    """The roster above is HAND-LISTED, and `app.py` builds `gate_cfgs` conditionally, so the
+    two can disagree: measured, a sixth config swept by `doctor` but absent from that tuple
+    leaves the guard green while a valid install emits DEGRADED and `--strict` exits 1, telling
+    the user to check a setting their YAML never mentions.
+
+    Since #245 made that row affect the exit code, the hand-list is no longer merely a coverage
+    gap. This asserts the property END TO END through the path that actually runs, so a config
+    the tuple forgets is still caught: a default install has NO degraded gate row, because every
+    field the real sweep reaches declares a role."""
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.core.doctor import DEGRADED
+
+    rep = Sluice(Config(vault_dir=str(tmp_path / "vault"))).doctor(offline=True)
+    gates = [c for c in rep.components if c.component == "gates"]
+    # SCOPE first: zero rows would satisfy the assertion below having examined nothing.
+    assert len(gates) >= 14, f"the real sweep produced only {len(gates)} gate rows"
+    degraded = [(c.subject, c.detail) for c in gates if c.state == DEGRADED]
+    assert not degraded, (
+        f"a default install reports {degraded} as degraded, so `--strict` fails for a user who "
+        "configured nothing wrong. Every field the sweep reaches must declare a gate_role.")
 
 
 def test_an_abstaining_gate_never_affects_the_exit_code():
@@ -1270,7 +1419,7 @@ def test_every_preference_gate_appears_in_the_posture_report():
     expected = {
         f"{type(cfg).__name__}.{name}"
         for cfg in (Config(), TriageConfig(), CvConfig(), TrackConfig(), ApplyConfig())
-        for name, _ in list_typed_fields(cfg)
+        for name, _, _role in list_typed_fields(cfg)
     }
     assert expected, "the derivation enumerated no list-typed gate at all"
 
