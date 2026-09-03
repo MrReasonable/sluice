@@ -28,7 +28,7 @@ import pytest
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault
+from sluice.core.vault import Vault, _fold_note_name
 from tests.conftest import LOCATIONS
 
 
@@ -67,17 +67,24 @@ def _require_case_sensitive_fs(tmp_path):
     be wrong. The probe writes into a dedicated subdirectory so it cannot collide with a
     vault the caller has already built.
 
-    TWO different reasons bring callers here, and neither is a shortcoming of the test.
-    Some rows would pass without exercising anything -- `_locate`'s stat already resolves
-    the variant, so the defect does not exist to be caught. The rest cannot even build
-    their FIXTURE: a pre-existing collided pair is two files whose names differ only by
-    case, which a case-insensitive filesystem cannot hold at all (the second write lands
-    on the first). Both are honest skips rather than green ticks.
+    Callers are only the rows that need the WRITE PATH to mint or resolve a same-directory
+    pair: the create rows, the exact-probe-wins row, and the ambiguous-refusal rows. There
+    the defect genuinely does not exist on a case-insensitive filesystem -- `_locate`'s stat
+    already resolves the variant -- so the row would pass without exercising anything.
 
-    The FS-independent rows -- the `_merged/` archive probe, and the fold-sharing check --
-    deliberately do NOT call this: their comparisons are Python string equality, not
-    filesystem lookups, so they run everywhere and are what a developer on a Mac still
-    gets."""
+    Most rows in this file do NOT belong here, and getting that wrong was the more damaging
+    mistake. This gate was originally applied to every row that mentioned a pair, on the
+    belief that a case-insensitive filesystem cannot hold one at all. It cannot hold one in a
+    SINGLE DIRECTORY; across two subfolders the pair exists everywhere, and since `_slug_for`
+    is the basename and both `read_leads` sweeps group on it, that is the same identity to
+    sluice (see `_seat_pair`). Over-gated, deleting the entire capitalisation sweep reddened
+    nothing on macOS, and regressing the folded probe to a bare `except OSError` -- the arm
+    that creates and records an irreversible `seen.db` row -- reddened nothing either. A gate
+    that hides a guard is worse than no guard, because it looks like coverage.
+
+    So: gate on needing the filesystem to DISTINGUISH two names, never on merely mentioning
+    a pair. The archive rows, the report rows, the reconcile rows, the fold-sharing and
+    equivalence-class checks all run everywhere, and are what a developer on a Mac gets."""
     probe = tmp_path / "_case_probe"
     probe.mkdir(exist_ok=True)
     (probe / "CaseProbe").write_text("")
@@ -87,10 +94,12 @@ def _require_case_sensitive_fs(tmp_path):
     probe.rmdir()
     if collides:
         pytest.skip(
-            "needs a case-sensitive filesystem: on a case-insensitive one (macOS APFS by "
-            "default) either _locate's stat already finds the case-variant note (so #205 "
-            "cannot be reproduced) or the two-spelling fixture cannot be seated at all. "
-            "CI (ubuntu-latest) is case-sensitive and does run these."
+            "needs a case-sensitive filesystem: this row exercises the WRITE path minting "
+            "or resolving two names that differ only by case in ONE directory, and a "
+            "case-insensitive filesystem (macOS APFS by default) resolves them to one note "
+            "before sluice sees them -- so the defect does not exist to be caught. Rows "
+            "that only need the collided STATE are seated across subfolders and run here. "
+            "CI (ubuntu-latest) is case-sensitive and runs everything."
         )
 
 
@@ -239,19 +248,42 @@ def _seat(v, name, *, company, status, score):
     return _seat_at(v.leads_dir, name, company=company, status=status, score=score)
 
 
+def _seat_pair(v, base, *, status_a="shortlist", status_b="dismiss"):
+    """Seat a case-variant PAIR in two different SUBFOLDERS, which is what makes these rows
+    run on every filesystem instead of skipping on a developer's Mac.
+
+    What a case-insensitive filesystem refuses is two entries differing only by case in ONE
+    directory. Across two directories the pair exists happily -- and the recursive scan is
+    exactly what makes that the same identity to sluice, because `_slug_for` is the BASENAME
+    and both `read_leads` sweeps group on it. So the store state #205 describes is
+    reproducible here without a case-sensitive mount, and the rows that only need that STATE
+    (rather than needing the write path to mint it) must not be gated.
+
+    Getting that wrong is not a cosmetic over-caution: gated, deleting the whole
+    capitalisation sweep -- and separately regressing the folded probe to a bare
+    `except OSError`, the arm that creates and records an irreversible `seen.db` row --
+    reddened NOTHING on macOS. The guards were there and inert, which is the shape this
+    file's own docstring warns about."""
+    other = base.upper()
+    _seat_at(os.path.join(v.leads_dir, "Active"), base,
+             company="Example Co", status=status_a, score=1)
+    _seat_at(os.path.join(v.leads_dir, "Archive"), other,
+             company="EXAMPLE CO", status=status_b, score=2)
+    return base, other
+
+
 def test_read_leads_reports_a_pair_that_differs_only_by_capitalisation(tmp_path, caplog):
     """A store that predates this fix already holds pairs -- that is what wedged replication.
     `_locate` probes the exact name first, so `upsert` keeps updating whichever twin the scrape
     names and says nothing; the read path walks anyway, so the report costs one grouping over a
     list that already exists. The message must name the REMEDY, because `leads dedupe` already
     clusters such a pair (`_norm_tokens` casefolds) and a user told only that something is wrong
-    has to invent a repair that already ships."""
-    _require_case_sensitive_fs(tmp_path)
+    has to invent a repair that already ships.
+
+    Ungated: the pair is seated across two SUBFOLDERS, so it exists on every filesystem (see
+    `_seat_pair`). Gated, deleting this whole sweep reddened nothing at all on macOS."""
     v = Vault(str(tmp_path / "vault"))
-    _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=1)
-    _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=2)
+    a, b = _seat_pair(v, "Example Co - Engineering Manager")
 
     with caplog.at_level("WARNING"):
         notes = v.read_leads()
@@ -264,8 +296,7 @@ def test_read_leads_reports_a_pair_that_differs_only_by_capitalisation(tmp_path,
     assert "conflict" in hits[0], (
         "the report must not promise that --merge RESOLVES the pair: on the pair #205 "
         "reports it returns conflict and merges nothing (pinned below)")
-    assert "Example Co - Engineering Manager" in hits[0]
-    assert "EXAMPLE CO - Engineering Manager" in hits[0]
+    assert a in hits[0] and b in hits[0]
 
 
 def test_the_capitalisation_report_is_not_raised_for_notes_at_one_name(tmp_path, caplog):
@@ -295,12 +326,8 @@ def test_the_capitalisation_report_is_raised_once_per_store(tmp_path, caplog):
     """Every command that reads leads walks this path, and several read twice. An unsuppressed
     report would say the same unchanged fact on each pass, which is the noise the sibling
     warning is already deduped against."""
-    _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
-    _seat(v, "Example Co - Engineering Manager", company="Example Co",
-          status="shortlist", score=1)
-    _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-          status="dismiss", score=2)
+    _seat_pair(v, "Example Co - Engineering Manager")
 
     with caplog.at_level("WARNING"):
         v.read_leads()
@@ -461,11 +488,10 @@ def test_dedupe_clusters_a_case_variant_pair_but_merges_only_when_status_agrees(
     Clustering holds in every row -- that is the half `_norm_tokens`' casefold delivers --
     so the parametrization separates "does dedupe SEE the pair" from "does --merge finish
     it"."""
-    _require_case_sensitive_fs(tmp_path)
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
     v = Vault(str(tmp_path / "vault"))
-    _seat(v, "Example Co - Widget Analyst", company="Example Co", status=status_a, score=1)
-    _seat(v, "EXAMPLE CO - Widget Analyst", company="EXAMPLE CO", status=status_b, score=2)
+    _seat_pair(v, "Example Co - Engineering Manager",
+               status_a=status_a, status_b=status_b)
 
     app = Sluice(Config())
     report = app.dedupe_report()
@@ -491,21 +517,24 @@ def test_the_folded_probe_does_not_read_an_unlistable_directory_as_absent(tmp_pa
 
     The warm `_scan_dirs` cache is what makes it reachable and is set up explicitly here:
     `_walk`'s `onerror=_reraise` would otherwise have raised during the walk itself."""
-    _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     sub = os.path.join(v.leads_dir, "Active")
     os.makedirs(sub, exist_ok=True)
-    _seat_at(sub, "EXAMPLE CO - Widget Analyst", company="EXAMPLE CO",
-             status="applied", role="Widget Analyst")
+    _seat_at(sub, "Example Co - Engineering Manager", company="Example Co", status="applied")
 
-    assert v._locate("Example Co - Widget Analyst"), "control: the fold finds it when listable"
+    # Any name the exact probe misses reaches the fold, so no case variant is needed and
+    # this runs on every filesystem. An earlier version asked for a case variant and so
+    # gated itself on a case-sensitive mount -- leaving the arm that CREATES and records an
+    # irreversible `seen.db` row with no guard at all on a developer's machine.
+    absent = "Example Foundry - Analyst"
+    assert v._locate(absent) == [], "control: a genuinely absent name is [] and does not raise"
 
     os.chmod(sub, 0o111)   # executable, not readable: stat inside works, scandir raises
     try:
         v2 = Vault(str(tmp_path / "vault"))
         v2._scan_dirs_cache = [v.leads_dir, sub]   # as a prior successful walk left it
         with pytest.raises(OSError):
-            v2._locate("Example Co - Widget Analyst")
+            v2._locate(absent)
     finally:
         os.chmod(sub, 0o755)
 
@@ -536,8 +565,12 @@ def test_reconcile_names_refuses_to_mint_a_pair_differing_only_by_case(tmp_path)
     []`, with the case pair newly on disk. Layer 1 does not catch it either -- it runs
     against the pre-sweep vault, where neither target is occupied yet. So this pass MINTED
     the pair `_locate`'s fold exists to stop, which also falsified the claim that such pairs
-    only predate the fix."""
-    _require_case_sensitive_fs(tmp_path)
+    only predate the fix.
+
+    Ungated: the two SOURCE notes have plainly different names, and the whole point is that
+    both renames are REFUSED, so nothing case-colliding is written. The row therefore runs on
+    every filesystem -- which matters, because the mutant it kills is a WRITE path minting the
+    pair."""
     v = Vault(str(tmp_path / "vault"))
     _seat_at(v.leads_dir, "Unknown - Widget Analyst", company="Example Co",
              status="new", role="Widget Analyst")
@@ -588,12 +621,8 @@ def test_the_capitalisation_report_survives_a_status_filtered_read(tmp_path, cap
     very pair it exists for. Every other row here reads unfiltered, where the two sweeps are
     indistinguishable, so without this one the distinction is untested: measured, reverting
     to the returned list leaves all of them green."""
-    _require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
-    _seat_at(v.leads_dir, "Example Co - Engineering Manager", company="Example Co",
-             status="shortlist")
-    _seat_at(v.leads_dir, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
-             status="dismiss", score=2)
+    _a, b = _seat_pair(v, "Example Co - Engineering Manager")
 
     with caplog.at_level("WARNING"):
         notes = v.read_leads({"shortlist"})
@@ -602,5 +631,24 @@ def test_the_capitalisation_report_survives_a_status_filtered_read(tmp_path, cap
     hits = [r.getMessage() for r in caplog.records
             if "differ only by capitalisation" in r.getMessage()]
     assert len(hits) == 1, [r.getMessage() for r in caplog.records]
-    assert "EXAMPLE CO - Engineering Manager" in hits[0], (
-        "the filtered-out twin must still be named in the report")
+    assert b in hits[0], "the filtered-out twin must still be named in the report"
+
+
+def test_the_fold_is_a_full_casefold_not_a_per_character_lowering(tmp_path):
+    """`_fold_note_name`'s equivalence CLASS, pinned directly rather than only through the
+    paths that consume it.
+
+    Every other row here would stay green with `casefold()` swapped for `lower()`, because
+    every fixture in them folds identically under both -- so the roster guard certifies that
+    a token is present, not that the fold is the right one. That gap is not hypothetical on
+    this branch: `re.IGNORECASE`, which IS a per-character lowering, shipped as the archive
+    pre-filter and was measurably a resurrection.
+
+    The sharp s is the reachable witness: `casefold` maps it to a double s and `lower` leaves
+    it alone, so a company written one way and the same company written the other are one
+    identity under the fold this store promises and two under the weaker one."""
+    assert _fold_note_name("Widget \u00df Analyst") == _fold_note_name("Widget SS Analyst")
+    assert "Widget \u00df Analyst".lower() != "Widget SS Analyst".lower(), (
+        "the fixture no longer discriminates: pick a pair where casefold and lower disagree")
+    # And it must NOT reach past case: two genuinely different names stay different.
+    assert _fold_note_name("Example Co - A") != _fold_note_name("Example Co - B")
