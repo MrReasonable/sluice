@@ -8,11 +8,17 @@
 # The image does not exist until 1.1.0 publishes it. This file is inert until then, exactly like
 # the `docker` job that will push it.
 #
-# Camofox is NOT here, and cannot be: `ingest run`/`ingest test-source` need a persistent,
-# authenticated headless browser server that this repository does not bundle. It runs on the
-# host; `CAMOFOX_URL` below points the container at it. Every other command works without it,
-# and `triage`/`cv` reach it only on a dossier cache miss -- which is why the cache volume below
-# is worth keeping.
+# Camofox is NOT here, because it is a separate service with its own lifecycle, not because it
+# resists containerising: it runs perfectly well as a container beside this one, started with
+# the `docker run` upstream documents. `ingest run`/`ingest test-source` need it persistent and authenticated, so it
+# outlives any single sluice invocation. `CAMOFOX_URL` below points this container at wherever it
+# runs, host or container alike. Every other command works without it, and `triage`/`cv` reach it
+# only on a dossier cache miss -- which is why the cache volume below is worth keeping.
+#
+# An earlier version of this comment said Camofox "cannot be" containerised. That was wrong, and
+# it was load-bearing: read as a statement about what is POSSIBLE rather than about what this
+# file bundles, it makes `ingest` look out of reach for anyone not willing to run a browser
+# server by hand. See docs/INSTALL.md's Camofox section for how to start it.
 
 x-sluice: &sluice
   image: ghcr.io/mrreasonable/job-sluice:${JOB_SLUICE_TAG:-latest}

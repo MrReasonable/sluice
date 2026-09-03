@@ -397,11 +397,63 @@ command that will disagree with itself.
 ## Camofox
 
 `ingest run` and `ingest test-source` drive a persistent, authenticated headless browser server
-called Camofox. **This repository does not bundle one** — see
-[jo-inc/camofox-browser](https://github.com/jo-inc/camofox-browser) to stand one up. sluice looks
-for it at `http://127.0.0.1:9377` by default (`CAMOFOX_URL`).
+called Camofox. **This repository does not bundle one**, and that is a packaging boundary rather
+than a technical one: Camofox runs perfectly well as a container beside sluice, and upstream
+documents a `docker run` for it. (It publishes no image and no compose file, which is the whole
+of the friction.) sluice looks for it at `http://127.0.0.1:9377` by default (`CAMOFOX_URL`).
 
-`triage` and `cv` reach it too, but only lazily, on a dossier cache miss. Every other command
+```bash
+git clone https://github.com/jo-inc/camofox-browser.git
+cd camofox-browser
+make build      # once: no image is published, so it is built for your architecture
+
+docker run -d --name camofox-browser \
+  -p 127.0.0.1:9377:9377 -p 127.0.0.1:6080:6080 \
+  --shm-size=2g \
+  -e ENABLE_VNC=1 -e VNC_BIND=0.0.0.0 \
+  -v ~/.camofox/profiles:/root/.camofox/profiles \
+  camofox-browser:<the tag make build printed>
+```
+
+`make build` is the slow step and the only real friction; the image is several GB and it prints
+the tag it created (`camofox-browser:<version>-<arch>`), which is what the last line takes.
+
+Each flag earns its place: `9377` is the API sluice talks to and `6080` the noVNC web UI;
+`--shm-size=2g` is what the image's own Makefile uses, because Firefox crashes on content-heavy
+pages with Docker's 64MB default; `ENABLE_VNC`/`VNC_BIND` turn the VNC plugin on and bind it
+inside the container so the mapped port is reachable; and the profiles volume is what makes a
+login survive a restart.
+
+**Both ports are published to loopback deliberately.** `VNC_PASSWORD` is empty by default, so
+anyone who can reach 6080 has full control of a browser that is logged into your job boards, and
+the API on 9377 can drive that browser and import cookies with no key set. Camofox's own VNC
+documentation says the same and names this exact binding. If you need either from another
+machine, do it over an SSH tunnel (`ssh -L 6080:localhost:6080 your-host`) rather than by
+widening the bind, and set `VNC_PASSWORD` and `CAMOFOX_API_KEY` if you do. One case genuinely
+needs a wider bind: sluice running in a container reaches the host as `host.docker.internal`,
+which loopback does not serve, so that setup wants a key rather than an open port.
+Camofox's own README documents the remaining environment variables, including `NOVNC_PORT` and
+the proxy settings.
+
+The `docker run` above was executed against a built image before being written here: the
+container starts, `http://127.0.0.1:9377/health` answers, `http://127.0.0.1:6080/vnc.html`
+serves the noVNC UI, and the profiles volume appears on both sides of the mount. `make build`
+itself is the one step not re-run for this document.
+
+**Logging into job boards is interactive, and that is the point.** The container serves noVNC at
+`http://localhost:6080/vnc.html`: open it and you get a real Firefox window to log into LinkedIn,
+Reed or anything else the way you normally would, with no tokens to mint and no credentials given
+to sluice. Sessions persist in the profile volume, so a login survives a restart. Two things about
+that are worth knowing before you rely on it:
+
+- **A login is written to disk when the session is destroyed, not when you log in.** Close the
+  session (or stop the container cleanly) to flush it. A verified-working login can otherwise be
+  lost on the next restart.
+- Log in inside the profile sluice will drive. `job-sluice doctor` prints which one that is
+  (`camofox  CAMOFOX_USER`), and a logged-out profile mostly looks like an empty result set rather
+  than an error: only `linkedin` detects the logged-out page and reports `drift=auth`.
+
+`triage` and `cv` reach Camofox too, but only lazily, on a dossier cache miss. Every other command
 works without it.
 
 ## Backend credentials
