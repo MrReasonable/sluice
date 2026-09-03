@@ -1007,7 +1007,18 @@ State it that way, not as an absolute "never re-created": a re-scrape whose iden
 **drifted beyond what the store recorded** is outside the guarantee. For the vault the
 recorded identity is the note NAME the loser was seated at, so a re-scrape whose title
 has drifted past every `Company - Title` name candidate `_resolve_path` builds is still
-created -- a visible duplicate a human can merge again. The conformance suite exercises
+created -- a visible duplicate a human can merge again.
+
+Comparing that recorded name up to CASE is #205's second half, and it was a live breach rather
+than a tidy-up: measured on the code before it, merging a lead away and re-scraping it with the
+company spelled `EXAMPLE CO` instead of `Example Co` returned `created`. The exact-casing control
+suppressed correctly, so the guard was working and the re-scrape simply walked past it — undoing
+a human's merge, and where the surviving twin was already `applied`, meaning a second application
+under the user's name. Folding can only SUPPRESS more, never resurrect more, so it moves in the
+safe direction by construction; and it does not widen what enters `seen.db`, because that arm
+stays gated on `url_proven` — a matching non-empty url, which no amount of name folding can
+manufacture. A fold-widened match that is not url-proven lands on `merged_away_unproven`, writes
+nothing, records nothing, and re-reports every run until a human acts. The conformance suite exercises
 only the location-split shape, so it does not police that residual; the contract does, by
 naming it. A url index over the archive would close the gap; it is `#23` territory and
 changes `upsert`'s cost model, so it is deliberately out of scope here.
@@ -1149,6 +1160,28 @@ read, so the cost falls the other way — a non-lead file squatting a lead's exa
 candidate name is reconciled against as though it were a lead, unchanged from the
 flat store. A name resolving to two or more notes is ambiguous identity and `upsert`
 refuses.
+
+**That name is matched up to CASE** (#205). A board renders one employer several ways and the
+name is built from the company string verbatim, so a byte-for-byte match seated a separate note
+per spelling, each with its own status — one spelling holding a live `shortlist` while its twin
+held a `dismiss`, so dismissing the role under one did not stop it returning as `new` under the
+other. It also wedged replication silently: a case-insensitive filesystem cannot hold the pair,
+and Syncthing reports the folder `state=idle` while delivering neither note. `_fold_note_name` is
+the one fold, shared by `_locate`, `_archived_match` and `read_leads`' report — a `_locate` that
+folds against an `_archived_match` that does not is measurably a **resurrection**, so they cannot
+be allowed to drift. It is CASE only: Unicode normalization is a real and separate axis (a macOS
+filesystem may return NFD for a name written NFC), and every widening past case claims two
+differently spelled names are one job.
+
+`_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the cost
+where it was — the steady-state hit stays ~7µs while the folded listing costs ~1.9ms over a
+3190-note store, so the fold is paid on the create/miss arm that already pays `_archived_match`'s
+listdir. One consequence follows and is REPORTED rather than closed: against a pair a pre-#205
+store already holds, a scrape whose casing matches either note returns that one and updates
+silently; only a third casing, matching neither, reaches the ambiguous refusal. So the standing
+signal on such pairs is `read_leads`' own warning, which every command that reads leads emits and
+which names `leads dedupe --merge` — a remedy that already works, since `cluster_duplicates`
+normalizes company and role through `_norm_tokens`, which casefolds. Only the signal was missing.
 
 **The scan set and the write folder are two different things** (#1). The scan set is
 every directory a lead may be READ from; the **write folder** is the ONE directory a

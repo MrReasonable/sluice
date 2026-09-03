@@ -334,3 +334,29 @@ def test_the_three_consumers_share_one_fold(tmp_path):
         assert ".casefold()" not in src, (
             f"{fn.__qualname__} folds inline; that is the second copy the helper exists to "
             "prevent")
+
+
+@pytest.mark.parametrize("scraped,expected", [
+    ("Example Co", "updated"),    # matches one twin exactly -> fast path, one hit
+    ("EXAMPLE CO", "updated"),    # matches the other exactly -> same
+    ("example co", "refused"),    # a THIRD casing -> folded probe sees both -> ambiguous
+])
+def test_which_casings_of_an_existing_pair_reach_the_ambiguous_refusal(tmp_path, scraped,
+                                                                       expected):
+    """Pins the SCOPE of the ambiguous-identity refusal over a pre-existing collided pair,
+    because `_resolve_candidates` now states it in prose and a prose claim about behaviour
+    is the drift this repo keeps finding in its own comments.
+
+    The exact probe runs first, so a scrape whose casing matches either note on disk returns
+    one path and updates -- silently, leaving the twin untouched and unmentioned. Only a
+    casing matching neither falls through to the folded probe, sees both, and refuses. A
+    board that keeps sending the spelling that created the note therefore never reaches that
+    line, which is why the standing report on such pairs lives in `read_leads` instead."""
+    _require_case_sensitive_fs(tmp_path)
+    v = Vault(str(tmp_path / "vault"))
+    _seat(v, "Example Co - Engineering Manager", company="Example Co",
+          status="shortlist", score=86)
+    _seat(v, "EXAMPLE CO - Engineering Manager", company="EXAMPLE CO",
+          status="dismiss", score=0)
+
+    assert v.upsert(_lead(scraped)).outcome == expected

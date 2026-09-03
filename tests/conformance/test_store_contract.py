@@ -637,6 +637,63 @@ def test_merged_away_lead_is_never_recreated(store_name, tmp_path, monkeypatch):
     assert len(store.read_leads()) == 1
 
 
+def test_an_identity_equivalence_binds_the_archive_probe_too(store_name, tmp_path,
+                                                             monkeypatch):
+    """#205, and the obligation is CONDITIONAL because the equivalence itself is a MAY. A
+    store may match its recorded identity up to an equivalence of its own -- the vault
+    matches note names up to CASE, because a board renders one employer several ways -- and
+    a store keyed on synthetic ids has no such notion and needs none. What is a MUST is that
+    whichever equivalence a store adopts binds EVERY path that resolves a lead, the create
+    walk and the archive probe alike.
+
+    Applying it in one place only is not a partial improvement, it is a resurrection.
+    Measured on the vault before the fold reached its archive probe: a lead merged away as
+    `Example Co` and re-scraped as `EXAMPLE CO` came back "created" -- undoing a human's
+    merge decision, and where the survivor was already `applied`, meaning a second
+    application under the user's name.
+
+    SCOPE first, and it is the whole reason this is written as a branch rather than a
+    straight assertion: a conditional property whose antecedent never holds is satisfied by
+    every store trivially, which is this suite's own vacuity trap. The antecedent is
+    PROBED -- does this store treat a case-variant as the same lead on the create path? --
+    and the arm taken is asserted on, so a store that adopts no equivalence is recorded as
+    having been checked for the right thing rather than silently passing."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(url="https://example.invalid/1")).outcome == "created"
+
+    # ANTECEDENT: does this store fold case on the CREATE path?
+    variant = store.upsert(_lead(company="EXAMPLE FOUNDRY", title="ANALYST",
+                                 url="https://example.invalid/1"))
+    folds_on_create = variant.outcome != "created"
+    if not folds_on_create:
+        # No case equivalence, so nothing to bind. Recorded rather than skipped, so the
+        # roster shows this store was asked.
+        assert len(store.read_leads()) == 2, (
+            f"{store_name} neither folded the variant nor created it as a distinct lead")
+        return
+
+    assert len(store.read_leads()) == 1, (
+        f"{store_name} reported {variant.outcome!r} but left more than one lead")
+
+    # THE PROPERTY: the same equivalence must reach the archive probe.
+    assert store.upsert(_lead(url="https://example.invalid/2",
+                              location=LOCATIONS[1])).outcome == "created"
+    survivor = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/1")
+    loser = next(n for n in store.read_leads() if n.fm.get("url") == "https://example.invalid/2")
+    store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+    assert len(store.read_leads()) == 1, "nothing was merged: the property below is vacuous"
+
+    resurrected = store.upsert(_lead(company="EXAMPLE FOUNDRY", title="ANALYST",
+                                     url="https://example.invalid/2",
+                                     location=LOCATIONS[1]))
+    assert resurrected.outcome != "created", (
+        f"{store_name} folds case when creating but not when probing its archive, so a "
+        "case-variant re-scrape resurrects a lead a human merged away")
+    assert resurrected.outcome in _VOCAB
+    assert len(store.read_leads()) == 1
+
+
 # ── #131 post-final-review: upsert reports the note it ACTUALLY wrote to ──────
 def test_upsert_result_slug_names_the_note_this_call_actually_wrote(
         store_name, tmp_path, monkeypatch):
