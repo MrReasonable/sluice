@@ -647,7 +647,14 @@ config is its own DEAD `cv-config` row rather than a traceback — see
 
 Four classification states per row: `ok`, `degraded`, `dead`, and `notice` (which never
 affects the exit code, even under `--strict`). Output (stdout) is two tables — backends, then
-components — each ending with an `N ok, N degraded, N dead[, N notice]` summary. Exit 1 if any
-row is `dead` (or, under `--strict`, `degraded`); otherwise 0. Run this before a real pipeline
+components — each ending with an `N ok, N degraded, N dead[, N notice]` summary. Both summaries
+move with the install and they move independently: the backend one tracks which providers are
+reachable, the component one tracks your vault and your optional extras. A captured run in any
+doc is therefore one machine's answer, never a constant to compare yours against.
+Exit 1 if any row is `dead` (or, under `--strict`, `degraded`); otherwise 0. A fresh install has
+`dead` components and so exits 1 by design, which is a to-do list rather than a fault. How many
+depends on the install: a packaged channel supplies the renderer's native libraries, a bare `pip`
+install does not, so a count stated here would be wrong for one of them. Run
+this before a real pipeline
 run; see `docs/TROUBLESHOOTING.md` for what a specific `dead`/`degraded` line means and how to
 fix it.
