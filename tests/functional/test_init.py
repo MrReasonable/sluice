@@ -1227,3 +1227,114 @@ def test_a_mis_encoded_evidence_entry_is_reported_rather_than_crashing_the_inter
     assert transcript, "the asker was never prompted; the absence check below is vacuous"
     assert "Capture some" not in transcript, \
         "the capture step was offered against a corpus this run could not read"
+
+
+def test_the_next_steps_line_never_tells_you_to_fill_in_a_note_that_is_not_there(
+        tmp_path, monkeypatch, capsys):
+    """#244. The documented quickstart runs `--no-input`, which declares nothing, so the
+    Candidate Profile write is gated off and no note is created. The next-steps line said
+    "fill in <path>" regardless, so the first instruction a new user got named a file that did
+    not exist and `doctor` then confirmed it missing two commands later.
+
+    Both arms are asserted, and the middle shape matters: the Store contract returns an
+    all-blank profile for a MISSING document and says nothing about how a present one parses,
+    so nothing here can distinguish "no file" from "a blank file". The negative arm is worded
+    to be true of both rather than pretending the distinction is available."""
+    from sluice.cli import main
+
+    vault = tmp_path / "vault"
+    monkeypatch.chdir(tmp_path)
+
+    def _line_two():
+        capsys.readouterr()
+        main(["init", "--no-input", "--vault", str(vault)])
+        out = capsys.readouterr().out
+        line = [ln for ln in out.split("\n") if ln.strip().startswith("2.")]
+        assert len(line) == 1, f"expected exactly one `2.` next-step line, got {line}"
+        return line[0]
+
+    # No note at all: the shape the documented quickstart produces.
+    assert "fill in" not in _line_two(), (
+        "init tells the user to fill in a Candidate Profile it did not create")
+
+    note = vault / "Job Applications" / "Candidate Profile.md"
+    note.parent.mkdir(parents=True, exist_ok=True)
+
+    # A blank note: present, but nothing declared. Must not claim it needs creating.
+    note.write_text('---\nforenames: ""\n---\n', encoding="utf-8")
+    blank = _line_two()
+    assert "fill in" not in blank and "create" not in blank, (
+        f"the blank-note arm claims the file must be created or filled in: {blank!r}")
+
+    # A declared note: now there genuinely is something to finish.
+    note.write_text('---\nforenames: "Example"\n---\n', encoding="utf-8")
+    assert "fill in the rest of" in _line_two(), (
+        "a note with declared fields should be described as needing completion, not creation")
+
+
+
+def test_init_never_overwrites_a_hand_built_leads_view(run_init, tmp_path):
+    """#240's never-overwrite arm, driven through `cmd_init` rather than through the store.
+
+    `tests/test_leads_view.py` asserts the same property against `store.write_document`
+    directly, which turns out to test the STORE's contract (already covered by
+    `tests/conformance/test_store_contract.py`) rather than this feature's use of it. Measured:
+    dropping `only_if_absent=True` from `cli.py`'s view write -- so `init` clobbers a view the
+    user hand-built -- reddened NOTHING in the whole suite.
+
+    That is the never-overwrite family, on a file a user is invited to edit in Obsidian, so it
+    needs a functional guard and not a unit one. README promises `init` never overwrites an
+    existing artefact, and the other three artefacts each already have one of these."""
+    from sluice.core.protocols import LEADS_VIEW_RELPATH
+
+    vault = tmp_path / "vault"
+    rc, _out, _err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0
+    view = vault / LEADS_VIEW_RELPATH
+    assert view.exists(), "init did not write the leads view at all"
+
+    # CONTENT, not just existence. Measured: replacing plan.view_text with "" at the call site
+    # leaves the whole suite green, and `only_if_absent=True` means no later `init` ever repairs
+    # it -- the user gets a permanently blank table in Obsidian, which is precisely the failure
+    # nothing else can notice (an empty Bases view renders as "no results", not as an error).
+    import yaml
+    doc = yaml.safe_load(view.read_text(encoding="utf-8"))
+    assert isinstance(doc, dict) and doc, "init wrote an empty or unparseable view"
+    assert doc.get("views"), "the written view defines no views, so it renders nothing"
+    predicate = " ".join(doc["filters"]["and"])
+    assert "Job Leads.base" in predicate, (
+        "the written view does not select on the key lead notes carry, so it matches nothing")
+
+    sentinel = "views:\n  - type: table\n    name: MINE\n"
+    view.write_text(sentinel, encoding="utf-8")
+
+    rc, out, _err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0
+    assert view.read_text(encoding="utf-8") == sentinel, (
+        "init overwrote a view the user had edited; the whole file is theirs once it exists")
+    assert "Job Leads.base" in out, (
+        "the re-run said nothing about the view it left alone, so a user cannot tell it was "
+        "considered rather than forgotten")
+
+
+
+def test_the_leads_view_inside_the_leads_directory_is_not_read_as_a_lead(run_init, tmp_path):
+    """`Job Leads.base` lives INSIDE leads_dir, so the lead scan walks over it every run.
+
+    Asserts the OBSERVABLE property -- no phantom lead appears -- and deliberately not the
+    mechanism, because measured there are two: the `.endswith(".md")` filters, and the
+    frontmatter parse, which yields nothing from a file that has none. Removing every `.md`
+    filter leaves `read_leads()` empty anyway, so this test does NOT single that filter out and
+    must not be described as guarding it. What it does guard is the thing a user would suffer:
+    a row in their vault that is not a job."""
+    from sluice.core.protocols import LEADS_VIEW_RELPATH
+    from sluice.core.vault import Vault
+
+    vault = tmp_path / "vault"
+    rc, _out, _err = run_init(["init", "--vault", str(vault), "--no-input"])
+    assert rc == 0
+    assert (vault / LEADS_VIEW_RELPATH).exists(), "precondition: the view must be present"
+
+    v = Vault(str(vault))
+    assert v.read_leads() == [], (
+        "the Bases view inside leads_dir is being read as a lead note")

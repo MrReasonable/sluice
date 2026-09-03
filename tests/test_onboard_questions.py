@@ -185,7 +185,7 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     from sluice.core.criteria import DEFAULT_CRITERIA
     from tests.onboard_prose import rendered_artefacts
     surfaces = dict(rendered_artefacts())
-    assert len(surfaces) == 4                              # Task 6 added candidate_text
+    assert len(surfaces) == 5                              # +candidate_text, +view_text (#240)
     for label, text in surfaces.items():
         assert text.strip(), f"{label} swept nothing"
 

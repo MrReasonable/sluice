@@ -40,6 +40,38 @@ CANDIDATE_PROFILE_RELPATH = "Job Applications/Candidate Profile.md"
 this is an opaque DOCUMENT KEY, not a path -- nothing here may assume a filesystem."""
 
 
+LEADS_VIEW_RELPATH = "Job Applications/Job Leads/Job Leads.base"
+"""The Obsidian Bases view over the lead notes (#240). Another opaque DOCUMENT KEY.
+
+Every lead note `core/vault.py` writes carries `base: "[[Job Leads.base]]"`, and every
+triage audit note does too; that key is the view's own membership predicate, which is
+why the notes have carried it since long before anything created the file it names.
+Until #240 nothing did, so each note shipped an unresolved link and the user never got
+the table the link exists to open.
+
+The path is INSIDE the leads directory rather than beside it, which is not arbitrary.
+An Obsidian wikilink resolves by name from anywhere in the vault, so both locations
+satisfy the notes; what does not survive the choice is never-overwrite. A user who
+already hand-built this view has it here, and writing to any other path would hand them
+a second, competing one instead of finding theirs and standing down. The lead scan is
+unaffected either way: its consumers admit only names ending `.md`.
+
+KNOWN GAP, stated rather than implied: the view's membership predicate is that `base:` key
+alone, and `triage/audit.py` stamps the SAME key into the Rejected Leads Audit note, which
+carries no company, role, status or score. So the unfiltered "All leads" tab gains one blank
+row after the first non-dry-run triage that has audit entries; the three status-filtered tabs
+exclude it already, because it has no `status`. `generated: true` on that note is the
+available discriminator, and using it needs a filter form verified against a live Obsidian
+rather than guessed at -- every construct the shipped view uses today is one observed
+working, and a filter that fails to parse renders an EMPTY table, which would hide every
+lead rather than surface one extra row.
+
+That is not the only lever, and the other needs no Bases syntax at all: `triage/audit.py`
+could stop stamping this key into a note that is not a lead. So this is deferred rather than
+unavailable, and whichever lever is taken, this paragraph is what should stop being true.
+"""
+
+
 FLOOR_FIELD_SOURCES = {
     "company": "Company",
     "category": "Category",
