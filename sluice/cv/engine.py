@@ -28,6 +28,7 @@ from datetime import date
 from sluice.core import status as _status
 from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by_slug
+from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.log import get_logger
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
@@ -808,6 +809,81 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
     except Exception as e:
         e.dossier_failed = dossier_failed
         raise
+
+
+def missing_prerequisites(vault) -> list:
+    """Config-level preconditions EVERY lead in a run shares, as user-facing strings (#242).
+
+    Checked ONCE per run, before any spend, and deliberately NOT in `run_one`. `run_one`'s
+    existing refusals -- pending_cv, staleness, a blank Candidate Profile -- are per-LEAD
+    facts, so reporting them per lead is right. These two are properties of the install: a
+    missing baseline CV or an empty citable corpus is equally true of every lead, so a
+    per-lead check emits N identical lines for one fixable thing.
+
+    Neither was checked before the dossier fetch, and the two failed DIFFERENTLY -- the
+    distinction matters and an earlier draft of this docstring got it wrong. Measured on the
+    pre-fix code: an empty corpus reached the composer and spent two backend calls before the
+    fabrication gate rejected the result; a missing baseline spent NONE, because
+    `read_baseline` sits above `compose()` and raised through `_read`'s bare `open` first. So
+    the corpus half cost tokens and the baseline half cost a TRACEBACK where
+    `docs/USAGE.md` promises a clean usage error. Both still cost a dossier fetch, which
+    drives a real browser.
+
+    The corpus check is keyed on `cited_by_gate`, not on all three kinds. `skills` is
+    `read_by_composer` only and `stories` is neither, so requiring verified entries in those
+    would refuse runs that would have composed perfectly well -- the gate licenses nothing
+    from them, so their emptiness cannot make a CV fail.
+    """
+
+
+    # UNREADABLE is not EMPTY, and the two get different sentences. `Vault.preflight` already
+    # ruled on this shape for the same corpora: a kind whose directories could not be read
+    # reports the error's own text "INSTEAD of that triple, never a zero count". Reporting a
+    # read failure as an absence is the quiet-wrong-default class, and here it also sends the
+    # user somewhere useless -- measured, a symlinked `Job Applications` holding a genuinely
+    # verified entry produced "no verified experience entries ... Add with `job-sluice
+    # experience add`", discarding `_evidence_dir`'s precise symlink refusal and naming a
+    # command that fails through that same resolver. `-- {exc}` follows `cmd_init`'s shape.
+    missing = []
+    baseline = ""
+    try:
+        baseline = vault.read_baseline()
+    except FileNotFoundError:
+        pass                       # genuinely absent: the actionable message below covers it
+    except (OSError, ValueError) as exc:          # ValueError covers UnicodeDecodeError
+        # Present but unreadable: a refused symlink, a permission problem, or bytes that are
+        # not UTF-8. Never let it RAISE -- replacing a traceback with a sentence is the whole
+        # point -- but do not call it absent either.
+        #
+        # `UnicodeError` is NOT redundant with `OSError`: `read_baseline` goes through `_read`,
+        # which opens with `encoding="utf-8"`, and `UnicodeDecodeError` descends from
+        # ValueError, not OSError. Measured -- a baseline of arbitrary bytes escaped an
+        # `except OSError` alone as a raw UnicodeDecodeError.
+        missing.append(
+            f"cannot read the baseline CV at "
+            f"{getattr(vault, 'baseline_rel', 'the configured path')!r} -- {exc}")
+        baseline = None            # reported; do not also report it as absent
+    if baseline is not None and not baseline.strip():
+        missing.append(
+            f"no baseline CV at {getattr(vault, 'baseline_rel', 'the configured path')!r} "
+            f"in your vault -- cv composes FROM it, so there is nothing to tailor")
+
+    for name, kind in EVIDENCE_KINDS.items():
+        if not kind.cited_by_gate:
+            continue
+        try:
+            entries = vault.read_evidence(name)
+        except (OSError, ValueError, UnicodeError) as exc:
+            # Same ruling: report WHY, and do not name `<kind> add` -- that command reaches the
+            # corpus through the same resolver, so it would fail identically.
+            missing.append(f"cannot read your {name} entries -- {exc}")
+            continue
+        if not entries:
+            missing.append(
+                f"no verified {name} entries -- every WORK bullet must cite one, so the "
+                f"fabrication gate would reject any CV composed without them. "
+                f"Add with `job-sluice {name} add`, then `job-sluice {name} verify`")
+    return missing
 
 
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,

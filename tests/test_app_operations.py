@@ -220,6 +220,11 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
 
 def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    # #242: compose_cv refuses a vault that cannot compose before any spend, so a bare
+    # tmp_path no longer reaches the wiring these tests are about.
+    from sluice.core.vault import Vault as _V
+    from tests.conftest import make_composable as _mc
+    _mc(_V(str(tmp_path)))
     app = Sluice(Config())
     monkeypatch.setattr(app, "backend", lambda *a, **k: object())  # avoid real creds
     assert app.compose_cv(lead="no-such-lead", dry_run=True) == []
@@ -227,6 +232,11 @@ def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
 
 def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    # #242: compose_cv refuses a vault that cannot compose before any spend, so a bare
+    # tmp_path no longer reaches the wiring these tests are about.
+    from sluice.core.vault import Vault as _V
+    from tests.conftest import make_composable as _mc
+    _mc(_V(str(tmp_path)))
     app = Sluice(Config())
     seen = {}
     monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(**kw) or object())
@@ -258,6 +268,16 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
         def read_leads(self, statuses=None):
             return [_Note()]
 
+
+        def read_baseline(self):
+            # MUST-support Store members (core/protocols.py: "NOT optional like
+            # preflight/precheck"), so the double implements them rather than cv/engine.py
+            # treating a required member as optional -- the precedent is _FakeStore gaining
+            # read_candidate_profile when Sluice.prep began calling it unconditionally.
+            return "# CV\n"
+
+        def read_evidence(self, kind, verified_only=True):
+            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
     def _boom(*a, **k):
         # Mirrors what a real run_one does on a downstream failure (a render error,
         # a backend timeout) AFTER a dossier fetch the SSRF guard blocked: stamp
@@ -290,6 +310,7 @@ class _PrecheckStore:
 
     def read_leads(self, statuses=None):
         return [self._note]
+
 
     def read_evidence(self, kind, verified_only=True):
         from tests.test_cv_engine import ENTRIES
