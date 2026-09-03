@@ -713,11 +713,24 @@ def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
     checks = classify_store({
         "vault_exists": True, "baseline_exists": False, "criteria_present": False,
         "experience_total": 0, "experience_verified": 0,
+        # The two non-citable kinds need their keys PRESENT, or the absent-fact guard routes
+        # them past the `cited_by_gate` conjunct and the NOTICE assertions below stop proving
+        # anything about it. Measured: without these, deleting that conjunct left this test
+        # green and only the README transcript guard complained -- with a message about a
+        # capture no longer reproducing, which invites a re-capture rather than a fix.
+        "skills_total": 0, "skills_verified": 0,
+        "stories_total": 0, "stories_verified": 0,
     })
     by_subject = {c.subject: c for c in checks}
     assert by_subject["baseline_rel"].state == DEAD
     assert by_subject["Judging Profile"].state == DEGRADED
-    assert by_subject["Experience Library"].state == NOTICE
+    # DEAD since #242: `cv run` refuses a vault with nothing verified, before any spend, so a
+    # NOTICE here would call the install fine about the exact thing that makes the next command
+    # exit 2. The two non-citable corpora stay NOTICE -- they block nothing.
+    assert by_subject["Experience Library"].state == DEAD
+    assert by_subject["Experience Library"].blocks == ("cv",)
+    assert by_subject["Skills Inventory"].state == NOTICE
+    assert by_subject["STAR Stories"].state == NOTICE
 
 
 def test_classify_store_healthy_facts_are_ok():
@@ -2497,3 +2510,36 @@ def test_an_empty_inventory_reports_nothing_through_the_real_wiring(tmp_path,
                 "Experience Library (unmatched)"} & gate_subjects, (
         "an empty Skills Inventory must abstain, not report every declared Skills: "
         f"name unmatched (gates subjects: {sorted(gate_subjects)})")
+
+
+def test_a_citable_corpus_with_entries_but_none_verified_is_still_dead():
+    """`not verified`, not `not total`. The distinction is a REACHABLE state: two hand-placed
+    notes with no `verified:` key give total=2, verified=0, and `cv run` refuses that vault --
+    so grading on the total would call it healthy while the next command exits 2."""
+    checks = classify_store({
+        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "experience_total": 2, "experience_verified": 0,
+        "skills_total": 0, "skills_verified": 0,
+        "stories_total": 0, "stories_verified": 0,
+        "candidate_name_present": True, "candidate_contact_present": True,
+    })
+    row = {c.subject: c for c in checks}["Experience Library"]
+    assert row.state == DEAD, "entries present but none verified must still block cv"
+    assert row.blocks == ("cv",)
+
+
+def test_an_absent_evidence_fact_is_not_graded_as_zero():
+    """A store that omits the key is a store that could not say, not one reporting zero.
+
+    `Vault.preflight` forbids exactly this shape in its own docstring -- a corpus it cannot
+    read reports the error "INSTEAD of that triple, never a zero count" -- and since the count
+    now drives DEAD and the exit code, defaulting an absent key to 0 would manufacture it one
+    layer up. Not reachable through Vault; a second store need only omit the key."""
+    checks = classify_store({
+        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "candidate_name_present": True, "candidate_contact_present": True,
+    })          # no <kind>_verified keys at all
+    rows = {c.subject: c for c in checks}
+    assert rows["Experience Library"].state != DEAD, (
+        "an absent fact was graded as a zero count, which is what preflight forbids")
+    assert rows["Experience Library"].blocks == ()

@@ -265,12 +265,15 @@ actually answers, not just that a key is present.
 - **`degraded`, Judging Profile absent**: `triage` falls back to the shipped neutral default,
   which states only that nothing is configured and prefers `research` over a confident
   verdict. Not fatal, just under-informed — fill in `Job Applications/Judging Profile.md`.
-- **`notice`, Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per
-  evidence corpus, informational only — `<verified> verified / <total> total entries`. Zero
-  verified `experience` entries means every CV fails the fabrication gate (no citable source
-  material), which is a `cv run` failure, not a `doctor` one; since #165 a verified `skills`
-  entry reaches the composer as framing (citable by nothing) and a verified `stories` entry is
-  consumed by nothing yet, so an empty one of either is not itself a blocker today. A non-zero
+- **Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per evidence
+  corpus — `<verified> verified / <total> total entries`. Zero verified `experience` entries is
+  **`dead`, and blocks `cv`** (#242): `cv run` refuses such a vault outright, once for the run
+  and before any fetch or backend call, so `doctor` grades it as the blocker it is rather than
+  reporting it informationally. (It used to say the opposite — that this was "a `cv run`
+  failure, not a `doctor` one" — which left `doctor` calling an install fine about the very
+  thing that stopped the next command.) The other two stay `notice`: since #165 a verified
+  `skills` entry reaches the composer as framing (citable by nothing) and a verified `stories`
+  entry is consumed by nothing yet, so an empty one of either blocks nothing. A non-zero
   PENDING count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)`
   — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
   command.

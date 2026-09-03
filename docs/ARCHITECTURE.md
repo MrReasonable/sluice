@@ -530,7 +530,10 @@ whichever neighbour it was written next to:
    through `main`'s usage-error path (exit 2) before the renderer, the backend and the
    dossier fetch. That ordering is the point: the earlier per-lead behaviour spent a
    browser fetch for both halves and, for the corpus half, two backend calls before the
-   gate rejected the result.
+   gate rejected the result. `doctor` reports the same two facts and the two MUST agree,
+   which is why `Vault.preflight`'s `baseline_exists` is `.strip()`-based rather than
+   existence-only and why `core/doctor.py` grades an empty citable corpus DEAD with
+   `blocks=("cv",)`.
 
    The gate has two tiers
    (#167). The HARD tier -- `cv/validate.py`'s fabrication/citation checks,
@@ -1866,8 +1869,12 @@ classifies each as `ok`/`degraded`/`dead`, then does the same for a second table
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
 LLM spend rather than after), the store's on-disk artefacts (the vault directory,
-the baseline CV, the Judging Profile, a verified/pending NOTICE row for each of the
-three evidence corpora (#164: Experience Library, Skills Inventory, STAR Stories),
+the baseline CV -- present AND non-empty, matching the refusal below rather than mere
+existence -- the Judging Profile, a verified/pending row for each of the three evidence
+corpora (#164: Experience Library, Skills Inventory, STAR Stories; NOTICE, except that a
+CITABLE corpus with nothing verified is DEAD and blocks `cv`, because #242 makes `cv run`
+refuse exactly that vault -- a NOTICE there would call the install fine about the thing
+that stops the next command),
 and -- #133/#107 -- the Candidate Profile note's own declared name/contact, checked
 here rather than as a separate identity-fields row, via the Store seam's OPTIONAL
 `preflight()` hook), track's Google adapter, the Camofox profile an ingest run will

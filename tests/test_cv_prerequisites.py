@@ -20,6 +20,31 @@ from sluice.cv.engine import missing_prerequisites
 from tests.conftest import UNREADABLE_DIR
 
 
+def _seed_shortlist_lead(vault_dir):
+    """One shortlist lead, so `run_one` is actually reached and the dossier path is live.
+
+    An ordering test with no selectable lead cannot fail on a dossier regression: `run_batch`
+    and the `--lead` path both return early, so `get_or_build` is never called however late the
+    refusal is moved.
+    """
+    from sluice.core.leads import Lead
+    from sluice.core.vault import Vault
+
+    v = Vault(str(vault_dir))
+    # Minimal identity on purpose: this test needs a SELECTABLE lead, nothing about who or
+    # where. A location here would put a new value in front of
+    # `test_fixture_name_neutrality`'s CV-fixture roster -- which it did, and the ratchet
+    # caught it -- for a field the assertion never reads. Widening a neutrality roster to
+    # carry a value the test does not need is the wrong direction.
+    v.upsert(Lead(source="manual", search="", title="Senior Engineer",
+                  company="Example Systems", location="", salary="",
+                  url="https://example.invalid/jobs/1", job_type="", job_type_source="",
+                  first_seen="", last_seen=""))
+    for n in v.read_leads():
+        v.update_fields(n.ref, {"status": "shortlist"})
+    return v
+
+
 def _vault(tmp_path, *, baseline=None, verified=()):
     from sluice.core.vault import Vault
 
@@ -84,10 +109,17 @@ def test_the_refusal_precedes_the_renderer_and_the_backend(tmp_path, monkeypatch
     sees ITS exception rather than the usage error, which is exactly the pre-fix behaviour."""
     cfg = Config(vault_dir=str(tmp_path / "vault"))
     sl = Sluice(cfg)
-    monkeypatch.setattr(Sluice, "renderer",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("renderer ran")))
-    monkeypatch.setattr(Sluice, "backend",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("backend ran")))
+    # A SELECTABLE lead, and the dossier cache made to explode too. Without both, the test
+    # cannot see a regression that moved the check past the dossier: with no shortlist lead
+    # `run_one` never runs, so nothing reaches `get_or_build` and the fetch path is untested
+    # however late the refusal lands. The dossier fetch drives a real browser, so it is the
+    # spend this ordering most needs to precede.
+    _seed_shortlist_lead(tmp_path / "vault")
+    for name, what in (("renderer", "renderer"), ("backend", "backend"),
+                       ("dossier_cache", "dossier cache")):
+        monkeypatch.setattr(
+            Sluice, name,
+            lambda *a, _w=what, **k: (_ for _ in ()).throw(AssertionError(f"{_w} ran")))
 
     with pytest.raises(ValueError) as exc:
         sl.compose_cv(lead="anything")
@@ -98,8 +130,14 @@ def test_the_refusal_precedes_the_renderer_and_the_backend(tmp_path, monkeypatch
 def test_a_dry_run_is_refused_too(tmp_path, monkeypatch):
     """Previewing a run that cannot possibly compose is the false green this removes."""
     sl = Sluice(Config(vault_dir=str(tmp_path / "vault")))
-    monkeypatch.setattr(Sluice, "renderer",
-                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("renderer ran")))
+    # Same shape as the ordering test above, and for the same reason: a dry run still reaches
+    # the dossier on the pre-fix path, so the lead and the exploding cache are what make this
+    # cover it.
+    _seed_shortlist_lead(tmp_path / "vault")
+    for name in ("renderer", "backend", "dossier_cache"):
+        monkeypatch.setattr(
+            Sluice, name,
+            lambda *a, _n=name, **k: (_ for _ in ()).throw(AssertionError(f"{_n} ran")))
     with pytest.raises(ValueError) as exc:
         sl.compose_cv(all_shortlist=True, dry_run=True)
     assert "not set up to compose yet" in str(exc.value)
@@ -213,3 +251,34 @@ def test_a_whitespace_only_baseline_is_not_a_baseline(tmp_path):
     v = _vault(tmp_path, baseline="\n   \n\t\n")
     assert any("no baseline CV at" in m for m in missing_prerequisites(v)), (
         "a whitespace-only baseline passed as real content")
+
+
+def test_preflight_and_the_refusal_agree_about_a_blank_baseline(tmp_path):
+    """The two halves of #242 must not disagree about the same vault.
+
+    `missing_prerequisites` refuses on `not baseline.strip()`. `Vault.preflight`'s
+    `baseline_exists` was existence-only, so a whitespace-only `My CV/CV.md` reported
+    `baseline_rel  ok  found` while the very next `cv run` refused that vault -- the exact
+    doctor-says-fine-while-cv-refuses contradiction the doctor commit exists to remove,
+    surviving on the other half of the feature. Nothing bound them; this does.
+    """
+    v = _vault(tmp_path, baseline="\n   \n\t\n")
+    assert v.preflight()["baseline_exists"] is False, (
+        "preflight calls a whitespace-only baseline present while the refusal calls it absent")
+    assert any("no baseline CV at" in m for m in missing_prerequisites(v))
+
+
+def test_the_refusal_reaches_the_cli_as_exit_2(tmp_path, monkeypatch, capsys):
+    """END TO END, because every doc that documents this documents the CODE.
+
+    docs/USAGE.md and docs/AI-SETUP.md both state exit 2. Measured: a `cmd_cv_run` that
+    caught the ValueError and returned 1 survived the entire suite while making both false --
+    nothing asserted the number a user or an agent actually sees.
+    """
+    from sluice.cli import main
+
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    rc = main(["cv", "run", "--all-shortlist"])
+    out = capsys.readouterr()
+    assert rc == 2, f"documented exit 2, got {rc}"
+    assert "not set up to compose yet" in (out.out + out.err)

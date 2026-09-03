@@ -1923,11 +1923,15 @@ class Vault:
         if not _is_dir(self.dir):
             return {"vault_exists": False}
         try:
-            self.read_baseline()
+            # `.strip()`, not mere existence, and matching `criteria_present` below rather than
+            # the older existence-only reading. `cv/engine.py`'s `missing_prerequisites`
+            # refuses on `not baseline.strip()`, so an existence-only fact here made doctor and
+            # cv disagree on a reachable state: measured, a whitespace-only `My CV/CV.md`
+            # reported `baseline_rel  ok  found` while the very next `cv run` refused the same
+            # vault. A file of blank lines is a file, but not a CV to tailor.
+            baseline_exists = bool(self.read_baseline().strip())
         except (FileNotFoundError, IsADirectoryError):
             baseline_exists = False
-        else:
-            baseline_exists = True
         # `experience_total`/`experience_verified` keep their pre-#164 names: doctor
         # already consumes them by name, and a parallel `experience_entries` key
         # would leave two sources for the same fact -- the drift shape this codebase
