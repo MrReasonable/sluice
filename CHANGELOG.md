@@ -42,6 +42,41 @@ it is accurate. -->
 
 ## [2.5.0](https://github.com/MrReasonable/sluice/compare/v2.4.2...v2.5.0) (2026-09-03)
 
+### What you need to do
+
+**Nothing, and one thing to look at.** If you scrape any board hosted on a
+client-rendered ATS — Ashby and Workday are the two confirmed — those leads have been
+reaching triage with **no job description at all**, on every run. The fetcher read the page
+before the app had painted it, so the body came back empty.
+
+You do not have to clear anything: a dossier whose JD never arrived was never written to
+the cache, so the next `triage run` re-fetches those leads and now gets the real posting.
+You do not have to re-queue anything either — `unjudgeable`, the status a lead lands on
+when its JD never arrived, is already in the default set `triage run` reads.
+
+**What is worth looking at** is any CV composed for one of those leads before this release.
+`cv run` said so at the time — it reported `dossier_failed` and printed `N CV(s) composed
+blind` — but the PDF it produced was tailored to nothing, and it passed the fabrication
+gate correctly, because the gate checks bullets against your evidence bundle and the bundle
+was fine. What was missing was the job.
+
+### Also worth knowing
+
+- **Ingest and triage runs are slower**, bounded by the new `dossier_settle_ms` (default
+  `5000`, in milliseconds). It is not a fixed pause: the fetcher stops as soon as the page
+  text stops changing, so a server-rendered board pays one extra read rather than five
+  seconds. Only a page that keeps changing — or one that never paints — spends the budget.
+  Set `dossier_settle_ms: 0` to restore the previous single-read behaviour exactly, which
+  is also the way to prove the wait is what changed a result.
+
+- **A job description may now come from the page's structured data rather than its rendered
+  text.** Where a page settles into navigation chrome instead of the posting, the JD is
+  recovered from the page's own JSON-LD `JobPosting` when that carries more text. Nodes are
+  matched to the lead by url, so a "related roles" widget on the same page cannot supply
+  the description; where two postings remain indistinguishable, no JD is used rather than
+  the wrong one.
+
+- **No existing config key changes meaning**, and `dossier_settle_ms` is the only key added.
 
 ### Features
 
