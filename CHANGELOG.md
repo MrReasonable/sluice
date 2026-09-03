@@ -40,6 +40,25 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.6.0](https://github.com/MrReasonable/sluice/compare/v2.5.1...v2.6.0) (2026-09-03)
+
+
+### Features
+
+* **onboard:** ship the Job Leads Obsidian view, and fix init's next-steps message ([fb2e2d9](https://github.com/MrReasonable/sluice/commit/fb2e2d983890e7dbe9c8f24e6f654b40350afda1))
+
+
+### Bug Fixes
+
+* **docs:** document the Camofox invocation upstream actually supports ([6dcf9f7](https://github.com/MrReasonable/sluice/commit/6dcf9f744e85385181f09bb9a4aa83995a51af7f))
+* **docs:** reproduce README's Quickstart transcripts, and guard them ([104169b](https://github.com/MrReasonable/sluice/commit/104169b656503d1d58a40026a6767e5587b0a08c))
+* **doctor:** report what an empty list MEANS, per role, not one label for three ([0517610](https://github.com/MrReasonable/sluice/commit/051761015826f58c2c566a5fb2a468a2823edb1a))
+
+
+### Documentation
+
+* add an AI setup contract for driving sluice with an agent ([f1fb06d](https://github.com/MrReasonable/sluice/commit/f1fb06dea389e01647912e5083f84341b79d7d7b))
+
 ## [2.5.1](https://github.com/MrReasonable/sluice/compare/v2.5.0...v2.5.1) (2026-09-03)
 
 
