@@ -40,6 +40,60 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.7.0](https://github.com/MrReasonable/sluice/compare/v2.6.1...v2.7.0) (2026-09-04)
+
+### What you need to do
+
+**Nothing, unless you alert on `job-sluice doctor`'s exit code.**
+
+**`doctor` now exits 0 on an install that is merely unconfigured.** It used to exit 1 whenever
+any row was `dead`, and a fresh install had `dead` rows by design — no baseline CV, no verified
+evidence, no Candidate Profile, no `render` extra — so the first command `init` tells you to run
+reported your brand-new install as broken. Rows are now `setup` when you have not supplied
+something and `dead` only when something you *did* configure does not work: an unset API key is
+`setup`, a key that fails its round-trip is `dead`; a vault at the default `./vault` that does
+not exist yet is `setup`, a vault at a path you configured that has gone is `dead`.
+
+**If a cron job, health check or setup script alerts on that exit code, point it at the new
+`--require` flag instead:**
+
+```bash
+job-sluice doctor --require triage,cv || notify-me
+```
+
+That exits 1 the moment either capability stops being ready, for any reason. It is a sharper
+signal than the one it replaces, not a weaker one — the old exit 1 fired on a fresh install and
+on every gap indiscriminately, while this fires precisely when the thing you depend on breaks.
+An unknown capability name exits 2, so a typo in your own command is distinguishable from a real
+outage. `--strict` is unchanged and still fails on `degraded`.
+
+### Also worth knowing
+
+- **`doctor`'s default output is now a verdict, not a table.** It says which of the five things
+  sluice does are ready, waiting on you, degraded or broken, then prints the remedy for each
+  remaining row. The full table is still there under `--verbose`, unchanged.
+
+- **Some rows changed state without changing meaning.** A missing Judging Profile, an
+  uninstalled `google` extra and an unminted Google token are all reported differently than
+  before. `--strict` no longer fails on the last two, which are now `setup` rather than
+  `degraded`: an optional sub-app you have not set up is not a fault.
+
+- **A capability can now report `degraded`** — it runs, but something you configured is not
+  doing its job. The camofox profile mismatch is the one that fires in practice, and it was
+  previously invisible unless you passed `--verbose`.
+
+- **No config key changes meaning, and none is added.**
+
+
+### Features
+
+* **doctor:** a verdict by default, and exit 0 on a clean install ([05683b5](https://github.com/MrReasonable/sluice/commit/05683b5202e30f81726fee3db7d92bfb1b08f80d))
+
+
+### Bug Fixes
+
+* **tests:** confine citation resolution to the live trees ([e6fc828](https://github.com/MrReasonable/sluice/commit/e6fc8282acf0b48122d4e90b2e5e79ad637919bb))
+
 ## [2.6.1](https://github.com/MrReasonable/sluice/compare/v2.6.0...v2.6.1) (2026-09-04)
 
 ### What you need to do
