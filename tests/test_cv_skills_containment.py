@@ -819,3 +819,196 @@ def test_a_skills_value_that_names_nothing_is_refused_rather_than_silently_activ
     # coverage this check does not provide.
     with pytest.raises(ValueError, match="must begin with a letter"):
         _two_entry_sources(al_skills="#", be_skills="Example Query")
+
+
+# --- #257: the prompt's LINE SHAPE rule, measured against what row 2 refuses ---------
+#
+# The tests below are a SET and only make sense read together. #257's fix is a PROMPT
+# change, so nothing in `sluice/cv/` changes behaviour and no gate test can go red on it;
+# what these pin instead is that the prompt's PROHIBITION and row 2's REFUSAL stay in step:
+# that each shape the rule names HAS an instance the gate really refuses, that the rule is
+# deliberately BROADER than the refusal (and that its stated reason does not claim
+# otherwise), and that the pool it tells the model to copy from is the pool row 2 licenses.
+#
+# The first of those is an EXISTENCE claim, deliberately. "Never join with commas" does not
+# mean every comma-joined line is refused -- `test_a_grouped_line_in_the_bundles_own_order_
+# is_not_refused` measures one that is not -- so a test asserting the universal would be
+# asserting something false. Deliberately no COUNT of the shapes or of these tests: a count
+# in prose is this repo's most repeated stale claim, and an earlier revision of this very
+# comment said "two tests" and "both shapes" while the rule named three shapes.
+
+def _shape_rule():
+    """The shipped rule's text (cv/compose.py::_SKILLS_FORMAT_PROMPT_RULE), READ from the
+    module rather than restated here. A local copy of the sentence could not witness the
+    thing these tests exist for: that the prompt and the gate have not drifted apart."""
+    from sluice.cv.compose import _SKILLS_FORMAT_PROMPT_RULE
+    return _SKILLS_FORMAT_PROMPT_RULE
+
+
+def test_each_line_shape_the_prompt_forbids_is_one_row_2_really_refuses():
+    """#257, direction 1. Row 2 compares the WHOLE stripped line against the source
+    blocks as one token SEQUENCE, so a line carrying anything the bundle does not declare
+    in that order is unsourced in full. Each shape the rule names is driven through
+    `validate()` HERE rather than argued from the code:
+
+      - a CATEGORY LABEL, refused even when the line names a single real skill (so the
+        defect is the LABEL, not the grouping -- measured, and the reason the rule names
+        the two separately);
+      - terms joined with a COMMA and REORDERED out of the order the bundle declares them
+        in;
+      - the same, joined with a SLASH -- named by the rule and, before a reviewer said so,
+        never actually driven through the gate here.
+
+    An EXISTENCE claim per shape, never a universal one: an in-order comma or slash join
+    passes clean, which the sibling test measures. If a later widening of row 2 stops
+    refusing one of these, this reds and the prompt's stated reason has to be revisited
+    rather than left asserting a mechanism that no longer holds -- which is the whole
+    failure mode a prose rule about a gate has.
+
+    The text assertions key on the PROHIBITION clause, not on the bare noun phrase. Both
+    "category label" and "commas" also occur in the rule's REASON clause, so the two
+    occurrences covered for each other: a mutant deleting only the imperative half -- the
+    half aimed at the measured production failure -- left the whole suite green.
+    """
+    s = _sources(body="Ran the rebuild.", skills="Example Query, Example Framework",
+                 baseline="Example Alpha.")
+    assert s.source_tokens  # scope: the bundle actually carries blocks to search
+
+    labelled = _cv_with_skills(["Example Category: Example Query"])
+    assert V.section_spans(labelled)[2]  # scope: the SKILLS region was collected
+    assert any("UNSOURCED SKILL" in x for x in V.validate(labelled, s)), \
+        "a category label on a line naming ONE declared skill must still refuse"
+
+    reordered = _cv_with_skills(["Example Framework, Example Query"])
+    assert V.section_spans(reordered)[2]
+    assert any("UNSOURCED SKILL" in x for x in V.validate(reordered, s))
+
+    slashed = _cv_with_skills(["Example Framework / Example Query"])
+    assert V.section_spans(slashed)[2]
+    assert any("UNSOURCED SKILL" in x for x in V.validate(slashed, s))
+
+    # The prescribed shape is the one that is ALWAYS clean: each declared item's tokens
+    # are contiguous in its own block by construction, whatever order they are emitted in.
+    prescribed = _cv_with_skills(["Example Framework", "Example Query"])
+    assert V.section_spans(prescribed)[2]
+    assert V.validate(prescribed, s) == []
+
+    rule = _shape_rule()
+    assert "never prefix a line with a category label" in rule, \
+        "the rule must FORBID the labelled shape, not merely mention it in its reason"
+    assert "Never join several skills onto one line with commas or slashes" in rule, \
+        "the rule must FORBID both joined shapes, not merely mention them in its reason"
+    # ...and it must state the MECHANISM the three assertions above just measured, not
+    # only the prohibition. Added on a surviving mutant: deleting the rule's reason clause
+    # outright left this file and the whole suite green, so the one sentence whose
+    # accuracy the test below exists to protect was the one part of the rule nothing
+    # pinned -- a bare prohibition is what a later reader re-explains, and #257's own
+    # proposed explanation was measurably false (see that test).
+    # The REASON clause, whole: the mechanism AND both consequences it enumerates. Keyed on
+    # the run rather than on "checked as a SINGLE name" alone, because that narrower
+    # spelling let a mutant delete the reason's CATEGORY-LABEL half and stay green -- the
+    # rule would then forbid a labelled line without saying why, which is exactly the bare
+    # prohibition a later reader re-explains, and #257's own re-explanation was false.
+    assert ("checked as a SINGLE name against those three sources, so a category label, or "
+            "terms joined in an order they do not use") in rule, \
+        "the rule must say WHY, for BOTH shapes: the whole line is checked as one name"
+
+
+def test_a_grouped_line_in_the_bundles_own_order_is_not_refused():
+    """#257, direction 2 -- the honesty pin, and the reason the shipped rule does NOT say
+    what the issue proposed.
+
+    The issue's suggested wording explained the prohibition as "a grouped line is checked
+    as ONE skill string and no entry declares one". Measured, that is FALSE: punctuation
+    inside a source block is transparent to `_WORD_RE` (see `bundle_sources`' own note
+    that a block seam is the only seam it preserves), so a comma- or slash-joined line
+    whose terms appear in the bundle's own ORDER is a contiguous subsequence and passes.
+
+    So the prompt over-restricts on purpose. One term per line is a SUFFICIENT condition
+    for a clean line, not a necessary one, and the alternative -- telling the model
+    grouping is fine so long as it preserves the bundle's order -- is a rule a model
+    cannot reliably apply whose failure costs a whole retry. Over-restricting costs
+    nothing: a one-per-line SKILLS section is an ordinary CV shape.
+
+    This test is what stops that trade-off from being quietly reversed. Someone
+    "closing" the gap by widening row 2 to refuse every grouped line reds HERE, and has
+    to weigh that the same change also refuses a line the user's own prose supports.
+    """
+    s = _sources(body="Ran the rebuild.", skills="Example Query, Example Framework",
+                 baseline="Example Alpha.")
+    assert s.source_tokens  # scope: the bundle actually carries blocks to search
+    in_order = _cv_with_skills(["Example Query, Example Framework"])
+    assert V.section_spans(in_order)[2]  # scope: the SKILLS region was collected
+    assert V.validate(in_order, s) == []
+    # The rule must not claim otherwise. Keyed on the FALSE explanation's own subject --
+    # a rule asserting no entry declares a grouped line would contradict the line above.
+    assert "no entry declares" not in _shape_rule()
+
+
+def test_the_shape_rule_names_the_pool_row_2_actually_licenses():
+    """#257, direction 3, and the defect a reviewer caught in this fix's own first cut.
+
+    The rule is the one AFFIRMATIVE "copy VERBATIM from X" sentence in the SKILLS half of
+    the prompt, so X is what a complying model reaches for. X must be the pool row 2
+    LICENSES, not the text the model can SEE, and the rendered bundle carries strictly more
+    than it licenses. `bundle_sources` builds `source_tokens` from THREE blocks (an entry's
+    `Skills:`, an entry's body, the baseline) and from nothing else.
+
+    Both gaps are MEASURED here, because an earlier cut of the rule left each open in turn:
+
+      - #165's SKILLS INVENTORY, which is framing. Adding one leaves `source_tokens`
+        byte-identical, its term IS in the text the model is given, and emitting it earns
+        `UNSOURCED SKILL`. That killed the first wording, "the SOURCE BUNDLE".
+      - an entry's own HEADING line (`[id] (company) title | metrics=...`), shown to the
+        composer and contributing no block either. That killed the second wording, "the
+        BASELINE CV or a VERIFIED EXPERIENCE ENTRY" -- the phrasing `_RULES`' framing bullet
+        and `cv/bundle.py`'s `_DERIVED_NEGATIVE_PROMPT` share, which is right for those two
+        (they govern CLAIMS in general, and an employer name legitimately comes from the
+        heading line) and one notch too wide for a rule about a SKILL specifically.
+
+    An earlier version of this docstring claimed the gate licenses "nothing else the
+    rendered bundle carries" while measuring only the inventory half. Both halves are
+    measured now.
+    """
+    def _bundle(skills):
+        return build_bundle(
+            entries=[{"company": "Example Systems", "title": "Example Beta Engineer",
+                      "metrics": "", "body": "Ran the rebuild.",
+                      "fields": dict(Skills="Example Query"),
+                      "best_for": "", "category": ""}],
+            baseline="Example Alpha.", negatives=[], jd_keywords=[],
+            prefix_map={"Example Systems": "ES"}, skills=skills)
+
+    # Declared inline rather than reusing tests/test_cv_bundle.py's `_SKILL`, which a
+    # `from tests.test_cv_bundle import _SKILL` would reach perfectly well (that package is
+    # importable and the suite already does this in ~20 places). The reason is that this one
+    # is deliberately MINIMAL -- empty `body` and `fields` -- so the `source_tokens`
+    # comparison below isolates the inventory itself; a fixture carrying prose of its own
+    # would leave it ambiguous which part contributed nothing. The TITLE is the exact string
+    # that file already uses, so no new identity reaches the roster.
+    skill = {"title": "Example Cloud Skill", "best_for": "", "company": "",
+             "category": "", "metrics": "", "body": "", "fields": {}}
+    from sluice.cv.bundle import render_composer_bundle
+
+    without = bundle_sources(_bundle(()))
+    with_inventory = bundle_sources(_bundle([skill]))
+    assert without.source_tokens  # scope: there are blocks to compare at all
+    assert with_inventory.source_tokens == without.source_tokens, \
+        "an inventory must contribute NO source block -- it is framing, not a source"
+
+    text = render_composer_bundle(_bundle([skill]))
+    for label, term in (("the inventory", skill["title"]),
+                        ("an entry's heading line", "Example Beta"),
+                        ("an entry's company", "Example Systems")):
+        assert term in text, f"scope: {label}'s term really is in the text the model reads"
+        cv = _cv_with_skills([term])
+        assert V.section_spans(cv)[2]  # scope: the SKILLS region was collected
+        assert any("UNSOURCED SKILL" in x for x in V.validate(cv, with_inventory)), \
+            f"a term visible only in {label} is refused, so the rule must not name it"
+
+    rule = _shape_rule()
+    for named in ("`Skills:`", "body text", "BASELINE CV"):
+        assert named in rule, f"the rule must name {named}, one of row 2's three blocks"
+    for wider in ("SOURCE BUNDLE", "VERIFIED EXPERIENCE ENTRY"):
+        assert wider not in rule, \
+            f"{wider!r} names more than row 2 licenses; the two refusals above are why"

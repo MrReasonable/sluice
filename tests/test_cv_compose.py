@@ -428,3 +428,106 @@ def test_the_row_1_attribution_rule_is_present_when_an_entry_declares_skills():
                        skills_requested=True)
     assert C._SKILLS_ATTRIBUTION_PROMPT_RULE in p
     assert "only if an entry that bullet cites lists that skill" in p
+
+
+# ── #257: the SKILLS section's LINE SHAPE ─────────────────────────────────────
+def test_the_prompt_states_the_line_shape_row_2_requires():
+    """#257. Row 2 checks a SKILLS line as ONE name (cv/validate.py's `_in_source` over
+    the whole stripped line), and the block asked for the section while stating nothing
+    about the shape of a line -- `_SKILLS_PROMPT_BLOCK` is `SKILLS` plus a bare `- skill`
+    placeholder, and still is: this rule, not that block, is what carries the constraint.
+    A model formatting the section the ordinary way a human writes one (a
+    category label, several terms comma-joined) then earned `skipped-gate` on a CV whose
+    every INDIVIDUAL term the bundle declared.
+
+    Measured end to end through `cv/engine.py::run_one` before this rule existed: the
+    grouped draft returned `skipped-gate` with `UNSOURCED SKILL 'Observability: Widget,
+    Gadget': not in the bundle`, having burned the one retry, while the identical bundle
+    with one term per line returned clean. So the failure is BACKEND-DEPENDENT and
+    silent -- a stronger model that happens to emit one term per line passes, and the
+    fallback that groups fails the same lead twice.
+
+    Reads the rule TEXT, not a generic "SKILLS"/"line" pair: `_RULES` already carries
+    two always-on bullets naming the SKILLS section (#165's framing bullet and row 2's
+    own source rule), so a loose substring assertion here would pass with this rule
+    absent entirely -- the vacuity trap
+    `test_the_skills_block_is_absent_when_no_entry_declares_skills` documents by name.
+    """
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=True)
+    assert C._SKILLS_FORMAT_PROMPT_RULE in p
+    assert "ONE skill per line" in p
+
+
+def test_the_line_shape_rule_is_absent_when_no_entry_declares_skills():
+    """SC5's request abstain, for #257's shape rule, gated on the SAME `skills_requested`
+    the block and row 1's rule already are rather than on a second test of its own (see
+    `_SKILLS_ATTRIBUTION_PROMPT_RULE`'s comment for why a second condition that could
+    disagree is the hazard).
+
+    A shape rule for a section the format contract never asks for is an invitation to
+    emit one, and on an un-annotated vault row 2 can license nothing for it -- one
+    guaranteed HARD violation per lead and the one retry burned, which is exactly the
+    failure SC5 exists to prevent and the reason the block itself is gated.
+    """
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=False)
+    assert C._SKILLS_FORMAT_PROMPT_RULE not in p
+    assert "per line" not in p
+    # Row 2's own source rule is genuinely unconditional (that gate row fails closed on
+    # an un-annotated vault), so it must SURVIVE the abstain -- without this the test
+    # would pass just as well on a mutant that gated the wrong rule.
+    assert "Every line of the SKILLS section must come from the SOURCE BUNDLE" in p
+
+
+def test_each_gated_prompt_rule_is_its_own_bullet_in_the_rules_list():
+    """The rules list is a list of BULLETS, and each gated rule is spliced into it by a
+    bare `{placeholder}` at column 0. That shape is load-bearing and nothing pinned it.
+
+    Two MOVE/DELETE mutants were green against the whole suite before this test: deleting a
+    rule constant's TRAILING newline merges it with the bullet that follows, producing
+    `...the CV is rejected.- Include every employer present in the SOURCE BUNDLE...` on one
+    line -- silently demoting the employer-completeness rule out of the rules list; and
+    deleting the leading `- ` stops the rule being a bullet at all. Both constants' own
+    comments state the trailing-newline mechanism as a REASON, and this repo's rule is that
+    a comment stating a mechanism needs a row that falsifies it.
+
+    DERIVED by walking the module for `*_PROMPT_RULE`, never hand-listed: the gap is an
+    inherited class, not one #257 introduced -- the pre-existing
+    `_SKILLS_ATTRIBUTION_PROMPT_RULE` has it too -- so a roster would have to be remembered
+    exactly when a fourth rule made it wrong. Scope is asserted first, because a discovery
+    loop that matches nothing satisfies every assertion made over it.
+    """
+    rules = {n: v for n, v in vars(C).items()
+             if n.endswith("_PROMPT_RULE") and isinstance(v, str)}
+    assert len(rules) >= 2, f"discovery found {sorted(rules)}; expected every gated rule"
+
+    p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                       skills_requested=True)
+    lines = p.splitlines()
+    for name, text in sorted(rules.items()):
+        own = text.strip("\n").splitlines()
+        assert own[0].startswith("- "), f"{name} is not a bullet"
+        # Whole LINES of the prompt, not a substring of one: a lost trailing newline still
+        # leaves the text present, so `in p` cannot see the defect this test exists for.
+        for line in own:
+            assert line in lines, f"{name} does not occupy whole prompt lines: {line!r}"
+
+    # ...and the bullet that FOLLOWS each splice point is still its own bullet. This is the
+    # half a per-constant check cannot see, and note which bullet that is: a lost newline
+    # merges the two lines and demotes the NEXT rule, not the rule whose newline vanished
+    # (the merged line still opens with that rule's own `- `). The neighbour differs per
+    # constant -- row 2's SKILLS bullet follows the attribution rule, the employer bullet
+    # follows the shape rule -- so both are named rather than just the one this issue added.
+    bullets = [ln.lstrip("- ") for ln in lines if ln.startswith("- ")]
+    for neighbour in ("Every line of the SKILLS section must come from the SOURCE BUNDLE. "
+                      "Do not add a skill the bundle does not contain.",
+                      C._employer_line(None)):
+        assert neighbour in bullets, f"absorbed into the bullet above it: {neighbour[:40]!r}"
+
+    # The prompt must not MODEL a token it forbids. `_RULES` bans a double hyphen in the CV
+    # and slop.py's HARD tier rejects one, and the pre-existing count assertion
+    # (test_prompt_is_a_tailoring_task_and_forbids_invention) renders with skills_requested
+    # OFF, so it cannot see a `--` introduced by a gated rule. Caught in review: a draft of
+    # the shape rule used `--` twice.
+    assert p.count("--") == 1, "a gated rule introduced a double hyphen into the prompt"
