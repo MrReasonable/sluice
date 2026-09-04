@@ -194,6 +194,53 @@ class EvidenceKind:
         return {**FLOOR_FIELD_SOURCES, **dict(self.floor_map)}
 
 
+# (#243) The pipeline sub-apps, in pipeline order, with the phrase a user would recognise.
+#
+# HERE rather than in `core/doctor.py`, where it was written and where its only consumer
+# lives, for one measured reason: `cli.py` needs the names at PARSER-BUILD time, to list
+# them in `doctor --require`'s help, and `_build_parser()` runs on every invocation.
+# Importing `core.doctor` there costs ~36ms and drags in `core.backends` -- one of the
+# three families `cli.py` deliberately keeps off the critical path. This module was
+# already imported at `cli.py`'s module scope and costs ~3ms, and it is where the rest of
+# the cross-module vocabulary lives (`EVIDENCE_KINDS` below is the same shape). The
+# alternative -- hand-listing the names in a help string -- is the stale-roster trap this
+# repo keeps walking into.
+# This is the ONE hand-written roster in the verdict path, and it is hand-written because a
+# label is not derivable from anything executable -- "cv" is the package name, "tailored CVs"
+# is what the user came for. Nothing in `sluice/` enumerates the sub-apps, so there is no
+# second list to derive these keys from.
+#
+# Its COMPLETENESS is enforced at RUNTIME, by `ComponentCheck.__post_init__` above, rather
+# than by sweeping this module's source: rows are minted in `core/app.py` too, so a
+# source-text sweep keyed on this file alone certified only some of them, and a `blocks=`
+# spelled as a name rather than a literal is invisible to it either way. Construction-time
+# validation catches every row wherever it is built, which is the same reason unknown
+# backend and adapter names raise instead of falling through to a default.
+CAPABILITIES = (
+    ("ingest", "scrape job boards"),
+    ("triage", "triage leads"),
+    ("cv", "tailored CVs"),
+    ("apply", "send applications"),
+    ("track", "track replies"),
+)
+
+
+# Derived, never hand-listed. Two rows mean "this stops the entire pipeline", and both used
+# to spell the five sub-apps out; a sixth capability would have left them silently naming
+# four fifths of the pipeline while reading as complete.
+ALL_CAPABILITIES = tuple(name for name, _ in CAPABILITIES)
+
+# The four buckets `verdict()` sorts capabilities into. Deliberately NOT the row states:
+# a row is `ok`/`degraded`/`dead`/`setup`/`notice`, a CAPABILITY is one of these, and the
+# two vocabularies answer different questions -- several rows in different states can bear
+# on one capability. `doctor --require` compares against READY and nothing else.
+READY = "ready"
+NEEDS_SETUP = "needs setup"
+DEGRADED_CAP = "degraded"
+BROKEN = "broken"
+CAPABILITY_BUCKETS = (READY, NEEDS_SETUP, DEGRADED_CAP, BROKEN)
+
+
 EVIDENCE_KINDS = {
     # The one kind the fabrication gate licenses, and -- until the next commit -- the only
     # one the composer is handed at all. TWO flags since #165: `read_by_composer` says the
@@ -303,6 +350,35 @@ class RenderError(RuntimeError):
     that cannot let it propagate.
 
     `renderers/script.py` re-exports it, so the historical import path still resolves.
+    """
+
+
+class RenderDependencyError(RenderError):
+    """A renderer could not be CONSTRUCTED because something it needs is not installed.
+
+    A `RenderError` subclass, so every existing `except RenderError` keeps catching it and
+    no caller has to learn a second type. It exists so a renderer can DECLARE the one
+    distinction `job-sluice doctor` cannot infer (#243): an uninstalled dependency is a
+    setup step the user has not taken, while a `cv.template` that is not a file, a template
+    that is not valid Jinja2, or a `cv.render_script` that does not exist are all things the
+    user DID configure and that do not work. doctor exits 0 on the first and 1 on the
+    second, so the difference is the exit code.
+
+    This is a seam member and not an implementation detail on purpose. The first cut of
+    #243 asked `isinstance(e.__cause__, ImportError)` in `core/app.py`, which read
+    `renderers/template.py`'s `except (ImportError, OSError)` tuple through a keyhole:
+    that renderer changing what it catches would silently change doctor's verdict, and a
+    THIRD renderer raising `RenderError` from inside an `except` WITHOUT a `from` clause
+    gets `__cause__ = None` (implicit chaining sets `__context__`, not `__cause__`) and
+    would be classified broken however plainly its message said "not installed". Neither
+    shipped renderer is written that way today -- this is a hazard the seam declines to
+    hand a future one, not a bug being fixed. The same
+    argument `RenderError`'s own docstring makes above -- an orchestrator reaching inside
+    one adapter for a name is the seam inverted -- applies to reaching inside it for an
+    exception's cause.
+
+    Raise it ONLY for a genuinely absent dependency. A renderer that cannot tell should
+    raise plain `RenderError`, which is the louder, safer reading.
     """
 
 
@@ -508,6 +584,18 @@ class Store(Protocol):
     verdicts: classification is `core/doctor.py`'s job, kept pure there the same way
     backend classification is kept separate from `Sluice.doctor`'s credential
     resolution.
+
+    One of those facts is about the store's own CONFIGURATION rather than its contents,
+    and it is worth naming because it is the shape a second store would miss (#243). A
+    store that cannot be reached should say whether the location it tried was one the
+    USER named or the one it ships as a default: "no store configured yet" is an
+    unfinished setup step, while "the store I was pointed at is gone" is a fault that
+    stops every command, and on disk the two are indistinguishable. `Vault` answers with
+    `vault_dir_is_default`, recorded at construction because that is the last moment the
+    distinction still exists. Reporting NOTHING is allowed and is not a defect -- a store
+    with no notion of a default location has nothing to say -- but `core/doctor.py` then
+    takes the louder reading, so a store that CAN tell them apart and stays silent will
+    have its unconfigured state reported as broken.
 
     MUST NOT create or open anything that does not already exist, and MUST NOT read a
     store file that could disarm a later relocation notice -- see #81's warning at
@@ -969,6 +1057,17 @@ class Renderer(Protocol):
     the seam declared no failure mode at all and its two implementations agreed on one
     only by importing from each other. The Store seam does the same thing correctly with
     `VaultConflict`, which is the shape copied here.
+
+    Raise `RenderDependencyError` (a `RenderError` subclass, defined above) instead when
+    construction failed ONLY because something you need is not installed -- a Python
+    package, or a native library no `pip install` can supply. `job-sluice doctor` reports
+    that as a setup step the user has not taken yet and exits 0, rather than calling their
+    install broken. Everything else -- a path they configured that is not a file, a
+    template that will not parse, a binary that is not executable -- is plain
+    `RenderError`, reported as a fault and exiting 1. If you cannot tell the two apart,
+    raise plain `RenderError`: it is the louder reading, and being wrong in that direction
+    costs a needless alarm rather than a silent "everything is fine" on an install that
+    cannot render.
 
     OPTIONAL SECOND METHOD -- `precheck(cv_text) -> list[str]`. Not declared below,
     because a Protocol member is a REQUIRED member and the whole point of this hook is

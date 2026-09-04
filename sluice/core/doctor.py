@@ -5,13 +5,15 @@ running a one-token round-trip, constructing (but never writing through) the
 store and renderer seams -- lives in `Sluice.doctor` (core/app.py); the
 formatting and exit-code plumbing live in `cli.py`. This module owns only the
 rules: what is configured (enumeration), and given a set of resolved facts
-about one piece of it, is it ok / degraded / dead / worth a notice
+about one piece of it, is it ok / degraded / dead / awaiting setup / worth a notice
 (classification).
 
 Backend classification is ROLE-AWARE, and that is the whole point. The default
 install ships a keyless `deepseek` fallback, which `_make_fallback` already
 treats as a sanctioned degrade to primary-only -- so a keyless *fallback* is
-`degraded` (exit 0), while a keyless *primary* (a run cannot happen) is `dead`.
+`degraded` (exit 0), while a keyless *primary* (a run cannot happen) is `setup`
+-- unsupplied rather than broken (#243), so it too exits 0, while still naming
+the capability it stops.
 A backend whose credentials ARE present but whose round-trip fails is `dead`
 regardless of role: that is the silently-non-functional fallback this tool
 exists to catch -- the one you believe in and never test until the primary
@@ -33,10 +35,13 @@ from sluice.core.camofox import profile_dir as camofox_profile_dir
 # The bucket boundaries this module LABELS and DossierCache.census COUNTS with -- one
 # home, so a moved boundary cannot leave the label asserting the old number.
 from sluice.core.dossier import JD_LENGTH_BUCKETS as _JD_LENGTH_BUCKETS
-from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.core.protocols import (
+    ALL_CAPABILITIES, BROKEN, CAPABILITIES, DEGRADED_CAP, EVIDENCE_KINDS,
+    NEEDS_SETUP, READY,
+)
 from sluice.core.stem import stem_all
 
-# Four states, as bare strings so callers (cli formatter, exit_code) and tests
+# Five states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
 # see DoctorReport.exit_code for why it is excluded from the count rather than
 # folded in as the mildest DEGRADED.
@@ -44,6 +49,22 @@ OK = "ok"
 DEGRADED = "degraded"
 DEAD = "dead"
 NOTICE = "notice"
+# #243. A component the user has simply not SUPPLIED yet, as distinct from one they supplied
+# that does not work. Every dead row on a fresh install was the former -- no CV, no verified
+# evidence, no Candidate Profile, no `render` extra -- so `doctor` exited 1 on the very command
+# `init` tells a new user to run next, and the reassurance that this was expected had to live in
+# prose because the exit code said otherwise.
+#
+# The distinction is "did they give us something broken, or nothing at all": an unset API key is
+# SETUP, a key that fails its round-trip is DEAD; a missing baseline is SETUP, an unreadable one
+# is DEAD; a renderer whose extra is not installed is SETUP, a renderer NAME that does not exist
+# is DEAD. SETUP never reaches the exit code, so `doctor` exits 0 when nothing is broken and 1
+# when something is -- which is what a monitor wants to fire on.
+#
+# It still carries `blocks`, and the row still says which command it stops. Exit 0 means
+# "nothing is broken", NOT "everything works"; the verdict line above the table is what says
+# what is still needed.
+SETUP = "setup"
 
 # The round-trip prompt. Tiny on purpose -- a per-token backend costs a token or
 # two to answer it, and the answer is discarded (only "did complete() raise?"
@@ -101,13 +122,65 @@ class ComponentCheck:
     checked within that group ("cv.renderer", "Candidate Profile",
     "TriageConfig.accept_titles", ...). `blocks` names the sub-apps this
     specific failure stops -- the ComponentCheck analogue of BackendTarget.uses
-    -- so the printed detail can say what a DEAD/DEGRADED row actually costs
+    -- so the printed detail can say what a DEAD/SETUP/DEGRADED row actually costs
     rather than leaving the reader to infer it."""
     component: str
     subject: str
     state: str
     detail: str
     blocks: tuple = ()
+
+    def __post_init__(self):
+        """Every name in `blocks` must be a capability the verdict knows (#243).
+
+        `blocks` stopped being decoration when `DoctorReport.verdict()` began reading it
+        to decide what the user can still do: a name that matches no capability is
+        silently dropped there, so the row keeps printing `blocks: <name>` under
+        `--verbose` while the verdict reports that capability -- or every capability --
+        as ready. Raising here follows this codebase's fail-loudly-at-construction rule
+        and catches it at the row that is wrong, wherever in the tree that row is minted.
+
+        An EMPTY `blocks` stays legal and is not the same mistake: the unreadable
+        `stories` corpus carries it deliberately, because nothing reads that corpus, and
+        an unread row genuinely stops nothing."""
+        unknown = [b for b in self.blocks if b not in ALL_CAPABILITIES]
+        if unknown:
+            raise ValueError(
+                f"ComponentCheck({self.component}/{self.subject}) blocks unknown "
+                f"capabilit{'y' if len(unknown) == 1 else 'ies'} {unknown!r}; "
+                f"valid names are {list(ALL_CAPABILITIES)}")
+
+
+
+# The bare name every sub-app config ships as its `claude` CLI path. One constant rather
+# than three literals, so the three loaders cannot drift away from this check --
+# `tests/test_doctor_verdict.py` pins it against every `*_claude_path` default there is.
+_DEFAULT_CLAUDE_PATH = "claude"
+
+
+@dataclass
+class Verdict:
+    """`DoctorReport.verdict()`'s answer: capability LABELS in four buckets, plus the
+    rows behind the last three so the caller can print remedies without re-deriving which
+    rows mattered."""
+    ready: list = field(default_factory=list)
+    setup: list = field(default_factory=list)
+    degraded: list = field(default_factory=list)
+    broken: list = field(default_factory=list)
+    # capability NAME -> bucket, for a caller that has to look one up (`doctor --require`).
+    # The four lists above carry display labels and are what a human reads; this is the
+    # machine-readable half, and the only one anything outside this module may key on.
+    buckets: dict = field(default_factory=dict)
+    setup_rows: list = field(default_factory=list)
+    broken_rows: list = field(default_factory=list)
+    # Carried so the printer can SHOW the rows `--strict` fails on. Without them a strict
+    # run said "Nothing is broken" and exited 1: true on its own terms (nothing is DEAD)
+    # and useless, because the rows deciding the exit code were the ones not printed.
+    degraded_rows: list = field(default_factory=list)
+    # The SUBSET of those that name a capability they stop. Printed in the DEFAULT view,
+    # not only under `--strict`, because a row saying `blocks: ingest` is a thing the user
+    # must act on whether or not this run's exit code turns on it.
+    degraded_blocking_rows: list = field(default_factory=list)
 
 
 @dataclass
@@ -120,10 +193,12 @@ class DoctorReport:
         additionally fails on any degraded one (the cron mode that enforces a
         believed-in fallback).
 
-        NOTICE never contributes, under `--strict` or otherwise -- that
-        exclusion is BY CONSTRUCTION (the states this loop tests for), not a
-        filter applied to a wider set, so it cannot be silently dropped by
-        deleting one `if`. This is the same posture #26/#63 already state for
+        NOTICE and SETUP never contribute, under `--strict` or otherwise --
+        that exclusion is BY CONSTRUCTION (the states this loop tests for), not
+        a filter applied to a wider set, so neither can be silently dropped by
+        deleting one `if`. SETUP is #243: a thing the user has not supplied yet
+        is not a fault, and exiting 1 on a fresh install made the first command
+        `init` recommends read as a broken install. This is the same posture #26/#63 already state for
         an empty preference gate: abstaining is the shipped default and
         legitimate, so a fresh, wholly unconfigured install must exit 0. If a
         NOTICE affected the exit code, `--strict` in a cron job would fail on
@@ -136,6 +211,99 @@ class DoctorReport:
         if strict and DEGRADED in states:
             return 1
         return 0
+
+    def verdict(self):
+        """What the user can DO right now, per capability (#243).
+
+        `doctor`'s table answers "is each component healthy". A new user is asking a
+        different question -- "what works, and what do I still have to do" -- and a screenful
+        of rows across four states is a bad way to answer it. This maps the rows onto the
+        CAPABILITIES roster and buckets each one:
+
+          READY     nothing blocks it
+          SETUP     everything blocking it is a thing the user has not supplied yet
+          DEGRADED  it runs, but a thing the user configured is not doing its job
+          BROKEN    at least one thing blocking it is supplied and does not work
+
+        A capability's bucket is the WORST of its blockers, so one genuinely broken row
+        moves a capability out of SETUP even when four other rows are merely unsupplied.
+
+        DEGRADED is in that ladder because `blocks` is set on a DEGRADED row too, and it
+        means the same thing there: `classify_camofox`'s `CAMOFOX_USER` mismatch carries
+        `blocks=("ingest",)` -- the 2026-08-15 incident where a run drove the wrong cookie
+        profile and a board returned zero rows for days. Reading `blocks` on only two of
+        the five states printed `Ready now: scrape job boards` directly above a `--verbose`
+        row saying `blocks: ingest`, and printed that row's remedy nowhere. A DEGRADED row
+        with an EMPTY `blocks` still blocks nothing -- which is what keeps the keyless
+        fallback, the sanctioned primary-only degrade, out of this entirely.
+        Nothing here re-derives a state: it reads the classifiers' verdicts and groups
+        them, so the verdict and the table can never disagree about a row.
+
+        Backend rows block only where the target is that sub-app's PRIMARY. A shared
+        target that is triage's primary and cv's fallback, with its key unset, stops
+        triage and merely degrades cv -- which is exactly what `Sluice.backend()`'s
+        `auto` role does at runtime, so reporting it as blocking cv would overstate the
+        damage on the commonest multi-sub-app config there is.
+        """
+        blockers: dict = {name: [] for name, _ in CAPABILITIES}
+        for c in self.checks:
+            if c.state in (DEAD, SETUP):
+                # A `uses` naming a sub-app outside the roster would silently drop its
+                # blocker on the floor; `tests/test_doctor_verdict.py` sweeps both
+                # producers (this module's `blocks=` tuples and `enumerate_targets`'
+                # specs) against CAPABILITIES so that cannot happen unnoticed.
+                for u in c.target.uses:
+                    if u.role == "primary" and u.subapp in blockers:
+                        blockers[u.subapp].append(c)
+        for c in self.components:
+            # DEGRADED joins the two blocking states here, but only ever contributes
+            # through a non-empty `blocks` -- the loop below iterates it, so a DEGRADED row
+            # that names nothing adds no blocker and changes no bucket.
+            if c.state in (DEAD, SETUP, DEGRADED):
+                for subapp in c.blocks:
+                    if subapp in blockers:
+                        blockers[subapp].append(c)
+
+        ready, setup, degraded, broken = [], [], [], []
+        buckets = {}
+        for name, label in CAPABILITIES:
+            rows = blockers[name]
+            states = {c.state for c in rows}
+            if not rows:
+                bucket, out = READY, ready
+            elif DEAD in states:
+                bucket, out = BROKEN, broken
+            elif DEGRADED in states:
+                # Above SETUP deliberately: an unsupplied thing does not run at all and
+                # says so, while a misconfigured one runs and quietly does the wrong
+                # thing, which is the harder failure to notice.
+                bucket, out = DEGRADED_CAP, degraded
+            else:
+                bucket, out = NEEDS_SETUP, setup
+            out.append(label)
+            # Keyed by the capability NAME as well, in the same pass. `--require cv` has to
+            # look one up, and it must do so by the stable key rather than by the display
+            # label -- the labels are prose, free to be reworded, and a CLI contract that
+            # broke when someone improved a phrase would be a trap. One dict written beside
+            # the four lists, not derived from them afterwards, so the two cannot disagree.
+            buckets[name] = bucket
+        rows = self.checks + self.components
+        degraded_rows = [c for c in rows if c.state == DEGRADED]
+        return Verdict(ready=ready, setup=setup, degraded=degraded, broken=broken,
+                       buckets=buckets,
+                       setup_rows=self.awaiting_setup(),
+                       broken_rows=[c for c in rows if c.state == DEAD],
+                       degraded_rows=degraded_rows,
+                       degraded_blocking_rows=[c for c in degraded_rows
+                                               if getattr(c, "blocks", ())])
+
+    def awaiting_setup(self) -> list:
+        """Every row the user has not supplied yet, in report order (#243).
+
+        Derived, never hand-listed: the classifiers decide what is SETUP at the point they
+        know why a thing is missing, and this reads that back. A roster here would be a second
+        opinion about the same fact, and the two would drift."""
+        return [c for c in self.checks + self.components if c.state == SETUP]
 
 
 def _fallback_host_path(fallback_backend, host, claude_path):
@@ -226,7 +394,7 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
     - needs_key:   this provider authenticates with an API key (claude-max: no)
     - key_present: that key was resolved in THIS process
     - key_var:     the env var name, for the detail message
-    - cli_present: for a local (no-host) claude-max checked offline, whether the
+    - cli_present: for a local (no-host) claude-max, checked in BOTH modes (#243), whether the
                    `claude` binary is on PATH; None when not applicable
     - offline:     config-only mode (no round-trip was attempted)
     - probe_error: the BackendError message if a live round-trip ran and failed,
@@ -250,12 +418,41 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
                 f"OPTION rather than a value (argument injection; e.g. -oProxyCommand=...)")
     if needs_key and not key_present:
         if target.is_primary:
-            return BackendCheck(target, DEAD, f"{key_var} unset")
+            # SETUP, not DEAD (#243): an unset key is a credential the user has not supplied,
+            # not one that fails. A key that IS set and fails its round-trip falls through to
+            # `probe_error` below and stays DEAD, which is the distinction that matters to a
+            # monitor -- "not configured yet" is not an incident.
+            return BackendCheck(target, SETUP, f"{key_var} unset")
         return BackendCheck(target, DEGRADED, f"{key_var} unset - primary-only")
-    if offline:
-        if cli_present is False:
+    # BEFORE the `offline` split, deliberately (#243). `Sluice.doctor` now resolves
+    # `cli_present` in both modes, and this arm must classify it in both: while it sat
+    # inside `if offline:` the two modes disagreed about the same fact -- offline said
+    # "CLI not on PATH" and, since #243, SETUP; a live run skipped this, attempted the
+    # probe anyway, and reported the failure as `probe_error`, DEAD, exit 1. A fresh
+    # install with no `claude` therefore got "Broken: triage leads, tailored CVs, track
+    # replies" from plain `job-sluice doctor`, and only `--offline` told the truth.
+    if cli_present is False:
+        # SETUP only for the SHIPPED default. `claude_max_path`/`compose_claude_path` both
+        # default to the bare name `claude`, so "not on PATH" there means the CLI simply is
+        # not installed yet -- unsupplied. A user who NAMED a path (a typo, a binary that
+        # moved, a homedir that changed) supplied something that does not work, and that
+        # must keep exiting 1: otherwise a cron `doctor --strict` goes green on a backend
+        # that cannot run.
+        if not target.is_primary:
+            # A fallback that cannot run is a DEGRADE, exactly like the keyless-fallback
+            # arm above -- `auto` still runs primary-only. Without this, two spellings of
+            # one fact got opposite `--strict` verdicts: a keyless per-token fallback
+            # failed the build while a claude-max fallback whose binary is simply absent
+            # passed it, which is the silently-non-functional fallback `--strict` exists
+            # to catch.
             return BackendCheck(
-                target, DEAD, f"CLI '{target.claude_path}' not on PATH")
+                target, DEGRADED,
+                f"CLI '{target.claude_path}' not on PATH - primary-only")
+        unsupplied = target.claude_path == _DEFAULT_CLAUDE_PATH
+        return BackendCheck(
+            target, SETUP if unsupplied else DEAD,
+            f"CLI '{target.claude_path}' not on PATH")
+    if offline:
         return BackendCheck(target, OK, "(offline: not round-tripped)")
     if probe_error is not None:
         return BackendCheck(target, DEAD, probe_error)
@@ -281,17 +478,19 @@ def format_roles(uses: list) -> str:
 # Each function is a pure `facts -> ComponentCheck(es)` mapping, mirroring
 # `classify` above; `Sluice.doctor` (core/app.py) gathers the facts.
 
-_MISSING_RENDER_LIBS = (
-    "the renderer could not be constructed -- see the message above for the exact "
-    "cause. If it names jinja2/weasyprint, `pip install 'job-sluice[render]'`; if the "
-    "install already has that extra, WeasyPrint additionally needs its native "
-    "libraries (cairo, pango, gdk-pixbuf), which are not a Python dependency (see "
-    "https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#system-libraries-for-pdf-rendering "
-    "for the platform-specific install + the DYLD_FALLBACK_LIBRARY_PATH note on macOS)."
-)
+# (#243) There is deliberately NO trailing "...and here is what to do about it" blurb
+# appended to a renderer error any more. There used to be, and it restated the remedy the
+# error had ALREADY given -- the missing-extra case printed `pip install 'job-sluice[render]'`,
+# the INSTALL.md link and the macOS DYLD note twice each, in one 1,207-character line, which is
+# the single noisiest row `doctor` prints on a fresh install. Every construction-path raise in
+# `renderers/template.py:_make` carries its own remedy (point cv.template somewhere real;
+# reinstall; install the extra; fix the template's Jinja2), and `plugins.UnknownAdapter` lists
+# the valid names, so the generic restatement added no fact -- only length. Keep it that way:
+# a remedy belongs at the raise site, which knows which case it is, not here, which does not.
+# `tests/test_doctor_verdict.py` pins that every renderer row is self-contained.
 
 
-def classify_renderer(error: str | None) -> ComponentCheck:
+def classify_renderer(error: str | None, *, missing_dependency: bool = False) -> ComponentCheck:
     """`error` is the RenderError message from constructing `cv.renderer`, or
     None if construction succeeded. Construction is the whole probe -- no PDF
     is written and no LLM is called, so this is cheap and runs under
@@ -300,8 +499,18 @@ def classify_renderer(error: str | None) -> ComponentCheck:
     native library, an unreadable configured template), exactly so a run
     fails before the dossier fetch and the LLM spend rather than after."""
     if error is not None:
-        return ComponentCheck("renderer", "cv.renderer", DEAD,
-                               f"{error} ({_MISSING_RENDER_LIBS})", blocks=("cv",))
+        # `missing_dependency` is decided by the CALLER from the exception TYPE, never by
+        # matching this message (#243). `core/app.py` asks
+        # `isinstance(e, RenderDependencyError)` -- the seam member a renderer raises to say
+        # "something I need is not installed" -- and nothing else. A `plugins.UnknownAdapter`
+        # naming a renderer that does not exist, and a plain `RenderError` from a missing
+        # template or a template syntax error, are things the user supplied that do not
+        # work, and stay DEAD. Deliberately NOT `__cause__`-sniffing, which is what this
+        # comment used to describe: `core/protocols.py` has the three ways that was wrong.
+        # String-matching this text would tie classification to wording free to change.
+        return ComponentCheck("renderer", "cv.renderer",
+                              SETUP if missing_dependency else DEAD,
+                              error, blocks=("cv",))
     return ComponentCheck("renderer", "cv.renderer", OK, "constructs ok")
 
 
@@ -312,7 +521,8 @@ def classify_store(facts: dict | None) -> list:
     already gives the renderer seam's optional `precheck`. A store that cannot
     say is not a store that is broken.
 
-    Missing vault or missing baseline CV are DEAD: `cv run` cannot compose
+    Missing vault or missing baseline CV BLOCK (#243: SETUP when the user has not
+    supplied them, DEAD when a named vault is gone): `cv run` cannot compose
     without a baseline, and every sub-app that touches `self.store()` --
     which, ingest through track, is all five -- treats an unreadable vault the
     same way. A missing Judging Profile is DEGRADED, not dead --
@@ -322,7 +532,7 @@ def classify_store(facts: dict | None) -> list:
     the three evidence corpora (#164: Experience Library, Skills Inventory, STAR
     Stories) gets its own row -- NOTICE, with one exception. For a corpus the gate
     actually READS (`EvidenceKind.cited_by_gate` -- `experience` alone today), zero
-    verified entries is DEAD and `blocks=("cv",)` (#242): `cv run` refuses such a
+    verified entries BLOCKS -- SETUP, `blocks=("cv",)` (#242, restated for #243): `cv run` refuses such a
     vault outright, once for the run and before any fetch or backend call, so a
     NOTICE row would call the install fine about the exact thing that stops the next
     command. That reverses this docstring's earlier reading -- "worth knowing before
@@ -339,7 +549,7 @@ def classify_store(facts: dict | None) -> list:
     per-kind, so one unreadable corpus costs exactly its own row and every other
     store row survives (round-2 review, H2).
 
-    Candidate Profile (#133/#107) is DEAD, not degraded, on either half-declared
+    Candidate Profile (#133/#107) BLOCKS cv, not merely degrades it, on either half-declared
     shape -- a name with no contact, a contact with no name, or neither -- because
     that is exactly the condition `cv/engine.py`'s `skipped-config` refusal already
     gates a real compose on, before any dossier fetch or backend spend. The message
@@ -354,11 +564,33 @@ def classify_store(facts: dict | None) -> list:
         # ALL FIVE, not just cv/triage/apply: `Sluice.ingest` (VaultSink),
         # `leads` (expire/dedupe/reconcile) and `track` all call self.store()
         # too -- a missing vault stops the entire pipeline, not a subset of it.
-        return [ComponentCheck("store", "vault_dir", DEAD, "vault directory does not exist",
-                                blocks=("ingest", "triage", "cv", "apply", "track"))]
+        # SETUP only when the path is the shipped default -- i.e. nobody has configured a
+        # vault yet, a genuine pre-`init` install. When the user NAMED one (config key or
+        # `$VAULT_DIR`) and it is not there, the vault has MOVED or been deleted: an
+        # unmounted drive, a renamed Obsidian folder, a Syncthing path change, a typo.
+        # That stops every sub-app, and reporting it as an unfinished setup step made
+        # `doctor` exit 0 saying "Nothing is broken." on an install where nothing works --
+        # measured. Same explicit-vs-default distinction `core/paths.py` draws, for the
+        # same reason: naming a path is a claim that it is the right one.
+        #
+        # An absent fact keeps the pre-#243 DEAD rather than defaulting to the quieter
+        # SETUP: a store that does not report the distinction has not earned the benefit
+        # of it.
+        explicit = facts.get("vault_dir_is_default") is not True
+        return [ComponentCheck("store", "vault_dir", DEAD if explicit else SETUP,
+                               "vault directory does not exist -- "
+                               "`job-sluice init --vault PATH` creates one",
+                               blocks=ALL_CAPABILITIES)]
     if not facts.get("baseline_exists"):
         out.append(ComponentCheck(
-            "store", "baseline_rel", DEAD,
+            "store", "baseline_rel",
+            # Same explicit-vs-default rule as `vault_dir` above, and it belongs here for
+            # the same reason: `baseline_rel` is a root config key, so a user who set it
+            # told sluice where their CV IS. If it is not there, they renamed or moved it --
+            # every `cv run` now refuses before any spend, and `doctor`, the command they
+            # run to find out why, would otherwise say "Nothing is broken." and exit 0.
+            # At the shipped default nobody has said anything, so it is unsupplied.
+            SETUP if facts.get("baseline_rel_is_default") is True else DEAD,
             "baseline CV not found, or empty, at the configured path -- cv run cannot "
             "compose without it", blocks=("cv",)))
     else:
@@ -402,9 +634,11 @@ def classify_store(facts: dict | None) -> list:
                 "store", label, DEAD, f"cannot be read -- {error}",
                 blocks=("cv",) if spec.cited_by_gate else ()))
             continue
-        # `_MISSING`, not a `0` default: since #242 a zero here is DEAD and contributes to the
-        # exit code, so defaulting an ABSENT fact to zero would manufacture the very
-        # "read failure reported as an empty count" that `Vault.preflight` forbids. Not
+        # `_MISSING`, not a `0` default: since #242 a zero here BLOCKS cv -- it moves the
+        # capability out of `Ready now` (#243 made the state SETUP, so it no longer moves
+        # the exit code, but the row still stops the next command) -- so defaulting an
+        # ABSENT fact to zero would manufacture the very "read failure reported as an
+        # empty count" that `Vault.preflight` forbids. Not
         # reachable through `Vault` (it always supplies the triple, or the `<kind>_error` arm
         # above fires instead), but a second store need only omit the key to trip it.
         verified = facts.get(f"{kind}_verified")
@@ -439,23 +673,23 @@ def classify_store(facts: dict | None) -> list:
             # whole value of this row -- a count nobody can act on is just noise.
             detail += (f"; {pending} proposed and awaiting review "
                        f"(job-sluice {kind} verify)")
-        # DEAD, not NOTICE, when a CITABLE corpus has nothing verified in it (#242): `cv run`
+        # BLOCKING (SETUP), not NOTICE, when a CITABLE corpus has nothing verified in it (#242): `cv run`
         # now refuses such a vault outright, before any spend, so a NOTICE row here would say
         # the install is fine about the very thing that makes the next command exit 2. The
-        # Candidate Profile row below is the precedent -- the same shape, DEAD, naming the
+        # Candidate Profile row below is the precedent -- the same shape, blocking, naming the
         # refusal it predicts -- and predicting which commands are blocked is what this report
         # is for. Only for `cited_by_gate`: an empty `skills` or `stories` corpus blocks
         # nothing, so those stay NOTICE and say so in their own wording above.
         if spec.cited_by_gate and not verified and not fact_missing:
             out.append(ComponentCheck(
-                "store", label, DEAD,
+                "store", label, SETUP,
                 detail + " -- cv run refuses to compose without at least one",
                 blocks=("cv",)))
         else:
             out.append(ComponentCheck("store", label, NOTICE, detail))
     if not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
         out.append(ComponentCheck(
-            "store", "Candidate Profile", DEAD,
+            "store", "Candidate Profile", SETUP,
             "no name or no contact details -- cv run refuses to compose "
             "(skipped-config) before any backend call", blocks=("cv",)))
     else:
@@ -470,12 +704,27 @@ def classify_track_google(*, available: bool, import_error: str | None,
     importable without them (`sluice/` is stdlib-only except for the three
     named, deliberate exceptions -- see CLAUDE.md). DEGRADED only, never DEAD:
     track is one optional sub-app among five, and a job hunt can run entirely
-    on the other four."""
+    on the other four.
+
+    SETUP since #243, and `blocks=("track",)` on both arms. An uninstalled `google` extra is
+    the same fact as an uninstalled `render` extra, and a token the user has not minted is
+    the same fact as an unset API key -- both of which this file already calls SETUP, so
+    calling these DEGRADED was two spellings of one idea. `blocks` is the load-bearing half:
+    without it `verdict()` sees no blocker and the default view printed
+    `Ready now: track replies` on an install where `track run` cannot reach Gmail at all,
+    with the remedy on neither line -- the identical defect `classify_camofox` carries a
+    `blocks` to avoid, arrived at from the other direction (an empty `blocks` rather than an
+    unread state).
+
+    The state change has one consequence worth stating rather than discovering: `--strict`
+    used to fail on both of these and no longer does. That is the intended reading -- an
+    optional sub-app the user has not set up is not a fault -- but it is a change to what a
+    cron alert fires on, not a tidy-up."""
     if not available:
         return ComponentCheck(
-            "track", "google client libs", DEGRADED,
+            "track", "google client libs", SETUP,
             f"not importable ({import_error}) -- track run cannot reconcile "
-            f"Gmail/Calendar; pip install 'job-sluice[google]'")
+            f"Gmail/Calendar; pip install 'job-sluice[google]'", blocks=("track",))
     if not token_present:
         # The RESOLVED path, not the config key's name. `track.token_path` resolves through a
         # config key then an XDG root, so telling someone their token is missing without saying
@@ -484,11 +733,12 @@ def classify_track_google(*, available: bool, import_error: str | None,
         # suite keep working; the caller that matters passes it.
         where = f" at {token_path}" if token_path else " at track.token_path"
         return ComponentCheck(
-            "track", "google_token.json", DEGRADED,
+            "track", "google_token.json", SETUP,
             f"google libs are importable but no token file exists yet{where} -- "
             "`track run` cannot reach Gmail/Calendar until one does. sluice does not run "
             "the OAuth consent flow itself; see https://github.com/MrReasonable/sluice/"
-            "blob/main/docs/INSTALL.md#google-access-for-track for how to produce the token")
+            "blob/main/docs/INSTALL.md#google-access-for-track for how to produce the token",
+            blocks=("track",))
     return ComponentCheck("track", "google", OK, "libs importable, token present")
 
 

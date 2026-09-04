@@ -238,18 +238,23 @@ future run re-fetches it), not about the source running at all: a source you dis
 hand (`ingest disable ID`, above) stays disabled until you `ingest enable` it again, and
 re-authenticating alone will not bring it back.
 
-## A backend is `dead` or `degraded` in `doctor`'s output
+## A backend is `setup`, `dead` or `degraded` in `doctor`'s output
 
-- **`dead`, `<KEY_VAR> unset`** on a role used as *primary* anywhere: set the key
+- **`setup`, `<KEY_VAR> unset`** on a role used as *primary* anywhere: set the key
   (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`DEEPSEEK_API_KEY`), or switch that role to
   `claude-max`, which needs no key — it shells out to a local or SSH-reachable `claude` CLI.
 - **`degraded`, `<KEY_VAR> unset - primary-only`**: the *fallback* role has no key. This is a
   sanctioned degrade — `auto` still runs on the primary alone — but `doctor --strict` fails the
   build on it, and `--backend fallback` (an explicit, non-`auto` request) hard-errors rather
   than degrading, since there's nothing left to fall back to.
-- **`dead`, `CLI '<path>' not on PATH`** (under `--offline`): the configured `claude_max_path`
-  isn't found locally. Either install/alias it there or point `claude_max_host` at a machine
-  where it is.
+- **`CLI '<path>' not on PATH`**: the `claude` binary isn't found locally. The STATE depends on
+  whether you named the path, and so does the exit code. Left at the shipped default `claude`,
+  it is `setup` (exit 0) — you have not installed it yet. If you set `claude_max_path` /
+  `compose_claude_path` to a path of your own and it isn't there, that is `dead` (exit 1): you
+  told sluice where the binary is and it isn't. Either install/alias it there or point
+  `claude_max_host` at a machine where it is. Checked in both `--offline` and live runs, so the
+  two modes agree. On a role used only as *fallback* it is `degraded` instead — `auto` still
+  runs primary-only — which `--strict` fails on.
 - **`dead`, `unknown backend '<name>'`**: a typo'd `primary_backend`/`fallback_backend`. Valid
   names are listed in the error.
 
@@ -258,16 +263,28 @@ actually answers, not just that a key is present.
 
 ## Store / vault problems
 
-- **`dead`, vault missing**: `vault_dir` (or `$VAULT_DIR`) doesn't resolve to a real directory.
-  Blocks every pipeline command. `job-sluice init --vault PATH` creates one.
-- **`dead`, baseline CV unreadable**: `baseline_rel` (default `My CV/CV.md`, relative to the
-  store root) isn't there. Blocks `cv`.
+- **vault missing**: the vault directory doesn't exist. Blocks every pipeline command, and the
+  STATE again turns on whether you named it. With nothing configured it is `setup` (exit 0) —
+  you haven't run `job-sluice init --vault PATH` yet, which creates one. With `vault_dir` set in
+  your config, or `$VAULT_DIR` exported, it is `dead` (exit 1): the vault you named has moved or
+  been deleted — an unmounted drive, a renamed Obsidian folder, a Syncthing path change. Point
+  the config at where it actually is, or bring the volume back.
+- **baseline CV not found or empty**: `baseline_rel` (default `My CV/CV.md`, relative to the
+  store root) isn't there, or has no content. Blocks `cv`, and follows the same rule: at the
+  shipped default it is `setup` (exit 0, you haven't written one yet), while a `baseline_rel`
+  you set yourself that isn't there is `dead` (exit 1) — you told sluice where your CV is, so
+  it has been renamed or moved. A baseline that IS there but
+  cannot be READ does not produce a `baseline_rel` row at all — the permissions error is allowed
+  to propagate rather than be read as "absent", so the whole store section collapses to a single
+  `store | preflight | dead` row carrying the real error. Fix the permissions and the ordinary
+  rows come back. (A baseline that is a symlink pointing outside the vault reads `ok`; sluice
+  reads through it. The symlink refusals are on the evidence directories, not on this file.)
 - **`degraded`, Judging Profile absent**: `triage` falls back to the shipped neutral default,
   which states only that nothing is configured and prefers `research` over a confident
   verdict. Not fatal, just under-informed — fill in `Job Applications/Judging Profile.md`.
 - **Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per evidence
-  corpus — `<verified> verified / <total> total entries`. Zero verified `experience` entries is
-  **`dead`, and blocks `cv`** (#242): `cv run` refuses such a vault outright, once for the run
+  corpus — `<verified> verified / <total> total entries`. Zero verified `experience` entries
+  **blocks `cv`** (#242), as a `setup` row: `cv run` refuses such a vault outright, once for the run
   and before any fetch or backend call, so `doctor` grades it as the blocker it is rather than
   reporting it informationally. (It used to say the opposite — that this was "a `cv run`
   failure, not a `doctor` one" — which left `doctor` calling an install fine about the very
@@ -278,6 +295,8 @@ actually answers, not just that a key is present.
   — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
   command.
 - **`dead`, an evidence corpus that cannot be read**: `<Corpus> | dead | cannot be read — …`,
+  and this one genuinely is `dead` rather than `setup` — the directory exists and the store
+  cannot read it, which is a fault rather than an unfinished setup step, so it exits 1.
   one row per affected kind and only for that kind. The usual cause is a symlinked directory:
   the store refuses to read or write through one anywhere below the vault root, because
   promoting an entry from behind it would make content from outside your vault citable — and

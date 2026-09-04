@@ -2335,7 +2335,7 @@ class Sluice:
         from sluice.apply.config import load_apply_config
         from sluice.core import doctor as _doctor
         from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
-        from sluice.core.protocols import RenderError
+        from sluice.core.protocols import RenderDependencyError, RenderError
         from sluice.cv.config import load_cv_config
         from sluice.track.config import load_track_config
         from sluice.triage.config import load_triage_config
@@ -2385,16 +2385,29 @@ class Sluice:
             key_var = _PROVIDER_ENV.get(t.provider, ("", ""))[0]
             api_key, base_url = _provider_creds(t.provider)
             key_present = bool(api_key)
-            # A local (no-host) backend that needs no key IS the claude-max CLI;
-            # for the offline mode we can only check the binary exists on PATH.
+            # A local (no-host) backend that needs no key IS the claude-max CLI, so the
+            # binary being on PATH at all is checkable without running anything.
+            #
+            # NOT gated on `offline` (#243). It used to be, and the consequence was that
+            # `--offline` and the default live run disagreed about the SAME fact: offline
+            # reported `CLI 'claude' not on PATH` and, since #243, called it SETUP, while a
+            # live run skipped this, attempted the probe, and classified the resulting
+            # failure as `probe_error` -- DEAD, exit 1. So a fresh install with no `claude`
+            # installed got "Broken: triage leads, tailored CVs, track replies" from plain
+            # `job-sluice doctor`, which is the exact experience #243 exists to remove, and
+            # `--offline` was the only invocation that told the truth. Checking first also
+            # saves a subprocess that cannot succeed.
             cli_present = None
-            if offline and known and not needs_key and not t.host:
+            if known and not needs_key and not t.host:
                 cli_present = shutil.which(t.claude_path) is not None
             # Round-trip ONLY when live AND buildable+testable: known provider,
             # creds satisfied. Everything else is classified from config alone.
             probe_error = None
             elapsed = None
-            if not offline and known and (not needs_key or key_present):
+            # `cli_present is not False`: a missing binary is already classified above and
+            # the probe would only rediscover it as a less specific error.
+            if (not offline and known and (not needs_key or key_present)
+                    and cli_present is not False):
                 try:
                     # Deliberately does NOT inherit cv.compose_timeout (#28). That knob
                     # sizes a full CV composition; this is PROBE_PROMPT, a two-token
@@ -2446,10 +2459,34 @@ class Sluice:
             # with an uncaught UnknownAdapter, losing the backend checks already
             # computed above -- the opposite of what a diagnostic tool run BECAUSE
             # something is wrong should do.
+            #
+            # (#243) The SETUP-vs-DEAD split is decided by the exception type the seam
+            # DECLARES -- `RenderDependencyError`, "something I need is not installed" --
+            # never by matching doctor's message text and never by reaching into
+            # `__cause__`. Every other `RenderError`, and an `UnknownAdapter` naming a
+            # renderer that does not exist, is a thing the user DID configure and that does
+            # not work, and stays DEAD.
+            #
+            # The first cut asked `isinstance(e.__cause__, ImportError)` and was wrong three
+            # ways. It missed the case that actually fires in the field -- weasyprint
+            # importing with the extra present but its native libraries absent raises
+            # OSError, which `renderers/template.py` calls "the single likeliest real
+            # failure" -- so the documented macOS install landed on exit 1 under a heading
+            # saying something you configured is broken, on a row whose remedy is `pip
+            # install`. Widening that tuple to `(ImportError, OSError)` would have moved the
+            # bug rather than fixed it: it mirrors one renderer's `except` clause, so that
+            # renderer changing what it catches silently changes doctor's verdict, and it
+            # would ALSO have swept in the packaged-template read one layer down, whose own
+            # message says "reinstall sluice" and which is a broken install rather than an
+            # unfinished setup step. A renderer raising from inside an `except` with no
+            # `from` clause (`__cause__` is None -- implicit chaining sets `__context__`)
+            # stays misclassified whatever its message says. Letting the renderer declare it
+            # fixes all three. `core/protocols.py` carries the argument.
             try:
                 self.renderer(cv_cfg)
             except (RenderError, plugins.UnknownAdapter) as e:
-                components.append(_doctor.classify_renderer(str(e)))
+                components.append(_doctor.classify_renderer(
+                    str(e), missing_dependency=isinstance(e, RenderDependencyError)))
             else:
                 components.append(_doctor.classify_renderer(None))
 
@@ -2467,10 +2504,23 @@ class Sluice:
         # which validates `lead_layout` itself and never gets here. Both must
         # be reported the same way rather than crashing -- the identical fix
         # as the renderer's, one layer earlier.
+        #
+        # `blocks` is the WHOLE pipeline on both rows below, and it is load-bearing rather
+        # than decorative (#243): `DoctorReport.verdict()` reads `blocks` to decide which
+        # capabilities are still usable, so a DEAD row that names nothing leaves every
+        # capability in `Ready now`. Measured -- an unbuildable store printed
+        # "Ready now: scrape job boards, triage leads, send applications, track replies"
+        # above a `Broken:` row saying the store could not be constructed. A store that
+        # will not build is strictly worse than the missing vault `classify_store` already
+        # marks as stopping "the entire pipeline, not a subset of it", so it is spelled the
+        # same way. `blocks=()` remains meaningful and must not be filled in reflexively:
+        # the unreadable `stories` corpus carries it deliberately, because nothing reads
+        # that corpus and naming a sub-app there would be an over-claim.
         try:
             store = self.store()
         except (plugins.UnknownAdapter, ValueError) as e:
-            components.append(_doctor.ComponentCheck("store", "store", _doctor.DEAD, str(e)))
+            components.append(_doctor.ComponentCheck(
+                "store", "store", _doctor.DEAD, str(e), blocks=_doctor.ALL_CAPABILITIES))
         else:
             preflight_fn = getattr(store, "preflight", None)
             if preflight_fn is not None:
@@ -2479,7 +2529,8 @@ class Sluice:
                 except Exception as e:  # noqa: BLE001 -- see the comment above: a
                     # broken preflight must be reported, not crash doctor itself.
                     components.append(_doctor.ComponentCheck(
-                        "store", "preflight", _doctor.DEAD, str(e)))
+                        "store", "preflight", _doctor.DEAD, str(e),
+                        blocks=_doctor.ALL_CAPABILITIES))
             # #165. Needs BOTH the store and cv_cfg, which is why it lives here and not in
             # `Vault.preflight()` -- whose docstring commits it to COUNTS rather than
             # content, and which is a Store-seam member every implementation would have to

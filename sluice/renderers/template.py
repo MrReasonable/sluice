@@ -21,7 +21,7 @@ import os
 from sluice.core import plugins
 # The seam's error type, taken from the seam rather than from the sibling implementation
 # that happened to define it first (see `core/protocols.py`).
-from sluice.core.protocols import RenderError
+from sluice.core.protocols import RenderDependencyError, RenderError
 from sluice.cv.parse import CvParseError, parse_cv
 from sluice.renderers import register
 
@@ -120,7 +120,11 @@ class TemplateRenderer:
             from jinja2 import Environment, StrictUndefined
             from jinja2.exceptions import TemplateError
         except ImportError as e:
-            raise RenderError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
+            # Same fact as `_make`'s arm below, so the same type: two spellings of one
+            # thing in one file is how they drift. Unreachable through the seam today
+            # (`_make` proves jinja2 first), which is a reason to keep them equal, not a
+            # reason to let them differ.
+            raise RenderDependencyError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
 
         # Named for the RenderError below: a StrictUndefined failure must say WHICH
         # template broke, and the packaged default has no filesystem path a user can
@@ -260,7 +264,12 @@ def _make(cvcfg):
         # TemplateRenderer imports Environment again itself when it actually builds one.
         from weasyprint import HTML
     except (ImportError, OSError) as e:
-        raise RenderError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
+        # RenderDependencyError, not plain RenderError: BOTH arms of that tuple are "you
+        # have not installed this yet" -- the extra itself, and the native libraries the
+        # OSError arm exists for -- so `doctor` reports them as a setup step and exits 0
+        # rather than calling the install broken. See core/protocols.py for why the
+        # renderer declares this rather than letting doctor infer it from `__cause__`.
+        raise RenderDependencyError(f"{_MISSING_EXTRA} (underlying error: {e})") from e
     # CvConfig.template now exists (blank means "use the packaged default", per
     # TemplateRenderer's own constructor check), so read it directly -- the earlier
     # `getattr` defence only existed because the config field had not landed yet.

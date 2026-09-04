@@ -640,7 +640,7 @@ you typed. Exit 2 if `--vault` and `$VAULT_DIR` name different directories, if `
 given with no vault answer available anywhere, or if the resolved `vault_dir` exists and is not
 a directory. Exit 1 if any individual write failed. Otherwise 0.
 
-## `job-sluice doctor [--offline] [--strict]`
+## `job-sluice doctor [--offline] [--strict] [--verbose] [--require CAPABILITY]`
 
 Preflights backends, the renderer, the store's on-disk artefacts (vault, baseline CV, Judging
 Profile, a verified/pending count for each of the three evidence corpora — #164: Experience
@@ -654,17 +654,59 @@ config is its own DEAD `cv-config` row rather than a traceback — see
 |---|---|
 | `--offline` | config-only checks; no network round-trip |
 | `--strict` | also fail (exit 1) on any `degraded` result, not just `dead` |
+| `--verbose`, `-v` | print every check as a table, not just the verdict |
+| `--require CAPABILITY` | exit 1 unless these are ready: `ingest`, `triage`, `cv`, `apply`, `track`. Comma-separated, repeatable |
 
-Four classification states per row: `ok`, `degraded`, `dead`, and `notice` (which never
-affects the exit code, even under `--strict`). Output (stdout) is two tables — backends, then
-components — each ending with an `N ok, N degraded, N dead[, N notice]` summary. Both summaries
-move with the install and they move independently: the backend one tracks which providers are
-reachable, the component one tracks your vault and your optional extras. A captured run in any
-doc is therefore one machine's answer, never a constant to compare yours against.
-Exit 1 if any row is `dead` (or, under `--strict`, `degraded`); otherwise 0. A fresh install has
-`dead` components and so exits 1 by design, which is a to-do list rather than a fault. How many
-depends on the install: a packaged channel supplies the renderer's native libraries, a bare `pip`
-install does not, so a count stated here would be wrong for one of them. Run
-this before a real pipeline
-run; see `docs/TROUBLESHOOTING.md` for what a specific `dead`/`degraded` line means and how to
-fix it.
+**Default output (stdout) is a verdict**, not a table (#243): which of the five things sluice
+does are ready, which are waiting on something you have not supplied, and which are broken —
+followed by the remedy for each row in the last two groups, verbatim from the check that knows
+it. `--verbose` prints the full table instead, which is what you want once something *is*
+broken.
+
+Five classification states per row: `ok`, `degraded`, `dead`, `setup`, and `notice`. `notice`
+and `setup` never affect the exit code, even under `--strict`. The `--verbose` output is two
+tables — backends, then components — each ending with an
+`N ok, N degraded, N dead, N setup[, N notice]` summary. Both summaries move with the install
+and they move independently: the backend one tracks which providers are reachable, the component
+one tracks your vault and your optional extras. A captured run in any doc is therefore one
+machine's answer, never a constant to compare yours against.
+
+**`setup` versus `dead` is the distinction the exit code is built on.** `setup` means you have
+not supplied the thing yet — no baseline CV, no verified evidence, no API key in the
+environment, the `render` extra not installed, no vault. `dead` means something you *did*
+supply does not work — a `cv.renderer` naming no registered renderer, a `cv.template` that is
+not a file, an API key that fails its round-trip, a store that has moved. Exit 1 if any row is
+`dead` (or, under `--strict`, `degraded`); otherwise 0.
+
+**A fresh install therefore exits 0.** It still has rows to act on, and `doctor` still lists
+them; what it no longer does is report a to-do list as a failure. How many rows depends on the
+install: a packaged channel supplies the renderer's native libraries, a bare `pip` install does
+not, so a count stated here would be wrong for one of them. Run this before a real pipeline run;
+see `docs/TROUBLESHOOTING.md` for what a specific `dead`/`degraded` line means and how to fix
+it.
+
+**`--require` is for monitoring.** The exit code answers "is anything broken", which is not
+the same question as "can this install still do the thing I depend on". A `setup` row does not
+fail the build — so an install that stops working for a reason sluice reads as *unsupplied*
+(a cron unit whose `PATH` lacks `~/.local/bin`, an API key not exported outside an interactive
+shell) exits 0. Name what you actually need and it exits 1 the moment that stops being ready:
+
+```bash
+job-sluice doctor --require triage,cv || notify-me
+```
+
+Any bucket other than ready fails it — `needs setup`, `degraded` and `broken` alike — because
+the question is "can I do this", and all three answer no. An unknown capability name is exit 2,
+a usage error, deliberately distinct from the exit 1 that means a capability is down.
+
+`ready` means nothing `doctor` *checks* is blocking that capability. It is not a promise the
+thing works: `--offline` never round-trips a backend, and nothing ever dials Camofox. So
+`--require cv` is a much stronger claim than `--require ingest`.
+
+> **This changed (#243).** `doctor` used to exit 1 whenever any row was `dead`, and a fresh
+> install had `dead` rows by design — so the happy path failed. If you alert on `doctor`'s exit
+> code (a cron job, a setup script, a health check), it now fires only on a genuine fault.
+> **Point that alert at `--require` instead**, naming the capabilities you actually use. That
+> is a sharper signal than the one it replaces, not a weaker one: the old exit 1 fired on a
+> fresh install and on every gap indiscriminately, while `--require triage` fires precisely
+> when triage stops working.

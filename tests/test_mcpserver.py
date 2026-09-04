@@ -258,7 +258,43 @@ def test_doctor_defaults_to_offline_and_matches_sluice_doctor_offline(tmp_path):
     app = Sluice(Config(), store=Vault(str(tmp_path)))
     out = doctor(app)
     expected = app.doctor(offline=True)
-    assert out == {**dataclasses.asdict(expected), "exit_code": expected.exit_code(strict=False)}
+    assert out == {**dataclasses.asdict(expected),
+                   "exit_code": expected.exit_code(strict=False),
+                   # #243. Included explicitly because `verdict()` is a METHOD, so
+                   # `dataclasses.asdict(report)` walks straight past it -- which is
+                   # exactly how the CLI's new answer to "what can this install do" came
+                   # to be CLI-only while the MCP tool still returned only rows.
+                   "verdict": dataclasses.asdict(expected.verdict())}
+
+
+def test_the_mcp_doctor_answers_what_the_install_can_do_not_only_which_rows_are_unhealthy(
+        tmp_path):
+    """An agent driving sluice over MCP gets the same verdict the CLI prints (#243).
+
+    `exit_code` alone became a weaker answer when `setup` stopped contributing to it: a
+    half-configured install that cannot compose a CV at all now reports 0, which is
+    correct ("nothing is BROKEN") and useless on its own for deciding what to do next.
+    The buckets are what carry that, and they must survive the JSON round trip an MCP
+    response actually makes -- a dataclass that serialises here but not through `json`
+    would fail only in a client.
+    """
+    import json
+
+    from sluice.core.doctor import ALL_CAPABILITIES
+
+    app = Sluice(Config(), store=Vault(str(tmp_path / "absent")))
+    out = doctor(app)
+    verdict = json.loads(json.dumps(out["verdict"]))
+    assert set(verdict) >= {"ready", "setup", "degraded", "broken", "setup_rows"}
+    # A vault the caller NAMED and that does not exist stops every sub-app, so nothing is
+    # ready -- and that is invisible in `exit_code` if the caller reads only that.
+    assert verdict["ready"] == []
+    # ...and it is the VAULT row driving that, not some incidental other failure. Selected
+    # by subject rather than by position: `components` leads with the renderer row, so an
+    # index here would assert about whichever check happens to be built first.
+    rows = {c.subject: c for c in app.doctor(offline=True).components}
+    assert rows["vault_dir"].state == "dead", "a named vault that is gone is a fault"
+    assert set(rows["vault_dir"].blocks) == set(ALL_CAPABILITIES)
 
 
 # ── health ───────────────────────────────────────────────────────────────────

@@ -111,9 +111,9 @@ installing rather than after:
 | A [Google OAuth token](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md#google-access-for-track), which you mint yourself | `track` | `track run` logs a failure and exits 0 |
 
 `job-sluice doctor --offline` reports which of these you are missing and which commands each gap
-blocks. Running it immediately after installing is the fastest way to see where you stand — a
-bare install honestly reports several dead components, and that is expected rather than a broken
-install.
+blocks. Running it immediately after installing is the fastest way to see where you stand. It
+exits `0` on a fresh install and lists what is still waiting on you; a non-zero exit means
+something you actually configured is broken.
 
 ## Install
 
@@ -233,36 +233,59 @@ relevance and pay gates already closed and nothing saying so.
 $ job-sluice doctor --offline
 job-sluice doctor  (offline)
 
-claude-max  claude-sonnet-4-5    ok        primary: triage, cv, track  (offline: not round-tripped)
-deepseek    deepseek-v4-flash    degraded  fallback: triage, cv, track  DEEPSEEK_API_KEY unset - primary-only
+Ready now:    scrape job boards, triage leads, send applications
+Needs setup:  tailored CVs, track replies
 
-1 ok, 1 degraded, 0 dead
+Still to set up:
+  cv.renderer
+      renderer 'template' could not load its rendering backend: pip install
+...
+  baseline_rel
+      baseline CV not found, or empty, at the configured path -- cv run cannot
+      compose without it
+  Experience Library
+      0 verified / 0 total entries -- only verified entries are citable by the CV
+      fabrication gate -- cv run refuses to compose without at least one
+  Candidate Profile
+      no name or no contact details -- cv run refuses to compose (skipped-config)
+      before any backend call
+  google client libs
+      not importable (No module named 'google') -- track run cannot reconcile
+...
 
-renderer     cv.renderer                      dead      renderer 'template' could not load its ...
-store        baseline_rel                     dead      baseline CV not found, or empty, at the ...
-store        Judging Profile                  ok        found
-store        Experience Library               dead      0 verified / 0 total entries -- only verified ...
+Nothing is broken.
 ...
-store        Candidate Profile                dead      no name or no contact details -- cv run refuses ...
-...
-gates        Config.dossier_allow_hosts       notice    no exceptions granted (empty)
-...
-gates        TriageConfig.accept_titles       notice    abstaining (empty)
-...
-1 ok, 1 degraded, 4 dead, 18 notice
+Run `job-sluice doctor --verbose` for every check.
 ```
 
-Dead components on a fresh install are the expected state, not a fault, though `doctor` still exits
-non-zero while any component is dead, so a fresh install exits `1`. Each names the command it
-blocks, so you only fix what you need — above, every one of them blocks `cv`, while `ingest` and
-`triage` need none of them.
+A fresh install exits `0`. Nothing above is a fault: each row is something you have not supplied
+yet, and the two lines at the top say which of the five things sluice does that actually costs
+you. `Ready now` means nothing `doctor` checks is blocking it — not a promise it will work, since
+an offline run never dials a backend or a browser. Here nothing blocks scraping, triage or
+applying; tailored CVs and tracking are waiting on you. Fix what you need and ignore the rest.
 
-There are two summary lines, and they count different things: the first totals the backends above
-it, the second totals the components below it. Both move with your machine, so treat the capture
-as one install rather than as the answer. That one had the `claude` CLI on `$PATH`, so
-`claude-max` reads `ok`; without it you get `dead  CLI 'claude' not on PATH` and a backend total
-of `0 ok, 1 degraded, 1 dead`. It also had no `render` extra, which is why the renderer is `dead`
-— install that and the component totals move too, exactly as they do when you add a baseline CV.
+`doctor` exits non-zero only when something you *did* configure does not work — a renderer name
+that is not registered, a template that is not a file, an API key that fails its round-trip, a
+store that has moved. That makes the exit code safe to put in a setup script or a cron alert.
+`--strict` additionally fails on `degraded`, and the line elided above says how many rows that
+is. A keyless *fallback* backend is the usual one: a sanctioned degrade in which `auto` runs on
+the primary alone, so it is not listed as something to fix unless you pass `--strict`.
+
+If you want an alert that fires when sluice stops being able to do a particular job — rather
+than when something is broken — name it:
+
+```bash
+job-sluice doctor --require triage,cv || notify-me
+```
+
+That exits 1 whenever either capability is anything but ready, whatever the reason.
+
+The capture is one machine, not the answer. That one had the `claude` CLI on `$PATH`; without it
+every capability whose primary backend is `claude-max` moves down to `Needs setup` — on the
+shipped defaults that is triage, CVs *and* tracking, not just triage. It also had no `render`
+extra, which is the renderer row. Add `job-sluice doctor --verbose` for the full table — every
+check, its state, and the command each gap blocks — which is what you want once something *is*
+broken.
 
 The `gates` rows sweep every **list-valued** setting and report what its current value means:
 `abstaining (empty)` for a preference gate, and its own posture for the settings where empty

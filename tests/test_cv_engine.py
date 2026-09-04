@@ -1107,7 +1107,7 @@ def test_run_ones_skipped_config_status_and_doctors_candidate_profile_row_agree(
     already cover individually -- both-blank, name-only, contact-only,
     both-declared -- through BOTH `run_one` and `classify_store` off the SAME
     seeded vault, and asserts the two never disagree on any of them."""
-    from sluice.core.doctor import DEAD, classify_store
+    from sluice.core.doctor import DEAD, DEGRADED, SETUP, classify_store
 
     # Each shape gets its OWN vault directory. `_vault_with_candidate` writes NO note at
     # all for `{}` (that is how the missing-note abstain path is exercised), so on a
@@ -1129,9 +1129,21 @@ def test_run_ones_skipped_config_status_and_doctors_candidate_profile_row_agree(
                                  renderer=FakeRenderer()).status == "skipped-config"
         rows = [c for c in classify_store(vault.preflight()) if c.subject == "Candidate Profile"]
         assert len(rows) == 1, f"{label}: expected exactly one Candidate Profile row"
-        doctor_dead = rows[0].state == DEAD
-        assert engine_refused == doctor_dead, (
-            f"{label}: run_one refused={engine_refused} but doctor DEAD={doctor_dead}")
+        # Keyed on `blocks`, not on a state NAME. #243 renamed this row's blocking state
+        # DEAD -> SETUP (an unfilled Candidate Profile is unsupplied, not broken) without
+        # touching what it blocks, and a state-keyed assertion would have read that rename
+        # as "doctor stopped reporting the problem" -- when the row, its detail and its
+        # `blocks=("cv",)` were all unchanged. `blocks` is also the thing the claim is
+        # actually about: doctor must say cv is stopped exactly when `run_one` stops it.
+        # The state conjunct names the three states `verdict()` and `exit_code` actually
+        # ACT on, not merely "not OK". Measured: with `state != OK`, flipping this row to
+        # NOTICE (leaving `blocks` alone) left this test green while `verdict()` dropped
+        # the row entirely and printed `Ready now: tailored CVs` for a vault `run_one`
+        # refuses -- the exact disagreement the test is named for.
+        doctor_blocks_cv = "cv" in rows[0].blocks and rows[0].state in (SETUP, DEGRADED, DEAD)
+        assert engine_refused == doctor_blocks_cv, (
+            f"{label}: run_one refused={engine_refused} but doctor blocks cv="
+            f"{doctor_blocks_cv} (state={rows[0].state!r}, blocks={rows[0].blocks!r})")
         # ...and the EXPECTED verdict for this shape, not merely that the two agree.
         # Agreement alone is order-blind: both sides read the same vault, so a note left
         # behind by a previous iteration moves them together and the assertion above

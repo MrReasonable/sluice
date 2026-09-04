@@ -7,7 +7,8 @@ from dataclasses import dataclass
 import pytest
 
 from sluice.core.doctor import (
-    DEAD, DEGRADED, NOTICE, OK, BackendCheck, BackendTarget, ComponentCheck,
+    ALL_CAPABILITIES, DEAD, DEGRADED, NOTICE, OK, SETUP, BackendCheck, BackendTarget,
+    ComponentCheck,
     DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
     classify_negatives_vs_skills, classify_renderer, classify_skills_reconciliation,
     classify_store, classify_track_google, enumerate_targets,
@@ -158,12 +159,17 @@ def test_classify_unknown_provider_is_dead_even_offline():
     assert "gpt5" in c.detail
 
 
-def test_classify_keyless_primary_is_dead():
+def test_classify_keyless_primary_is_setup_not_dead():
+    # #243: an UNSET key is a credential the user has not supplied. A key that IS set
+    # and fails its round-trip is `probe_error` below, and stays DEAD -- the two are
+    # deliberately different states, so `doctor` can exit 0 on the first and 1 on the
+    # second. `test_classify_live_probe_error_is_dead` is that other half; it must
+    # keep asserting DEAD or this distinction collapses into "backends never fail".
     t = _target(provider="deepseek", roles=(("triage", "primary"),))
     c = classify(t, known=True, needs_key=True, key_present=False,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
                  probe_error=None)
-    assert c.state == DEAD
+    assert c.state == SETUP
     assert "DEEPSEEK_API_KEY" in c.detail
 
 
@@ -186,12 +192,14 @@ def test_classify_offline_ok_when_static_checks_pass():
     assert "offline" in c.detail
 
 
-def test_classify_offline_claude_cli_missing_is_dead():
+def test_classify_offline_claude_cli_missing_is_setup_not_dead():
+    # #243: not installed yet, so SETUP. An installed CLI that fails to run is
+    # `probe_error`, which stays DEAD.
     t = _target(provider="claude-max", model="claude-sonnet-4-5",
                 roles=(("triage", "primary"),))
     c = classify(t, known=True, needs_key=False, key_present=False,
                  key_var="", cli_present=False, offline=True, probe_error=None)
-    assert c.state == DEAD
+    assert c.state == SETUP
     assert "claude" in c.detail.lower()
 
 
@@ -265,15 +273,18 @@ def test_enumerate_merges_and_flags_mixed_primary_fallback_role():
     assert format_roles(merged[0].uses) == "primary: triage; fallback: triage"
 
 
-def test_classify_keyless_mixed_role_is_dead():
-    # tst-003: is_primary wins -- a keyless per-token backend used as BOTH roles
-    # is dead (a run using it as primary cannot happen), not merely degraded.
+def test_classify_keyless_mixed_role_is_setup_not_degraded():
+    # tst-003: is_primary still wins -- a keyless per-token backend used as BOTH roles
+    # is not merely degraded, because a run using it as primary cannot happen. #243
+    # renamed the losing state from DEAD to SETUP (an unset key is unsupplied, not
+    # broken); what this row pins is unchanged, that the PRIMARY use decides.
     t = _target(provider="deepseek",
                 roles=(("triage", "primary"), ("cv", "fallback")))
     c = classify(t, known=True, needs_key=True, key_present=False,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
                  probe_error=None)
-    assert c.state == DEAD
+    assert c.state == SETUP
+    assert c.state != DEGRADED
 
 
 # ── Sluice.doctor (impure wiring, with an injected probe so it stays offline) ──
@@ -315,6 +326,13 @@ def _deepseek_dies_probe(backend):
 
 def test_doctor_live_all_ok(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
+    # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
+    # when it does not. Before that change `cli_present` was computed only under
+    # `--offline`, so live mode probed unconditionally and these rows were hermetic by
+    # accident. Without this line they pass on a developer machine with `claude`
+    # installed and fail in CI, which is exactly backwards.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
     states = {c.target.provider: c.state for c in rep.checks}
     assert states == {"claude-max": OK, "deepseek": OK}
@@ -323,6 +341,13 @@ def test_doctor_live_all_ok(monkeypatch):
 
 def test_doctor_live_keyed_fallback_broken_is_dead(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
+    # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
+    # when it does not. Before that change `cli_present` was computed only under
+    # `--offline`, so live mode probed unconditionally and these rows were hermetic by
+    # accident. Without this line they pass on a developer machine with `claude`
+    # installed and fail in CI, which is exactly backwards.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_deepseek_dies_probe)
     states = {c.target.provider: c.state for c in rep.checks}
     assert states["claude-max"] == OK
@@ -354,12 +379,17 @@ def test_doctor_offline_skips_probe_and_checks_claude_cli(monkeypatch):
     assert rep.exit_code() == 0
 
 
-def test_doctor_offline_reports_dead_when_claude_cli_absent(monkeypatch):
+def test_doctor_offline_reports_setup_and_exits_zero_when_claude_cli_absent(monkeypatch):
+    # #243: the CLI is not installed, so the whole install is un-set-up rather than
+    # broken, and `doctor` says so with exit 0. The row is still reported, still names
+    # the binary, and still blocks triage in the verdict -- what changed is only that
+    # "you have not installed this yet" no longer fails a setup script.
     monkeypatch.setattr("shutil.which", lambda name: None)
     rep = Sluice().doctor(offline=True, probe=_ok_probe)
     states = {c.target.provider: c.state for c in rep.checks}
-    assert states["claude-max"] == DEAD
-    assert rep.exit_code() == 1
+    assert states["claude-max"] == SETUP
+    assert rep.exit_code() == 0
+    assert "triage leads" in rep.verdict().setup
 
 
 def test_doctor_offline_dead_when_plugin_unregistered(monkeypatch):
@@ -394,6 +424,13 @@ def test_doctor_never_builds_a_fetcher(monkeypatch):
 # tst-002: the elapsed field is printed, so pin when it is set vs None.
 def test_doctor_records_elapsed_on_live_probe_only(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
+    # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
+    # when it does not. Before that change `cli_present` was computed only under
+    # `--offline`, so live mode probed unconditionally and these rows were hermetic by
+    # accident. Without this line they pass on a developer machine with `claude`
+    # installed and fail in CI, which is exactly backwards.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
     by = {c.target.provider: c for c in rep.checks}
     assert isinstance(by["claude-max"].elapsed, float)
@@ -428,14 +465,17 @@ def test_doctor_unknown_provider_in_config_is_dead(monkeypatch):
     assert rep.exit_code() == 1
 
 
-def test_doctor_keyless_primary_is_dead_through_wiring(monkeypatch):
+def test_doctor_keyless_primary_is_setup_through_wiring(monkeypatch):
+    # The wiring half of `test_classify_keyless_primary_is_setup_not_dead`: #243's
+    # reclassification has to survive the real `Sluice.doctor` path, not only the pure
+    # classifier, because that is what the exit code is computed from.
     monkeypatch.setattr("sluice.triage.config.load_triage_config",
                         lambda: _Triage(primary_backend="deepseek"))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     rep = Sluice().doctor(probe=_ok_probe)
-    assert any(c.state == DEAD and c.target.provider == "deepseek"
+    assert any(c.state == SETUP and c.target.provider == "deepseek"
                and c.target.is_primary for c in rep.checks)
-    assert rep.exit_code() == 1
+    assert rep.exit_code() == 0
 
 
 def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
@@ -550,9 +590,13 @@ from sluice.cli import main                    # noqa: E402
 
 
 def test_cli_doctor_offline_degraded_fallback_exits_zero(monkeypatch, capsys):
+    # `--verbose`, because the assertions here are about the backend TABLE, which the
+    # default view no longer prints (#243). The default view's own contract is
+    # `tests/test_doctor_verdict.py`; this row keeps pinning that a degraded fallback
+    # is reported, named, and exits 0.
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
-    rc = main(["doctor", "--offline"])
+    rc = main(["doctor", "--offline", "--verbose"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "claude-max" in out and "deepseek" in out
@@ -565,9 +609,24 @@ def test_cli_doctor_strict_fails_on_degraded(monkeypatch):
     assert main(["doctor", "--offline", "--strict"]) == 1
 
 
-def test_cli_doctor_offline_dead_when_claude_missing_exits_nonzero(monkeypatch):
+def test_cli_doctor_offline_exits_zero_when_claude_is_merely_not_installed(monkeypatch):
+    # #243 flipped this from 1 to 0 deliberately, and it is the change that most needs
+    # a migration note: a `doctor` in a cron alert used to fire on an uninstalled CLI.
+    # `test_cli_doctor_offline_exits_nonzero_on_a_backend_that_fails` is the row that
+    # keeps a genuine fault exiting 1, so this pair brackets the new rule.
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: None)
+    assert main(["doctor", "--offline"]) == 0
+
+
+def test_cli_doctor_offline_exits_nonzero_on_an_unregistered_provider(monkeypatch):
+    # The other side of the pair above, through the real CLI: a config naming a
+    # provider the seam does not serve is a thing the user SUPPLIED that does not work,
+    # so it stays DEAD and still exits 1. Without this row, #243's exit-code change
+    # would be indistinguishable from "doctor always exits 0".
+    monkeypatch.setattr("sluice.triage.config.load_triage_config",
+                        lambda: _Triage(primary_backend="nonesuch"))
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     assert main(["doctor", "--offline"]) == 1
 
 
@@ -583,7 +642,7 @@ def test_print_doctor_shows_elapsed_for_a_live_probe(capsys):
     _print_doctor(report, offline=False)
     out = capsys.readouterr().out
     assert "(0.4s)" in out
-    assert "1 ok, 0 degraded, 0 dead" in out
+    assert "1 ok, 0 degraded, 0 dead, 0 setup" in out
 
 
 def test_doctor_probe_does_not_inherit_the_compose_timeout(monkeypatch, tmp_path):
@@ -613,6 +672,9 @@ def test_doctor_probe_does_not_inherit_the_compose_timeout(monkeypatch, tmp_path
     # `doctor` does `from sluice.core.backends import make_backend` at METHOD scope, so
     # the import re-runs per call and patching the source module is what takes effect.
     monkeypatch.setattr("sluice.core.backends.make_backend", spy_make)
+    # Same reason as the live rows above: `doctor` must actually reach `make_backend` for
+    # claude-max, and since #243 it does not when the CLI is absent from PATH.
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     # No try/except: `Sluice.doctor` already catches BackendError around the
     # make_backend/probe pair, so a handler here is dead code that could only mask a
     # later regression while `seen` stayed non-empty and this test stayed green.
@@ -688,30 +750,60 @@ def test_classify_renderer_ok():
     assert c.blocks == ()
 
 
-def test_classify_renderer_dead_blocks_cv_and_names_the_fix():
+def test_classify_renderer_reports_the_raise_sites_message_verbatim():
+    # #243: doctor no longer appends its own "...and here is what to do" blurb. It used
+    # to, and the missing-extra case then printed the pip command, the INSTALL.md link
+    # and the macOS DYLD note TWICE each in one 1,207-character row -- the noisiest line
+    # a fresh install produced. The remedy belongs at the raise site, which knows which
+    # of the four failures it is; this pins that doctor passes it through untouched, so
+    # a future raise site cannot be made un-actionable by a generic suffix hiding it.
     c = classify_renderer("weasyprint could not be imported")
-    assert c.state == DEAD
+    assert c.detail == "weasyprint could not be imported"
     assert c.blocks == ("cv",)
-    assert "weasyprint could not be imported" in c.detail
-    # A DEAD renderer must say WHAT TO DO, not just that it is broken -- the
-    # LOCATION field lesson (CLAUDE.md) applies here too: a refusal with no
-    # actionable next step just relocates the confusion.
-    assert "render" in c.detail and "cairo" in c.detail
 
 
-def test_classify_store_missing_vault_short_circuits_to_one_dead_row():
+def test_classify_renderer_splits_an_uninstalled_extra_from_a_broken_one():
+    # The SETUP/DEAD fork (#243), decided by the CALLER from the exception type. A
+    # missing dependency is something the user has not supplied: SETUP, exit 0. Anything
+    # else -- an unknown renderer name, a cv.template that is not a file, a template
+    # that is not valid Jinja2 -- is something they DID supply that does not work: DEAD,
+    # exit 1. Both still block cv, because both stop `cv run` either way.
+    setup = classify_renderer("could not load its rendering backend", missing_dependency=True)
+    broken = classify_renderer("unknown renderer 'nonesuch'")
+    assert setup.state == SETUP
+    assert broken.state == DEAD
+    assert setup.blocks == broken.blocks == ("cv",)
+
+
+def test_classify_store_missing_vault_short_circuits_to_one_row():
     # Four DEAD rows for one cause (a vault that does not exist) would bury the
     # actual problem -- classify_store must short-circuit rather than also
     # report baseline/criteria/experience as independently broken.
     checks = classify_store({"vault_exists": False})
     assert len(checks) == 1
-    assert checks[0].state == DEAD
-    assert checks[0].blocks == ("ingest", "triage", "cv", "apply", "track")
+    assert checks[0].blocks == ALL_CAPABILITIES
+
+    # #243 splits the STATE on whether the user named the path, and both arms matter.
+    # A vault the user CONFIGURED and that is gone -- an unmounted drive, a renamed
+    # Obsidian folder, a Syncthing path change, a typo -- is a fault that stops every
+    # sub-app, and must keep exiting 1; reporting it as an unfinished setup step made
+    # `doctor` print "Nothing is broken." and exit 0 on an install where nothing works.
+    # An absent fact takes the same louder reading, so a store that cannot say does not
+    # get the benefit of the doubt.
+    for facts, expected in (
+            ({"vault_exists": False}, DEAD),                              # not reported
+            ({"vault_exists": False, "vault_dir_is_default": False}, DEAD),
+            ({"vault_exists": False, "vault_dir_is_default": True}, SETUP),
+    ):
+        assert classify_store(facts)[0].state == expected, facts
 
 
-def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
+def test_classify_store_missing_baseline_needs_setup_missing_profile_is_degraded():
     checks = classify_store({
         "vault_exists": True, "baseline_exists": False, "criteria_present": False,
+        # #243: absent, this fact takes the louder DEAD reading, so a fixture asserting
+        # the unsupplied arm has to say which case it is modelling.
+        "baseline_rel_is_default": True,
         "experience_total": 0, "experience_verified": 0,
         # The two non-citable kinds need their keys PRESENT, or the absent-fact guard routes
         # them past the `cited_by_gate` conjunct and the NOTICE assertions below stop proving
@@ -722,12 +814,14 @@ def test_classify_store_missing_baseline_is_dead_missing_profile_is_degraded():
         "stories_total": 0, "stories_verified": 0,
     })
     by_subject = {c.subject: c for c in checks}
-    assert by_subject["baseline_rel"].state == DEAD
+    assert by_subject["baseline_rel"].state == SETUP
     assert by_subject["Judging Profile"].state == DEGRADED
-    # DEAD since #242: `cv run` refuses a vault with nothing verified, before any spend, so a
-    # NOTICE here would call the install fine about the exact thing that makes the next command
-    # exit 2. The two non-citable corpora stay NOTICE -- they block nothing.
-    assert by_subject["Experience Library"].state == DEAD
+    # Blocking since #242: `cv run` refuses a vault with nothing verified, before any spend, so
+    # a NOTICE here would call the install fine about the exact thing that makes the next
+    # command exit 2. #243 renamed the state DEAD -> SETUP (nothing verified yet is unsupplied,
+    # not broken) and left `blocks` alone, which is what the verdict actually reads. The two
+    # non-citable corpora stay NOTICE -- they block nothing.
+    assert by_subject["Experience Library"].state == SETUP
     assert by_subject["Experience Library"].blocks == ("cv",)
     assert by_subject["Skills Inventory"].state == NOTICE
     assert by_subject["STAR Stories"].state == NOTICE
@@ -766,29 +860,32 @@ _HEALTHY_STORE_FACTS = {
 }
 
 
-def test_a_blank_candidate_profile_is_dead_and_blocks_cv():
+def test_a_blank_candidate_profile_is_setup_and_blocks_cv():
+    # SETUP since #243: a Candidate Profile the user has not filled in is the archetypal
+    # not-supplied-yet row. `blocks` is what the verdict reads and is unchanged, so cv
+    # still reports as un-set-up rather than ready.
     checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": False,
                              "candidate_contact_present": False})
     c = _one(checks, "Candidate Profile")
-    assert c.state == DEAD
+    assert c.state == SETUP
     assert c.blocks == ("cv",)
 
 
-def test_a_declared_name_with_blank_contact_is_still_dead():
+def test_a_declared_name_with_blank_contact_still_blocks_cv():
     # The half-declared shape cv/engine.py's skipped-config gate itself refuses on
     # (#107's real report: a name alone reached compose, paying a dossier fetch and
     # an LLM call, before failing the header STRUCTURAL guard on every attempt).
     checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": True,
                              "candidate_contact_present": False})
-    assert _one(checks, "Candidate Profile").state == DEAD
+    assert _one(checks, "Candidate Profile").state == SETUP
 
 
-def test_a_declared_contact_with_blank_name_is_still_dead():
+def test_a_declared_contact_with_blank_name_still_blocks_cv():
     # The mirror-image half-declared shape -- distinct from the name-only case
     # above so a fix that only checks one of the two facts cannot pass both.
     checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": False,
                              "candidate_contact_present": True})
-    assert _one(checks, "Candidate Profile").state == DEAD
+    assert _one(checks, "Candidate Profile").state == SETUP
 
 
 def test_a_fully_declared_identity_is_ok():
@@ -797,7 +894,7 @@ def test_a_fully_declared_identity_is_ok():
     assert _one(checks, "Candidate Profile").state == OK
 
 
-def test_the_dead_message_does_not_nudge_disclosure_of_the_other_fields():
+def test_the_candidate_profile_message_does_not_nudge_disclosure_of_the_other_fields():
     """doctor reports what blocks a command. "Fill in the rest for better apply
     automation" reads as a prompt to supply ethnicity, religion, sexual orientation
     and disability to a tool telling you something is wrong."""
@@ -808,17 +905,26 @@ def test_the_dead_message_does_not_nudge_disclosure_of_the_other_fields():
         assert word not in lowered
 
 
-def test_classify_track_google_unavailable_is_degraded():
+def test_classify_track_google_unavailable_is_setup_and_blocks_track():
+    # SETUP since #243: an uninstalled `google` extra is the same fact as an uninstalled
+    # `render` extra, which this file already calls SETUP. `blocks` is the load-bearing
+    # half -- without it `verdict()` sees no blocker and the default view printed
+    # `Ready now: track replies` on an install where `track run` cannot reach Gmail at
+    # all, with the remedy on neither line.
     c = classify_track_google(available=False,
                               import_error="no module named googleapiclient",
                               token_present=False)
-    assert c.state == DEGRADED
+    assert c.state == SETUP
+    assert c.blocks == ("track",)
     assert "googleapiclient" in c.detail
 
 
-def test_classify_track_google_no_token_is_degraded():
+def test_classify_track_google_no_token_is_setup_and_blocks_track():
+    # A token the user has not minted is the same fact as an unset API key: SETUP, and it
+    # names the sub-app it stops.
     c = classify_track_google(available=True, import_error=None, token_present=False)
-    assert c.state == DEGRADED
+    assert c.state == SETUP
+    assert c.blocks == ("track",)
     assert "token" in c.detail
 
 
@@ -1382,18 +1488,18 @@ def test_sluice_doctor_feeds_a_real_preflight_result_into_the_candidate_check(
     from sluice.core.vault import Vault
 
     _seed_candidate_note(tmp_path, {})           # present but all blank
-    # Both this shape and no note at all classify identically as DEAD (an
+    # Both this shape and no note at all classify identically as SETUP (an
     # undeclared field abstains rather than being inferred, so a blank
     # candidate note and a missing one carry the same facts) -- the assertion
     # below is what actually distinguishes "present but blank" from "absent"
-    # for THIS test, since the DEAD verdict alone cannot tell them apart.
+    # for THIS test, since the SETUP verdict alone cannot tell them apart.
     assert os.path.exists(os.path.join(str(tmp_path), CANDIDATE_PROFILE_RELPATH))
     vault = Vault(str(tmp_path))
     monkeypatch.setattr(Sluice, "store", lambda self: vault)
 
     rep = Sluice().doctor(offline=True)
     store_checks = [c for c in rep.components if c.component == "store"]
-    assert _one(store_checks, "Candidate Profile").state == DEAD
+    assert _one(store_checks, "Candidate Profile").state == SETUP
 
     _seed_candidate_note(tmp_path, {"forenames": "Ada", "email": "ada@example.invalid"})
     rep = Sluice().doctor(offline=True)
@@ -1418,7 +1524,7 @@ def test_sluice_doctor_wires_the_real_token_path_into_track_google(monkeypatch, 
     monkeypatch.setattr("sluice.track.config.load_track_config", lambda *a, **k: trk)
     rep = Sluice().doctor(offline=True)
     track_checks = [c for c in rep.components if c.component == "track"]
-    assert track_checks and track_checks[0].state == DEGRADED
+    assert track_checks and track_checks[0].state == SETUP
     assert "token" in track_checks[0].detail
 
     token_path.write_text("{}", encoding="utf-8")
@@ -1492,6 +1598,13 @@ def test_a_store_whose_preflight_raises_is_reported_dead_not_crashed(monkeypatch
     assert store_checks and store_checks[0].state == DEAD
     assert "cannot stat vault_dir" in store_checks[0].detail
     assert rep.exit_code() == 1
+    # ...and it must say WHAT it costs (#243). `verdict()` reads `blocks`, so a DEAD row
+    # naming nothing changes no bucket: measured without this, a store whose preflight
+    # raises printed `Ready now: scrape job boards, triage leads, send applications,
+    # track replies` above the very row saying it could not be read. The sibling row (a
+    # store that will not CONSTRUCT) had a test for this and this one did not.
+    assert store_checks[0].blocks == ALL_CAPABILITIES
+    assert rep.verdict().ready == []
 
 
 def _write_dossier(dossier_dir, cache_key, *, markdown=None, omit_jd=False):
@@ -1634,16 +1747,18 @@ def test_sluice_doctor_reports_an_unreadable_dossier_dir_instead_of_tracebacking
 
 
 def test_cli_doctor_prints_component_section(monkeypatch, capsys):
+    # `--verbose` since #243: the component TABLE this asserts on is what that flag now
+    # prints. The default view is covered by tests/test_doctor_verdict.py.
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
-    rc = main(["doctor", "--offline"])
+    rc = main(["doctor", "--offline", "--verbose"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "gates" in out
     assert "notice" in out
     # The backend table's own summary line is untouched -- pinned verbatim by
     # test_print_doctor_shows_elapsed_for_a_live_probe -- and a second summary
-    # line for components follows it, counting a fourth state the first line
+    # line for components follows it, counting a state (`notice`) the first line
     # never has to.
     assert " notice\n" in out
 
@@ -1878,7 +1993,7 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
                     EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1],
                     EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]):
         assert subject in by_subject, f"{subject} was erased by an unrelated corpus"
-    assert by_subject["Candidate Profile"].state == DEAD, \
+    assert by_subject["Candidate Profile"].state == SETUP, \
         "the row a `cv run` skipped-config refusal is diagnosed from"
 
 
@@ -2021,7 +2136,7 @@ def test_the_missing_token_row_names_where_the_token_must_go():
     """
     c = classify_track_google(available=True, import_error=None, token_present=False,
                               token_path="/state/sluice/google_token.json")
-    assert c.state == DEGRADED
+    assert c.state == SETUP
     assert "/state/sluice/google_token.json" in c.detail
 
     bare = classify_track_google(available=True, import_error=None, token_present=False)
@@ -2512,10 +2627,13 @@ def test_an_empty_inventory_reports_nothing_through_the_real_wiring(tmp_path,
         f"name unmatched (gates subjects: {sorted(gate_subjects)})")
 
 
-def test_a_citable_corpus_with_entries_but_none_verified_is_still_dead():
+def test_a_citable_corpus_with_entries_but_none_verified_still_blocks_cv():
     """`not verified`, not `not total`. The distinction is a REACHABLE state: two hand-placed
     notes with no `verified:` key give total=2, verified=0, and `cv run` refuses that vault --
-    so grading on the total would call it healthy while the next command exits 2."""
+    so grading on the total would call it healthy while the next command exits 2.
+
+    #243 renamed the state SETUP (nothing verified yet is unsupplied, not broken). What this
+    row pins is `blocks`, which is unchanged and is what the verdict reads."""
     checks = classify_store({
         "vault_exists": True, "baseline_exists": True, "criteria_present": True,
         "experience_total": 2, "experience_verified": 0,
@@ -2524,7 +2642,7 @@ def test_a_citable_corpus_with_entries_but_none_verified_is_still_dead():
         "candidate_name_present": True, "candidate_contact_present": True,
     })
     row = {c.subject: c for c in checks}["Experience Library"]
-    assert row.state == DEAD, "entries present but none verified must still block cv"
+    assert row.state == SETUP, "entries present but none verified must still block cv"
     assert row.blocks == ("cv",)
 
 

@@ -7,7 +7,7 @@ distribution and the command are both `job-sluice`; the import package stays `sl
   job-sluice ingest enable|disable ID           persist an operator on/off override
   job-sluice health                             per-source baseline + retire state
   job-sluice mcp serve [--write]                run the MCP server (stdio transport)
-  job-sluice doctor [--offline] [--strict]      preflight backends + renderer/store/gates
+  job-sluice doctor [--offline] [--strict] [--verbose] [--require CAP]  preflight backends + renderer/store/gates
 
 `run` and `test-source` drive the live Camofox session; the rest are offline.
 enable/disable persist to a small JSON overlay (SLUICE_DISABLED) so an operator
@@ -35,7 +35,7 @@ from sluice.core.config import load_config
 from sluice.core.health import RATE_SIGNALS as HEALTH_RATE_SIGNALS, HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.core.paths import resolve
-from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.core.protocols import ALL_CAPABILITIES, EVIDENCE_KINDS
 from sluice.ingest import base as base_mod   # Search/searches_for; stdlib-only, no browser
 from sluice.ingest import sources as registry
 
@@ -1793,7 +1793,7 @@ def cmd_init(args, config, *, asker=None) -> int:
     # SPLIT rather than worded to straddle both shapes (#244). One line covering both had to say
     # "fill in <path>", and on the shape the documented quickstart actually produces
     # (`--no-input`, which declares nothing, so the write below is gated off) there is no file at
-    # that path to fill in. `doctor` then reports the same note dead and blocking `cv`, so the
+    # that path to fill in. `doctor` then reports the same note under `Needs setup`, blocking `cv`, so the
     # first thing a new user is told to do names a file that does not exist and the second thing
     # confirms it is missing. The run knows which shape it is in, so it says so.
     #
@@ -1838,11 +1838,169 @@ def cmd_mcp_serve(args, config) -> int:
 
 # ── doctor ────────────────────────────────────────────────────────────────────
 def cmd_doctor(args, config) -> int:
+    from sluice.core import doctor as _doctor_mod
     from sluice.core.app import Sluice
 
+    # Validated BEFORE the run, so a typo costs a usage error rather than a full
+    # preflight -- and it raises listing the valid names, the same shape every other
+    # name-keyed lookup here takes (`_select_backend`, `plugins.get`). `main` turns the
+    # ValueError into exit 2, which is a usage failure and deliberately NOT the exit 1
+    # that means "a capability you require is not ready": a monitor must be able to tell
+    # "I asked for something that does not exist" from "the thing I asked for is down".
+    required = _doctor_required(args.require)
+
     report = Sluice(config).doctor(offline=args.offline)
-    _print_doctor(report, offline=args.offline)
-    return report.exit_code(strict=args.strict)
+    # Computed ONCE and handed to the printer, never derived a second time there. The
+    # verdict's closing line is a statement about the exit code, and two derivations of
+    # one fact drift: the first cut of this recomputed nothing and simply keyed the line
+    # on `broken_rows`, which printed "Nothing is broken." while `--strict` exited 1 on a
+    # degraded row -- each half true alone, and together a contradiction on the command
+    # whose entire job is to tell you where you stand.
+    rc = report.exit_code(strict=args.strict)
+    if args.verbose:
+        _print_doctor(report, offline=args.offline)
+    else:
+        _print_doctor_verdict(report, offline=args.offline, strict=args.strict,
+                              exit_code=rc)
+    # AFTER the report, and outside the verbose/default branch, because the answer to
+    # `--require` is the thing the caller ran for: it must print whichever view they chose.
+    unmet = [(name, report.verdict().buckets[name]) for name in required
+             if report.verdict().buckets[name] != _doctor_mod.READY]
+    if unmet:
+        labels = dict(_doctor_mod.CAPABILITIES)
+        print()
+        for name, bucket in unmet:
+            print(f"REQUIRED but not ready: {labels[name]} ({bucket})")
+        rc = 1
+    return rc
+
+
+def _doctor_required(values) -> list:
+    """Flatten and validate `--require` (#243).
+
+    Accepts both spellings people actually type -- `--require triage,cv` and
+    `--require triage --require cv` -- because a cron line wants the first and argparse
+    convention is the second, and supporting one would have someone silently passing a
+    string that matches no capability.
+
+    Capability NAMES, never the display labels: the labels are prose and free to be
+    reworded, so keying a CLI contract on them would break a user's alert to improve a
+    sentence.
+    """
+    names = [n.strip() for value in (values or []) for n in value.split(",") if n.strip()]
+    unknown = [n for n in names if n not in ALL_CAPABILITIES]
+    if unknown:
+        raise ValueError(
+            f"doctor --require: unknown capabilit"
+            f"{'y' if len(unknown) == 1 else 'ies'} {', '.join(unknown)!s}; "
+            f"valid names are {', '.join(ALL_CAPABILITIES)}")
+    # Order preserved and duplicates dropped, so `--require cv,cv` reports once.
+    return list(dict.fromkeys(names))
+
+
+def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
+    """The default report (#243): what the user can DO, then what is left to do.
+
+    The full table is not deleted, only demoted to `--verbose`. It answers "is each
+    component healthy", which is the right question once something is wrong and the
+    wrong one for a person sixty seconds into an install -- who got a screen of rows across
+    four states, several of them `dead`, and a non-zero exit, on the very command `init`
+    told them to run next. Every remedy still printed here, verbatim from the row that knows
+    it; what is dropped is the healthy rows and the state column, neither of which is
+    an instruction.
+
+    The buckets come from `report.verdict()`, which reads the classifiers rather
+    than re-deriving anything, so this can never disagree with `--verbose` about a row.
+    "Ready" means no check blocks that capability, which is doctor's whole claim and not
+    a promise the thing will work: `--offline` never round-trips a backend, and nothing
+    here dials Camofox (`classify_camofox` is deliberately a NOTICE, since a reachability
+    probe is not free). The closing line says the same in the scope that matters for
+    automation -- "nothing is broken", which is exactly what the exit code now means."""
+    import textwrap
+
+    v = report.verdict()
+    print(f"job-sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
+    # Only non-empty buckets get a line. A permanent `Broken: -` reads as a field the
+    # user should be watching; its ABSENCE is the good news, and saying so once at the
+    # bottom is louder than a dash.
+    for label, names in (("Ready now", v.ready), ("Needs setup", v.setup),
+                         ("Degraded", v.degraded), ("Broken", v.broken)):
+        if names:
+            print(f"{label + ':':14}{', '.join(names)}")
+
+    # Degraded rows are listed only under `--strict`, where they decide the exit code. A
+    # keyless fallback is a sanctioned degrade at the default -- `auto` runs primary-only
+    # -- so listing it there would put a permanent to-do beside a state the project calls
+    # correct; the one-line pointer below says it exists without making it a task.
+    # The row headings are deliberately NOT the bucket labels above, all four of them.
+    # "Broken" was both, and so was "Degraded";
+    # and a DEAD row that names no capability -- a broken FALLBACK backend, which is dead
+    # but genuinely does not stop its sub-app, since `auto` runs primary-only -- then
+    # printed `Ready now: <everything>` above a section headed `Broken:`, reading as a
+    # contradiction when both halves were true. A row list is a list of rows; only the
+    # four lines above are claims about capabilities.
+    #
+    # Degraded rows come in two kinds and are shown on different terms. One that names a
+    # capability it stops is printed ALWAYS -- `classify_camofox`'s `CAMOFOX_USER`
+    # mismatch is a run silently driving the wrong cookie profile, which the user must act
+    # on whether or not this run's exit code turns on it. One that names nothing is the
+    # sanctioned keyless-fallback degrade, and appears only under `--strict`, where it
+    # decides the exit code.
+    strict_only = [c for c in v.degraded_rows
+                   if strict and c not in v.degraded_blocking_rows]
+    for heading, rows in (("Still to set up", v.setup_rows),
+                          ("Not working", v.broken_rows),
+                          ("Working, but not properly",
+                           v.degraded_blocking_rows + strict_only)):
+        if not rows:
+            continue
+        print(f"\n{heading}:")
+        for c in rows:
+            print(f"  {_doctor_subject(c)}")
+            # Wrapped, unlike `--verbose`'s table. The renderer's remedy is ~700
+            # characters of genuine instruction (install the extra, then the native
+            # libraries, then the macOS DYLD step, or switch renderer), and on one line
+            # it reads as a wall rather than as steps. The table keeps one row per line
+            # because its columns are the point; this view has no columns to preserve.
+            # 76 leaves room for the 6-space indent inside a conventional 80.
+            #
+            # Both `break_*` are OFF, and neither is cosmetic: at the defaults this
+            # wrap split the INSTALL.md url across two lines at its `#system-` fragment
+            # and `pip install 'job-sluice[render]'` at its hyphen, so the one row whose
+            # entire remedy is "run this, then read that" printed a command and a link
+            # that could not be copied. A long token now overflows 76 instead, which
+            # costs a ragged edge and keeps the remedy usable -- the trade this whole
+            # view exists to get right.
+            for line in textwrap.wrap(c.detail, width=76, break_long_words=False,
+                                      break_on_hyphens=False) or [""]:
+                print(f"      {line}")
+
+    print()
+    # Keyed on the exit code this command actually returns, so the sentence and the shell's
+    # `$?` cannot disagree. Deliberately NOT a count of anything: `--strict` fails on
+    # `degraded` and the plain run does not, so any single number would be wrong for one
+    # of them.
+    if v.broken_rows:
+        print("Something you configured is not working -- the rows above say what.")
+    elif exit_code:
+        print("Nothing is broken, but --strict fails on the degraded rows above.")
+    else:
+        print("Nothing is broken.")
+        # A REMAINDER, and worded as one. `quiet` excludes the degraded rows already
+        # printed above, so phrasing it as a total ("N degraded") contradicted the screen
+        # it sat on -- three degraded rows, one listed, and a footnote saying two.
+        quiet = [c for c in v.degraded_rows if c not in v.degraded_blocking_rows]
+        if quiet:
+            print(f"({len(quiet)} more degraded, not listed, which --strict also fails on.)")
+    print("Run `job-sluice doctor --verbose` for every check.")
+
+
+def _doctor_subject(check) -> str:
+    """The name to print for either row type. A BackendCheck is identified by its
+    provider and model (a `subject` would be ambiguous across roles), a ComponentCheck
+    by the subject its classifier already chose."""
+    target = getattr(check, "target", None)
+    return f"{target.provider} {target.model}" if target else check.subject
 
 
 def _print_doctor(report, *, offline) -> None:
@@ -1858,7 +2016,7 @@ def _print_doctor(report, *, offline) -> None:
     questions -- one backend can serve six roles, one component check is one
     fact -- so a single merged count would blur "how many distinct backends
     are broken" into "how many lines printed"."""
-    from sluice.core.doctor import DEAD, DEGRADED, NOTICE, OK, format_roles
+    from sluice.core.doctor import DEAD, DEGRADED, NOTICE, OK, SETUP, format_roles
 
     print(f"job-sluice doctor  ({'offline' if offline else 'live round-trip'})\n")
     for c in report.checks:
@@ -1869,7 +2027,8 @@ def _print_doctor(report, *, offline) -> None:
     n_ok = sum(1 for c in report.checks if c.state == OK)
     n_deg = sum(1 for c in report.checks if c.state == DEGRADED)
     n_dead = sum(1 for c in report.checks if c.state == DEAD)
-    print(f"\n{n_ok} ok, {n_deg} degraded, {n_dead} dead")
+    n_setup = sum(1 for c in report.checks if c.state == SETUP)
+    print(f"\n{n_ok} ok, {n_deg} degraded, {n_dead} dead, {n_setup} setup")
 
     if report.components:
         print()
@@ -1880,7 +2039,9 @@ def _print_doctor(report, *, offline) -> None:
         c_deg = sum(1 for c in report.components if c.state == DEGRADED)
         c_dead = sum(1 for c in report.components if c.state == DEAD)
         c_notice = sum(1 for c in report.components if c.state == NOTICE)
-        print(f"\n{c_ok} ok, {c_deg} degraded, {c_dead} dead, {c_notice} notice")
+        c_setup = sum(1 for c in report.components if c.state == SETUP)
+        print(f"\n{c_ok} ok, {c_deg} degraded, {c_dead} dead, {c_setup} setup, "
+              f"{c_notice} notice")
 
 
 # ── shell-completion candidate providers ─────────────────────────────────────
@@ -2180,6 +2341,15 @@ def _build_parser() -> argparse.ArgumentParser:
                         help="config-only checks; no round-trip")
     doctor.add_argument("--strict", action="store_true",
                         help="exit non-zero on degraded (e.g. a keyless fallback) too")
+    doctor.add_argument("--verbose", "-v", action="store_true",
+                        help="print every check, not just the verdict")
+    doctor.add_argument("--require", action="append", metavar="CAPABILITY",
+                        help="exit non-zero unless these are ready, whatever the reason "
+                             "(comma-separated, repeatable): "
+                             + ", ".join(ALL_CAPABILITIES)
+                             + ". NB 'ready' means nothing doctor CHECKS is blocking it "
+                               "-- an --offline run never round-trips a backend and "
+                               "nothing ever dials Camofox")
     doctor.set_defaults(func=cmd_doctor)
     return p
 

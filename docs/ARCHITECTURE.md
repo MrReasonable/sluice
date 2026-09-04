@@ -532,8 +532,9 @@ whichever neighbour it was written next to:
    browser fetch for both halves and, for the corpus half, two backend calls before the
    gate rejected the result. `doctor` reports the same two facts and the two MUST agree,
    which is why `Vault.preflight`'s `baseline_exists` is `.strip()`-based rather than
-   existence-only and why `core/doctor.py` grades an empty citable corpus DEAD with
-   `blocks=("cv",)`.
+   existence-only and why `core/doctor.py` grades an empty citable corpus SETUP with
+   `blocks=("cv",)` -- `blocks` is the load-bearing half of that agreement, and the one
+   the state rename in #243 deliberately left alone.
 
    The gate has two tiers
    (#167). The HARD tier -- `cv/validate.py`'s fabrication/citation checks,
@@ -1914,14 +1915,14 @@ Four points in the config are the seams for pluggable adapters.
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
 seam: it enumerates every configured backend (primary and fallback, per sub-app) and
-classifies each as `ok`/`degraded`/`dead`, then does the same for a second table of
+classifies each as `ok`/`degraded`/`dead`/`setup`, then does the same for a second table of
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
 LLM spend rather than after), the store's on-disk artefacts (the vault directory,
 the baseline CV -- present AND non-empty, matching the refusal below rather than mere
 existence -- the Judging Profile, a verified/pending row for each of the three evidence
 corpora (#164: Experience Library, Skills Inventory, STAR Stories; NOTICE, except that a
-CITABLE corpus with nothing verified is DEAD and blocks `cv`, because #242 makes `cv run`
+CITABLE corpus with nothing verified is SETUP and blocks `cv`, because #242 makes `cv run`
 refuse exactly that vault -- a NOTICE there would call the install fine about the thing
 that stops the next command),
 and -- #133/#107 -- the Candidate Profile note's own declared name/contact, checked
@@ -1949,9 +1950,10 @@ otherwise full -- the store's Candidate
 Profile row, track/Google, camofox and every other sub-app's gate rows are unrelated to
 `cv_cfg` and still run. Backend
 classification is role-aware -- a keyless fallback degrades (the sanctioned
-primary-only path, exit 0), while a keyed-but-broken backend is `dead` regardless of
+primary-only path, exit 0), a keyless PRIMARY is `setup` (see the state model below),
+and a keyed-but-broken backend is `dead` regardless of
 role, the silently-non-functional fallback the tool exists to catch. Component
-classification adds a fourth state, `notice`, for the gate-posture rows -- and, since
+classification adds a fifth state, `notice`, for the gate-posture rows -- and, since
 #165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
 verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
 user's own text, since a report is returned whole to MCP clients. #168's Task 10 added a
@@ -1971,7 +1973,119 @@ undeclared-role branch (#245): the sweep is by runtime `isinstance`, so a user's
 put a list on a setting that takes a scalar, and that is a wrong-shaped VALUE rather than
 an abstaining gate -- measured, `track.gmail_extra_query` as a list raises `TypeError` in
 `track/engine.py`. It is DEGRADED, so `--strict` sees it; the developer case of a real
-gate shipping without a role cannot reach here, because the build fails first. Live round-trip by default; `--offline` for a
+gate shipping without a role cannot reach here, because the build fails first.
+
+**The `setup` state, and the verdict that reads it (#243).** Five states, not four: `setup`
+is a component the user has not SUPPLIED yet, as distinct from one they supplied that does not
+work. The split matters because `doctor` is the command `init` tells a new user to run next,
+and on a fresh install every dead row was the former -- no baseline CV, no verified evidence,
+no Candidate Profile, no `render` extra, no vault -- so the happy path printed a screenful of
+rows across four states, several of them `dead`, and exited 1. The reassurance that this was expected had to
+live in README prose, because the exit code said otherwise.
+
+The rule is "did they give us something broken, or nothing at all". An unset API key is `setup`
+and a key that fails its round-trip is `dead`. A `claude` CLI not on `$PATH` is `setup` when
+`claude_max_path`/`compose_claude_path` hold the shipped bare `claude`, and `dead` when the user
+NAMED a path that is not there -- a typo or a moved binary is something they supplied. That check
+runs in BOTH modes; while it sat inside `classify`'s `if offline:` the two disagreed about one
+fact, offline calling it `setup` while a live run skipped it, attempted the probe anyway and
+reported `probe_error` -- so a fresh install with no `claude` got `Broken: triage leads, tailored
+CVs, track replies` from plain `job-sluice doctor`, and only `--offline` told the truth.
+
+A vault draws the same explicit-vs-default line: absent at the default `./vault` is `setup`
+(nobody has run `init` yet), absent at a path the user configured is `dead`, because a named
+directory that is gone is an unmounted drive or a renamed Obsidian folder and it stops every
+sub-app. `Vault` records which case it is at construction (`vault_dir_is_default`), since that is
+the last moment the distinction exists; `core/protocols.py` states the obligation for a second
+store, and a store that stays silent gets the louder reading.
+
+A missing or empty baseline CV is `setup`. An UNREADABLE one is not a `baseline_rel` row at all
+-- `Vault.preflight` lets the `PermissionError` propagate, deliberately, rather than reading it
+as absent, so the whole store report collapses to one `store`/`preflight` `dead` row carrying the
+real error text. (A baseline that is a symlink out of the vault reads `ok`: `preflight` reads
+through it. The symlink refusals are on the evidence directories, not here.)
+
+The renderer fork is DECLARED by the seam, not inferred: `core/protocols.py`'s
+`RenderDependencyError` (a `RenderError` subclass, so every existing `except RenderError` still
+catches it) means "something I need is not installed", and `core/app.py` asks
+`isinstance(e, RenderDependencyError)` and nothing else. The first cut asked
+`isinstance(e.__cause__, ImportError)`, which was wrong three ways: it missed the case that
+actually fires in the field (weasyprint importing with the extra present but cairo/pango absent
+raises `OSError`, which `renderers/template.py` calls "the single likeliest real failure"), so the
+documented macOS install got exit 1 under a heading saying something it had configured was broken;
+widening that tuple would have mirrored one renderer's `except` clause, letting that renderer
+silently change doctor's verdict, and would have swept in the packaged-template read one layer
+down, whose own message says "reinstall sluice"; and a renderer raising from inside an `except`
+with no `from` clause has `__cause__ = None` (implicit chaining sets `__context__`), so it
+would be classified broken however plainly its message said "not installed".
+
+`setup` never reaches `exit_code`, under `--strict` or otherwise, the same by-construction
+exclusion `notice` has (the states the loop tests for, not a filter over a wider set). So
+`doctor` exits 0 when nothing is broken and 1 when something is, which is what an alert wants to
+fire on -- exit 0 means "nothing is broken", NOT "everything works", and the verdict above the
+rows is what says what is still needed.
+
+`DoctorReport.verdict()` is that verdict. It maps the rows onto `CAPABILITIES` -- the five
+pipeline sub-apps with the phrase a user would recognise -- and buckets each capability as READY
+(nothing blocks it), SETUP (everything blocking it is unsupplied), DEGRADED (it runs, but
+something the user configured is not doing its job) or BROKEN (at least one blocker is supplied
+and does not work), worst-of wins. DEGRADED sits above SETUP because an unsupplied thing does not
+run and says so, while a misconfigured one runs and quietly does the wrong thing.
+
+What a row blocks is `blocks`, and it is read on every blocking state rather than on two of them.
+Reading it on `dead`/`setup` alone was measurably wrong in both directions: `classify_camofox`'s
+`CAMOFOX_USER` mismatch is DEGRADED and carries `blocks=("ingest",)` -- the 2026-08-15 incident
+where a run drove the wrong cookie profile and a board returned zero rows for days -- and printed
+`Ready now: scrape job boards` directly above a `--verbose` row saying `blocks: ingest`, with the
+remedy shown nowhere; and, the other way, a DEAD row carrying NO `blocks` changes no bucket, so an
+unbuildable store printed four capabilities as ready. Those two rows in `core/app.py` now name
+`ALL_CAPABILITIES`, derived from the roster rather than spelled out. A DEGRADED row with an empty
+`blocks` still blocks nothing, which is what keeps the sanctioned keyless-fallback degrade out of
+the verdict entirely.
+
+The verdict re-derives nothing: it reads the states the classifiers already assigned, so the
+default view and `--verbose` cannot disagree about a row. Backend rows block only where the target
+is that sub-app's PRIMARY -- a shared target that is triage's primary and cv's fallback, with its
+key unset, stops triage and merely degrades cv, which is what `Sluice.backend()`'s `auto` role
+does at runtime.
+
+`CAPABILITIES` is the one hand-written roster here (a label is not derivable: `cv` is the package
+name, "tailored CVs" is what the user came for, and nothing in `sluice/` enumerates the sub-apps
+to derive the keys from). Its correctness is held two ways. Membership is enforced at RUNTIME by
+`ComponentCheck.__post_init__`, which refuses a `blocks` naming anything outside the roster -- the
+same fail-loudly-at-construction rule unknown backend and adapter names follow, and it sees every
+row wherever it is minted. Reachability -- that no label sits permanently in `Ready now` because
+nothing can ever block it -- is swept from the source across every module under `sluice/` by
+`tests/test_doctor_verdict.py`. The membership half used to be that sweep too, keyed on
+`core/doctor.py` alone, and it certified only some of the rows: `core/app.py` mints them as well.
+
+`doctor --require <capability>` is the machine-readable half of the same verdict, and the
+answer to what the exit-code change took away from automation: a `setup` row does not fail the
+build, so an install that stops working for a reason sluice reads as *unsupplied* -- a cron
+unit whose `PATH` lacks `~/.local/bin`, an API key not exported outside an interactive shell --
+exits 0. Naming a capability exits 1 the moment it is anything but READY. It compares against
+that one bucket rather than listing the failing ones, so a fifth bucket cannot silently start
+passing. It takes capability KEYS and never the display labels, which are prose and free to be
+reworded; `Verdict.buckets` is the name-keyed map it reads, written in the same pass as the
+four label lists so the two cannot disagree. An unknown name is a usage error (exit 2), raised
+BEFORE the preflight runs and listing the valid names -- distinct on purpose from the exit 1
+that means a capability is down, because a monitor must be able to tell those apart.
+
+The roster itself lives in `core/protocols.py` rather than in `core/doctor.py` where its only
+consumer is. That is measured, not tidiness: `cli.py` needs the names at PARSER-BUILD time to
+list them in `--require`'s help, `_build_parser()` runs on every invocation, and importing
+`core.doctor` there costs ~36ms and drags in `core.backends` -- one of the three families
+`cli.py` deliberately keeps off the critical path. `core/protocols.py` was already imported at
+`cli.py`'s module scope, costs ~3ms, and is where the rest of the cross-module vocabulary lives.
+Hand-listing the names in the help string instead would be the stale-roster trap this repo keeps
+walking into.
+
+`cli.py` prints the verdict by DEFAULT and the two tables under `--verbose`. The table is
+demoted, not deleted: it answers "is each component healthy", which is the right question once
+something is wrong and the wrong one sixty seconds into an install. Every remedy still prints,
+verbatim from the row that knows it -- doctor no longer appends a generic "and here is what to
+do" blurb to a renderer error, which used to restate the raise site's own remedy and made that
+one row 1,207 characters. Live round-trip by default; `--offline` for a
 config-only check (the component checks were already local, so `--offline` changes
 nothing about them); `--strict` to also fail on degraded. See `docs/USAGE.md` for every
 flag `doctor` and the rest of the CLI take, and `docs/CONFIGURATION.md` for every config
