@@ -153,13 +153,29 @@ def doctor(sluice: Sluice, offline: bool = True) -> dict:
     default: an agent calling this tool casually must not trigger unbudgeted live
     spend. Passing `offline=False` makes a REAL live round-trip against every
     configured backend -- real network calls, real cost/latency, possibly an SSH
-    hop for a remote claude-max host -- not a config-only check. `exit_code` is
-    `DoctorReport.exit_code(strict=False)`, the CLI's own default -- the full
-    report is already in the response, so an agent can apply its own strictness
-    policy over the raw checks."""
+    hop for a remote claude-max host -- not a config-only check.
+
+    `exit_code` is `DoctorReport.exit_code(strict=False)`, the CLI's own default -- the
+    full report is already in the response, so an agent can apply its own strictness
+    policy over the raw checks. Read it as "is anything BROKEN", not "is everything
+    working" (#243): a row in state `setup` is something the user has not supplied yet --
+    no baseline CV, no verified evidence, no API key, the `render` extra not installed --
+    and it never contributes to `exit_code`, so a perfectly ordinary half-configured
+    install answers 0 while still being unable to run `cv`. `degraded` contributes only
+    under strictness the caller applies itself.
+
+    `verdict` is what to read instead when the question is "what can this install
+    actually DO right now". It buckets the five pipeline capabilities as ready / setup /
+    degraded / broken and carries the rows behind the last three, so an agent gets the
+    same answer the CLI prints rather than having to re-derive it from `checks` and
+    `components` -- and, being derived by the same code, cannot disagree with it. It is
+    included explicitly because `verdict()` is a METHOD: `dataclasses.asdict(report)`
+    walks fields only and would silently omit it.
+    """
     report = sluice.doctor(offline=offline)
     out = dataclasses.asdict(report)
     out["exit_code"] = report.exit_code(strict=False)
+    out["verdict"] = dataclasses.asdict(report.verdict())
     return out
 
 

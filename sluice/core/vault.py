@@ -579,6 +579,14 @@ class Vault:
         # decided in `stores/vault.py:_make`, and nothing here reorders that. No `abspath` --
         # a relative vault is legitimate and documented (`./vault` is the default).
         self.dir = os.path.expanduser(dir or os.environ.get("VAULT_DIR", _DEFAULT_VAULT))
+        # (#243) Recorded here because here is the only place that still KNOWS. After this
+        # line `self.dir` is just a path, and a path cannot say whether a human chose it.
+        # `doctor` needs the distinction to tell a pre-`init` install (no vault configured
+        # yet -- an unfinished setup step) from a vault that has MOVED or been deleted (a
+        # named directory that is gone -- a fault that stops every sub-app). Both look
+        # identical on disk. Reported as a FACT by `preflight()`; `core/doctor.py` turns it
+        # into the verdict, per this seam's facts-not-verdicts rule.
+        self._dir_is_default = not (dir or os.environ.get("VAULT_DIR"))
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
         self.baseline_rel = baseline_rel
         self._name_max_cache: int | None = None
@@ -2198,7 +2206,11 @@ class Vault:
         are -- `read_candidate_profile()` never raises on a missing note (an
         all-blank CandidateProfile), so no extra try/except is needed here."""
         if not _is_dir(self.dir):
-            return {"vault_exists": False}
+            # Paired with the flag, deliberately: on its own `vault_exists: False` cannot
+            # distinguish "no vault configured yet" from "the configured vault is gone",
+            # and those have opposite verdicts (see core/doctor.py:classify_store).
+            return {"vault_exists": False,
+                    "vault_dir_is_default": self._dir_is_default}
         try:
             # `.strip()`, not mere existence, and matching `criteria_present` below rather than
             # the older existence-only reading. `cv/engine.py`'s `missing_prerequisites`
@@ -2261,6 +2273,13 @@ class Vault:
         return {
             "vault_exists": True,
             "baseline_exists": baseline_exists,
+            # (#243) Compared by VALUE, not recorded at construction like
+            # `vault_dir_is_default` above -- and the difference is forced, not stylistic.
+            # `stores/vault.py:_make` always passes `config.baseline_rel`, which always has
+            # a value, so "was this argument supplied?" is True for everyone and would
+            # answer nothing. What distinguishes the cases here is whether the value is
+            # still the shipped one.
+            "baseline_rel_is_default": self.baseline_rel == _MYCV_BASELINE,
             "criteria_present": bool(self.read_criteria().strip()),
             **counts,
             "candidate_name_present": bool(full_name(profile).strip()),

@@ -85,12 +85,29 @@ a job board (it is their account, over an interactive browser), and minting the 
 
 ## The sequence
 
-Run `job-sluice doctor --offline` after each step that changes state. It names every component it
-considers dead and which command each gap blocks, which is how you check your own work. On a fresh
-install it reports several dead components and **exits 1 by design**; that is a to-do list rather
-than a failure, so do not treat the exit code as an error until the list is empty. Deliberately no
-number: how many are dead depends on which channel the user installed from, since a packaged
-install brings the renderer's native libraries and a bare `pip install` does not.
+Run `job-sluice doctor --offline` after each step that changes state. Its default output is a
+verdict -- which of the five things sluice does are ready, which are waiting on something, which
+are DEGRADED (running, but something the user configured is not doing its job) and which are
+broken -- followed by the remedy for every row that is not ready. That is how you check your own
+work. Read the `Degraded` line as carefully as the others: it does not fail the exit code, but
+it means a capability is quietly doing the wrong thing, which is the harder failure to notice.
+
+**Read the exit code (#243).** A fresh install **exits 0** with several rows under `Needs setup`:
+those are things the user has not supplied yet, which is a to-do list rather than a failure. On a
+PLAIN `job-sluice doctor` -- no `--strict`, no `--require` -- a **non-zero exit means something
+that WAS configured is broken**: a renderer name that is not registered, a template that is not a
+file, a key that fails its round-trip. Stop and fix that rather than continuing.
+
+That reading is specific to the plain invocation, and the flags do NOT mean the same thing, so do
+not carry it across: `--strict` also exits 1 on a `degraded` row, which is a sanctioned state
+rather than a fault; `--require` exits 1 whenever a named capability is not ready, which includes
+the perfectly ordinary "not set up yet"; and a `--require` naming a capability that does not exist
+exits **2**, a usage error in your own command rather than anything about the install. Treating any
+of those three as "the user's install is broken" would send you fixing something that is not wrong.
+
+Deliberately no number of setup rows: how many there are depends on which channel the user
+installed from, since a packaged install brings the renderer's native libraries and a bare `pip
+install` does not. `--verbose` prints every check as a table when you need the detail.
 
 ### 0. Confirm the install
 
@@ -133,7 +150,7 @@ answers in their words. Leave the neutral text where they had no answer.
 ### 3. Candidate Profile: interview, then write
 
 `init` writes this only when answered interactively, so a `--no-input` run leaves it absent and
-`doctor` reports it dead and blocking `cv`. Ask for the name and contact details that should head
+`doctor` reports it `setup` and blocking `cv`. Ask for the name and contact details that should head
 their CV, then fill it in. This is rule 3 territory: nothing here is guessable.
 
 ### 4. Baseline CV
@@ -163,7 +180,7 @@ corpus costs nothing, but it also composes nothing until the human verifies at l
 
 `claude-max` is the shipped default and needs no API key, just the `claude` CLI on `$PATH`.
 Otherwise ask which provider they want and where the key should live. Never write a key into the
-config file: it belongs in the environment. `doctor` reports which provider fills each role.
+config file: it belongs in the environment. `job-sluice doctor --verbose` reports which provider fills each role.
 
 ### 7. Camofox, if they want real leads
 
@@ -209,16 +226,21 @@ End by telling them, concretely:
 
 - what you set up, and what you deliberately left unset because they did not answer
 - that `job-sluice experience verify` is waiting for them, and nothing composes until it runs
-- what `doctor` still reports dead, and which command each one blocks
+- what `doctor` still lists under `Needs setup` or `Degraded`, and which command each one
+  blocks, if any -- not every row blocks something. A missing Judging Profile is `degraded`
+  and blocks nothing: triage falls back to the shipped neutral criteria rather than stopping
 - that `track` is not set up, and needs a Google OAuth token they mint themselves
 
 ---
 
 ## Things that will look like bugs and are not
 
-- **`doctor` exits 1 on a fresh install.** Dead components are the expected starting state,
-  and how many there are depends on the install channel, so do not treat any particular
-  count as the healthy one.
+- **`doctor` lists several things under `Needs setup` on a fresh install, and exits 0.**
+  That is the expected starting state: a `setup` row is something the user has not supplied
+  yet, not a fault. How many there are depends on the install channel, so do not treat any
+  particular count as the healthy one. On a plain `doctor` a non-zero exit means something they
+  *did* configure is broken — that one is worth stopping for. Under `--strict` or `--require` it
+  does not carry that meaning: see "Read the exit code" above before acting on it.
 - **Most gate rows read `abstaining (empty)`.** That is rule 1 working: no lead is being
   discarded, and nothing failed to configure. Not all of them say that, and the ones that do not
   are the ones to leave alone. `dossier_allow_hosts` reads `no exceptions granted (empty)` because

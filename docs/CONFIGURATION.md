@@ -232,7 +232,10 @@ wiring the entrypoint would otherwise set up. An empty or whitespace-only value 
 ignored rather than read as "run it locally": exporting a variable to the empty string is how a
 shell says nothing, and treating that as an instruction would silently undo a configured host.
 If you need the three to differ, leave these unset and use the config keys. A keyless *fallback* backend is a sanctioned degraded state
-(`doctor` reports it `degraded`, `--strict` fails on it); a keyless *primary* backend is `dead`.
+(`doctor` reports it `degraded`, `--strict` fails on it); a keyless *primary* backend is `setup`
+— it stops that sub-app, and `doctor` says so, but an unset key is something you have not
+supplied rather than something broken, so it does not fail the exit code (#243). A key that IS
+set and fails its round-trip is `dead`, and does.
 
 **Under the container image** those three XDG roots are pre-set to `/app/config`, `/app/state`
 and `/app/cache`, spelled absolutely because a relative `XDG_*` value is ignored with a warning,
