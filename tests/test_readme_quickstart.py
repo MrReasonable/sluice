@@ -54,6 +54,7 @@ merely offline, and both are narrow and stated:
 """
 
 import os
+import pathlib
 import re
 import shlex
 import sys
@@ -67,15 +68,22 @@ from sluice.cli import main
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _README = os.path.join(_ROOT, "README.md")
 
-# The fence that carries the sample lead note, under `## What you end up with`. Step 4 tells the
-# reader to save exactly this file, so the test writes exactly this file: if the sample note ever
-# stops being valid triage input, the instruction that depends on it goes red rather than the
-# reader discovering it.
+# The fence that carries the sample lead note, under `## What you end up with`. Since #241 the
+# reader no longer WRITES this file -- `leads add` does -- so it is no longer a precondition to
+# be staged. It is now the OPPOSITE: an expected value, compared against the note the command
+# actually wrote (test_the_sample_note_is_what_leads_add_actually_writes). That inversion is
+# what makes the block checkable at all. The old staging read the fence and wrote it to disk,
+# so the fence could say anything and still "reproduce" -- measured on this very branch, README
+# had been missing `role_type_source` since #223 added it and every guard here stayed green.
 _NOTE_FENCE = re.compile(r"^```markdown\n(?P<body>.*?)^```", re.M | re.S)
 
-# Step 4 states the destination in backticks. Read it from the prose rather than hardcoding it,
-# so a change to the documented path moves the test with it instead of past it.
-_NOTE_PATH = re.compile(r"^Save the note from .*? as\n`(?P<path>[^`]+)`", re.M)
+# `first_seen`/`last_seen` are stamped with the run date, so the README's captured values can
+# only ever be stale. Blanked on BOTH sides before comparing -- the key must still be present
+# and in position, which is the part that can actually drift. The date SHAPE is matched
+# explicitly rather than with `.*`: a permissive blank hides a change to the value's form as
+# well as its content (measured -- quoting the dates in `_render_new` left this green), and
+# an unmatched line simply survives into the comparison, so tightening cannot mask a drift.
+_DATED = re.compile(r"^(first_seen|last_seen): \d{4}-\d{2}-\d{2}$", re.M)
 
 _QUICKSTART = re.compile(r"^## Quickstart\s*$(?P<body>.*?)(?=^## )", re.M | re.S)
 _CONSOLE = re.compile(r"^```console\n(?P<body>.*?)^```", re.M | re.S)
@@ -84,6 +92,33 @@ _CONSOLE = re.compile(r"^```console\n(?P<body>.*?)^```", re.M | re.S)
 def _read(rel):
     with open(rel, encoding="utf-8") as fh:
         return fh.read()
+
+
+def _join_continuations(first, rest):
+    """Splice a `\\`-continued shell command into one, returning (command, leftover lines).
+
+    A wrapped invocation is ONE command. Without joining, a block silently truncates at
+    the first line and then pins a command the README does not actually tell anyone to
+    run -- worse than not checking it, because it reads as coverage.
+
+    The splice is RAW: the backslash and the newline go, and NOTHING is put in their
+    place, because that is exactly what the shell does. An earlier cut rstripped each
+    side and inserted a space. That is indistinguishable on this README -- the
+    continuation lines are indented, so the tokens separate either way, and every test
+    here stayed green under both -- and wrong the moment a continuation falls INSIDE a
+    quoted argument, where the shell joins the halves with nothing between them. Hence
+    `test_a_continuation_inside_a_quoted_argument_splices_the_way_the_shell_does`, which
+    is the only thing in this file that can tell the two apart: the fix is unfalsifiable
+    against the real page.
+
+    Trimming happens ONCE, on the finished command, so an inner line's own leading
+    whitespace survives into the join the way the shell leaves it.
+    """
+    command, rest = first, list(rest)
+    while command.endswith("\\"):
+        assert rest, f"a Quickstart command ends in a continuation with nothing after it: {command!r}"
+        command = command[:-1] + rest.pop(0)
+    return command.strip(), rest
 
 
 def _quickstart_blocks():
@@ -100,7 +135,8 @@ def _quickstart_blocks():
         lines = fence.group("body").rstrip("\n").split("\n")
         assert lines[0].startswith("$ "), (
             f"a Quickstart console block does not open with a `$ ` command line: {lines[0]!r}")
-        blocks.append((lines[0][2:].strip(), lines[1:]))
+        command, rest = _join_continuations(lines[0][2:], lines[1:])
+        blocks.append((command, rest))
     return blocks
 
 
@@ -188,21 +224,12 @@ def quickstart_env(tmp_path, monkeypatch):
 def test_every_quickstart_transcript_reproduces(quickstart_env, capsys):
     """Run the Quickstart the way a reader does, and hold each capture to what it prints."""
     blocks = _quickstart_blocks()
-    note_path = _NOTE_PATH.search(_read(_README))
-    assert note_path, (
-        "step 4 no longer states the sample note's destination in the documented shape, so this "
-        "test cannot place the lead its transcript depends on")
-    note_body = _NOTE_FENCE.search(_read(_README))
-    assert note_body, "README's `## What you end up with` sample note fence did not parse"
 
+    # No staging step any more. Step 4's precondition used to be "write this note file by hand",
+    # performed here on the reader's behalf; since #241 it is `leads add`, which is itself one of
+    # the roster's commands and runs in this same loop. So the chain is now genuinely end to end:
+    # step 1's config decides where the vault is, step 4a writes into it, step 4b reads it back.
     for command, expected in blocks:
-        # Step 4's own precondition, performed exactly as the README instructs the reader to.
-        if command.startswith("job-sluice triage"):
-            dest = os.path.join(os.getcwd(), note_path.group("path"))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "w", encoding="utf-8") as fh:
-                fh.write(note_body.group("body"))
-
         argv = shlex.split(command)
         assert argv[0] == "job-sluice", f"unexpected program in a Quickstart block: {argv[0]!r}"
         capsys.readouterr()
@@ -219,6 +246,54 @@ def test_every_quickstart_transcript_reproduces(quickstart_env, capsys):
             f"  real output was:\n" + "\n".join(f"    {ln}" for ln in actual[reached:][:25]))
 
 
+def test_the_sample_note_is_what_leads_add_actually_writes(quickstart_env, capsys):
+    """README shows a lead note and calls it "exactly as written". Hold it to that.
+
+    Before #241 the reader hand-authored this block, so the test could only STAGE it and check
+    triage accepted it -- which certifies nothing about the block's own accuracy, because the
+    fence was both the input and the claim. Now `leads add` writes the note, so the fence is a
+    prediction the store can be held to, and the comparison runs the other way.
+
+    Measured while writing this: README's block had been missing `role_type_source` since #223
+    added that key to every note `_render_new` writes, and nothing here or in
+    tests/test_docs_claims.py could see it -- the noun-shaped sweeps check that keys named in
+    prose exist, never that a shown artefact matches a produced one.
+
+    Whole-block and line-by-line, not a spot check on keys someone thought of: an ADDED key is
+    the drift that actually happened, and a per-key sweep is blind to it by construction.
+    """
+    blocks = dict(_quickstart_blocks())
+    init = next(c for c in blocks if c.startswith("job-sluice init"))
+    add = next(c for c in blocks if c.startswith("job-sluice leads add"))
+
+    def _md():
+        return set(pathlib.Path(os.getcwd()).rglob("*.md"))
+
+    capsys.readouterr()
+    assert main(shlex.split(init)[1:]) == 0, f"`{init}` did not exit 0"
+    # DIFFERENCED against the post-init tree rather than globbed absolutely: `init` writes a
+    # Judging Profile of its own, and naming the lead's expected path here would hardcode the
+    # layout the store is free to decide (`lead_layout`). The difference is exactly the file
+    # THIS command created, whatever the layout.
+    before = _md()
+    capsys.readouterr()
+    assert main(shlex.split(add)[1:]) == 0, f"`{add}` did not exit 0"
+
+    written = sorted(_md() - before)
+    assert len(written) == 1, (
+        f"expected `leads add` to leave exactly one new note; found {[str(w) for w in written]}")
+
+    shown = _NOTE_FENCE.search(_read(_README))
+    assert shown, "README's `## What you end up with` sample note fence did not parse"
+    expected = _DATED.sub(r"\1: <date>", shown.group("body")).rstrip("\n").split("\n")
+    actual = _DATED.sub(r"\1: <date>",
+                        written[0].read_text(encoding="utf-8")).rstrip("\n").split("\n")
+    assert actual == expected, (
+        "README's sample lead note is not what `job-sluice leads add` writes.\n"
+        "  README shows:  " + repr(expected) + "\n"
+        "  the store wrote: " + repr(actual))
+
+
 def test_the_quickstart_roster_is_what_this_file_thinks_it_is(quickstart_env):
     """Pin the SCOPE, because a parse that finds nothing satisfies every assertion above.
 
@@ -227,19 +302,35 @@ def test_the_quickstart_roster_is_what_this_file_thinks_it_is(quickstart_env):
     floor on how many EXACT (non-elided) lines each one actually pins.
     """
     blocks = _quickstart_blocks()
-    assert [c for c, _ in blocks] == [
+    # Compared as ARGV, not as raw strings. The splice is deliberately raw (see
+    # `_quickstart_blocks`), so a `\`-continued command carries the README's own
+    # indentation inside it; pinning that verbatim would make this tripwire fire on a
+    # cosmetic reflow while saying "the Quickstart's commands have changed". argv is
+    # the claim that matters -- it is what the reader's shell builds and what this file
+    # actually executes -- and it stays EXACT inside quotes, so a changed value still
+    # reddens.
+    expected = [
         "job-sluice init --no-input --vault ./vault",
         "job-sluice doctor --offline",
         "job-sluice ingest list-sources",
+        'job-sluice leads add --url https://example.invalid/jobs/1234 '
+        '--company "Example Systems" --role "Senior Engineer" '
+        '--location "Example City" --salary "\u00a3500/day" --role-type contract',
         "job-sluice triage run --no-llm",
-    ], f"the Quickstart's commands have changed: {[c for c, _ in blocks]}"
+    ]
+    assert [shlex.split(c) for c, _ in blocks] == [shlex.split(c) for c in expected], (
+        f"the Quickstart's commands have changed: {[c for c, _ in blocks]}")
 
     exact = {c: sum(1 for ln in exp if ln.strip() and not ln.endswith("...")) for c, exp in blocks}
     # Floors, not equalities: adding a line to a capture must not fail this, dropping the block's
     # substance must. Each floor is under the count measured when this file was written.
+    add_cmd = next(c for c in exact if c.startswith("job-sluice leads add"))
     for command, floor in (("job-sluice init --no-input --vault ./vault", 4),
                            ("job-sluice doctor --offline", 6),
                            ("job-sluice ingest list-sources", 3),
+                           # One line, and it must be exact: `created` is the whole claim, and a
+                           # prefix match would accept every other outcome upsert can report.
+                           (add_cmd, 1),
                            ("job-sluice triage run --no-llm", 0)):
         assert exact[command] >= floor, (
             f"`{command}`'s capture now pins only {exact[command]} exact lines (floor {floor}). "
@@ -273,6 +364,40 @@ def test_the_matcher_rejects_a_drifted_transcript(drift, why):
     ok, missed, _ = _match(drift, actual)
     assert not ok, f"_match accepted {drift!r}, which it must not: {why}"
     assert missed is not None
+
+
+def test_a_continuation_inside_a_quoted_argument_splices_the_way_the_shell_does():
+    """The ONE case that distinguishes a raw splice from a space-inserting one.
+
+    Every `\\`-continued line in the real README is indented, so both implementations
+    yield identical argv there and the whole file stays green under either -- measured.
+    A continuation falling inside a QUOTED argument is where they diverge: the shell
+    removes the backslash and the newline and joins the halves with nothing between
+    them, so this is `ExampleSystems`. The space-inserting version produced
+    `Example Systems`, i.e. the harness would have run a command the page does not
+    document while reporting that the page reproduced.
+
+    Written because CodeRabbit found the fidelity bug and nothing in the suite could
+    have caught the fix being reverted.
+    """
+    # `--value`, not `--company`, and a sentinel with no identity shape at all: the
+    # subject here is the SPLICE, so an employer-shaped token in an employer-shaped
+    # option is gratuitous, and this one could not follow the `Example <Word>` roster
+    # anyway -- the whole point is that the join eats the space between the halves.
+    command, rest = _join_continuations('cmd --value "one\\', ['two" --x 1'])
+    assert shlex.split(command) == ["cmd", "--value", "onetwo", "--x", "1"]
+    assert rest == []
+
+
+def test_a_continuation_with_nothing_after_it_is_refused():
+    """The assert inside the loop, which is otherwise unreachable on a well-formed page
+    and would sit there untested -- an unbounded `pop` from an empty list instead."""
+    try:
+        _join_continuations("cmd --flag \\", [])
+    except AssertionError as exc:
+        assert "nothing after it" in str(exc)
+    else:
+        raise AssertionError("a dangling continuation was accepted")
 
 
 def test_the_matcher_accepts_the_elision_forms_it_documents():

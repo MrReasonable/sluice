@@ -214,11 +214,23 @@ job-sluice triage run                   # with the judge
 job-sluice cv run --all-shortlist --dry-run
 ```
 
-Without Camofox, seed leads instead by writing note files into
-`Job Applications/Job Leads/` in the frontmatter shape README documents, one per job ad the user
-gives you. Triage reads them back like any other lead. Run `job-sluice leads dedupe` afterwards if
-you have added several by hand, since notes written directly do not go through the dedup path that
-`ingest` uses.
+Without Camofox, seed leads with `job-sluice leads add`, one call per job ad the user gives you:
+
+```bash
+job-sluice leads add --url URL --company NAME --role TITLE \
+    [--location L] [--salary S] [--role-type contract|permanent]
+```
+
+Do NOT write note files directly. `leads add` goes through the same store path `ingest` does, so
+dedup, never-clobber and the merged-away archive probe all apply; a hand-written file bypasses all
+three, and a lead the user previously merged away would be silently resurrected. Read the outcome
+the command prints rather than assuming it created something — `updated`/`merged` mean a lead was
+already there, and both `merged_away` outcomes mean the user deliberately merged it away and it was
+NOT re-created. Report those back to them rather than retrying.
+
+Invent nothing. Every field must come from the advert or from the user; if they have not given you
+a location or a salary, omit the flag rather than guessing, and if the advert has no url, ask for
+one — it is required, and it is what triage fetches the job description from.
 
 ### 9. Hand back
 

@@ -346,11 +346,64 @@ exit 0: `track-dismiss: <cleared|would clear> N entr(y|ies)`.
 
 Maintenance passes. **Report by default; none of these offers `--dry-run`, because the
 default *is* the dry run** — a write happens only with the flag named below.
-**Exception: `leads dismiss` writes unconditionally on every call** (#131), like the
-pipeline commands (`ingest run`/`triage run`/`cv run`/`apply record`/`track run`), not
-like its `leads` siblings — the distinguishing property is who decided what to write:
-`dismiss` acts on a verdict the USER typed (`--lead`/`--reason`), while
-`dedupe`/`expire`/`reconcile` write over a set the TOOL computed.
+**Exception: `leads add` (#241) and `leads dismiss` (#131) both write unconditionally on
+every call**, like the pipeline commands (`ingest run`/`triage run`/`cv run`/`apply
+record`/`track run`), not like their `leads` siblings — the distinguishing property is who
+decided what to write: `add` and `dismiss` act on what the USER typed (the lead's own
+fields; `--lead`/`--reason`), while `dedupe`/`expire`/`reconcile` write over a set the TOOL
+computed. There is no report to preview when the user is the one supplying the content.
+
+### `job-sluice leads add --url URL --company NAME --role TITLE [--location L] [--salary S] [--role-type contract|permanent]`
+
+Adds one lead by hand, for a job no scanner found — the only route into the lead store that
+needs neither a Camofox browser server nor an MCP client (the MCP `create_lead` write tool
+drives the same facade, but only under `job-sluice mcp serve --write`):
+
+```console
+$ job-sluice leads add --url https://example.invalid/jobs/1234 \
+    --company "Example Systems" --role "Senior Engineer" \
+    --location "Example City" --salary "£500/day" --role-type contract
+leads add: Example Systems - Senior Engineer: created
+```
+
+It routes through the same `Vault.upsert` a scrape does, so every store guarantee applies
+unchanged, and it reports which of upsert's six outcomes actually happened rather than
+assuming `created`:
+
+| outcome | exit | what happened |
+| --- | --- | --- |
+| `created` | 0 | a new note, at `status: new`, ready for `triage run` |
+| `updated` | 0 | a lead already existed at this company+role and this posting proved to be the same one — its url matched, or failing that its location did — so `last_seen` was bumped and nothing else touched |
+| `merged` | 0 | as `updated`, but the evidence could not prove same-or-different, so the store declined to split it into a second note |
+| `refused` | 1 | nothing written: company and role both read back blank, or every name the lead could be seated at belongs to a different job |
+| `merged_away` | 1 | nothing written: you previously merged this lead away and the archived note under `_merged/` carries this exact url |
+| `merged_away_unproven` | 1 | nothing written: an archived note matches on weaker evidence than a url |
+
+Three consequences worth knowing before you use it:
+
+- **A second add does not correct a field.** `updated`/`merged` bump `last_seen` and nothing
+  else — that is never-clobber, the same rule that protects your notes from a re-scrape. Edit
+  the note in Obsidian to change a salary or a location.
+- **A lead you merged away is not resurrected** (#81). Both `merged_away` outcomes write
+  nothing and exit non-zero. To bring one back, move its note out of `Job Leads/_merged/`;
+  it returns to the active view and the next add reconciles against it normally.
+- **Nothing is recorded in `seen.db`.** A hand-added lead does not suppress the later genuine
+  scrape of the same posting, which matters because `seen.db` has no removal path.
+
+`--url` is required and must be http(s): it is what makes the lead apply-eligible, and what
+`triage`/`cv` fetch the job description from.
+
+`--role-type` records the pay basis your configured salary floors are judged against, as
+`declared` provenance. It accepts `contract` and `permanent` and the usual spellings of each
+(`perm`, `freelance`, `interim`, `fte`, `temp`, `fixed term`, …); anything else is refused
+with the accepted list, rather than quietly stored as no basis at all.
+
+There is no `--source` flag. `source` is not a free-text note about where you found the job —
+it is a key into the ingest source registry, and `triage` reads it as one: a company it
+resolves that equals the source id is discarded as the board's own name rather than the
+employer. Setting it to a real board id therefore makes triage treat your hand-added lead as
+that board's, and an employer genuinely called (say) Reed would be thrown away. The value is
+always `manual`, which matches no board, so that check correctly abstains.
 
 ### `job-sluice leads dedupe [--merge ID ...] [--json]`
 

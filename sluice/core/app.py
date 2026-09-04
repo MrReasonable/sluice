@@ -2078,7 +2078,7 @@ class Sluice:
                 f"\" or \\, and url must be present and http(s))")
         store = self.store()
         # #223 §2.1's third origin. This is the case where `job_type` is UNAMBIGUOUSLY
-        # the user's -- they typed it into `leads create` or the MCP write tool -- so it
+        # the user's -- they typed it into `leads add` or the MCP write tool -- so it
         # is `declared`, the provenance the relevance gate is allowed to act on. The
         # stamp is repeated here rather than centralised in `_row_to_lead` because this
         # path never touches it: `create_lead` builds the `Lead` by hand and calls

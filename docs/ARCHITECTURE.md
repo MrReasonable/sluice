@@ -1102,12 +1102,72 @@ site, so it does not replace checking before applying.
 **`job-sluice leads dismiss --lead SLUG --reason REASON`** (#131) writes `dismiss`
 by the same route as `leads expire` -- `require_status=_DISMISSABLE_FROM` re-read
 inside the CAS transform, `require_blank={"pending_cv"}` refusing a lead holding
-a #60 sign-off hold -- but is the ONE `leads` pass that writes unconditionally on
-every call rather than reporting by default: the verdict it writes is one the
-USER typed (`--lead`/`--reason`), not one this tool computed, matching the
-pipeline commands' contract rather than `dedupe`/`expire`/`reconcile`'s. Resolves
+a #60 sign-off hold -- but is one of the TWO `leads` passes that write
+unconditionally on every call rather than reporting by default (`leads add`,
+below, is the other): the verdict it writes is one the USER typed
+(`--lead`/`--reason`), not one this tool computed, matching the pipeline
+commands' contract rather than `dedupe`/`expire`/`reconcile`'s. Resolves
 by EXACT slug equality, never substring, and refuses (writes nothing) when the
 slug names two or more notes rather than picking one.
+
+**`job-sluice leads add --url URL --company NAME --role TITLE`** (#241) is the
+only route into the lead store needing neither a browser nor an MCP client.
+`ingest run` needs a Camofox server; `mcpserver.create_lead` drives this very
+facade without one, but only under `job-sluice mcp serve --write` with a
+configured client. So before this command a fresh install could not reach
+`triage` or `cv` from the CLI at all, and both README's quickstart and
+`docs/AI-SETUP.md` had to tell their reader to hand-author a note file --
+bypassing dedup, never-clobber and the #81 archive probe in one step.
+
+It is a THIN front-end over `Sluice.create_lead`, the same facade
+`mcpserver.create_lead` drives, and deliberately not a second writer: that facade
+already validates every field, calls `store.upsert` directly (so `seen.db` is
+untouched -- a hand-added lead must not suppress the later genuine scrape of the
+same posting, and that store has no removal path), and stamps
+`role_type_source=declared` because a basis the user typed is the provenance the
+relevance gate may act on. A sibling write function would be a new CodeQL sink
+with all of that to re-argue, which is the same reasoning that gave
+`update_fields` a parameter rather than a twin.
+
+The command's whole correctness is reporting what `upsert` actually returned.
+All six outcomes are reported by their own name -- a bare "created" would be a
+lie on five of them -- and the three that write nothing (`refused`,
+`merged_away`, `merged_away_unproven`) exit non-zero, because a silent no-op
+exiting 0 is the failure mode every `leads` pass is shaped against. The two
+`merged_away` arms stay distinct rather than collapsing into one message: they
+differ in whether the archive match was url-PROVEN, which is the same distinction
+that decides whether the ingest sink may record the lead, and each names the one
+recovery action (move the note out of `_merged/`) so a #81 refusal is not a
+permanent no with nothing said about the way out.
+
+Two decisions about the flag set are load-bearing.
+
+There is no `--source`, because `source` is not a free-text provenance note: it
+is a key into the ingest source registry, and `triage/resolve.py` reads it as one
+in two places. The live one is `_is_board_name`, which discards a resolved
+company equal to the source id as the board's own name -- measured,
+`_is_board_name("Reed", {"source": "reed"})` is True and the same call under
+`manual` is False, so a `--source reed` would throw away an employer genuinely
+called Reed. The other is `company_from_url`: resolve.py looks the id up and
+calls that hook when the source defines one. That arm is a FORWARD hazard rather
+than a live one, and the distinction matters -- an earlier version of this
+paragraph claimed `--source reed` would aim reed's url extractor at a foreign
+url, which cannot happen (reed defines no such hook, and `wellfound`, the only
+source that does, anchors its regex on its own host and abstains). The hook is
+optional, so a future source need not. `manual` matches no registered source, so
+both paths abstain.
+
+`--role-type` is an argparse `choices=` rather than free text validated
+downstream. `normalise_role_type` warns and returns "" for an unrecognised value,
+and the warning IS visible (the default level is INFO), so the hazard is not
+silence: it is that the command would go on to succeed, print `created`, and
+leave a note whose pay basis is blank while `triage` judges the salary against
+the wrong floor. Refusing up front writes nothing. The accepted set is DERIVED
+from `roletype._ALIASES` (exported as `ACCEPTED_ROLE_TYPES`) rather than pinned
+to the two canonical values, because 11 of the 13 spellings the facade honours
+are aliases -- `perm`, `freelance`, `interim`, `fte` among them -- and a
+hand-pinned pair made this CLI reject input the MCP tool over the same facade
+accepts and maps correctly.
 
 **Preventing overwrites of hand-edits** (#109): a sibling guard to
 `require_status`, also on `Vault.update_fields`, named `require_blank`. It
