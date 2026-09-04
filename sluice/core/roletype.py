@@ -75,6 +75,28 @@ _ALIASES = {
     "fte": PERMANENT,
 }
 
+# What a HUMAN may type for a pay basis, derived from the alias table rather than
+# hand-listed beside it: `job-sluice leads add --role-type` (#241) needs the accepted
+# set while argparse BUILDS the parser, so it can refuse a typo by listing the real
+# names. Deriving it is the whole point -- a hand-listed copy would drift the moment an
+# alias is added, and the CLI would then reject a spelling `normalise_role_type` maps
+# perfectly well. Sorted so the error argparse prints is stable rather than dict-ordered.
+ACCEPTED_ROLE_TYPES = tuple(sorted(_ALIASES))
+
+
+def fold_role_type(value) -> str:
+    """The alias-lookup fold, exposed for `leads add --role-type`'s argparse `type=`.
+
+    argparse tests `choices` against the RAW argument, while `normalise_role_type`
+    folds first -- so `choices=ACCEPTED_ROLE_TYPES` alone refuses `Contract`, `PERM`
+    and `fixed-term`, every one of which the facade maps correctly and every one of
+    which #223 measured in real vault contents. Folding at `type=` (argparse runs it
+    BEFORE the choices test) is what makes the CLI and the MCP tool, which share this
+    facade, accept the same set. Deriving the CLI's accepted list from `_ALIASES`
+    closed the alias half of that gap; this closes the casing/punctuation half.
+    """
+    return _fold(value)
+
 # JD markers. See the module docstring for why the bar is "near-conclusive" rather than
 # "suggestive", and why `full time` is not here.
 #

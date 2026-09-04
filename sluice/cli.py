@@ -36,6 +36,11 @@ from sluice.core.health import RATE_SIGNALS as HEALTH_RATE_SIGNALS, HealthStore
 from sluice.core.log import get_logger, notify
 from sluice.core.paths import resolve
 from sluice.core.protocols import ALL_CAPABILITIES, EVIDENCE_KINDS
+# `leads add --role-type`'s accepted set, needed while the parser is BUILT (argparse
+# `choices=`), so it cannot be deferred into the command body the way a heavy import
+# is. Costs nothing: core/roletype.py is stdlib-only (`re`) plus core/log, which this
+# module already imports -- the same shape as core/status above.
+from sluice.core.roletype import ACCEPTED_ROLE_TYPES, fold_role_type
 from sluice.ingest import base as base_mod   # Search/searches_for; stdlib-only, no browser
 from sluice.ingest import sources as registry
 
@@ -690,6 +695,133 @@ def cmd_leads_dedupe(args, config) -> int:
         if not report:
             print("dedupe: no duplicate clusters", file=sys.stderr)
     return 0
+
+
+# Every one of `Vault.upsert`'s six outcomes, which `Sluice.create_lead` forwards
+# VERBATIM. All six are reached through a real store and asserted in
+# tests/test_leads_add_cli.py, so this table is covered by execution rather than by
+# matching a roster -- there is no enumerable constant to match against; the
+# vocabulary lives in `core/protocols.py`'s prose and `ingest/sink.py`'s allowlist.
+#
+# A SEVENTH outcome falls back to printing its own name and exiting non-zero (below)
+# rather than raising: this line runs AFTER the store has already decided, so a
+# KeyError here would show a traceback for a write that may well have landed, and
+# leave the user with no idea which. Failing closed and saying the word the store said
+# is strictly more useful. `mcpserver.create_lead` keys the same vocabulary and also
+# declines to raise, but it is NOT the same call -- its `if result.outcome in _DETAIL`
+# returns the unknown outcome with the explanation simply absent and no failure signal
+# at all, which is the weaker half of this behaviour, not a precedent for the exit
+# code.
+#
+# The two WROTE-NOTHING pairs are kept apart on purpose:
+#   * `refused` is the store declining an identity it cannot seat.
+#   * `merged_away*` is #81 -- a human already merged this lead away, and re-creating
+#     it would undo their decision (and, if the surviving twin is already `applied`,
+#     mean a second application under their name). So each names the ONE recovery
+#     action, because otherwise this is a permanent no with no stated way forward.
+# `merged_away` and `merged_away_unproven` differ in EVIDENCE (a url-proven archive
+# match vs a weaker one) and are reported separately for the same reason the store
+# keeps them apart: flattening them teaches a distinction the store does not make.
+_ADD_DETAIL = {
+    "created": "created",
+    # NOT an enumeration of the dropped fields. It listed "url/location/salary" and
+    # omitted --role-type, which is dropped identically -- so a user re-adding to
+    # supply a missing pay basis was told the three fields they did not care about
+    # were ignored, and left believing the one they did care about had landed. The
+    # remedy names BOTH keys for the same reason: setting `role_type` by hand while
+    # `role_type_source` stays blank leaves triage distrusting it, so the edit reads
+    # as done and changes nothing.
+    "updated": "updated -- a lead already existed at this company+role and this posting "
+               "proved to be the same one (its url matched, or failing that its "
+               "location did), so only last_seen was bumped; NOTHING else you passed "
+               "was recorded (never-clobber). To change a field, edit the note in your "
+               "vault -- and if you set role_type there, set role_type_source: declared "
+               "beside it or triage will not act on it",
+    # Names the way out, like the merged_away arms below. Without it this is the one
+    # exit-0 outcome where the posting the user typed is recorded NOWHERE -- the url is
+    # dropped with everything else -- and if the two really are different jobs, `apply`
+    # would later submit against the note that already existed.
+    #
+    # The escape named is --company/--role, NOT --location, and the difference is
+    # measured. Location cannot be the general answer: `_compare_locations` reports
+    # DIFFERENT only when BOTH sides are non-blank, and the stored note's location is
+    # never updated (never-clobber) -- so after a first add that omitted it, EVERY
+    # later add merges no matter what location it carries (four adds, four locations,
+    # one note, location still ""). A first draft of this string advised --location and
+    # was wrong in exactly the case that produces `merged`. company+role IS the note's
+    # identity, so changing either always seats a new note.
+    "merged": "merged -- a lead already existed at this company+role and the evidence "
+              "could not prove same-or-different, so only last_seen was bumped; NOTHING "
+              "else you passed was recorded (never-clobber), the url included. If this "
+              "IS a different job, re-run it with a company or role that tells the two "
+              "apart -- that pair is the note's identity, so it always seats a separate "
+              "note (a differing --location only works when the existing note already "
+              "records one of its own)",
+    # Deliberately NOT an exhaustive disjunction: upsert refuses on five causes across
+    # four sites (three identity, two concurrency-loss) and this used to state two of
+    # them as though they were all. The log line is what actually names the case -- and
+    # it is visible, since the default level is INFO.
+    "refused": "refused -- nothing was written, because no name this lead could be "
+               "seated at is usable. Causes include a company and role that both read "
+               "back blank, a name that belongs to a different job, and a name that "
+               "several notes already claim (for that one, `job-sluice leads dedupe`). "
+               "The warning logged above names which",
+    # These two LEAD WITH THE STORE'S OWN WORD, like every arm above, and that is the
+    # point of the command rather than a formatting choice: both used to open with
+    # "refused", so the six-member vocabulary #241 exists to surface arrived as a
+    # three-member one, and a reader (or a script reading the first token) could not
+    # tell a #81 non-resurrection from a blank identity. The plain-English consequence
+    # follows immediately, because "merged_away" alone does not say nothing was written.
+    "merged_away": "merged_away -- refused, nothing was written: you previously merged "
+                   "this lead away, and its archived note (under Job Leads/_merged/) "
+                   "covers this exact url. To bring it back, move that note out of "
+                   "_merged/",
+    "merged_away_unproven": "merged_away_unproven -- refused, nothing was written: an "
+                            "archived note under Job Leads/_merged/ looks like this lead "
+                            "on weaker evidence than a matching url. To bring it back, "
+                            "move that note out of _merged/; to add this as a genuinely "
+                            "different job, give it a company or role that tells them "
+                            "apart",
+}
+# A write happened (or an existing note was resolved to) -- exit 0. Everything else
+# wrote nothing, and a silent no-op exiting 0 is the failure mode every `leads` pass
+# is shaped to avoid. `updated` is a success even on the same day, when last_seen is
+# monotonic and no bytes change at all: an idempotent repeat is not a failure, which
+# is the call `leads dismiss` already makes for its own `unchanged`.
+_ADD_WROTE = frozenset({"created", "updated", "merged"})
+
+
+def cmd_leads_add(args, config) -> int:
+    """`job-sluice leads add` (#241): the offline way into the lead store, for a job a
+    human found that no scanner ingested.
+
+    Writes unconditionally on every call, like `leads dismiss` (#131) and unlike its
+    other `leads` siblings, which report by default. The distinguishing property is
+    whose judgement the write encodes: this one writes what the USER typed, not a set
+    the tool computed, so there is no computed report to preview first.
+
+    A thin front-end over `Sluice.create_lead` -- the same facade the MCP write tool
+    drives -- rather than a second write function: the store's never-clobber contract,
+    the #81 archive probe and the decision to leave `seen.db` untouched all live there
+    already, and a sibling writer would be a new sink to re-argue every one of them
+    against. A `ValueError` for an unsafe or non-http field propagates to `main`'s own
+    handler, which prints it and exits 2, so validation is not restated here.
+    """
+    from sluice.core.app import Sluice
+
+    result = Sluice(config).create_lead(
+        title=args.role, company=args.company, url=args.url,
+        location=args.location, salary=args.salary, job_type=args.role_type)
+    # The slug is the store's OWN report of the note this call touched, never a guess
+    # -- and it is what the user types into `cv run --lead` next, so it leads the line
+    # when there is one. It is "" for exactly the outcomes that wrote nothing.
+    prefix = f"leads add: {result.slug}: " if result.slug else "leads add: "
+    detail = _ADD_DETAIL.get(
+        result.outcome,
+        f"{result.outcome} -- this version of the CLI does not recognise that outcome, so it "
+        f"cannot say whether anything was written; check the note in your vault")
+    print(prefix + detail, file=sys.stderr)
+    return 0 if result.outcome in _ADD_WROTE else 1
 
 
 def cmd_leads_dismiss(args, config) -> int:
@@ -2215,6 +2347,60 @@ def _build_parser() -> argparse.ArgumentParser:
 
     leads = top.add_parser("leads", help="lead maintenance").add_subparsers(
         dest="cmd", required=True)
+    ad = leads.add_parser("add", help="add one lead by hand, for a job no scanner found")
+    ad.add_argument("--url", required=True,
+                    help="the posting's http(s) url (required: it is what makes the "
+                         "lead apply-eligible, and what triage fetches the job "
+                         "description from)")
+    ad.add_argument("--company", required=True, help="employer name")
+    ad.add_argument("--role", required=True, help="job title")
+    ad.add_argument("--location", default="", help="where the job is (optional)")
+    ad.add_argument("--salary", default="", help="the advertised pay, verbatim (optional)")
+    # Enforced by argparse rather than left to the facade's own `normalise_role_type`,
+    # which warns and returns "" for an unrecognised value. The warning IS visible (the
+    # default level is INFO -- measured; an earlier version of this comment claimed the
+    # opposite), so the problem is not silence: it is that the command would go on to
+    # SUCCEED, printing `created` and leaving a note whose pay basis is blank, which is
+    # the half-success "fail loudly at construction" exists to prevent. Refusing up
+    # front writes nothing and lists the real names.
+    #
+    # The set is DERIVED from `_ALIASES`, never the two canonical values: 11 of the 13
+    # spellings the facade honours -- `perm`, `freelance`, `interim`, `fte` among them
+    # -- are aliases, and pinning `choices` to `contract|permanent` made this CLI reject
+    # input the MCP tool over the SAME facade accepts and maps correctly. `metavar`
+    # keeps the usage line one token wide; the full list still appears on an error.
+    #
+    # `type=` is the other half of that fix, not a tidy-up: argparse tests `choices`
+    # against the RAW argument, so the derived list ALONE still refused `Contract`,
+    # `PERM`, `fixed-term` and `day-rate` -- casings and punctuations
+    # `normalise_role_type` maps correctly and that #223 measured in real vault
+    # contents. Folding first (argparse runs `type` before the choices test) is what
+    # actually makes the two front-ends accept the same input. The `""` default is not
+    # passed through it, so an omitted flag still arrives blank.
+    ad.add_argument("--role-type", default="", type=fold_role_type,
+                    choices=ACCEPTED_ROLE_TYPES, metavar="BASIS",
+                    help="pay basis, if the advert states one (contract/permanent and "
+                         "their usual spellings; an unrecognised value is refused and "
+                         "the accepted ones listed)")
+    # No --source, deliberately. `source` is not a free-text provenance note: it is a
+    # KEY INTO THE INGEST REGISTRY, and triage/resolve.py reads it as one in two places.
+    #
+    # The live one, measured rather than argued: `_is_board_name` refuses a resolved
+    # company that equals the source id, so `--source reed` makes triage treat a lead
+    # whose employer genuinely IS "Reed" as having named the board instead of the
+    # employer -- `_is_board_name("Reed", {"source": "reed"})` is True, and False under
+    # the facade's "manual" default. The other is `company_from_url`: resolve.py looks
+    # the id up and calls that hook if the source defines one. That arm is a FORWARD
+    # hazard, not a live one, and the distinction is worth keeping straight -- an
+    # earlier version of this comment cited `--source reed` aiming reed's extractor at
+    # a foreign url, which cannot happen: reed defines no such hook, and the only
+    # source that does (wellfound) anchors its regex on its own host and abstains.
+    # The hook is optional, so a future source need not. Either way "manual" matches no
+    # registered source and both paths abstain, which is what a hand-added lead wants.
+    # `tests/test_leads_add_cli.py::test_source_is_manual_and_there_is_no_
+    # flag_to_change_it` pins the absence.
+    ad.set_defaults(func=cmd_leads_add)
+
     dd = leads.add_parser("dedupe", help="find/merge duplicate lead notes")
     dd.add_argument("--merge", nargs="+", metavar="ID",
                     help="merge the named vetted clusters (from a prior report)")

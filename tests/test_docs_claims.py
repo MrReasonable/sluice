@@ -103,10 +103,18 @@ def test_the_command_tree_walk_is_not_vacuous():
 
     The prior `>= 15` floor was itself the bug this file exists to catch: the real count moved
     from 20 to 29 across #164 and the floor caught none of it (Task 7 review, MINOR 4) -- a
-    floor that trails reality by 14 asserts nothing. `20` (the ten pre-#164 groups' own
-    subcommand counts) is pinned as a literal because it does NOT grow on its own; the evidence
-    contribution is DERIVED from EVIDENCE_KINDS (3 subcommands -- add/list/verify -- per kind)
-    so a future fourth kind needs no edit here.
+    floor that trails reality by 14 asserts nothing. The literal (`21`) is the NON-EVIDENCE
+    groups' own subcommand total; the evidence contribution is DERIVED from EVIDENCE_KINDS (3
+    subcommands -- add/list/verify -- per kind) so a future fourth kind needs no edit here.
+
+    The literal is edited by hand ON PURPOSE, and #241 is the worked example: it was `20` until
+    `leads add` made it 21, and this assertion is what said so. An earlier version of this note
+    justified the literal by claiming the count "does NOT grow on its own" -- which read as a
+    property of the tree when it is only a property of the LITERAL, and would have invited
+    deriving it from the walk the next time it moved. A derived expected value compares the walk
+    against itself and can never fail. The edit IS the review step: a subcommand is a public
+    interface, and being made to touch this line is how a new one is noticed here, in
+    docs/USAGE.md, and in README's Commands table together.
     """
     tree = _command_tree()
     assert set(tree) == {
@@ -115,11 +123,11 @@ def test_the_command_tree_walk_is_not_vacuous():
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    expected = 20 + 3 * len(EVIDENCE_KINDS)
+    expected = 21 + 3 * len(EVIDENCE_KINDS)
     assert total_subs == expected, (
-        f"expected {expected} subcommands (20 pre-#164 + 3 per evidence kind), found "
+        f"expected {expected} subcommands (21 non-evidence + 3 per evidence kind), found "
         f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
-        f"this needs updating")
+        f"this needs updating, along with docs/USAGE.md and README's Commands table")
 
 
 # English number words for the prose sweep below. This is a fixed VOCABULARY (spellings of

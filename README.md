@@ -71,6 +71,7 @@ score: 0
 source: "manual"
 salary: "£500/day"
 role_type: "contract"
+role_type_source: "declared"
 url: "https://example.invalid/jobs/1234"
 glassdoor_rating: ""
 culture_flags: ""
@@ -87,6 +88,8 @@ last_seen: 2026-08-29
 ```
 
 The three blank keys are enrichment slots triage fills in and then owns.
+`role_type_source` records where the pay basis came from: `declared` because it was typed
+at `leads add` below, `observed` when the advert's own text stated it, `assumed` otherwise.
 
 `status` is the spine, and it has two owners. Triage owns `new`, `shortlist`, `research`,
 `needs_review`, `dismiss` and `unjudgeable`; once an application is sent, the lead crosses into
@@ -312,8 +315,18 @@ are still the shipped example rather than yours, so a fresh install shows it on 
 **4. Give it a lead, then triage.**
 
 Nothing has scraped yet, so the vault holds no leads and triage would have nothing to classify.
-Save the note from [What you end up with](#what-you-end-up-with) as
-`vault/Job Applications/Job Leads/Example Systems - Senior Engineer.md`, then:
+`leads add` is the offline way in — for a job you found yourself, with no browser server running:
+
+```console
+$ job-sluice leads add --url https://example.invalid/jobs/1234 \
+    --company "Example Systems" --role "Senior Engineer" \
+    --location "Example City" --salary "£500/day" --role-type contract
+leads add: Example Systems - Senior Engineer: created
+```
+
+That writes exactly the note under [What you end up with](#what-you-end-up-with), through the same
+store path a scrape uses — so your own edits to it survive, and re-running the command reports
+`updated` and bumps `last_seen` rather than overwriting what you changed. Then:
 
 ```console
 $ job-sluice triage run --no-llm
@@ -372,7 +385,7 @@ hard to undo.
 | `job-sluice cv` | compose, gate and render a tailored CV, then sign off on it (`run`, `signoff`) |
 | `job-sluice apply` | stage a CV and a prep packet, then record a submitted application (`prep`, `record`) |
 | `job-sluice track` | reconcile the funnel from email and calendar signals (`run`, `confirm`, `dismiss`) |
-| `job-sluice leads` | maintenance passes (`dedupe`, `expire`, `dismiss`, `reconcile`, `rename`) |
+| `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `dismiss`, `reconcile`, `rename`) |
 | `job-sluice experience` | capture and verify experience evidence — the CV gate's only citable source (`add`, `list`, `verify`) |
 | `job-sluice skills` | capture and verify skills evidence, shown to the composer as framing (`add`, `list`, `verify`) |
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
@@ -380,9 +393,10 @@ hard to undo.
 | `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools) |
 
 The `leads` passes **report by default** and change nothing until told otherwise (`--merge`,
-`--expire`, `--apply`), because they write over a set the tool computed. `dismiss` is the
-exception: it writes on every call, because the verdict is the one you typed. The pipeline
-commands invert that and write by default.
+`--expire`, `--apply`), because they write over a set the tool computed. `add` and `dismiss`
+are the exceptions: both write on every call, because what they write is what you typed — the
+new lead's own fields, or the dismissal reason. The pipeline commands invert that and write by
+default.
 
 Full flag reference, exit codes and which stream each command writes to:
 [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).

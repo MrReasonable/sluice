@@ -232,10 +232,39 @@ print and change nothing until told otherwise, and none offers `--dry-run` — t
 run, and a flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
 property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
-a list rather than change a hundred notes. **Exception: `leads dismiss` writes unconditionally on
-every call** (#131), like the pipeline commands, not like its `leads` siblings — the verdict it
-writes is the one the user typed (`--lead`/`--reason`), not one the tool computed. (`docs/ARCHITECTURE.md`
-has the per-pass mechanics.)
+a list rather than change a hundred notes. **Exception: `leads dismiss` (#131) and `leads add`
+(#241) both write unconditionally on every call**, like the pipeline commands, not like their
+`leads` siblings — what each writes is what the user typed (`--lead`/`--reason`; the new lead's
+own fields), not something the tool computed, so there is no computed set to preview first. Note
+that is a property of the CONTENT, not of the command acting on one lead the user named:
+`leads expire --expire <slug>` names a single lead too and STILL needs its flag, because the
+verdict it writes there (stale, therefore dismiss) is the tool's derivation and not something the
+user typed. Do not reach for `leads rename` as that example -- it carries only `--apply`/`--json`
+and sweeps the whole vault, so it is not single-lead at all; an earlier cut of this paragraph said
+it was. (`docs/ARCHITECTURE.md` has the per-pass mechanics.)
+
+`leads add` is the only route into the lead store needing neither a browser nor an MCP client —
+`ingest run` needs a Camofox server, and `mcpserver.create_lead` drives this very facade without one
+but only under `mcp serve --write`, so from the CLI alone a fresh install could not reach `triage` or
+`cv` at all (#241). Do not shorten that to "the only offline route": the MCP tool is offline too, and
+the same paragraph names it two sentences later. It is a thin front-end over `Sluice.create_lead`,
+the SAME facade that MCP tool drives, not a second writer: never-clobber, the #81 archive probe and
+the decision to leave `seen.db` untouched all live in that facade already, and a sibling write
+function would be a new CodeQL sink with every one of those to re-argue. It reports `Vault.upsert`'s
+six-member vocabulary verbatim and exits non-zero on the three that write nothing.
+
+It exposes no `--source`, and the reason is the BOARD-NAME GUARD, measured:
+`triage/resolve.py`'s `_is_board_name` discards a resolved company equal to the source id, so
+`_is_board_name("Reed", {"source": "reed"})` is True while the same call under the facade's `manual`
+default is False — a `--source reed` would throw away an employer genuinely called Reed. resolve.py
+ALSO looks the id up to call that source's optional `company_from_url`, but that arm is a FORWARD
+hazard only and must not be cited as a live one: an earlier cut of this paragraph claimed
+`--source reed` would aim reed's url extractor at a foreign url, and reed defines no such hook at
+all — `wellfound` is the only source that does, and it anchors its regex on its own host and
+abstains. `--role-type`'s accepted set is DERIVED from `roletype._ALIASES` (exported as
+`ACCEPTED_ROLE_TYPES`), never pinned to `contract|permanent`: 11 of the 13 spellings the facade
+honours are aliases, so pinning the pair made the CLI reject `perm` and `freelance`, which the MCP
+tool over the same facade accepts.
 
 **Backends are selected by role, not provider.** `--backend` takes `auto|primary|fallback`
 (`claude-max`/`deepseek` survive as deprecated aliases). Which provider fills each role is config
