@@ -40,6 +40,69 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.6.1](https://github.com/MrReasonable/sluice/compare/v2.6.0...v2.6.1) (2026-09-04)
+
+### What you need to do
+
+**Nothing, and two things you may see.**
+
+**Lead notes that differ only by capitalisation are now reported.** Before this release
+sluice created a separate note whenever a board changed an employer's capitalisation, so one
+job could sit in your vault twice with two different statuses — one `shortlist`, its twin
+`dismiss` — and a dismissal recorded under one spelling did not stop the role returning as
+`new` under the other. Every command that reads leads now names such a pair and points at
+`job-sluice leads dedupe`. Nothing is rewritten and **no note is renamed**: the fix is in how
+a lead is matched, not in what it is called.
+
+To resolve a reported pair, `leads dedupe` clusters it and `--merge` completes it — but only
+where the twins' statuses agree. A `shortlist`/`dismiss` pair reports `conflict` and merges
+nothing, because choosing which verdict survives is yours to make. Set both to the status you
+want, then merge.
+
+**A lead you merged away stays merged away.** Re-scraping one with the employer capitalised
+differently used to re-create it, and where its surviving twin was already `applied` that
+meant a second application under your name. Those re-scrapes are now suppressed.
+
+**`job-sluice doctor` may now exit 1 where it exited 0**, for exactly one install: everything
+present — baseline CV, Judging Profile, Candidate Profile, a working renderer and backend —
+but not one *verified* evidence entry. That install's `cv run` already exited 2, so doctor was
+calling it healthy about the very thing blocking the next command. Promote an entry with
+`job-sluice experience verify` and both go green. Fresh installs already exited 1.
+
+### Also worth knowing
+
+- **`cv run` now refuses once, up front, when it cannot compose at all.** A missing baseline
+  CV used to raise a traceback; an empty citable corpus used to spend two backend calls and a
+  browser-driven dossier fetch before the fabrication gate rejected the result. Both now exit
+  2 with a usage error before any spend, and an *unreadable* file is reported as unreadable
+  rather than as empty.
+
+- **Lead identity is matched up to CASE only.** Unicode normalisation is a separate axis and
+  is deliberately untouched, so two names differing only by NFC/NFD are still two leads.
+
+- **The create path does slightly more work.** When nothing matches a lead's exact note name,
+  resolution now lists each scanned directory instead of stat-ing one path per candidate. A
+  re-scrape of a note you already have costs what it did before.
+
+- **No existing config key changes meaning, and none is added.**
+
+
+
+### Bug Fixes
+
+* **cv:** refuse a run that cannot compose, once, before any spend ([8f9c189](https://github.com/MrReasonable/sluice/commit/8f9c18993aa6f01f09a0561213c91d48665c33b9))
+* **doctor:** grade an empty citable evidence corpus as blocking cv ([f64a313](https://github.com/MrReasonable/sluice/commit/f64a313c92bceea98db535086dbb27ac0e195633))
+* **vault:** bind the identity fold to every path that resolves a lead ([84b29f0](https://github.com/MrReasonable/sluice/commit/84b29f0873544538c642b1650535942730215563))
+* **vault:** fold the archive pre-filter, don't just flag it IGNORECASE ([b97eb5d](https://github.com/MrReasonable/sluice/commit/b97eb5d7c2e4685b75622d03f22f0a611491c3ab))
+* **vault:** resolve a lead's identity case-insensitively ([#205](https://github.com/MrReasonable/sluice/issues/205)) ([0e81a19](https://github.com/MrReasonable/sluice/commit/0e81a19632f242e731e652ed7aec3b9172981604))
+* **vault:** say what `leads dedupe` actually does to a case-variant pair ([e330ca9](https://github.com/MrReasonable/sluice/commit/e330ca90b8420810e2066144258ff5c20bda751d))
+
+
+### Documentation
+
+* **vault:** derive the fold's roster instead of counting it, again ([3d392e4](https://github.com/MrReasonable/sluice/commit/3d392e4822cf1db60a8cc4c6038e3018bc92200b))
+* **vault:** state the case-fold in the contract, and correct what it falsifies ([118260a](https://github.com/MrReasonable/sluice/commit/118260ace9ccd8aded4fa2d68f21749dd9a6164f))
+
 ## [2.6.0](https://github.com/MrReasonable/sluice/compare/v2.5.1...v2.6.0) (2026-09-03)
 
 
