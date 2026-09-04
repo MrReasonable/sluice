@@ -176,18 +176,46 @@ def _prose(path):
     return out
 
 
+def _under_live_tree(path):
+    """Is `path` really inside one of the live trees?
+
+    `realpath` on both sides, so neither `..` nor a symlink can walk out. Without this the
+    first branch of `_resolve` accepted ANY existing path: measured, a citation naming
+    `docs/superpowers/specs/<a real file>.py` resolved and its symbols satisfied rule 2 --
+    a file this guard's own docstring declares historical and out of scope. Rule 2 claims
+    the symbol exists in a file the guard governs, and without this the claim was false."""
+    root = os.path.realpath(path)
+    return any(root == os.path.realpath(t) or root.startswith(os.path.realpath(t) + os.sep)
+               for t in _LIVE_TREES)
+
+
 def _resolve(cited):
     """The live-tree file a citation names, or None. Accepts a repo-relative path, a
     tree-relative one, or any unambiguous suffix -- citations in this repo are written
-    all three ways (`core/paths.py`, `sluice/core/vault.py`, `engine.py`)."""
-    if os.path.isfile(cited):
+    all three ways (`core/paths.py`, `sluice/core/vault.py`, `engine.py`).
+
+    Every branch is filtered through `_under_live_tree`, never just the first: a path that
+    exists is not thereby a path this guard governs."""
+    if os.path.isfile(cited) and _under_live_tree(cited):
         return cited
     for tree in _LIVE_TREES:
         joined = os.path.join(tree, cited)
-        if os.path.isfile(joined):
+        if os.path.isfile(joined) and _under_live_tree(joined):
             return joined
+    # This branch needs the check too, and the reasoning that said otherwise was WRONG in an
+    # instructive way. It looked structurally inert -- `_live_python_files` walks
+    # `_LIVE_TREES` and nothing else, so surely every candidate is already inside one -- and
+    # a mutant deleting it SURVIVED, which seemed to confirm that. Both were wrong.
+    # `os.walk` does not follow symlinked DIRECTORIES, but it lists symlinked FILES like any
+    # other entry, so a link at `sluice/x.py` pointing outside is yielded, matches a suffix
+    # citation, and hands rule 2 a file this guard does not govern. Measured end to end: the
+    # link is listed, `_resolve` returns it, its realpath is outside, and its symbols satisfy
+    # the rule. The mutant survived only because the tree happens to contain no such link --
+    # a negative check with nothing to catch, which is this module's whole subject arriving
+    # one more time in its own resolver. (CodeRabbit, PR #256.)
     tail = os.sep + cited.replace("/", os.sep)
-    matches = [f for f in _live_python_files() if f.endswith(tail)]
+    matches = [f for f in _live_python_files()
+               if f.endswith(tail) and _under_live_tree(f)]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -417,3 +445,61 @@ def test_symbol_offences_discriminates(prose, checked, offences):
     got_checked, got = symbol_offences(prose, resolve=_fake_resolve,
                                        symbols_of=lambda _t: {"alive", "alive_ve", "ali_ve"})
     assert (got_checked, len(got)) == (checked, offences), got
+
+
+def test_a_citation_cannot_resolve_outside_the_live_trees(tmp_path):
+    """Rule 2 claims a cited symbol exists in a file THIS GUARD GOVERNS. `_resolve` used to
+    accept any existing path before it consulted `_LIVE_TREES`, so the claim was false:
+    measured, a citation naming a real file under `docs/superpowers/` -- the tree this
+    guard's own docstring declares historical and out of scope -- resolved, and that file's
+    symbols satisfied rule 2. (CodeRabbit, PR #256.)
+
+    The SCOPE assertion is the point of this test rather than ceremony: the file is asserted
+    to EXIST before it is asserted to be rejected. Without that, the test would pass with
+    the containment deleted, proving only that `_resolve` cannot find a file that is not
+    there -- the same vacuity the rest of this module is about."""
+    outsider = tmp_path / "outsider.py"
+    outsider.write_text("def looks_citable():\n    pass\n")
+    assert outsider.is_file(), "fixture missing: the rejection below would be vacuous"
+
+    assert not _under_live_tree(str(outsider))
+    assert _resolve(str(outsider)) is None
+
+    # ...while a real in-tree file still resolves, so the check narrowed nothing it governs.
+    assert _under_live_tree("sluice/core/vault.py")
+    assert _resolve("core/vault.py") == os.path.join("sluice", "core", "vault.py")
+
+
+def test_a_symlinked_file_cannot_smuggle_a_symbol_into_the_live_trees(tmp_path, monkeypatch):
+    """`os.walk` does not follow symlinked DIRECTORIES, but it lists symlinked FILES like any
+    other entry. So a link inside a live tree pointing outside it is a candidate for suffix
+    resolution, and rule 2 would then check a citation against a file this guard does not
+    govern -- reporting green on a symbol it has no claim over.
+
+    This row exists because the check it pins was briefly REMOVED as an equivalent mutant:
+    deleting it survived a full run, which read as proof that `_live_python_files` already
+    constrained the branch. It does not, and the mutant survived only because the tree
+    contains no such link. A negative check with nothing to catch cannot witness its own
+    deletion -- the module's own subject, arriving in its resolver. (CodeRabbit, PR #256.)
+
+    Hermetic: `_LIVE_TREES` is repointed at a temporary tree, so nothing is written into the
+    real `sluice/` and a failure cannot leave a stray link behind."""
+    tree = tmp_path / "livetree"
+    (tree / "pkg").mkdir(parents=True)
+    (tree / "pkg" / "genuine.py").write_text("def real_symbol():\n    pass\n")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "smuggled.py").write_text("def smuggled_symbol():\n    pass\n")
+    (tree / "pkg" / "smuggled.py").symlink_to(outside / "smuggled.py")
+
+    monkeypatch.setattr("tests.test_citation_drift._LIVE_TREES", (str(tree),))
+
+    # SCOPE: the walk really does list the symlink, or the rejection below proves nothing.
+    listed = _live_python_files()
+    assert str(tree / "pkg" / "smuggled.py") in listed, (
+        "os.walk did not list the symlinked file; this fixture no longer reproduces")
+    assert str(tree / "pkg" / "genuine.py") in listed
+
+    assert _resolve("smuggled.py") is None          # escapes the tree -> not governed
+    assert _resolve("genuine.py") == str(tree / "pkg" / "genuine.py")   # still resolves
