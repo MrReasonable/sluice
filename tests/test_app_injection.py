@@ -378,7 +378,7 @@ def _stale_apply_store():
 
 
 def test_prep_dry_run_and_real_run_BOTH_report_stale(monkeypatch):
-    """The core/app.py:630 regression.
+    """The core/app.py::prep regression.
 
     Sluice.prep has THREE branches into selection, and the dry-run single-lead one calls
     select_one DIRECTLY, bypassing prep_one. Assert the shared OUTCOME, not merely that

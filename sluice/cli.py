@@ -2205,7 +2205,7 @@ def main(argv=None) -> int:
         # raw traceback instead of the identical "job-sluice: <message>" / exit 2 shape a malformed
         # ROOT config key already gets. All REACHABLE ValueError sites in this dispatch path are
         # usage-error class raises (config or argument validation) — unreachable internal-invariant
-        # guards exist too (paths.py:307's kind check, track_dismiss's selector guard) but cannot
+        # guards exist too (paths.py::resolve's kind check, track_dismiss's selector guard) but cannot
         # currently fire from any live call site, so the widening's real-world effect is purely
         # improving UX for config errors that previously escaped as raw tracebacks.
         print(f"job-sluice: {exc}", file=sys.stderr)

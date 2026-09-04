@@ -46,7 +46,7 @@ def test_cv_run_composes_and_renders(cli):
 
 def test_cv_run_no_matching_lead_returns_1(cli):
     # A never-called backend, only so compose_cv's up-front backend build (before the
-    # empty-notes check, app.py:351) does not hit real construction.
+    # empty-notes check, app.py::compose_cv) does not hit real construction.
     h, run = cli(backend=ScriptedBackend())
     rc, _out, err = run(["cv", "run", "--lead", "no-such-lead"])
     assert rc == 1

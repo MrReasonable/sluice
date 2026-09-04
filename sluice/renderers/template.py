@@ -68,7 +68,7 @@ class TemplateRenderer:
         # LLM has already composed a CV and it has passed the fabrication gate.
         if template_path:
             # expanduser at INGRESS, which is this project's rule for a path a user
-            # names (core/paths.py:30 states it, and this is a new ingress site). `~`
+            # names (core/paths.py states it, and this is a new ingress site). `~`
             # is expanded by a SHELL, not by open(), so `cv.template: ~/mine.html.j2`
             # in a YAML file reaches here literally and reported "is not a file" for a
             # file that plainly exists. Expanded before the isfile check, so the check

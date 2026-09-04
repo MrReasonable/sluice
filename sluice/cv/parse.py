@@ -222,7 +222,7 @@ _ATTEMPTED_DATE_RE = re.compile(_DATE_TOKEN)
 # `_CITE_RE`'s search/sub semantics) is deliberate: this line must be NOTHING BUT one or
 # more citations to be swallowed as a continuation, or a genuine new company/heading
 # that happens to start with "[" would vanish instead of being parsed. ONE-OR-MORE
-# (not exactly one): cv/compose.py:11 explicitly permits several citations per bullet
+# (not exactly one): cv/compose.py::_RULES explicitly permits several citations per bullet
 # ("several allowed: [id] [id]"), and a multi-citation bullet is exactly as likely to
 # get wrapped onto its own line as a single-citation one.
 _CITE_ONLY_RE = re.compile(r"^(?:\[[A-Za-z]{2}[0-9]+\]\s*)+$")

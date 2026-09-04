@@ -4,7 +4,7 @@ Deliberately NOT the `cli` fixture: that one calls `build_harness`, which writes
 setenvs SLUICE_CONFIG and VAULT_DIR -- so `config_file()` would always resolve to an existing file
 and `cmd_init` would always take the skip branch. `init` needs no browser, renderer, backend or
 seeded vault, so it runs under the autouse `_pin_paths` sandbox alone, which is the only tier that
-can witness XDG resolution at all (`tests/conftest.py:46`).
+can witness XDG resolution at all (`tests/conftest.py::_pin_paths`).
 """
 import pytest
 

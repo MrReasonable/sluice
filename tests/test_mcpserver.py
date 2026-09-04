@@ -774,7 +774,7 @@ def test_cv_run_tool_ambiguous_names_slug_candidates(tmp_path):
 def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv(monkeypatch):
     """The single most important test in this slice (Testing item 6): proves the
     #60 latch survives the MCP path unweakened. run_one checks pending_cv BEFORE
-    any dossier fetch or compose (verified directly, sluice/cv/engine.py:195), so
+    any dossier fetch or compose (verified directly, sluice/cv/engine.py::run_one), so
     a minimal store carrying just read_leads/read_evidence/read_baseline
     is enough -- the fabrication gate never reaches far enough to need more."""
     from tests.test_cv_engine import FakeCache, Note, _cfg
@@ -816,15 +816,15 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
     claims (neither affects any other test in this file):
 
     (1) `_MinimalCvStore.read_leads` must actually FILTER by `statuses`, mirroring
-        `Vault.read_leads` (sluice/core/vault.py:1242-1256). A `read_leads` that
+        `Vault.read_leads` (sluice/core/vault.py::read_leads). A `read_leads` that
         returns the note unconditionally would let compose_cv's OWN
         `store.read_leads({"shortlist"})` find this "research" note anyway, so
         `results` would be non-empty and cv_run would return the note's real
         `run_one` verdict (skipped-selection) instead of ever reaching the
         out_of_scope fallback this test exists to prove.
     (2) The note needs a real `.status` attribute, not just `fm["status"]`.
-        `out_of_scope_verdict` (core/leads.py:468) reads `n.status` directly at
-        :486 and again at :493-494 -- the real `LeadNote` contract's own field
+        `out_of_scope_verdict` (core/leads.py::out_of_scope_verdict) reads `n.status`
+        directly, in two separate places -- the real `LeadNote` contract's own field
         (core/protocols.py), distinct from `.fm`. tests/test_cv_engine.py's
         `Note` stand-in never needed one (run_one only reads `fm.get("status")`),
         so it is set here explicitly rather than widening that shared fixture for

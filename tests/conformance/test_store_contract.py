@@ -1070,7 +1070,7 @@ def test_update_fields_require_status_writes_on_a_fresh_match(store_name, tmp_pa
 
 def test_update_fields_require_status_compares_the_NORMALIZED_status(store_name, tmp_path,
                                                                      monkeypatch):
-    """Drifted vocabulary must still match. `core/status.py:22` exists because real vaults
+    """Drifted vocabulary must still match. `core/status.py::_ALIASES` exists because real vaults
     carry `dismissed`/`Researching`/`needs review`; a store comparing raw strings would
     abstain on every one of them -- forever reporting the lead stale and never writing it,
     with no error. Both other require_status cases use canonical values only, so nothing

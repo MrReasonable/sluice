@@ -242,7 +242,7 @@ class StalenessPolicy:
 
     def __post_init__(self):
         # `Sluice`'s `today` collaborator is a zero-arg CALLABLE -- VaultSink does
-        # `today or _today` and then CALLS it (ingest/sink.py:26,31), and every test
+        # `today or _today` and then CALLS it (ingest/sink.py::VaultSink), and every test
         # injects `lambda: "2026-07-07"`. So the tempting `today=self._today` binds a
         # FUNCTION here, which reaches date.fromisoformat(<function>) -> TypeError. The
         # ValueError guard in days() does NOT catch that, so the designed fail-safe

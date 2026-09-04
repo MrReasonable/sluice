@@ -461,7 +461,7 @@ def test_parse_accepts_bullet_and_asterisk_markers():
 
 
 def test_parse_swallows_a_wrapped_multi_citation_line():
-    """cv/compose.py:11 explicitly permits several citations per bullet ('several
+    """cv/compose.py::_RULES explicitly permits several citations per bullet ('several
     allowed: [id] [id]'). `_CITE_ONLY_RE` used to fullmatch exactly ONE bracket pair, so
     a multi-citation bullet the composer wrapped onto its own line ('[ED1] [EA1]') fell
     through as an unrecognised line instead of being swallowed the way the single-

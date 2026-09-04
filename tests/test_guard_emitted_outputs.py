@@ -231,7 +231,7 @@ def test_the_module_exits_nonzero_as_a_process(tmp_path):
     """The CI contract IS the exit code.
 
     A suite that only calls `main()` in-process stays green when `sys.exit(main(...))` is
-    deleted -- the lesson `tests/test_guard_no_bypass.py:26-30` records. Driven with a FAILING
+    deleted -- the lesson `tests/test_guard_no_bypass.py` records. Driven with a FAILING
     tree, because a passing one cannot tell the two apart.
 
     Asserts the exact code AND that the root appears in stderr: `returncode != 0` alone accepts a

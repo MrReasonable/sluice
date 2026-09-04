@@ -167,7 +167,7 @@ def test_an_already_generated_tree_is_rejected_not_read_as_a_pass(tmp_path):
 
 def test_the_module_exits_nonzero_as_a_process(tmp_path):
     """The CI contract IS the exit code. A suite that only calls main() in-process stays green
-    when `sys.exit(main(...))` is deleted -- the lesson tests/test_guard_no_bypass.py:26-30
+    when `sys.exit(main(...))` is deleted -- the lesson tests/test_guard_no_bypass.py
     records. Driven with a FAILING capture: a passing one cannot tell the two apart."""
     capture = tmp_path / "out.txt"
     capture.write_text(BROKEN_HOOKS, encoding="utf-8")
