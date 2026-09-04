@@ -13,7 +13,7 @@ _RULES = """CV RULES (follow exactly):
 - Every WORK EXPERIENCE bullet MUST end with a citation [id] naming the bundle entry it came from (several allowed: [id] [id]). No uncited bullets. Any number in a bullet must appear in a cited entry.
 - The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which experience entries to lead with and how to describe them. Never cite it, never quote a number from it, and never introduce a claim that rests on it alone: every fact in the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.
 {skills_attribution_rule}- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
-- {employer_line}
+{skills_format_rule}- {employer_line}
 - NO em dashes anywhere. Use commas, colons, semicolons, periods, or parentheses. No double hyphens (--). En-dash date ranges (12/2025-present) are fine.
 - No AI slop (avoid these words/phrases and any inflection of them: {banned_phrases}). Short sentences. Real metrics only.
 - Profile: "I" voice, 2 to 3 sentences. Compose it ONLY from facts in the SOURCE BUNDLE, ordered and emphasised for {role}. Introduce nothing not in the bundle. No motivations, aspirations, or company-specific claims. Any number in the profile must appear in the SOURCE BUNDLE.
@@ -66,6 +66,104 @@ EDUCATION
 _SKILLS_ATTRIBUTION_PROMPT_RULE = (
     "- You may name a skill in a WORK EXPERIENCE bullet only if an entry that bullet "
     "cites lists that skill. If no cited entry lists it, leave it out.\n")
+
+# The SKILLS section's LINE SHAPE (#257), and the THIRD thing `skills_requested` gates.
+#
+# Row 2 (cv/validate.py's UNSOURCED SKILL) compares the WHOLE stripped line against the
+# source blocks as one token SEQUENCE, so a line is sourced only if everything on it
+# appears contiguously, in that order, in one block. Nothing said so. The format contract
+# below shows a bare `- skill` placeholder and states no rule of its own (it still does --
+# this rule is what carries the constraint), so a model formatting the section the ordinary
+# way a human writes one -- a category label, several terms comma-joined -- produced lines
+# the gate refused WHOLE, on a CV whose every individual term the bundle declared.
+# Measured through cv/engine.py::run_one: `skipped-gate`, `UNSOURCED SKILL 'Observability:
+# Widget, Gadget': not in the bundle`, and the backend called TWICE for it -- compose then
+# retry-compose, no audit, against compose-then-audit on the clean draft, so the missing
+# sentence costs a whole second composition per lead. Backend-dependent and therefore
+# silent -- a model that happens
+# to emit one term per line passes, so the feature reads as working until the fallback
+# takes over and fails the same lead twice.
+#
+# Stated as a RULE and not by widening the gate. The gate is correct: no entry declares a
+# comma-joined group as a single skill, and cv/parse.py's LOCATION refusal is the standing
+# precedent for what happens when a check is loosened to accept what the prompt failed to
+# ask for -- there the only actionable reading of the refusal was "invent a city".
+#
+# It lives HERE, in the rules list, rather than inside `_SKILLS_PROMPT_BLOCK` as #257's own
+# suggested patch had it: that block sits under "Output the CV in EXACTLY this format" and
+# is a literal template, where every other section's entry is a placeholder the model
+# substitutes for (`- cert`, `- university, dates | degree`). Prose inside it is prose the
+# model may reasonably echo as content. Every other prohibition in this prompt is a rules
+# bullet, and this is a prohibition.
+#
+# WHAT IT DOES NOT SAY, deliberately. #257 proposed explaining the ban as "a grouped line
+# is checked as ONE skill string and no entry declares one". Measured, that is FALSE:
+# punctuation inside a source block is transparent to `_WORD_RE` (see `bundle_sources`,
+# whose own note is that a block seam is the only seam it preserves), so a comma- or
+# slash-joined line whose terms appear in the bundle's own ORDER is a contiguous
+# subsequence and passes clean. The rule therefore forbids MORE than the gate refuses, and
+# the reason it gives is one that holds: there are labelled lines the gate refuses even when
+# they name a single real skill, and reordered ones it refuses too. Both of those are
+# EXISTENCE claims and neither is a universal, which is the qualifier an earlier revision of
+# this very comment dropped while the rule text itself kept it ("in an order they do not
+# use"). Measured: with an entry body reading `Example Category: Example Query and more.`,
+# the labelled line `- Example Category: Example Query` is CLEAN, because the user's own
+# prose happens to carry that token run -- and the same holds for a reordering the body
+# happens to spell. One skill per line is a SUFFICIENT
+# condition for a clean line, not a necessary one -- and the alternative, telling the model
+# grouping is fine so long as it preserves the bundle's order, is a rule a model cannot
+# reliably apply whose every failure costs a whole retry. Over-restricting costs nothing
+# here: a one-per-line SKILLS section is an ordinary CV shape.
+# `tests/test_cv_skills_containment.py`'s #257 tests pin both directions -- each shape this
+# rule names HAS an instance row 2 really refuses, AND the in-order grouped line really
+# passes. Note the first of those is an existence claim, not a universal one: "commas" does
+# NOT mean every comma-joined line is refused, which is precisely what the second test
+# measures.
+#
+# It names the THREE blocks `bundle_sources` actually builds row 2's vocabulary from -- an
+# entry's `Skills:` list, an entry's body, the baseline -- and nothing wider, because an
+# affirmative "copy VERBATIM from X" is the one sentence in this prompt a model would follow
+# straight into a refusal. X must therefore be the pool the gate LICENSES, not the text the
+# model can SEE, and the rendered bundle carries strictly more than it licenses. Two
+# measured gaps, both of which an earlier cut of this rule left open:
+#
+#   the #165 SKILLS INVENTORY, which is framing -- adding one leaves `source_tokens`
+#   byte-identical, so a term visible only there is still `UNSOURCED SKILL`; and
+#
+#   an entry's own HEADING line (`[id] (company) title | metrics=...`), which is shown to the
+#   composer and contributes no block either -- a title-only or company-only term is refused.
+#
+# That second one is why this rule does NOT simply reuse the wording `_RULES`' framing bullet
+# and `bundle.py`'s `_DERIVED_NEGATIVE_PROMPT` share ("the BASELINE CV or a VERIFIED
+# EXPERIENCE ENTRY"). That phrasing is right for those two, which govern CLAIMS in general --
+# an employer name in the WORK section legitimately comes from the heading line -- and it is
+# one notch too wide HERE, where row 2 checks a skill specifically. A narrower rule nested
+# under a broader one, not a contradiction of it. Getting this wrong would re-create #257's
+# exact bug class inside #257's own fix: the prompt asking for something the gate refuses.
+#
+# The rule also contains no `--`: `_RULES` bans a double hyphen in the CV and `slop.py`'s
+# HARD tier rejects one, so a prompt that MODELS the token invites the output it forbids.
+# `test_each_gated_prompt_rule_is_its_own_bullet_in_the_rules_list` pins that with the
+# rendered `--` count, since this constant only reaches the prompt when skills are requested
+# and the pre-existing count assertion renders with them off.
+#
+# Gated on the SAME `skills_requested` the block and row 1's rule already are, never a
+# second test of its own (see `_SKILLS_ATTRIBUTION_PROMPT_RULE` above for the hazard a
+# second condition carries): a shape rule for a section the format contract never asks for
+# is an invitation to emit one, and on an un-annotated vault row 2 can license nothing for
+# it -- one guaranteed HARD violation per lead, which is SC5's failure exactly.
+#
+# Trailing newline, not leading, for the same reason as the rule above it: the placeholder
+# sits at column 0 of its own line in `_RULES`, so an empty value leaves the row 2 bullet
+# and the employer bullet adjacent with no blank line between.
+_SKILLS_FORMAT_PROMPT_RULE = (
+    "- ONE skill per line in the SKILLS section, copied VERBATIM from an entry's `Skills:` "
+    "list, an entry's body text, or the BASELINE CV. Never take one from an entry's heading "
+    "line or from the SKILLS INVENTORY. Never join several skills onto one line with commas "
+    "or slashes, and never prefix a line with a category label (`Languages:`, `Tools:`). "
+    "Each SKILLS line is checked as a SINGLE name against those three sources, so a category "
+    "label, or terms joined in an order they do not use, leaves the whole line unsourced and "
+    "the CV is rejected.\n")
 
 # The gated SKILLS section's format-contract example. Interpolated into `_RULES` only
 # when `build_prompt` is called with `skills_requested=True` -- see that function.
@@ -154,6 +252,8 @@ def build_prompt(bundle_text, jd, company, role, *, name, contact="",
                      banned_phrases=_banned_phrases_sentence(slop_allow),
                      skills_attribution_rule=(
                          _SKILLS_ATTRIBUTION_PROMPT_RULE if skills_requested else ""),
+                     skills_format_rule=(
+                         _SKILLS_FORMAT_PROMPT_RULE if skills_requested else ""),
                      skills_block=_SKILLS_PROMPT_BLOCK if skills_requested else ""),
         "",
         "=== THE ROLE (JD) ===",

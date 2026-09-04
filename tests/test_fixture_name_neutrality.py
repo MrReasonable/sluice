@@ -1837,6 +1837,29 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # `C#` survives), which sends it down the letter-leading arm instead.
     "...",
     "#",
+    #
+    # ---- Added by #257's line-shape fixtures (2026-09-04) ---------------------------
+    #
+    # A CATEGORY LABEL prefixed onto an already-rostered value, for the row 2 fixture
+    # proving a labelled line is refused even when it names a single REAL skill (which is
+    # what establishes that the defect is the label rather than the grouping). Answering
+    # this roster's question needs no outside knowledge for once: both halves are already
+    # here as invented, and the label follows the `Example <Word>` convention this roster
+    # itself asks for, so it names no product by construction.
+    #
+    # It replaced a bare `Tools:`, and the distinction is about WHERE a string sits, not
+    # about the word: a FIXTURE VALUE arrives here as a declared skill, where the question
+    # is whether it names a real product someone works with, so an ordinary noun still
+    # costs a ruling. The same commit ships `Tools:` in `cv/compose.py`'s shape rule, as an
+    # example of a FORBIDDEN line shape rather than a claimed skill, so THIS roster does not
+    # rule on it (tests/test_prompt_neutrality.py is the ratchet that reaches shipped prompt
+    # text, and it does). Do not read this entry as a finding that `Tools` is unsafe.
+    "Example Category: Example Query",
+    # Two already-rostered values joined by a SLASH, for the row 2 fixture proving the
+    # slash-joined shape the rule names has a refused instance too. The join character is
+    # the whole point of the value; both halves are already here as invented, so this
+    # ratchet's question needs no outside knowledge for this one either.
+    "Example Framework / Example Query",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
