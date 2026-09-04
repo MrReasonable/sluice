@@ -62,7 +62,7 @@ FROZEN_PREFIX_MAP = {"Example Alpha 31": "AL", "Example Beta 41": "BE",
                       "Example Alpha 51": "AL"}   # keys are the FULL company strings:
 # `_prefix` does `prefix_map.get(company) or company`, so a key that is a PREFIX of the
 # company falls through to deriving "EX" from the name and every id collides into one
-# sequence. Measured. tests/test_cv_bundle.py:8-12 already documents this trap.
+# sequence. Measured. This module's own header comment already documents the trap.
 
 FROZEN_BUNDLE_TEXT = """\
 === BASELINE CV (authoritative for dates/employers/certs) ===
@@ -191,7 +191,7 @@ def _frozen_bundle():
 
 def test_the_rendered_prompt_has_not_drifted():
     """`render_bundle`'s output IS the prompt the #60 ADVISORY audit sees
-    (cv/engine.py:653). It used to be the compose prompt too; since #165 the composer gets
+    (cv/engine.py::run_one). It used to be the compose prompt too; since #165 the composer gets
     `render_composer_bundle` and is frozen separately below. The pre-#174 text is frozen at
     the top of this file, so a refactor that changes presentation without changing any
     digit -- reordering fields, renaming `metrics=`, dropping the inter-entry blank line --
@@ -340,7 +340,7 @@ def test_a_duplicate_id_raises_naming_the_id_and_not_the_entry():
     defect shape one layer up.
 
     The message must name the ID and no part of the ENTRY: an entry carries the user's
-    company, title, metrics and body, and cv/engine.py:795 logs a failed run with %s.
+    company, title, metrics and body, and cv/engine.py::run_batch logs a failed run with %s.
     """
     b = {"baseline": "", "negatives": [],
          "entries": [{"id": "AL1", "company": "Example Alpha", "title": "A",

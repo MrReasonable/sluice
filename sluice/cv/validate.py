@@ -18,7 +18,7 @@ from sluice.cv.bundle import _WORD_RE, BundleSources
 # RENDERER delivers, not the WORK-bullet strip. render.strip_citations removes only
 # id-shaped [XX9] codes (render._CITE_RE), so a NON-id bracket like [500] SURVIVES
 # into the PDF and the profile check must see and check it. This pattern is
-# byte-identical to render._CITE_RE (render.py:10); test_profile_strip_matches_render_
+# byte-identical to render._CITE_RE (render.py::_CITE_RE); test_profile_strip_matches_render_
 # citation_shape pins that equality, because a comment cannot enforce it and a drift
 # silently reopens a fabricated-number-ships fail-open.
 #
@@ -211,8 +211,9 @@ def section_spans(cv_text):
         # which clears `in_skills` on the way through, and SKILLS itself re-enters the
         # run. A membership test repeated here could only be an equivalent mutant: it
         # would be unreachable for all five, and deleting it would leave the suite green.
-        # The set is asserted where it can actually be falsified -- `tests/test_cv_skills_
-        # containment.py::test_only_a_contract_heading_ends_the_run` drives each heading
+        # The set is asserted where it can actually be falsified:
+        # `tests/test_cv_skills_containment.py::test_only_a_contract_heading_ends_the_run`
+        # drives each heading
         # through this function, DERIVED from `tests/template_content.py`'s
         # `composer_headings()` (itself `{PROFILE, WORK EXPERIENCE}` plus `cv/parse.py`'s
         # `_TRAILING_SECTIONS`), never hand-listed, so a sixth contract heading added
@@ -407,7 +408,7 @@ def validate(cv_text, sources, employers=None, fabrication_decoys=None):
         # gate bug rather than a call-site one.
         #
         # The type ONLY, never the value: the stale argument is the user's whole CV source
-        # corpus and cv/engine.py:795 logs this exception with %s.
+        # corpus and cv/engine.py::run_batch logs this exception with %s.
         raise TypeError(
             f"validate() takes a BundleSources, not {type(sources).__name__} -- build it "
             "with cv.bundle.bundle_sources(bundle)")

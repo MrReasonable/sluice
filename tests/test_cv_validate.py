@@ -393,7 +393,7 @@ def test_at_zero_entries_the_negatives_no_longer_reach_the_profile_pool():
     into the baseline arm and its do-not-say figures became profile-permitted. Zero
     entries is reachable on any install before the user has written an Experience
     Library entry -- and an empty read is not a mere "no results" there, it fails the
-    WORK-bullet check closed (core/vault.py:1766-1774).
+    WORK-bullet check closed (core/vault.py::read_evidence).
 
     NOT gate-clean today, corrected: `- Ran things` carries no `[id]`, so `validate`
     already reports `UNCITED BULLET` for it, independent of anything this test is about.
@@ -721,7 +721,7 @@ def test_a_stale_text_caller_fails_loudly_without_echoing_the_bundle():
 
     The message names the type and NO PART of the value. The stale argument is the whole
     rendered bundle -- the user's baseline CV verbatim plus every entry's company, title,
-    metrics and body -- and cv/engine.py:795 logs a failed run with %s, so an
+    metrics and body -- and cv/engine.py::run_batch logs a failed run with %s, so an
     interpolated argument writes the user's CV source corpus into a log file. Asserting
     the absence is the load-bearing half: a `{sources}` spelling contains no `repr` and
     satisfies a naive "never repr" rule while leaking identically (a NamedTuple's str()

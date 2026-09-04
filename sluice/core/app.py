@@ -1923,7 +1923,7 @@ class Sluice:
         is False and every pending entry (post-`only`-filter) is reported `skipped`,
         which is what a caller prints. Gated on the asker's CLASS ATTRIBUTE
         (`asker.interactive`) rather than sys.stdin.isatty(), for the reason
-        onboard/ask.py:99-102 records: deriving it independently made the interactive
+        onboard/ask.py::TtyAsker records: deriving it independently made the interactive
         half unreachable under pytest, where isatty() is always False.
 
         `reviewed` is the EXACT text `Store.read_pending_evidence_text` just returned

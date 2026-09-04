@@ -56,7 +56,7 @@ class DossierBlocked(Exception):
     """A dossier fetch was refused by policy.
 
     The message is the reason SLUG ONLY -- never a url, host, or config entry.
-    cv/engine.py:268 does `_log.warning("dossier for %s failed: %s", note.ref, e)`,
+    cv/engine.py::run_one does `_log.warning("dossier for %s failed: %s", note.ref, e)`,
     so anything carried here is logged verbatim; that is the #67 leak shape.
     The host reaches the operator via the WARNING line in dossier_cache, which is
     the single place it is needed (to write an allowlist entry).

@@ -203,7 +203,7 @@ def render(*, sdist_url: str, sha256: str) -> str:
     # `if cv_cfg is not None:` drops the renderer row ENTIRELY on any load_cv_config error,
     # with exit 1 and the banner intact -- so refuting "dead" passes when the row is merely
     # ABSENT. A negative guard that finds nothing is indistinguishable from success.
-    # Row format is `f"{{component:12}} {{subject:32}} {{state:9}} ..."` (cli.py:1537).
+    # Row format is `f"{{component:12}} {{subject:32}} {{state:9}} ..."` (cli.py::_print_doctor).
     assert_match(/renderer\\s+cv\\.renderer\\s+ok/, report)
 
     # ...and independently of sluice's own output format, so a change to doctor's printing

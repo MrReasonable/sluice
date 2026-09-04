@@ -264,7 +264,7 @@ def test_dry_run_writes_nothing(tmp_path):
 
 
 def test_triage_classify_conflict_is_counted_and_batch_continues(tmp_path, titles, monkeypatch):
-    # #16 Task 6: a VaultConflict at the classify-pass apply site (engine.py:56)
+    # #16 Task 6: a VaultConflict at the classify-pass apply site (triage/engine.py::run)
     # must not abort the batch -- it is counted in report.failures and the
     # conflicted lead is left untouched, while the next lead still gets applied.
     accept, reject = titles
@@ -295,7 +295,7 @@ def test_triage_classify_conflict_is_counted_and_batch_continues(tmp_path, title
 
 def test_triage_judge_conflict_is_counted_and_batch_continues(tmp_path, titles, monkeypatch):
     # Symmetric to the classify-pass test above, targeting the judge-pass apply
-    # site (engine.py:92).
+    # site (triage/engine.py::run).
     accept, reject = titles
     v = Vault(str(tmp_path / "vault"))
     _note(v, "aaa.md", _fields("Example Conflict Co", accept[0].title()))  # sorts first -> conflicts

@@ -89,7 +89,7 @@ def test_a_blank_path_never_escapes_a_loader(
         label, cls, loader, fieldname, block, base, tmp_path):
     """`""` must never reach a consumer, from any of the three ways it can arise.
 
-    It is not merely untidy downstream. `app.py:118`'s `os.makedirs(os.path.dirname(p))`
+    It is not merely untidy downstream. `app.py`'s `os.makedirs(os.path.dirname(p))`
     has no `or "."`, so `""` raises FileNotFoundError out of `_save_seen`; and
     `deadletter_path("")` names a DIFFERENT #49 store from the one `track run` opened,
     so `track confirm` would report success against an empty database while the real

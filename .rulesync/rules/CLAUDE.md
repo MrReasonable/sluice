@@ -876,6 +876,18 @@ consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 - Comments explain *why* — the invariant being upheld, the bug being prevented, the trade-off taken.
   The existing code is dense with them and several encode real incidents; match that density rather
   than stripping it.
+- **Never cite a LINE NUMBER in a comment or docstring (#191).** Cite `file.py::symbol`, or the
+  file plus the claim quoted so `grep` finds it. A line number rots invisibly: any edit above it
+  moves the target while the citation still resolves, so a structural check passes and reads as
+  proof. Measured before the rule: of 30 line citations in live code, just ONE pointed at a blank
+  line and none past EOF, while at least five resolved to something unrelated — one claimed a
+  `set_tailored_cv` call logged an exception, cited identically from three files. That ratio is
+  the whole argument for banning the line number rather than range-checking it. `tests/test_citation_drift.py`
+  enforces both halves: the ban, and that a `::symbol` names a symbol that exists. It reads prose
+  through `tokenize`/`ast` rather than as raw text, because a regex over file bytes flags
+  `tests/test_no_leaked_files.py`'s grep-shaped fixture strings — a guard failing on its own
+  fixtures is one that gets deleted. `docs/superpowers/{specs,plans}` are out of scope, being
+  historical.
 - Conventional commits (`fix(triage): ...`, `ci: ...`, `docs: ...`). These are not decoration
   since #12: release-please reads the subjects to decide the next version and to draft the
   changelog, so a mistyped type silently changes what gets released.
