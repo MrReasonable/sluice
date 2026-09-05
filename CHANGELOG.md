@@ -40,6 +40,44 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.2](https://github.com/MrReasonable/sluice/compare/v2.9.1...v2.9.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **homebrew:** drop the redundant exit code brew audit rejects ([3f1e9e7](https://github.com/MrReasonable/sluice/commit/3f1e9e7114ce85db2f2cb62639016ffec9b1e959))
+
+**Correcting 2.9.1's note below: that release did not reach Homebrew either.** It said
+`brew upgrade` would move you to 2.9.1. It did not, and could not — 2.9.1's own
+`homebrew` job failed, so the tap was never pushed. If you install with Homebrew you are
+still on 2.6.0 until this release lands, at which point `brew update && brew upgrade
+job-sluice` moves you to **2.9.2**. The intervening versions never reached the tap and
+will not appear; Homebrew serves only the newest formula.
+
+Every other channel has been unaffected throughout. PyPI, Docker and the `.deb`/`.rpm`
+assets published normally for all of them.
+
+2.9.1 fixed the exit code the formula's smoke test asserts. It also began passing that
+code explicitly, and `brew audit` — which runs RuboCop, and which gates the release job —
+rejects restating a default:
+
+```
+FormulaAudit/Test: Passing 0 to shell_output is redundant
+```
+
+So the job failed on a different line of the same call. `shell_output` already defaults to
+0, and the assertion is unchanged in force with the argument gone: `brew test` still fails
+unless the command exits 0.
+
+Nothing in `sluice/` changed in either release. There is no behaviour difference on any
+other channel, and no migration note is owed: no config key, no default, no path and no
+status transition is affected.
+
+<!-- Stated as a correction rather than quietly superseded because 2.9.1's entry is
+published and tells Homebrew users to run a command that cannot work for them. The
+changelog is the one place a user checks what a version did; leaving a false instruction
+in it and fixing only the code would leave them believing they were upgraded. -->
+
 ## [2.9.1](https://github.com/MrReasonable/sluice/compare/v2.9.0...v2.9.1) (2026-09-05)
 
 
