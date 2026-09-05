@@ -1963,7 +1963,23 @@ class Vault:
             raise FileExistsError(
                 f"a verified {kind} entry is already named {slug!r}; pick another name, "
                 f"or edit that entry in the vault directly")
-        os.makedirs(inbox, exist_ok=True)
+        # `exist_ok=True` suppresses the error only when `inbox` is an existing
+        # DIRECTORY; anything else there (a regular file, a socket) still raises
+        # FileExistsError -- the SAME type as this method's two name-clash refusals,
+        # which no caller can then tell apart. That was not cosmetic: `mcpserver.
+        # propose_evidence` reports a FileExistsError as a recoverable `refused`
+        # meaning "that name is taken", so a broken vault came back as a name clash
+        # whose documented recovery -- pick another name -- can never succeed, and it
+        # arrived carrying the bare `[Errno 17] File exists: <absolute path>` this
+        # method's other two arms go out of their way to replace with a named message.
+        # Re-raised as NotADirectoryError: still an OSError, so an existing
+        # `except OSError` keeps catching it, but no longer a FileExistsError.
+        try:
+            os.makedirs(inbox, exist_ok=True)
+        except FileExistsError:
+            raise NotADirectoryError(
+                f"the {kind} inbox is not a directory: {inbox} -- move or remove "
+                f"whatever is there, then retry") from None
         path = os.path.join(inbox, f"{slug}.md")
         try:
             _write(path, text, exclusive=True)
