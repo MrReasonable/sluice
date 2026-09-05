@@ -956,11 +956,13 @@ extended #131, extended again #164 and #175) is the first one: a Model Context
 Protocol server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`,
 `health`, `list_evidence`) always, and the write-capable tools (`dismiss_lead`,
 `apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`) under
-`--write`. No COUNT of those is stated here on purpose: "five" stood in this
-paragraph, in `mcpserver.py`'s own module docstring, in `cli.py`'s `--write` help and
-in two other docs, and all five went stale together the moment #175 registered a
-sixth. `tests/functional/test_mcp_contract.py`'s exact-set `==` assertions pin the
-roster at both privilege levels; prose cannot.
+`--write`. No COUNT of those is stated here on purpose: "five" stood in this paragraph,
+in `mcpserver.py`'s own module docstring, in `build_server`, in `cli.py`'s `--write`
+help, in `docs/USAGE.md` and in both MCP test files, and every one went stale the moment
+#175 registered a sixth. No count of THOSE either — three reviewers tallied the stale
+statements and returned three different totals, which is the argument for enumerating
+rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
+assertions pin the roster at both privilege levels; prose cannot.
 
 `list_evidence` has a PROPOSE counterpart since #175 and still has no VERIFY
 counterpart at any privilege level -- that, not "read-only", is the standing property.

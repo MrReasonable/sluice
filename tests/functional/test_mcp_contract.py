@@ -265,9 +265,17 @@ def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_pa
     tests/test_mcpserver.py already covers. `cv_run`'s `backend` is schema-typed as an
     `enum` (pinned above in test_tools_list_under_write_true_returns_every_tool_with_exact_
     schemas, which is where 'every valid choice is accepted' is already covered without
-    duplicating that set here) -- this proves an invalid value past that schema still
-    reaches Sluice.backend's own role guard and comes back as a proper tool error either
-    way, rather than crashing the server.
+    duplicating that set here) -- this proves an invalid value comes back as a proper
+    tool error rather than crashing the server.
+
+    It does NOT prove the value reaches `Sluice.backend`'s role guard, which this
+    docstring claimed until #175 measured otherwise. `"bogus"` is rejected by pydantic's
+    ARGUMENT VALIDATION against that enum, which never enters the tool body at all --
+    which is also why the offending value survives into the message here while
+    `list_leads`' unknown-status ValueError above is redacted to "Error executing tool
+    list_leads": they are two different SDK paths, not one behaviour with an
+    inconsistency. The role guard is still exercised, at the direct-call layer in
+    tests/test_mcpserver.py, where no schema stands in front of it.
 
     cv.renderer is pointed at 'script' with a real (never-executed) file so compose_cv's
     renderer construction -- which runs BEFORE the backend role guard -- succeeds without
@@ -377,24 +385,28 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
 
     result = asyncio.run(_run())
     by_name = {t.name: t for t in result.tools}
+    # #175's whole scope in one line: a PROPOSE tool ships, a VERIFY tool does not --
+    # at this, the HIGHEST privilege level, which is the only level where the claim says
+    # anything (write=False forbids both by the exact-set assertion in the sibling test).
+    # Promotion to citable stays interactive-only; that is #164's central decision.
+    #
+    # Ordered BEFORE the exact-set `==` below, deliberately. Behind it this clause was
+    # unreachable -- the `==` raises first on any verify tool, so the specific message
+    # never rendered and the comment claiming it was "the readable diagnosis" was false
+    # of its own placement. The `==` is still what holds the property against an
+    # unanticipated name; this is the diagnosis, and now actually gets to be one.
+    # A substring, so `verify_evidence`, `evidence_verify` and `bulk_verify` all trip
+    # it; a future READ tool with `verify` in its name should be renamed rather than
+    # have this narrowed.
+    assert not [n for n in by_name if "verify" in n], (
+        f"a verify tool is registered at --write: {sorted(by_name)} -- promoting an "
+        f"evidence entry to citable is interactive-only (#164), and a second "
+        f"promotion path is a new trust root, not a convenience")
     assert set(by_name) == {
         "list_leads", "get_lead", "doctor", "health", "list_evidence",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
         "propose_evidence",
     }
-    # #175's whole scope in one line: a PROPOSE tool ships, a VERIFY tool does not --
-    # at this, the HIGHEST privilege level, which is the only level where the claim
-    # says anything (write=False forbids both by the set assertion above). Promotion
-    # to citable stays interactive-only; that is #164's central decision, and the
-    # exact-set `==` immediately above is what actually holds it against an
-    # unanticipated name. This clause is the readable diagnosis when it breaks --
-    # a substring, so `verify_evidence`, `evidence_verify` and `bulk_verify` all trip
-    # it, and a future read tool with `verify` in its name should be renamed rather
-    # than have this narrowed.
-    assert not [n for n in by_name if "verify" in n], (
-        f"a verify tool is registered at --write: {sorted(by_name)} -- promoting an "
-        f"evidence entry to citable is interactive-only (#164), and a second "
-        f"promotion path is a new trust root, not a convenience")
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
         assert "sluice" not in props, (
@@ -486,10 +498,23 @@ def test_call_tool_propose_evidence_lands_pending_and_never_citable(tmp_path):
     assert proposed.is_error is False
     body = json.loads(proposed.content[0].text)
     assert body["outcome"] == "proposed"
-    # Non-empty is the whole of `Store.propose_evidence`'s handle contract -- it is
-    # OPAQUE, so asserting anything about its SHAPE (that it is a path, that it ends
-    # in .md) would pin this test to the vault store rather than to the contract.
-    assert body["handle"]
+    # No filesystem path may reach an MCP client, and `Store.propose_evidence`'s handle
+    # IS the written path for the vault store -- so forwarding it disclosed the user's
+    # absolute vault directory, and the directory it names is the one a hand-placed
+    # note carrying `verified:` would be citable from. This module strips paths
+    # everywhere else for exactly that reason (`list_evidence` omits `path`, `get_lead`
+    # returns `slug` not `ref`), and nothing on `origin/main` disclosed the vault dir at
+    # any privilege level.
+    #
+    # Asserted over the WHOLE serialized response, not just the key that leaked: a
+    # `handle`-shaped value re-appearing under any other name is the same disclosure,
+    # and `"handle" not in body` alone would not see it.
+    vault_dir = str(tmp_path / "vault")
+    assert vault_dir not in proposed.content[0].text, (
+        f"the response discloses the vault path: {proposed.content[0].text}")
+    assert "handle" not in body, (
+        "the store's opaque handle is back in the response -- for the vault store it "
+        "is the absolute path of the written note")
     assert json.loads(citable.content[0].text)["count"] == 0, (
         "an MCP-proposed entry reached the CITABLE set -- the fabrication gate can "
         "now license a body an LLM authored")
