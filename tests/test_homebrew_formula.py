@@ -510,11 +510,15 @@ def test_the_formula_has_a_test_do_block_with_its_payoff_assertion():
 # what the renderer already carried, in a comment, when this broke.
 _EXPECTED_DOCTOR_EXIT_CODE = 0
 
-# Matches the explicit two-argument form only. `shell_output`'s second parameter DEFAULTS to 0,
-# so a future edit dropping it would leave the assertion working while removing the only thing
-# this guard can read -- the test says so rather than quietly matching both spellings.
+# BOTH spellings, with the code optional -- an omitted one means 0, which is `shell_output`'s
+# documented default. An earlier cut of this guard demanded the explicit two-argument form, on
+# the reasoning that a claim worth making is worth writing down. That was wrong in a way only
+# execution showed: `brew audit`'s RuboCop pass refuses a redundant `, 0`
+# (`FormulaAudit/Test`), so the form this guard required was the one form the release job
+# rejects, and 2.9.1's `homebrew` job failed on it. Requiring a spelling is what broke it;
+# reading either and comparing the MEANING is what this needs to do.
 _DOCTOR_EXIT_ASSERTION = re.compile(
-    r'shell_output\("#\{bin\}/job-sluice doctor --offline",\s*(?P<code>\d+)\)')
+    r'shell_output\("#\{bin\}/job-sluice doctor --offline"(?:,\s*(?P<code>\d+))?\)')
 
 
 def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_path, capsys):
@@ -580,12 +584,13 @@ def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_p
     formula = render(**FIXTURE)
     match = _DOCTOR_EXIT_ASSERTION.search(formula)
     assert match, (
-        f"the formula's `test do` block no longer asserts an explicit exit code for "
-        f"`doctor --offline`. `shell_output` defaults to 0, so dropping the argument keeps the "
-        f"assertion but removes the claim this guard reads -- state it explicitly:\n{formula}"
+        f"the formula's `test do` block no longer runs `doctor --offline` through "
+        f"`shell_output` at all, so nothing asserts its exit status any more:\n{formula}"
     )
-    assert int(match.group("code")) == _EXPECTED_DOCTOR_EXIT_CODE, (
-        f"the formula expects `doctor --offline` to exit {match.group('code')}, but a clean "
+    # An absent code is `shell_output`'s default, which IS 0 -- not "unasserted".
+    expected_in_formula = int(match.group("code")) if match.group("code") else 0
+    assert expected_in_formula == _EXPECTED_DOCTOR_EXIT_CODE, (
+        f"the formula expects `doctor --offline` to exit {expected_in_formula}, but a clean "
         f"install exits {_EXPECTED_DOCTOR_EXIT_CODE} (#243). `brew test` fails the release's "
         f"`homebrew` job on a mismatch, and the tap then goes on serving the PREVIOUS version "
         f"while every other channel ships -- which is what 2.7.0 and 2.8.0 did."
