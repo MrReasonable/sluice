@@ -1865,7 +1865,13 @@ class Sluice:
         sweep in tests/test_mcpserver.py matches a CALL by attribute name, so a facade
         method sharing a Store write method's name would be swept as a direct store
         write the moment mcpserver.py called it -- the same reason create_lead differs
-        from upsert and sign_off_cv differs from sign_off.
+        from upsert and sign_off_cv differs from sign_off. That stopped being
+        anticipatory at #175: `mcpserver.propose_evidence` calls this, so renaming this
+        method to match the Store member it wraps -- the obvious tidy-up, since every
+        other name here mirrors its store's -- turns that sweep red immediately.
+        Measured, not assumed: renaming the method and its call sites makes the sweep
+        report `call to .propose_evidence(...)`. The divergence is the point, not an
+        oversight.
 
         Never citable on its own, and the mechanism is the STORE's obligation, not this
         signature's: `fields` is a caller-supplied mapping and could carry `verified`
