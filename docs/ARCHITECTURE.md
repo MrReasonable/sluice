@@ -952,25 +952,36 @@ or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record
 track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
 builds one, calls one method, and formats the result for the terminal -- so a surface
 built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105,
-extended #131, extended again #164) is the first one: a Model Context Protocol
-server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`, `health`,
-`list_evidence`) always, and five write-capable tools (`dismiss_lead`,
-`apply_record`, `cv_run`, `cv_signoff`, `create_lead`) under `--write`.
-`list_evidence` has no write/verify counterpart at any privilege level. The original
-reason no longer holds and is recorded because the deferral outlived it: an evidence
-body reaches `cv/validate.py`'s fabrication-gate bundle verbatim, and while that gate
-recovered its ids by parsing the rendered bundle, `nums[cur] = set(...)` was an
-ASSIGNMENT rather than a union -- so an LLM-authored body shaped like a citation code
-REBOUND another entry's permitted numbers, and exposing a write tool would have handed
-that bypass to whatever calls this MCP server. #174 deleted that parse: the gate is
-handed a structural `BundleSources` and no body line can mint or rebind an id, so the
-blocker that deferral named is cleared and #175 is free to proceed on its own merits.
+extended #131, extended again #164 and #175) is the first one: a Model Context
+Protocol server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`,
+`health`, `list_evidence`) always, and the write-capable tools (`dismiss_lead`,
+`apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`) under
+`--write`. No COUNT of those is stated here on purpose: "five" stood in this
+paragraph, in `mcpserver.py`'s own module docstring, in `cli.py`'s `--write` help and
+in two other docs, and all five went stale together the moment #175 registered a
+sixth. `tests/functional/test_mcp_contract.py`'s exact-set `==` assertions pin the
+roster at both privilege levels; prose cannot.
+
+`list_evidence` has a PROPOSE counterpart since #175 and still has no VERIFY
+counterpart at any privilege level -- that, not "read-only", is the standing property.
+Proposing lands an entry under `_inbox/`, which `read_evidence` cannot see, so it is
+inert until a human promotes it; VERIFYING is what makes it citable, and a second
+promotion path is a new trust root rather than a convenience (#164's central
+decision, unchanged).
+
+What deferred the propose tool was the gate, not the store. An evidence body reaches
+`cv/validate.py`'s fabrication-gate bundle verbatim, and while that gate recovered its
+ids by parsing the rendered bundle, `nums[cur] = set(...)` was an ASSIGNMENT rather
+than a union -- so an LLM-authored body shaped like a citation code REBOUND another
+entry's permitted numbers, and a write tool would have handed that bypass to whatever
+calls this MCP server. #174 deleted that parse: the gate is handed a structural
+`BundleSources`, and no body line can mint or rebind an id.
 
 What survives is smaller. `bundle_sources` harvests every digit in an entry's own
 block, so a citation-shaped token in a body still contributes ITS digits to that entry
 -- the residual #174's design accepts, and the one
 `core/vault.py`'s `_refuse_citation_shaped_body` refuses outright on both evidence
-write paths. That guard, not the gate, is what an eventual write tool would rely on. Every write tool is a thin translation layer over
+write paths. That guard, not the gate, is what `propose_evidence` relies on. Every write tool is a thin translation layer over
 exactly one `Sluice` write method -- `sluice/mcpserver.py` itself contains no store
 write (AST-enforced) -- so a write tool can never become a second, undocumented
 write path for an invariant `Sluice`'s own methods already hold.

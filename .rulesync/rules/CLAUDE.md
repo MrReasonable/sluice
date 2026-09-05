@@ -632,14 +632,23 @@ against.) `EvidenceKind.fields` is the user-facing set only, and `cli.py` derive
 flags from that tuple, so listing `verified` there would generate a `--verified` flag — exactly
 what an agent shelling out to the CLI would reach for; and `verify` carries no `--all` and no
 `--yes`, because a bulk flag is the same
-hole one level up. The MCP server exposes `list_evidence` and nothing that proposes or verifies, at
-any `--write` level. `verify_evidence` itself is compare-and-set against the exact bytes a human
+hole one level up. The MCP server exposes `list_evidence` at every level and, since #175,
+`propose_evidence` under `--write` — and nothing that VERIFIES, at any level. That line is where
+it is for a reason: a proposal lands under `INBOX_SUBDIR`, which `read_evidence` cannot see, and
+cannot stamp the key (the same `_render_evidence_note` refusal above is what holds it, since
+`fields` is caller-supplied), so it is inert until a human promotes it. Do not read the
+trust-root sentence below as forbidding it, and do not read this one as licence to add the verify
+tool beside it. `verify_evidence` itself is compare-and-set against the exact bytes a human
 was shown, so an edit made after approval abstains rather than becoming citable — the same
 discipline `update_fields`' `require_status` uses, and reachable in practice, since the human sits
 at a prompt while their editor is free to save. Two things follow. The `verified:` key is
-STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a second promotion
-path — a bulk verifier, an MCP write tool, a `--yes` — is not a convenience but a new trust root,
-and would need the whole set of refusals above rebuilt around it. `EvidenceKind` carries TWO flags since #165, because
+STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a second PROMOTION
+path — a bulk verifier, an MCP verify tool, a `--yes` — is not a convenience but a new trust root,
+and would need the whole set of refusals above rebuilt around it. This list said "an MCP write
+tool" until #175, which made that reading actively wrong: `propose_evidence` IS an MCP write tool
+and is not a promotion path, so the phrase would have argued against the one thing on this axis
+that shipped while leaving the one that must not ship unnamed. What makes something a promotion
+path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carries TWO flags since #165, because
 the questions stopped having one answer: `read_by_composer` says the corpus reaches the composer's
 prompt, `cited_by_gate` says the fabrication gate may LICENSE its content. `experience` is both,
 `skills` is the first only (shown as framing, licensed by nothing), `stories` is neither, and

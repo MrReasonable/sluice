@@ -412,10 +412,12 @@ claude mcp add job-sluice -- job-sluice mcp serve
 ```
 
 `--write` additionally registers the write tools (`dismiss_lead`, `apply_record`, `cv_run`,
-`cv_signoff`, `create_lead`), each a thin layer over one facade method rather than a raw store
-write. It is a per-registration trust decision: a read-only server's `tools/list` genuinely omits
-their names and schemas rather than refusing them at call time. Nothing at any level can mark
-evidence verified — that stays a human action at a prompt.
+`cv_signoff`, `create_lead`, `propose_evidence`), each a thin layer over one facade method rather
+than a raw store write. It is a per-registration trust decision: a read-only server's `tools/list`
+genuinely omits their names and schemas rather than refusing them at call time. `propose_evidence`
+only queues an entry for review — it is not citable, and `list_evidence`'s default view cannot see
+it, until a human verifies it. Nothing at any level can mark evidence verified — that stays a human
+action at a prompt.
 
 ## Configuration
 

@@ -1,9 +1,15 @@
 """sluice/mcpserver.py -- a Model Context Protocol server: a second front-end over
 `Sluice`, exposing the read-only tools (list_leads, get_lead, doctor, health,
-list_evidence) to an MCP client (e.g. Claude Code) over stdio (#105), plus five
-write-capable tools (dismiss_lead, apply_record, cv_run, cv_signoff, create_lead)
-registered only when `build_server`/`serve` is called with write=True -- i.e.
-`job-sluice mcp serve --write` (#131).
+list_evidence) to an MCP client (e.g. Claude Code) over stdio (#105), plus the
+write-capable tools (dismiss_lead, apply_record, cv_run, cv_signoff, create_lead --
+#131 -- and propose_evidence, #175) registered only when `build_server`/`serve` is
+called with write=True -- i.e. `job-sluice mcp serve --write`.
+
+Deliberately no COUNT of the write tools stated anywhere in this module: "five" was
+written here, in `build_server`, in `cli.py`'s `--write` help and in three docs, and
+every one of them went stale on the same commit when #175 registered a sixth. The
+exact-set `==` assertions in tests/functional/test_mcp_contract.py are what pin the
+roster at both privilege levels; a prose count cannot, and a reader cannot verify one.
 
 The `mcp` package is imported in exactly ONE place: inside `build_server()`'s own
 function body. See docs/superpowers/plans/2026-08-12-mcp-server.md's Global Constraints
@@ -71,6 +77,25 @@ _CV_SIGNOFF_CONTENT_WARNING = (
 # calling agent reads the RESPONSE, and the structural warning is what rides along with it.
 _LIST_EVIDENCE_CONTENT_WARNING = (
     f"Each entry's title and fields {USER_AUTHORED_CONTENT_WARNING}")
+
+# Rides on every SUCCESSFUL `propose_evidence` response (#175), for the reason the
+# content warnings above ride on theirs: the tool's DESCRIPTION already says the entry
+# is not citable, but a description does not travel with each result -- the calling
+# agent reads the RESPONSE, and this is the fact it most needs from one.
+#
+# It states only the half that is true for EVERY kind. What `verify` actually BUYS
+# differs per kind (`EvidenceKind.cited_by_gate`: the gate licenses `experience`
+# alone, while `skills` reaches the composer as framing and `stories` reaches it not
+# at all), and the one correctly-keyed wording for that is `verify_outcome` in
+# sluice/evidence/commands.py -- a module the isolation sweep forbids importing here.
+# Restating it from memory is exactly the over-claim that helper exists to prevent: a
+# user who reads "verifying makes it citable" for a skills entry concludes their
+# skills are feeding their CVs and stops looking. So this says only that the entry is
+# NOT citable and names the command whose own output is keyed correctly.
+_PROPOSE_EVIDENCE_PENDING_DETAIL = (
+    "proposed only -- this entry is NOT citable by the CV fabrication gate and is not "
+    "visible to list_evidence's default view. A human must review it with "
+    "`job-sluice {kind} verify`; there is deliberately no tool here that promotes one.")
 
 
 class McpNotInstalled(RuntimeError):
@@ -221,26 +246,32 @@ def list_evidence(sluice: Sluice, kind: str, pending: bool = False) -> dict:
     constant rather than borrowing the scraped or derived wording -- see
     `_LIST_EVIDENCE_CONTENT_WARNING`.
 
-    Read-only, by design and by construction: there is no companion write or
-    verify tool registered anywhere in this module, at any --write privilege
-    level. `Sluice.add_evidence` (sluice/core/app.py) -- the facade method a write
-    tool would wrap, named `add_evidence` rather than `propose_evidence` so
-    tests/test_mcpserver.py's own isolation sweep cannot mistake a call to it for
-    a direct Store write call -- is deferred to #175 (blocked on #174) precisely
-    because splicing an LLM-authored body into the evidence corpus would hand
-    an MCP caller a fabrication-gate bypass: `cv/validate.py`'s
-    `nums[cur] = set(...)` is an ASSIGNMENT, not a union, so a body line shaped
-    like a bundle citation code rebinds another entry's permitted numbers.
+    This tool has a PROPOSE counterpart since #175 (`propose_evidence`, at --write)
+    and still has no VERIFY counterpart at any privilege level, which is the
+    distinction that matters rather than "read-only" -- the wording here until #175
+    shipped. Proposing lands an entry in the inbox `read_evidence` cannot see, so it
+    is inert; VERIFYING is what makes it citable, and a second promotion path is a
+    new trust root rather than a convenience. #164's central decision was that
+    promotion stays interactive-only, and it is unchanged.
 
-    The load-bearing proof this stays true is the exact-set `==` assertions in
-    tests/functional/test_mcp_contract.py: they enumerate the COMPLETE
-    registered-tool set at both privilege levels, so ANY future addition, under
-    ANY name, breaks them and forces a conscious update.
-    test_no_evidence_write_or_verify_tool_is_registered_at_any_privilege_level
-    (tests/test_mcpserver.py) is a narrower, defense-in-depth NAME-PATTERN sweep
-    on top of that -- a readable early failure for the names already anticipated
-    (see its own docstring for exactly which), not itself the reason the property
-    holds.
+    What deferred the propose tool to #175 was #174, closed 2026-08-25: `validate()`
+    used to re-parse the rendered bundle TEXT, where `nums[cur] = set(...)` is an
+    ASSIGNMENT rather than a union, so a body line shaped like a bundle citation code
+    rebound another entry's permitted numbers and a fabricated figure cleared the
+    gate. That reasoning rested on a body only ever being hand-typed, which an MCP
+    write tool falsifies. #174 hands `validate()` the true id list from
+    `build_bundle`'s own structured entries instead, so no line of body text can mint
+    or rebind a citable `[id]` -- which is what made #175 shippable, and the reason
+    to re-read that closure before widening anything here.
+
+    The load-bearing proof the VERIFY half stays true is the exact-set `==`
+    assertions in tests/functional/test_mcp_contract.py: they enumerate the COMPLETE
+    registered-tool set at both privilege levels, so ANY future addition, under ANY
+    name, breaks them and forces a conscious update.
+    test_only_propose_evidence_and_only_at_write_true_is_registered
+    (tests/test_mcpserver.py) is a narrower, defense-in-depth NAME-PATTERN sweep on
+    top of that -- a readable early failure for the names already anticipated (see
+    its own docstring for exactly which), not itself the reason the property holds.
 
     `kind` reaches Sluice.list_evidence unvalidated here -- an unknown kind raises
     ValueError naming the valid kinds (Store.read_evidence's own contract), which
@@ -616,17 +647,69 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     return out
 
 
+def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
+                     body: str = "") -> dict:
+    """Propose ONE evidence entry for a human to review (#175, deferred out of #164).
+    Lands in the pending inbox, which `read_evidence` cannot see -- so the entry is
+    invisible to the CV fabrication gate, and to `list_evidence`'s own default view,
+    until a human runs `job-sluice <kind> verify`. Write tool.
+
+    There is deliberately no companion VERIFY tool, at this or any privilege level.
+    Promotion to citable stays interactive-only: that is #164's central decision, and
+    a second promotion path -- a bulk verifier, an MCP write tool, a `--yes` -- is a
+    new trust root rather than a convenience. This tool is not one of those, and the
+    distinction is the whole reason it can ship: `Store.propose_evidence` must write
+    where `read_evidence` cannot see it, and must reject an undeclared field key BY
+    NAME -- `verified` among them -- rather than passing `fields` through to whatever
+    it writes. `fields` here IS such a caller-supplied mapping, so that store-side
+    rule, not this signature, is what holds the property.
+
+    Reaches the store through `Sluice.add_evidence`, whose name differs from the Store
+    member's precisely so tests/test_mcpserver.py's isolation sweep -- which matches a
+    call by attribute name alone -- cannot mistake this for a direct store write.
+
+    A NAME CLASH is reported as `outcome: "refused"` carrying the store's own message,
+    NOT raised, and that is a measured choice rather than a stylistic one. mcp 2.1.1
+    wraps every unhandled tool exception as `UnexpectedToolError("Error executing tool
+    <name>")` and discards the message -- measured against the real SDK for ValueError,
+    FileExistsError and OSError alike. Letting the refusal propagate would therefore
+    hand the caller a string indistinguishable from an unwritable vault, and the one
+    correct recovery (choose another name) would be unreachable, while the store's
+    message is the only thing that says WHICH set the name clashed in -- the inbox, or
+    the already-verified corpus. Reporting it instead mirrors `create_lead`'s
+    outcome/detail shape, this module's existing idiom for "the store declined".
+
+    Everything else still raises and degrades to an SDK tool error, the same way
+    `list_leads`' unknown-status ValueError does: the split follows the store's own
+    exception taxonomy, where a `FileExistsError` is a well-formed request declined
+    and a `ValueError` (unknown kind, undeclared field key, unusable name, content
+    that would not survive being read back) is a caller bug."""
+    try:
+        handle = sluice.add_evidence(kind=kind, name=name, fields=fields, body=body)
+    except FileExistsError as e:
+        # The store's OWN message, forwarded verbatim -- the same treatment
+        # `cmd_evidence_add` (sluice/evidence/commands.py) gives it, and for the same
+        # reason: it distinguishes a name already in the inbox from one already in the
+        # citable set, and only the store knows which. No `handle` key: nothing was
+        # written, so there is nothing to hand back, mirroring `create_lead`'s
+        # omission of `slug` on its own write-nothing outcomes.
+        return {"outcome": "refused", "detail": str(e)}
+    return {"outcome": "proposed", "handle": handle,
+            "detail": _PROPOSE_EVIDENCE_PENDING_DETAIL.format(kind=kind)}
+
+
 def build_server(config, write: bool = False):
     """Build one `Sluice(config)`, register the read tools (list_leads, get_lead,
-    doctor, health, list_evidence) always plus, when write=True, the five
-    write-capable tools (#131) -- dismiss_lead, apply_record, cv_run, cv_signoff,
-    create_lead -- and return the constructed (NOT yet running) MCPServer. `mcp` is
-    imported HERE and nowhere else -- see the module docstring.
+    doctor, health, list_evidence) always plus, when write=True, the write-capable
+    tools -- dismiss_lead, apply_record, cv_run, cv_signoff, create_lead (#131) and
+    propose_evidence (#175) -- and return the constructed (NOT yet running)
+    MCPServer. `mcp` is imported HERE and nowhere else -- see the module docstring,
+    which also says why no COUNT of those tools appears in this file.
 
     write=False is the default: every existing `claude mcp add job-sluice --
     job-sluice mcp serve` registration stays read-only across this upgrade, and a
-    read-only server's tools/list genuinely omits the five write tools' names and
-    schemas too, not merely refusing them at call time -- shrinking what an agent
+    read-only server's tools/list genuinely omits every write tool's name and
+    schema too, not merely refusing them at call time -- shrinking what an agent
     steered by prompt-injected content it just read through get_lead could even
     attempt to call. `write` is a flag on `serve`, not a config key: a
     per-registration trust decision about one client, not a property of the install.
@@ -743,6 +826,18 @@ def build_server(config, write: bool = False):
             scanner ingested. Lands at status=new; run triage to promote it."""
             return create_lead(sluice, title, company, url, location=location,
                                salary=salary, job_type=job_type, source=source)
+
+        @mcp_server.tool(name="propose_evidence")
+        def propose_evidence_tool(kind: str, name: str, fields: dict[str, str],
+                                  body: str = "") -> dict:
+            """Propose one evidence entry ('experience', 'skills', 'stories') for a
+            human to review. `fields` takes that kind's own declared field names
+            (`job-sluice <kind> add --help` lists them); an undeclared key is
+            refused. The entry is NOT citable by the CV gate and NOT visible to
+            list_evidence's default view until a human runs `job-sluice <kind>
+            verify` -- there is deliberately no tool here that promotes one. A name
+            already taken comes back as outcome="refused", not an error."""
+            return propose_evidence(sluice, kind, name, fields, body=body)
 
     return mcp_server
 
