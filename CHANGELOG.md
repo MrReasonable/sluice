@@ -40,6 +40,49 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.3](https://github.com/MrReasonable/sluice/compare/v2.9.2...v2.9.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **homebrew:** assert the doctor row against the view that prints it ([b8ddbe6](https://github.com/MrReasonable/sluice/commit/b8ddbe655092957da71a00d5eb3626eb0be538ce))
+
+**Third repair attempt for the Homebrew channel, and the previous two notes were wrong.**
+
+2.9.1's entry said `brew upgrade` would move you to 2.9.1. 2.9.2's said the same for
+2.9.2. Neither was true — each release's `homebrew` job failed on a different defect, so
+the tap has not moved from 2.6.0 since 2026-09-03. **This note deliberately does not make
+that claim a third time.** After this release, check what you actually have:
+
+```
+brew update && brew info MrReasonable/tap/job-sluice
+```
+
+Every other channel has published normally throughout. PyPI, Docker and the `.deb`/`.rpm`
+assets carry every version; only the tap is behind.
+
+One upstream change caused all three failures. `2.7.0` made `doctor` print a verdict by
+default and exit 0 on a clean install, and the formula's smoke test depended on **both**
+the exit code and the old output:
+
+| release | what failed |
+|---|---|
+| 2.7.0–2.9.0 | the test asserted `doctor` exits 1; it exits 0 |
+| 2.9.1 | the fix passed the exit code explicitly, which `brew audit` rejects as redundant |
+| 2.9.2 | the test asserted a table row; the table now needs `--verbose`, and the default view omits rows that are already `ok` |
+
+This release fixes the third, and adds a check that runs `doctor` the way the formula asks
+for it and fails if the row it asserts is not there — the defect class rather than the
+instance.
+
+Nothing in `sluice/` changed in any of the three. There is no behaviour difference on any
+channel, and no migration note is owed: no config key, no default, no path and no status
+transition is affected.
+
+<!-- The `test(release)` commit gets no user-facing line: it excludes `.worktrees/` from an
+internal release-marker sweep, which only ever affected contributors running the suite from
+a git worktree. No shipped artefact is involved. -->
+
 ## [2.9.2](https://github.com/MrReasonable/sluice/compare/v2.9.1...v2.9.2) (2026-09-05)
 
 
