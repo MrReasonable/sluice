@@ -958,10 +958,10 @@ Protocol server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`
 `apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`) under
 `--write`. No COUNT of those is stated here on purpose: "five" stood in this paragraph,
 in `mcpserver.py`'s own module docstring, in `build_server`, in `cli.py`'s `--write`
-help, in `docs/USAGE.md` and in both MCP test files, and every one went stale the moment
-#175 registered a sixth. No count of THOSE either — three reviewers tallied the stale
-statements and returned three different totals, which is the argument for enumerating
-rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
+help, in `docs/USAGE.md` and in both MCP test files, and every one went stale the
+moment #175 registered a sixth. No count of THOSE either — three reviewers tallied
+the stale statements and returned three different totals, which is the argument for
+enumerating rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
 assertions pin the roster at both privilege levels; prose cannot.
 
 `list_evidence` has a PROPOSE counterpart since #175 and still has no VERIFY

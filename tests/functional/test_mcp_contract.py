@@ -565,11 +565,17 @@ def test_call_tool_propose_evidence_refuses_a_name_already_taken(tmp_path):
     refused = json.loads(second.content[0].text)
     assert refused["outcome"] == "refused"
     assert "handle" not in refused, "a refusal wrote nothing, so it has no handle"
-    # The store's OWN message, forwarded verbatim: it is the only thing that says
-    # WHICH set the name clashed in (the inbox, or the already-citable corpus), and
-    # only the store knows. Asserted by a substring of the name rather than the whole
-    # message so the store stays free to reword it.
-    assert "Example platform rebuild".lower().split()[0] in refused["detail"].lower()
+    # The store's OWN message, forwarded verbatim: it is the only thing that says WHICH
+    # set the name clashed in (the inbox, or the already-citable corpus), and only the
+    # store knows. Asserted on the REDUCED SLUG rather than the whole message, so the
+    # store stays free to reword the sentence around it -- but the slug itself is the
+    # part a caller acts on, since it is the identity `job-sluice <kind> verify` lists.
+    #
+    # It used to assert `"Example platform rebuild".lower().split()[0]`, which is just
+    # "example" -- satisfied by almost any message this suite could produce, including
+    # one naming a completely different entry.
+    assert "example-platform-rebuild" in refused["detail"].lower(), (
+        f"the refusal does not name the clashing entry: {refused['detail']!r}")
     assert json.loads(pending.content[0].text)["count"] == 1, (
         "the refused second call still wrote an entry")
 
