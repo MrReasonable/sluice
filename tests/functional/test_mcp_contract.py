@@ -1,7 +1,7 @@
-"""MCP registration contract (#105, extended by #131, extended again by #164):
-`tools/list` reflects the real tools -- the read-only tools (list_leads, get_lead,
-doctor, health, list_evidence) under the default write=False, plus the five write
-tools under write=True -- names, and schemas that never leak the injected
+"""MCP registration contract (#105, extended by #131, #164 and #175): `tools/list`
+reflects the real tools -- the read-only tools (list_leads, get_lead, doctor, health,
+list_evidence) under the default write=False, plus the write tools under write=True
+-- names, and schemas that never leak the injected
 `sluice` parameter (the property decision #4's nested-closure shape in
 sluice/mcpserver.py exists to guarantee) -- and a real `call_tool(...)` round-trips
 through the SDK's own dispatch into the real functions, including one full
@@ -33,6 +33,10 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
 
     result = asyncio.run(_run())
     by_name = {t.name: t for t in result.tools}
+    # #175: `propose_evidence` joins the WRITE tier, so it must be absent here. This
+    # exact-set `==` is what enforces that -- deliberately not a separate `not in`
+    # clause beside it, which would only restate what the set already says while
+    # being free to go stale on its own.
     assert set(by_name) == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
@@ -334,9 +338,13 @@ def test_call_tool_cv_run_round_trips_slop_and_voice_flags_through_real_json(
     assert UNTRUSTED_DERIVED_CONTENT_WARNING in payload["content_warning"]
 
 
-# #131: the five write tools (dismiss_lead, apply_record, cv_run, cv_signoff,
-# create_lead) are registered only when build_server(config, write=True) is called --
-# the tests above all use the default write=False and so never see them. The two
+# #131: the write tools (dismiss_lead, apply_record, cv_run, cv_signoff, create_lead,
+# plus #175's propose_evidence) are registered only when build_server(config, write=True)
+# is called -- deliberately NO COUNT stated here. This comment read "the five write
+# tools" and was already wrong the moment #175 registered a sixth, which is this repo's
+# most-repeated finding shape applied to its own test file. The exact-set `==`
+# assertions below are what pin the roster; a prose count cannot and never could.
+# The tests above all use the default write=False and so never see them. The two
 # tools/list tests below prove that omission/inclusion is REAL at the SDK layer (a
 # reviewer could accept Task 11's `if write:` structure while still doubting whether
 # tools/list genuinely reflects it), and the round-trip tests below that prove one
@@ -353,8 +361,11 @@ def test_tools_list_under_default_write_false_returns_exactly_the_original_read_
     result = asyncio.run(_run())
     names = {t.name for t in result.tools}
     assert names == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}, (
-        "the five write tools must be genuinely ABSENT from tools/list under the "
-        "default (no --write) registration, not merely refusing at call time")
+        "every write tool must be genuinely ABSENT from tools/list under the default "
+        "(no --write) registration, not merely refusing at call time -- #175's "
+        "propose_evidence included, since a read-only registration is exactly the one "
+        "an agent steered by content it just read through get_lead should not be able "
+        "to reach the evidence corpus from")
 
 
 def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
@@ -369,7 +380,21 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert set(by_name) == {
         "list_leads", "get_lead", "doctor", "health", "list_evidence",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
+        "propose_evidence",
     }
+    # #175's whole scope in one line: a PROPOSE tool ships, a VERIFY tool does not --
+    # at this, the HIGHEST privilege level, which is the only level where the claim
+    # says anything (write=False forbids both by the set assertion above). Promotion
+    # to citable stays interactive-only; that is #164's central decision, and the
+    # exact-set `==` immediately above is what actually holds it against an
+    # unanticipated name. This clause is the readable diagnosis when it breaks --
+    # a substring, so `verify_evidence`, `evidence_verify` and `bulk_verify` all trip
+    # it, and a future read tool with `verify` in its name should be renamed rather
+    # than have this narrowed.
+    assert not [n for n in by_name if "verify" in n], (
+        f"a verify tool is registered at --write: {sorted(by_name)} -- promoting an "
+        f"evidence entry to citable is interactive-only (#164), and a second "
+        f"promotion path is a new trust root, not a convenience")
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
         assert "sluice" not in props, (
@@ -399,6 +424,14 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert schema_props["confirm_token"]["default"] is None
     assert set(by_name["create_lead"].input_schema["properties"]) == {
         "title", "company", "url", "location", "salary", "job_type", "source"}
+    # #175. `fields` is the caller-supplied mapping `Store.propose_evidence`'s contract
+    # requires a store to reject an undeclared key from BY NAME -- `verified` among
+    # them. Pinning the property SET is what turns a `verified` parameter sprouting on
+    # this tool into a test failure rather than a silent new trust root, and it is the
+    # only place that check can live: the store's refusal is keyed on the mapping's
+    # CONTENTS, which no schema assertion can reach.
+    assert set(by_name["propose_evidence"].input_schema["properties"]) == {
+        "kind", "name", "fields", "body"}
 
 
 def test_call_tool_dismiss_lead_round_trips_through_the_real_dispatch(tmp_path):
@@ -419,6 +452,101 @@ def test_call_tool_dismiss_lead_round_trips_through_the_real_dispatch(tmp_path):
     dismissed, fetched = asyncio.run(_run())
     assert json.loads(dismissed.content[0].text)["outcome"] == "dismissed"
     assert json.loads(fetched.content[0].text)["status"] == "dismiss"
+
+
+def test_call_tool_propose_evidence_lands_pending_and_never_citable(tmp_path):
+    """#175's load-bearing round trip, driven through the real SDK dispatch: an entry
+    an MCP CLIENT proposed reaches the PENDING queue and does NOT reach the citable
+    set. That gap is the entire safety argument for shipping a write tool here at all
+    -- `read_evidence` cannot see the inbox, so an LLM-authored body is invisible to
+    the CV fabrication gate until a human runs `job-sluice <kind> verify`.
+
+    Read back through this server's OWN `list_evidence` tool rather than off the
+    vault, deliberately: `pending=False` is the view the composer's corpus is built
+    from, so a proposal surfacing THERE is precisely the harm, and asking the same
+    question an agent would ask is what proves the two views disagree about this
+    entry. A vault read would prove a file landed somewhere and nothing about which
+    reader can see it."""
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            proposed = await client.call_tool("propose_evidence", {
+                "kind": "experience", "name": "Example platform rebuild",
+                "fields": {"Company": "Example Ltd", "Best For": "platform"},
+                "body": "Rebuilt the ingest path.",
+            })
+            citable = await client.call_tool(
+                "list_evidence", {"kind": "experience", "pending": False})
+            pending = await client.call_tool(
+                "list_evidence", {"kind": "experience", "pending": True})
+            return proposed, citable, pending
+
+    proposed, citable, pending = asyncio.run(_run())
+    assert proposed.is_error is False
+    body = json.loads(proposed.content[0].text)
+    assert body["outcome"] == "proposed"
+    # Non-empty is the whole of `Store.propose_evidence`'s handle contract -- it is
+    # OPAQUE, so asserting anything about its SHAPE (that it is a path, that it ends
+    # in .md) would pin this test to the vault store rather than to the contract.
+    assert body["handle"]
+    assert json.loads(citable.content[0].text)["count"] == 0, (
+        "an MCP-proposed entry reached the CITABLE set -- the fabrication gate can "
+        "now license a body an LLM authored")
+    pending_body = json.loads(pending.content[0].text)
+    assert pending_body["count"] == 1, (
+        "the proposal did not reach the pending queue either, so the assertion above "
+        "would hold just as well for a tool that wrote nothing at all")
+    # None, not "" -- the citability key is ABSENT on a proposal, and a verified entry
+    # carries the review DATE there. Asserted because it is the discriminating value:
+    # `count == 0` above would also hold for a proposal that somehow arrived stamped
+    # but filed out of the citable directory.
+    assert pending_body["entries"][0]["verified"] is None
+
+
+def test_call_tool_propose_evidence_refuses_a_name_already_taken(tmp_path):
+    """A second proposal at the same name is REFUSED and reported as a structured
+    outcome, not raised. Both halves matter and for different reasons.
+
+    Refused: `Store.propose_evidence` refuses rather than overwrites, so an agent
+    cannot silently replace an entry a human already reviewed the name of.
+
+    Structured: mcp 2.1.1 wraps EVERY unhandled tool exception as
+    `UnexpectedToolError("Error executing tool <name>")` and discards the message --
+    measured against the real SDK for ValueError, FileExistsError and OSError alike
+    (the neighbouring cv_run test's surviving "bogus" comes from pydantic's own enum
+    VALIDATION, which never enters the tool body, not from an exception surviving the
+    wrapper). So letting FileExistsError propagate would hand the agent a string that
+    cannot be told apart from an unwritable vault, and the one correct recovery --
+    pick another name -- would be unreachable."""
+    args = {"kind": "experience", "name": "Example platform rebuild",
+            "fields": {"Company": "Example Ltd"}, "body": "Rebuilt the ingest path."}
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(vault_dir=str(tmp_path / "vault")), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            first = await client.call_tool("propose_evidence", args)
+            second = await client.call_tool("propose_evidence", args)
+            pending = await client.call_tool(
+                "list_evidence", {"kind": "experience", "pending": True})
+            return first, second, pending
+
+    first, second, pending = asyncio.run(_run())
+    assert json.loads(first.content[0].text)["outcome"] == "proposed"
+    assert second.is_error is False, (
+        "the refusal reached the client as an SDK error, which discards the store's "
+        "own message -- see this test's docstring")
+    refused = json.loads(second.content[0].text)
+    assert refused["outcome"] == "refused"
+    assert "handle" not in refused, "a refusal wrote nothing, so it has no handle"
+    # The store's OWN message, forwarded verbatim: it is the only thing that says
+    # WHICH set the name clashed in (the inbox, or the already-citable corpus), and
+    # only the store knows. Asserted by a substring of the name rather than the whole
+    # message so the store stays free to reword it.
+    assert "Example platform rebuild".lower().split()[0] in refused["detail"].lower()
+    assert json.loads(pending.content[0].text)["count"] == 1, (
+        "the refused second call still wrote an entry")
 
 
 def test_call_tool_concurrency_sanity_check_reaches_dismiss_lead_under_overlap(tmp_path):

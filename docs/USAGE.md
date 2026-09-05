@@ -628,11 +628,13 @@ does not mean citable for every kind: the CV fabrication gate licenses the Exper
 Library alone, and since #165 a verified `skills` entry reaches the composer as framing
 without becoming citable. A non-empty result carries a `content_warning` --
 entry text is written by the user, and reaches the calling agent as data to read, never
-as instructions to follow. Deliberately read-only: there is no MCP tool anywhere that
-proposes or verifies an entry (see `sluice/mcpserver.py`'s `list_evidence` docstring for
-why).
+as instructions to follow. Proposing an entry needs `--write` (`propose_evidence`,
+below); **verifying one is not possible through MCP at any privilege level** -- there is
+no such tool, deliberately, because verification is what makes an entry citable and
+promotion stays interactive-only (`job-sluice <kind> verify`). See
+`sluice/mcpserver.py`'s `list_evidence` docstring for why.
 
-**With `--write`**, five more tools are registered:
+**With `--write`**, these further tools are registered:
 
 - `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
@@ -664,10 +666,23 @@ why).
   write nothing and so never have a slug to report -- `created`/`updated`/
   `merged` always carry the slug of the note this call actually touched, the
   store's own answer, never a guess.
+- `propose_evidence(kind, name, fields, body="")` -- propose one evidence entry for
+  a human to review. `fields` takes that kind's own declared field names (the same
+  set `job-sluice <kind> add` exposes as flags); an undeclared key is refused by
+  name, `verified` among them. The entry lands in the pending inbox, which the
+  verified read cannot see, so it is **not citable by the CV fabrication gate and
+  not visible to `list_evidence`'s default view** until a human runs `job-sluice
+  <kind> verify`. Every successful response says so in its own `detail`. A name
+  already taken -- in the pending queue or in the verified corpus -- comes back as
+  `outcome: "refused"` carrying the store's own message, rather than as an error:
+  the MCP SDK discards an exception's text, and "pick another name" is the one
+  recovery a caller needs to be able to act on. Malformed input (an unknown kind, an
+  undeclared field key, an unusable name) still raises and reaches the client as a
+  tool error.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`
-genuinely omits the five write tools, not merely refusing them at call time.
+genuinely omits every write tool, not merely refusing them at call time.
 
 ## `job-sluice init`
 

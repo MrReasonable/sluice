@@ -41,6 +41,7 @@ from sluice.mcpserver import (
     health,
     list_evidence,
     list_leads,
+    propose_evidence,
 )
 
 
@@ -1291,6 +1292,138 @@ def test_create_lead_tool_refused_reports_no_slug(tmp_path):
     assert "slug" not in out
 
 
+# ── propose_evidence (#175) ──────────────────────────────────────────────────
+
+def _propose(app, **over):
+    """One well-formed `experience` proposal, with per-test overrides. `experience`
+    is the kind chosen throughout this block deliberately: it is the ONE kind
+    `EvidenceKind.cited_by_gate` marks as licensable by the CV fabrication gate, so
+    it is where a proposal reaching the citable set would actually do harm."""
+    args = {"kind": "experience", "name": "Example platform rebuild",
+            "fields": {"Company": "Example Ltd"}, "body": "Rebuilt the ingest path."}
+    args.update(over)
+    return propose_evidence(app, **args)
+
+
+def test_propose_evidence_tool_reports_the_stores_handle(tmp_path):
+    out = _propose(_app(tmp_path))
+    assert out["outcome"] == "proposed"
+    # OPAQUE by contract -- truthiness is the whole of what a caller may test, so
+    # asserting a shape here would pin the tool to the vault store's happens-to-be-a-path.
+    assert out["handle"]
+
+
+def test_propose_evidence_tool_is_not_visible_to_the_citable_read(tmp_path):
+    """The safety property, at the direct-call layer: `list_evidence`'s default
+    (verified-only) view cannot see a proposal, while the pending view can. Both
+    halves are asserted because the first alone also holds for a tool that wrote
+    nothing at all."""
+    app = _app(tmp_path)
+    _propose(app)
+    assert list_evidence(app, kind="experience")["count"] == 0
+    assert list_evidence(app, kind="experience", pending=True)["count"] == 1
+
+
+def test_propose_evidence_tool_cannot_stamp_the_citability_key_through_fields(tmp_path):
+    """`fields` is a caller-supplied mapping and `verified` is the key that grants
+    citability, so this is the injection an MCP write tool most obviously arms. It
+    is refused by `_render_evidence_note`'s undeclared-key-BY-NAME rule one layer
+    down -- NOT by anything in mcpserver.py, which is why this asserts the OUTCOME
+    (nothing pending, nothing citable) rather than a message: the refusal is the
+    store's obligation, and a store that met it differently would still pass.
+
+    A round-trip validator cannot substitute for that rule and this is the test that
+    says so: `{"verified": "2099-01-01"}` round-trips equal to itself."""
+    app = _app(tmp_path)
+    with pytest.raises(ValueError, match="verified"):
+        _propose(app, fields={"Company": "Example Ltd", "verified": "2099-01-01"})
+    assert list_evidence(app, kind="experience")["count"] == 0
+    assert list_evidence(app, kind="experience", pending=True)["count"] == 0
+
+
+def test_propose_evidence_tool_reports_a_name_clash_as_a_structured_refusal(tmp_path):
+    """A refusal is REPORTED, not raised -- see the tool's own docstring for the
+    measured SDK reason. `detail` carries the store's own message, which is the only
+    thing that says WHICH set the name clashed in."""
+    app = _app(tmp_path)
+    _propose(app)
+    out = _propose(app)
+    assert out["outcome"] == "refused"
+    assert "handle" not in out, "a refusal wrote nothing, so it has no handle"
+    assert out["detail"]
+    assert list_evidence(app, kind="experience", pending=True)["count"] == 1
+
+
+def test_propose_evidence_tool_refuses_a_name_already_in_the_citable_set(tmp_path):
+    """The OTHER clash `Store.propose_evidence` promises to refuse, and the one that
+    matters more: re-proposing a name a human already VERIFIED must not overwrite the
+    reviewed entry. Distinct from the pending-clash row above -- that one proves the
+    refusal path exists, this one proves it covers the set whose contents are live."""
+    app = _app(tmp_path)
+    _propose(app)
+    title = list_evidence(app, kind="experience", pending=True)["entries"][0]["title"]
+    # Promoted the way a human's `job-sluice experience verify` does it, through the
+    # store directly -- there is no tool for this, which is the point of the sweep in
+    # this file. `reviewed=` must be the exact stored bytes: verify_evidence is a
+    # compare-and-set against what the human was actually shown, so a stand-in string
+    # abstains (returns False) and this row would have proved nothing.
+    reviewed = app.store().read_pending_evidence_text("experience", title)
+    assert app.store().verify_evidence("experience", title, today="2026-01-01",
+                                       reviewed=reviewed)
+    assert list_evidence(app, kind="experience")["count"] == 1
+
+    out = _propose(app)
+    assert out["outcome"] == "refused"
+    entries = list_evidence(app, kind="experience")["entries"]
+    assert len(entries) == 1 and entries[0]["verified"], (
+        "the verified entry was overwritten or unstamped by a re-proposal")
+
+
+def test_propose_evidence_tool_says_in_the_response_that_the_entry_is_not_citable(tmp_path):
+    """The tool DESCRIPTION says an entry is not citable yet; this asserts the
+    RESPONSE says it too. Same reasoning the content-warning constants carry: a
+    description does not travel with each result, and the calling agent reads the
+    result. Without this row the whole `detail` could be deleted and nothing would
+    redden -- verified by deleting it.
+
+    Named-kind interpolation is asserted because the generic `<kind>` placeholder is
+    the easy regression: it leaves the agent to guess which of three commands to run."""
+    out = _propose(_app(tmp_path), kind="experience")
+    assert "NOT citable" in out["detail"]
+    assert "`job-sluice experience verify`" in out["detail"]
+
+
+def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path):
+    """The message must state only what holds for EVERY kind. What verification
+    actually buys is per-kind (`EvidenceKind.cited_by_gate`: the gate licenses
+    `experience` alone), and the correctly-keyed wording lives in `verify_outcome`
+    (sluice/evidence/commands.py) -- a module mcpserver.py's isolation sweep forbids
+    importing, so the standing risk is someone restating it here from memory.
+
+    Sweeps ALL THREE kinds rather than the one where the claim would be true, since a
+    hand-written over-claim would read correctly on `experience` and mislead on the
+    other two -- exactly the "your skills are feeding your CVs" failure #164's M2
+    finding named."""
+    app = _app(tmp_path)
+    for kind in EVIDENCE_KINDS:
+        detail = _propose(app, kind=kind, name=f"Example entry for {kind}",
+                          fields={}, body="")["detail"]
+        assert "citable" in detail, f"{kind}: the response stopped saying anything at all"
+        assert "NOT citable" in detail, (
+            f"{kind}: the response claims this entry IS citable, or is now vague about "
+            f"it -- an unverified entry is citable in no kind")
+
+
+def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
+    """Malformed INPUT stays a raise, unlike the name clash above. The line is the
+    store's own exception taxonomy: a refusal (FileExistsError) is a well-formed
+    request the store declined and the caller can act on; a ValueError is a caller
+    bug, which every other tool in this module already lets degrade to an SDK
+    error."""
+    with pytest.raises(ValueError):
+        _propose(_app(tmp_path), kind="not-a-kind")
+
+
 # ── isolation sweep (decision 2) ─────────────────────────────────────────────
 #
 # Widened per important finding #2 of the final whole-branch review: the ORIGINAL
@@ -1420,7 +1553,7 @@ def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
 
 def test_build_server_accepts_a_write_parameter():
     """Only the signature is checked here. The behavioural proof that write=False
-    omits the five write tools from tools/list lives at the SDK layer
+    omits every write tool from tools/list lives at the SDK layer
     (tests/functional/test_mcp_contract.py, Task 12)."""
     import inspect
 
@@ -1428,7 +1561,7 @@ def test_build_server_accepts_a_write_parameter():
     assert "write" in inspect.signature(build_server).parameters
 
 
-# ── evidence write/verify tool absence (#164, Task 9) ─────────────────────────
+# ── evidence verify-tool absence, propose-tool scoping (#164 Task 9, #175) ────
 
 def _tool_names(server) -> set[str]:
     """Enumerate registered tool names off a constructed MCPServer directly.
@@ -1460,8 +1593,17 @@ def _tool_names(server) -> set[str]:
 # positive should rename the tool or narrow this entry, having read the docstring below.
 _EVIDENCE_WRITE_SHAPED_NAMES = ("propose", "verify", "add_evidence")
 
+# What each privilege level is ALLOWED to match, per #175. Stated as an expected SET
+# compared with `==`, never as "no match" plus a carve-out: #175 turned this from a
+# universal prohibition into a per-level one, and the tempting way to make that edit
+# -- skip the sweep when write=True, or drop "propose" from the shapes above -- would
+# un-guard `verify` at exactly the level where forbidding it is the whole point.
+# Equality also fails when propose_evidence is MISSING at --write, so the row cannot
+# quietly become vacuous the way a one-sided `not any(...)` can.
+_EXPECTED_EVIDENCE_WRITE_TOOLS = {False: set(), True: {"propose_evidence"}}
 
-def test_no_evidence_write_or_verify_tool_is_registered_at_any_privilege_level():
+
+def test_only_propose_evidence_and_only_at_write_true_is_registered():
     """A defense-in-depth NAME-PATTERN sweep, not the property's actual proof. That
     proof is tests/functional/test_mcp_contract.py's exact-set `==` assertions: they
     enumerate the COMPLETE registered-tool set at both privilege levels, so ANY
@@ -1469,10 +1611,22 @@ def test_no_evidence_write_or_verify_tool_is_registered_at_any_privilege_level()
     sweep only catches a name shaped like one of `_EVIDENCE_WRITE_SHAPED_NAMES`
     (chosen for what a write tool would plausibly be called, not for completeness)
     -- its value is a fast, readable failure message naming the offending tool,
-    ahead of a bare set-mismatch diff. #175 adds the write tool, blocked on #174; a
-    verify tool must never exist."""
+    ahead of a bare set-mismatch diff.
+
+    #175 shipped `propose_evidence` at --write. A VERIFY tool must never exist at
+    either level: promotion to citable stays interactive-only, which is #164's
+    central decision, and a second promotion path is a new trust root rather than a
+    convenience. `propose_evidence` is not one -- it lands under the inbox
+    `read_evidence` cannot see and never stamps the citability key -- which is why
+    this row permits the one and still forbids the other."""
     for write in (False, True):
         names = _tool_names(build_server(Config(), write=write))
-        assert not any(shape in n for n in names for shape in _EVIDENCE_WRITE_SHAPED_NAMES), \
-            f"an evidence write/verify tool is registered under write={write}: {names}"
+        matched = {n for n in names
+                   if any(shape in n for shape in _EVIDENCE_WRITE_SHAPED_NAMES)}
+        assert matched == _EXPECTED_EVIDENCE_WRITE_TOOLS[write], (
+            f"the evidence write/verify tools registered under write={write} are "
+            f"{sorted(matched)}, expected "
+            f"{sorted(_EXPECTED_EVIDENCE_WRITE_TOOLS[write])} -- a VERIFY tool must "
+            f"never appear at either level, and propose_evidence must never appear "
+            f"below --write; registered tools were {sorted(names)}")
         assert "list_evidence" in names, "the read tool is missing; this row would be vacuous"
