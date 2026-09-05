@@ -69,13 +69,21 @@ not a style preference: [release-please](https://github.com/googleapis/release-p
 commit subjects to decide the next version and draft the changelog, so a mistyped `type`
 silently changes what a release claims to contain.
 
+## Releases
+
 Releases are cut by **merging release-please's PR**, never by tagging by hand — the tag and
 the declared version are written by the same tool in the same commit, so they can't drift
 apart. Version bumps and the changelog itself get edited by hand *inside that PR* before
-merging: a generated commit subject can't tell you a config's *meaning* changed, and per
-`CHANGELOG.md`'s own policy a breaking config change matters more here than a breaking API
-change, since nothing imports `sluice` as a library — what you've invested in is your
-`sluice.yaml` and your vault.
+merging: a generated commit subject can't tell you a config's *meaning* changed.
+
+**A breaking config change outranks a breaking API change here**, because nothing imports
+`sluice` as a library — what a user has invested in is their config and their vault. Removing a
+member of a published Protocol is invisible to every install; changing what an unset value means
+is not, and earns a migration note even when no key is renamed.
+
+Which changes qualify is listed in `CHANGELOG.md`'s own **"What counts as breaking here"**
+section, and only there. That section is tracked and it is the one a user reads, so this page
+points at it rather than repeating it: a second copy diverges rather than agreeing.
 
 ## The four invariants
 

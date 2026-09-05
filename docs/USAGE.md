@@ -739,6 +739,13 @@ and they move independently: the backend one tracks which providers are reachabl
 one tracks your vault and your optional extras. A captured run in any doc is therefore one
 machine's answer, never a constant to compare yours against.
 
+**The `gates` rows report posture, not faults.** They sweep every **list-valued** setting and say
+what its current value means: `abstaining (empty)` for a preference gate, and its own posture for
+the settings where empty means something else — of which there is more than one kind, since an
+empty security allowlist grants no exceptions and an empty phrase allow-list leaves the full list
+active. All of them are `notice`, so none reaches the exit code. The numeric pay floors
+(`contract_floor_gbp_day`, `perm_floor_gbp`) get no row at all: they default to `0`, which is off.
+
 **`setup` versus `dead` is the distinction the exit code is built on.** `setup` means you have
 not supplied the thing yet — no baseline CV, no verified evidence, no API key in the
 environment, the `render` extra not installed, no vault. `dead` means something you *did*

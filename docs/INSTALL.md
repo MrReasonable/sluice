@@ -2,7 +2,8 @@
 
 The distribution and the command are both `job-sluice`. The import package stays `sluice`, and so
 do the `SLUICE_*` environment variables and the `~/.config/sluice/` paths — see
-[Naming](../README.md#naming) for why those three are different things here.
+[the FAQ](FAQ.md#why-is-the-command-job-sluice-and-not-sluice) for why those three are
+different things here.
 
 **Which channels exist is stated once**, in [README's channel table](../README.md#install). This
 page is how to use each one, what it does and does not include, and what to set up afterwards.
@@ -366,12 +367,30 @@ python -m pytest
 | `render` | `cv.renderer: template` — the default renderer, which fills a Jinja2 template via WeasyPrint | Docker, Homebrew; recommended by deb/rpm |
 | `google` | `track`'s Gmail and Calendar access | Docker, Homebrew; available from distro packages on deb/rpm |
 | `mcp` | `job-sluice mcp serve` | Docker, Homebrew |
-| `completion` | shell completion of commands, flags and live values — the extra alone is inert until the shell hook is registered, see [README](../README.md#shell-completion) | Docker, Homebrew; available from distro packages on deb/rpm |
+| `completion` | shell completion of commands, flags and live values — the extra alone is inert until the shell hook is registered, see [Shell completion](#shell-completion) | Docker, Homebrew; available from distro packages on deb/rpm |
 
 `ingest` and `triage` need none of them. `track run` does need `google`: the client libraries are
 imported lazily, the first time a run reaches Gmail, so a missing extra surfaces during the run
 rather than at startup. `cv run` needs `render` unless you set `cv.renderer: script`, which shells
 out to a render script you supply and needs neither the extra nor its system libraries.
+
+## Shell completion
+
+```bash
+pip install 'job-sluice[completion]'
+eval "$(register-python-argcomplete job-sluice)"
+```
+
+Put the `eval` in your shell's startup file to make it permanent.
+
+It completes command and flag names, and — for `--source`, `ingest enable|disable` and
+`track confirm --to` — **real values read live** from the registered sources and the status
+vocabulary, rather than a static list that could go stale.
+
+There is an oh-my-zsh/zinit plugin at
+[`plugins/job-sluice/`](https://github.com/MrReasonable/sluice/tree/main/plugins/job-sluice).
+Both forms are a no-op until `job-sluice` and `register-python-argcomplete` are on your `$PATH`,
+so sourcing one before installing does nothing rather than erroring.
 
 ## System libraries for PDF rendering
 
