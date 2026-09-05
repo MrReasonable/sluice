@@ -727,6 +727,40 @@ def test_a_taken_inbox_name_refuses_with_a_named_message_not_an_errno(tmp_path):
     assert "Errno" not in str(caught.value), "the raw errno reached the caller"
 
 
+def test_a_non_directory_inbox_is_not_reported_as_a_name_clash(tmp_path):
+    """The THIRD way this method can raise FileExistsError, and the only one that is not
+    a name clash: `os.makedirs(inbox, exist_ok=True)` raises it when something that is
+    not a directory already occupies the inbox path -- `exist_ok=True` suppresses the
+    error only for an existing DIRECTORY.
+
+    Two things made that worth separating rather than leaving as an accepted errno.
+    The contract says both name-clash refusals carry a message a caller may print
+    verbatim, NEVER a bare errno, and this arm leaked exactly that (`[Errno 17] File
+    exists: <absolute path>`) from the same method. And a caller cannot tell the arms
+    apart by TYPE, so `mcpserver.propose_evidence` -- which reports FileExistsError as
+    a recoverable `refused` outcome meaning "the name is taken" -- reported a broken
+    vault as a name clash, whose documented recovery is to pick another name. That
+    recovery can never succeed, so an agent renames forever.
+
+    NotADirectoryError, deliberately: still an OSError, so every existing
+    `except OSError` handler around this call keeps working, but NOT a FileExistsError,
+    so no caller keyed on that type can mistake it for a clash again."""
+    v = Vault(str(tmp_path))
+    inbox = v._evidence_dir("skills", inbox=True)
+    os.makedirs(os.path.dirname(inbox), exist_ok=True)
+    with open(inbox, "w", encoding="utf-8") as fh:
+        fh.write("not a directory\n")
+
+    with pytest.raises(NotADirectoryError) as caught:
+        v.propose_evidence("skills", name="alpha", fields={"Proficiency": "First"})
+    assert not isinstance(caught.value, FileExistsError), (
+        "a broken vault still raises the type callers read as 'that name is taken'")
+    assert "Errno" not in str(caught.value), "the raw errno reached the caller"
+    assert "_inbox" in str(caught.value), (
+        "the message does not say WHICH path is not a directory, so it names nothing "
+        "a human could go and fix")
+
+
 def test_id_shaped_matches_every_generated_code():
     """`vault._ID_SHAPED` is a deliberate LOCAL COPY of the bundle citation shape -- core/
     must not import cv/, so it cannot be the same object -- and this pins it against the
