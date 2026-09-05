@@ -40,6 +40,39 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.1](https://github.com/MrReasonable/sluice/compare/v2.9.0...v2.9.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **homebrew:** expect the exit code a clean install actually returns ([61789a1](https://github.com/MrReasonable/sluice/commit/61789a1897de6b297ff6fc09a44f43f680dfd278))
+
+**If you installed with Homebrew, you have been stuck on 2.6.0 since 2026-09-03.**
+`brew update && brew upgrade job-sluice` moves you straight to 2.9.1. Versions 2.7.0,
+2.8.0 and 2.9.0 never reached the tap and will not appear — Homebrew serves only the
+newest formula, so there is nothing to step through.
+
+Every other channel was unaffected throughout. PyPI, Docker, the `.deb`/`.rpm` assets and
+the post-release install check all published normally for those three releases; only the
+tap stopped moving.
+
+The cause was a smoke test, not the package. The formula's `test do` block asserted that
+`job-sluice doctor --offline` exits 1. `2.7.0` deliberately inverted that — a component
+you have not supplied yet is `setup`, which never reaches the exit code, so a clean
+install exits 0 — and the formula's expectation did not move with it. `brew test` then
+failed the release job, and a failed job means the tap is never pushed.
+
+Nothing in `sluice/` changed, so there is no behaviour difference on any other channel,
+and no migration note is owed under the policy above: no config key, no default, no path
+and no status transition is affected.
+
+<!-- Also in this commit and deliberately NOT given a user-facing line: the same stale
+claim was corrected in `.github/workflows/ci.yml` and `scripts/smoke_installed.py`, both
+of which still asserted that `doctor` exits non-zero on a clean machine. Neither ships,
+neither was ever user-visible, and a changelog line saying "doctor's exit code was wrong"
+would report a defect that never reached anyone -- the exit code itself has been correct
+since 2.7.0. What was repaired is the things that DESCRIBED it. -->
+
 ## [2.9.0](https://github.com/MrReasonable/sluice/compare/v2.8.0...v2.9.0) (2026-09-05)
 
 
