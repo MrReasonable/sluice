@@ -226,7 +226,17 @@ def render(*, sdist_url: str, sha256: str) -> str:
     # to a status. ci.yml's container smoke deliberately asserts the status in neither
     # direction -- it checks the report is positively present instead -- so it could not have
     # caught this, and `release-please.yml` runs no doctor at all.
-    report = shell_output("#{{bin}}/job-sluice doctor --offline")
+    #
+    # `--verbose` IS LOAD-BEARING, not extra detail. #243 made `doctor` print a VERDICT by
+    # default and demoted the row table to `--verbose`, and the default view lists only rows
+    # that still need action -- so a renderer that is `ok`, which is exactly what this formula
+    # exists to prove, appears NOWHERE in it. The row assertion below can only ever match the
+    # verbose view. Measured: the row shape occurs once under `--verbose` and zero times
+    # without it. This cost the channel a third failed release (2.9.2), after the same #243
+    # change had already cost it two through the exit code above -- one upstream change, two
+    # separate assertions in this block, and fixing the first without auditing the second is
+    # what let it repeat.
+    report = shell_output("#{{bin}}/job-sluice doctor --offline --verbose")
     assert_match "job-sluice doctor", report
 
     # THE PAYOFF, POSITIVE rather than a refutation of "dead": core/app.py's

@@ -26,6 +26,7 @@ import ast
 import os
 import pathlib
 import re
+import shlex
 import tomllib
 
 import pytest
@@ -518,7 +519,13 @@ _EXPECTED_DOCTOR_EXIT_CODE = 0
 # rejects, and 2.9.1's `homebrew` job failed on it. Requiring a spelling is what broke it;
 # reading either and comparing the MEANING is what this needs to do.
 _DOCTOR_EXIT_ASSERTION = re.compile(
-    r'shell_output\("#\{bin\}/job-sluice doctor --offline"(?:,\s*(?P<code>\d+))?\)')
+    r'shell_output\("#\{bin\}/job-sluice doctor(?P<flags>[^"]*)"(?:,\s*(?P<code>\d+))?\)')
+
+# The row assertion the formula makes about doctor's TABLE. Captured so the guard below can run
+# doctor the way the formula does and check such a row is actually there -- see that test for
+# why the state token is relaxed.
+_DOCTOR_ROW_ASSERTION = re.compile(
+    r'assert_match\(/(?P<pattern>[^/]+)/, report\)')
 
 
 def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_path, capsys):
@@ -603,7 +610,7 @@ def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_p
     monkeypatch.delenv("VAULT_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
 
-    real = main(["doctor", "--offline"])
+    real = main(["doctor", *shlex.split(match.group("flags"))])
     capsys.readouterr()
     assert real == _EXPECTED_DOCTOR_EXIT_CODE, (
         f"`doctor --offline` exits {real} on a clean install, but the formula (and the literal "
@@ -611,6 +618,59 @@ def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_p
         f"every release and the Homebrew channel silently stops updating -- fix both together."
     )
 
+
+
+def test_the_formula_asserts_a_doctor_row_that_the_view_it_asks_for_actually_prints(
+        monkeypatch, tmp_path, capsys):
+    r"""The formula asserts a TABLE ROW. Nothing checked the table was in the output.
+
+    `assert_match(/renderer\s+cv\.renderer\s+ok/, report)` is the payoff of this whole channel:
+    it proves WeasyPrint loaded, positively, rather than refuting "dead" (a row that is merely
+    ABSENT would satisfy a negative check). But it can only match a view that actually contains
+    rows, and #243 moved them: `doctor` prints a VERDICT by default and the table now needs
+    `--verbose`. Worse, the default view lists only rows still NEEDING ACTION, so a renderer
+    that is `ok` -- precisely the state being asserted -- appears nowhere in it. The assertion
+    was unsatisfiable by construction and `brew test` failed the whole release.
+
+    That is the SECOND assertion in this block broken by that one upstream change; the exit
+    code above was the first. Fixing the first without auditing the second is what let it
+    repeat, so this guard runs doctor THE WAY THE FORMULA ASKS FOR IT -- flags taken from the
+    rendered text, not restated here -- and checks a matching row comes back.
+
+    THE STATE TOKEN IS RELAXED, deliberately. The formula wants `ok`, which needs the `render`
+    extra AND its native libraries; a bare test environment has neither and reports `setup`.
+    Pinning `ok` here would assert the machine's configuration rather than the formula's
+    correctness, and would fail in CI for a reason that has nothing to do with the formula.
+    What is checkable offline, and what actually broke, is whether the requested view emits a
+    row of that SHAPE at all -- measured: one occurrence under `--verbose`, zero without it.
+    """
+    from sluice.cli import main
+
+    formula = render(**FIXTURE)
+    invocation = _DOCTOR_EXIT_ASSERTION.search(formula)
+    assert invocation, "the formula no longer runs doctor through shell_output"
+    row = _DOCTOR_ROW_ASSERTION.search(formula)
+    assert row, (
+        f"the formula's `test do` block no longer asserts a doctor row. That assertion is this "
+        f"channel's positive proof that WeasyPrint loaded; without it `brew test` proves "
+        f"nothing this channel exists for:\n{formula}")
+
+    # The formula's own pattern, with the trailing state token relaxed -- see the docstring.
+    shape = re.sub(r"ok$", r"\\w+", row.group("pattern")).replace("\\\\", "\\")
+
+    for name in [k for k in os.environ if k.startswith(("SLUICE_", "CAMOFOX_"))]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VAULT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    main(["doctor", *shlex.split(invocation.group("flags"))])
+    out = capsys.readouterr().out
+    assert re.search(shape, out), (
+        f"the formula asserts a row matching {row.group('pattern')!r}, but running "
+        f"`job-sluice doctor{invocation.group('flags')}` prints no row of that shape. #243 "
+        f"moved the table behind `--verbose` and left the default view listing only rows that "
+        f"need action -- so an `ok` row appears in neither. `brew test` fails the release on "
+        f"this, which is how the Homebrew channel broke a third time.")
 
 def test_the_formula_probes_the_non_render_extras_against_the_brewed_interpreter():
     """`_IMPORTABLE_CORE_FORMULAE` makes the venv depend on homebrew-core's OWN
