@@ -40,6 +40,53 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.0](https://github.com/MrReasonable/sluice/compare/v2.8.0...v2.9.0) (2026-09-05)
+
+
+### Features
+
+* **mcp:** add propose_evidence, the evidence write tool from [#175](https://github.com/MrReasonable/sluice/issues/175) ([1b3a15a](https://github.com/MrReasonable/sluice/commit/1b3a15aa5f3c77eba8343ff3c2d4cd4bacf0f49f))
+
+`job-sluice mcp serve --write` registers one more tool: `propose_evidence(kind, name,
+fields, body)`. It queues an evidence entry for review and nothing more. The entry lands
+in the pending inbox, so it is **not citable by the CV fabrication gate** and not visible
+to `list_evidence`'s default view until you verify it yourself with `job-sluice <kind>
+verify`.
+
+**There is still no MCP tool that verifies an entry, at any privilege level**, and that is
+deliberate rather than pending: verification is what makes an entry citable in a CV sent
+under your name, and it stays a human action at a prompt. An agent can now suggest
+evidence; it cannot make your CV cite it.
+
+Nothing changes for an existing registration. `--write` is off by default, and a
+read-only server's `tools/list` omits the write tools entirely rather than refusing them
+when called.
+
+
+### Bug Fixes
+
+* **vault:** a non-directory inbox is not a name clash ([6202e6e](https://github.com/MrReasonable/sluice/commit/6202e6e82ad5f1b277c25bf1f2589b30fb55f2eb))
+
+`Vault.propose_evidence` raised `FileExistsError` when something that is not a directory
+occupied an evidence kind's `_inbox` path — the same exception it raises for a name
+already taken, so the two were indistinguishable and the broken-vault case arrived as a
+bare `[Errno 17]`. It now raises `NotADirectoryError`. Still an `OSError`, so an existing
+`except OSError` is unaffected; a caller matching on `FileExistsError` specifically will
+no longer catch this case, which is the point.
+
+<!-- Not listed as a fix to a shipped version, deliberately: the two `fix(mcp)` commits in
+this release (9bb49d7, and the test hardening in b9615b5) repair `propose_evidence`, which
+is introduced BY this release. No published version ever disclosed a vault path or dropped
+a proposal body, and a changelog line saying "stop propose_evidence disclosing the vault
+path" would tell users they were exposed to something they were not. The work is real and
+the commits are in the log; it is the RELEASE NOTE that would have been false. -->
+
+
+
+### Documentation
+
+* **core:** say why add_evidence must not be renamed to match its store method ([00781ec](https://github.com/MrReasonable/sluice/commit/00781ec05d6597e7c4b3ab18eea17797af1c79d0))
+
 ## [2.8.0](https://github.com/MrReasonable/sluice/compare/v2.7.0...v2.8.0) (2026-09-05)
 
 
