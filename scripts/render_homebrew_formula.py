@@ -210,15 +210,23 @@ def render(*, sdist_url: str, sha256: str) -> str:
     # is that row: it RUNS `doctor --offline` and compares, so the formula's expectation and
     # the program's behaviour can no longer drift apart in silence.
     #
-    # The code is passed EXPLICITLY even though 0 is `shell_output`'s default. The claim being
-    # made is that a clean install exits 0, and a claim this channel has already been broken by
-    # should be written down where it can be read and checked, not left implicit in a default.
+    # The code is NOT passed explicitly, and that is forced rather than chosen. `shell_output`
+    # defaults to 0 and `brew audit`'s RuboCop pass rejects restating it:
+    # `FormulaAudit/Test: Passing 0 to shell_output is redundant`. The audit gates the release
+    # job, so an explicit `, 0` fails the channel just as surely as the wrong number did --
+    # which is how it shipped: 2.9.1 carried `, 0` on the reasoning that a claim this channel
+    # had already been broken by should be written down, and that reasoning was never run
+    # against the audit. Asserting a mechanism instead of executing it, in the fix for exactly
+    # that. `brew style --formula <tap>/<name>` reproduces it locally in seconds.
+    #
+    # The assertion is unchanged in force: an omitted code still means `brew test` fails unless
+    # the command exits 0. Only the spelling moved.
     #
     # This is the only place a release RUNS the shipped binary on a fresh machine and holds it
     # to a status. ci.yml's container smoke deliberately asserts the status in neither
     # direction -- it checks the report is positively present instead -- so it could not have
     # caught this, and `release-please.yml` runs no doctor at all.
-    report = shell_output("#{{bin}}/job-sluice doctor --offline", 0)
+    report = shell_output("#{{bin}}/job-sluice doctor --offline")
     assert_match "job-sluice doctor", report
 
     # THE PAYOFF, POSITIVE rather than a refutation of "dead": core/app.py's
