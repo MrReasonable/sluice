@@ -1305,12 +1305,35 @@ def _propose(app, **over):
     return propose_evidence(app, **args)
 
 
-def test_propose_evidence_tool_reports_the_stores_handle(tmp_path):
+def test_propose_evidence_tool_reports_no_filesystem_path(tmp_path):
+    """`Store.propose_evidence`'s handle is opaque by contract but IS the written note's
+    absolute path in the one store that exists, so reporting it disclosed the user's
+    vault location to an MCP client -- and named a file inside the very directory a
+    hand-placed `verified:` note would be citable from. Every other tool here already
+    strips paths (`list_evidence` omits `path`, `get_lead` reports `slug` not `ref`).
+
+    Swept over every value in the response rather than over the one key that leaked: the
+    same disclosure under a different key is the same disclosure."""
     out = _propose(_app(tmp_path))
     assert out["outcome"] == "proposed"
-    # OPAQUE by contract -- truthiness is the whole of what a caller may test, so
-    # asserting a shape here would pin the tool to the vault store's happens-to-be-a-path.
-    assert out["handle"]
+    assert "handle" not in out
+    leaked = [k for k, v in out.items() if isinstance(v, str) and str(tmp_path) in v]
+    assert not leaked, f"response keys disclosing the vault path: {leaked}"
+
+
+def test_propose_evidence_tool_refuses_to_report_success_without_a_handle(tmp_path):
+    """The handle is not REPORTED, but its truthiness is still READ -- the contract makes
+    a non-empty handle the signal that the store actually recorded the entry. A store
+    that abstained must not be reported as having written, which is the silent-failure
+    class (a failed write reported as success).
+
+    Uses a stub store method rather than a real abstaining store because no such store
+    exists: the property is a contract obligation on any FUTURE one, so the only way to
+    exercise this arm is to supply a store that breaks it."""
+    app = _app(tmp_path)
+    app.store().propose_evidence = lambda *a, **k: ""
+    with pytest.raises(RuntimeError, match="no handle"):
+        _propose(app)
 
 
 def test_propose_evidence_tool_is_not_visible_to_the_citable_read(tmp_path):
@@ -1405,13 +1428,63 @@ def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path
     other two -- exactly the "your skills are feeding your CVs" failure #164's M2
     finding named."""
     app = _app(tmp_path)
+    swept = []
     for kind in EVIDENCE_KINDS:
         detail = _propose(app, kind=kind, name=f"Example entry for {kind}",
                           fields={}, body="")["detail"]
+        swept.append(kind)
         assert "citable" in detail, f"{kind}: the response stopped saying anything at all"
         assert "NOT citable" in detail, (
             f"{kind}: the response claims this entry IS citable, or is now vague about "
             f"it -- an unverified entry is citable in no kind")
+    # Assert on the SCOPE, not only on the violations. A sweep that enumerated nothing
+    # satisfies every assertion inside the loop, so this row was green under
+    # `EVIDENCE_KINDS = {}` -- measured, not supposed. Pinned against the registry's own
+    # keys rather than a hand-written list, which would go stale the moment a fourth
+    # kind is declared and leave the new one unswept while still reading as covered.
+    assert swept == list(EVIDENCE_KINDS), (
+        f"the sweep visited {swept}, not every declared kind")
+    assert len(swept) >= 3, (
+        f"only {len(swept)} evidence kind(s) reached this sweep -- the registry is "
+        f"smaller than the three kinds #164/#165 declare, so the loop is not "
+        f"exercising what it claims to")
+
+
+def test_propose_evidence_tool_stores_the_body_it_was_given(tmp_path):
+    """Deleting `body=body` from the tool's own call SURVIVED the whole suite: the tool
+    discarded an MCP client's body and still reported `proposed`. `body` is the one
+    parameter #175's risk analysis is actually about -- it is the free text that reaches
+    the CV bundle, and the reason the tool was deferred behind #174 at all -- so it
+    being the one parameter with no coverage was the wrong gap to have.
+
+    Asserted through the pending READ rather than the store's return, so it witnesses
+    what was actually persisted rather than what was passed along."""
+    app = _app(tmp_path)
+    _propose(app, body="Rebuilt the ingest path to 12 nodes.")
+    stored = app.store().read_pending_evidence("experience")
+    assert len(stored) == 1
+    assert stored[0]["body"] == "Rebuilt the ingest path to 12 nodes."
+
+
+def test_propose_evidence_tool_refuses_a_citation_shaped_body(tmp_path):
+    """The guard this tool newly EXPOSES, driven through the tool rather than asserted
+    of the store in isolation.
+
+    An evidence body is spliced into the bundle the CV fabrication gate reads. Before
+    #174 a body line shaped like a bundle citation code REBOUND another entry's
+    permitted numbers, so a fabricated figure cleared the gate -- accepted at the time
+    on the reasoning that a body could only ever be hand-typed, which is exactly what an
+    MCP write tool falsifies. #174 closed the gate side; `_refuse_citation_shaped_body`
+    (core/vault.py) is the write-side guard that remains, and this row is what pins that
+    an MCP caller meets it.
+
+    The store owns the refusal, so this asserts the OUTCOME -- it raises, and nothing is
+    written -- rather than a message a different store would word differently."""
+    app = _app(tmp_path)
+    with pytest.raises(ValueError):
+        _propose(app, body="[AC1] delivered 500 things")
+    assert app.store().read_pending_evidence("experience") == []
+    assert list_evidence(app, kind="experience")["count"] == 0
 
 
 def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
@@ -1630,3 +1703,49 @@ def test_only_propose_evidence_and_only_at_write_true_is_registered():
             f"never appear at either level, and propose_evidence must never appear "
             f"below --write; registered tools were {sorted(names)}")
         assert "list_evidence" in names, "the read tool is missing; this row would be vacuous"
+
+
+# Phrasings that ASSERT the absence of a propose tool. Narrow and hand-listed on
+# purpose: whether a sentence denies a capability is a natural-language question, and
+# this repo has already established (see the `reprobed` field's own history) that every
+# tightening of such a matcher acquires a new hole, because the set is unbounded. A
+# structural derivation was tried and abandoned here for the same reason -- keying on a
+# registered tool's name plus a nearby negation false-positives on `propose_evidence`'s
+# own true sentence "The entry is NOT ... visible to list_evidence's default view",
+# which negates the ENTRY, not the tool.
+#
+# So this is a heuristic with the same standing as `_EVIDENCE_WRITE_SHAPED_NAMES`: it
+# catches the wording that actually shipped false, gives a readable failure, and is not
+# the reason the property holds. What it buys is that descriptions are swept AT ALL --
+# tests/functional/test_mcp_contract.py pins tool names and schema properties only, so
+# the string the CLIENT reads was the one part of this module nothing checked.
+_DENIES_A_PROPOSE_TOOL = (
+    "no tool here that proposes",
+    "nothing that proposes",
+    "no companion write",
+)
+
+
+def test_no_tool_description_denies_the_propose_tool_that_is_registered():
+    """The registered `list_evidence` description shipped "Read-only. There is
+    deliberately no tool here that proposes or verifies an entry" while
+    `propose_evidence` sat in the SAME tools/list response -- a flat contradiction, in
+    the one string an MCP client is actually shown. The module-level `list_evidence()`
+    docstring was corrected and this separate nested one was not, which is a gap nothing
+    could have caught: descriptions were swept by no test at any level.
+
+    Scoped to write=True because that is where the claim is false; at write=False no
+    propose tool is registered and the same sentence would be true."""
+    server = build_server(Config(), write=True)
+    described = {t.name: (t.description or "") for t in asyncio.run(server.list_tools())}
+    assert "propose_evidence" in described, (
+        "no propose tool is registered, so this row cannot detect a false denial of one")
+    # Anti-vacuity on the OTHER side: a tool whose description is empty denies nothing,
+    # and a server of such tools would pass this sweep while saying nothing at all.
+    assert all(described.values()), (
+        f"tools with an empty description: {[n for n, d in described.items() if not d]}")
+    for name, desc in described.items():
+        hit = [p for p in _DENIES_A_PROPOSE_TOOL if p in desc.lower()]
+        assert not hit, (
+            f"{name}'s description tells the client {hit!r} while propose_evidence is "
+            f"registered in the same tools/list response")
