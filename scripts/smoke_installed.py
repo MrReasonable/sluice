@@ -247,8 +247,14 @@ def check_offline_commands(report, trust_env=False):
     now delivers by stripping `SLUICE_*`/`XDG_*` rather than merely repointing HOME, since
     those outrank it.
 
-    `doctor` is deliberately NOT included: it probes backends and the vault, so on a clean
-    machine its failure is correct behaviour and would make this test a liar.
+    `doctor` is deliberately NOT included, but NOT because it fails here -- an earlier version
+    of this docstring said its "failure is correct behaviour on a clean machine", which #243
+    falsified: a component the user has not supplied is SETUP, never reaches the exit code, and
+    a clean machine exits 0. The real reason is scope. This function asserts that a handful of
+    commands RUN with no config, no vault and no network; what `doctor` REPORTS is a contract
+    owned by tests/test_doctor_verdict.py, and `ci.yml`'s own doctor smoke step covers the
+    image. Duplicating it here would add a third place for the same claim to go stale in, which
+    is exactly how the Homebrew formula's copy broke that channel for two releases.
     """
     for args in (["--help"], ["ingest", "list-sources", "--health"]):
         rc, out, err = _run(["job-sluice", *args], trust_env=trust_env)

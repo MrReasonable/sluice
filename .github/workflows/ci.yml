@@ -202,11 +202,23 @@ jobs:
           if printf '%s\n' "$rendered" | grep -E '^\s+SLUICE_CLAUDE_KEY: .*id_leak'; then
             echo "::error::the host ssh key path leaked into the container environment"; exit 1
           fi
-      # `doctor` exits 1 in ANY container by design: DoctorReport.exit_code() returns 1 whenever
-      # a check is DEAD, and claude-max is DEAD whenever the `claude` CLI is absent from PATH,
-      # which it always is here. So the status is asserted in NEITHER direction -- 0 would fail
-      # every run, and 1 would pin a degraded state as correct and start lying the moment a check
-      # changed. It is captured rather than discarded with a trailing `|| true`, because a bare
+      # The status is asserted in NEITHER direction, and the reason is scope rather than
+      # indeterminacy. What `doctor` exits is a CONTRACT
+      # (sluice/core/doctor.py::DoctorReport.exit_code) owned by the unit tests, which pin both
+      # arms directly -- tests/test_doctor_verdict.py has the clean-install and the broken-row
+      # cases, and tests/test_homebrew_formula.py holds the shipped binary to the clean-install
+      # one. This step owns something those cannot see: that the IMAGE runs at all. Pinning a
+      # number here would duplicate a contract tested better elsewhere and go red on any image
+      # state this job does not control.
+      #
+      # An earlier version of this comment justified the same choice by asserting `doctor` exits
+      # 1 in any container "by design", because claude-max is DEAD without the `claude` CLI.
+      # #243 falsified that -- a component the user has not SUPPLIED is SETUP, which never
+      # reaches the exit code, and the Dockerfile names no VAULT_DIR, so this container is a
+      # clean install and exits 0. Nothing could tell, since the claim was never asserted; the
+      # identical rot broke the Homebrew channel for two releases.
+      #
+      # It is captured rather than discarded with a trailing `|| true`, because a bare
       # "no traceback" negative passes against a container that prints nothing or dies before
       # doctor runs at all; the report must be positively present too.
       - name: Smoke -- the built image installs and runs

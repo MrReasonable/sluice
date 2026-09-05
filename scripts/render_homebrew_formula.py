@@ -192,11 +192,33 @@ def render(*, sdist_url: str, sha256: str) -> str:
 
     assert_match version.to_s, shell_output("#{{bin}}/job-sluice --version")
 
-    # `doctor --offline` exits 1 on ANY unconfigured machine BY DESIGN -- no vault directory
-    # and no `claude` CLI are both DEAD rows, and exit_code returns 1 on any DEAD. Measured.
-    # ci.yml records the same fact for the container smoke and asserts the status in NEITHER
-    # direction. Asserting success here would fail every release.
-    report = shell_output("#{{bin}}/job-sluice doctor --offline", 1)
+    # `doctor --offline` exits 0 on a clean, unconfigured machine, which is exactly what this
+    # one is. #243's contract, stated in sluice/core/doctor.py::DoctorReport.exit_code: a
+    # component the user has not SUPPLIED yet is SETUP and never reaches the exit code, so no
+    # vault directory, no `claude` CLI and no `render` extra are all still 0. Non-zero means
+    # something they DID configure is broken.
+    #
+    # THIS LITERAL WAS `1` FOR TWO RELEASES, and the cost was the whole channel. 2.7.0's
+    # `feat(doctor): a verdict by default, and exit 0 on a clean install` inverted the
+    # contract; this number did not move; `brew test` then failed the `homebrew` job on 2.7.0
+    # and 2.8.0 while every other channel shipped from those same runs, so the public tap went
+    # on serving the last version whose job passed. The justification lived only in a comment
+    # here that ended "Measured." -- true when written, and nothing could tell when it stopped
+    # being true, which is CLAUDE.md's "a comment that states a mechanism needs a row that
+    # falsifies it" applied to a release channel.
+    # tests/test_homebrew_formula.py::test_the_formula_expects_the_real_clean_install_exit_code
+    # is that row: it RUNS `doctor --offline` and compares, so the formula's expectation and
+    # the program's behaviour can no longer drift apart in silence.
+    #
+    # The code is passed EXPLICITLY even though 0 is `shell_output`'s default. The claim being
+    # made is that a clean install exits 0, and a claim this channel has already been broken by
+    # should be written down where it can be read and checked, not left implicit in a default.
+    #
+    # This is the only place a release RUNS the shipped binary on a fresh machine and holds it
+    # to a status. ci.yml's container smoke deliberately asserts the status in neither
+    # direction -- it checks the report is positively present instead -- so it could not have
+    # caught this, and `release-please.yml` runs no doctor at all.
+    report = shell_output("#{{bin}}/job-sluice doctor --offline", 0)
     assert_match "job-sluice doctor", report
 
     # THE PAYOFF, POSITIVE rather than a refutation of "dead": core/app.py's
