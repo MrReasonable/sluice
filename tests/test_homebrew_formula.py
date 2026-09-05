@@ -23,6 +23,7 @@ Mirrors tests/test_linux_packages_channel.py, the sibling channel's guard: impor
 FUNCTION, restate its expected OUTPUT independently, compare.
 """
 import ast
+import os
 import pathlib
 import re
 import tomllib
@@ -500,6 +501,109 @@ def test_the_formula_has_a_test_do_block_with_its_payoff_assertion():
         f"the formula's `test do` block is missing its payoff assertion (the rendered-PDF "
         f"check); `brew test` would then exercise nothing this channel actually exists to "
         f"prove:\n{formula}"
+    )
+
+
+# The exit status the `test do` block asserts `doctor --offline` returns. Restated here as a
+# literal like every other expectation in this file -- and then, unlike every other expectation
+# in this file, checked against the program itself. A literal restated by a human is exactly
+# what the renderer already carried, in a comment, when this broke.
+_EXPECTED_DOCTOR_EXIT_CODE = 0
+
+# Matches the explicit two-argument form only. `shell_output`'s second parameter DEFAULTS to 0,
+# so a future edit dropping it would leave the assertion working while removing the only thing
+# this guard can read -- the test says so rather than quietly matching both spellings.
+_DOCTOR_EXIT_ASSERTION = re.compile(
+    r'shell_output\("#\{bin\}/job-sluice doctor --offline",\s*(?P<code>\d+)\)')
+
+
+def test_the_formula_expects_the_real_clean_install_exit_code(monkeypatch, tmp_path, capsys):
+    r"""The formula asserts an exit STATUS, and nothing here checked it against the program.
+
+    `shell_output(cmd, N)` IS an assertion: `brew test` fails unless the command exits N. That
+    number was `1`, justified by a comment ending "Measured." -- true when written, and
+    unfalsifiable afterwards. 2.7.0's `feat(doctor): a verdict by default, and exit 0 on a clean
+    install` inverted the contract (#243: a component the user has not SUPPLIED yet is SETUP and
+    never reaches the exit code, so a fresh machine exits 0), the literal did not move, and the
+    `homebrew` job failed on 2.7.0 and 2.8.0 -- the public tap stayed at the last version whose
+    job passed, while PyPI, Docker and deb/rpm all shipped from those same runs. Every guard in
+    this file stayed green throughout, and the reason is structural rather than bad luck: all of
+    them read the rendered TEXT, and none ran the program the text makes a claim about.
+
+    So this one does both, and neither half is redundant:
+
+      * the code the formula asserts equals `_EXPECTED_DOCTOR_EXIT_CODE`, a literal restated
+        here by a human -- this file's whole discipline, and what stops the renderer drifting;
+      * `_EXPECTED_DOCTOR_EXIT_CODE` is what `doctor --offline` REALLY returns on a clean
+        install -- which a human-restated literal cannot give you, since a literal copied from
+        a stale comment is precisely what was already there.
+
+    THE SANDBOX IS THE TEST. Reaching a clean install needs THREE things, and the guard is inert
+    without any one of them -- measured, by reverting #243 on the program side (`core/doctor.py`
+    stamping the `vault_dir` row DEAD unconditionally instead of `DEAD if explicit else SETUP`):
+
+      * `VAULT_DIR` deleted. `tests/conftest.py` NAMES a per-test path and does not create it,
+        and #80's rule is that an explicitly-named path is taken as given -- so naming one that
+        is absent means it MOVED (DEAD, exit 1), where naming none means it was never set up.
+      * the cwd moved. Deleting the variable drops to `core/vault.py`'s SHIPPED DEFAULT, the
+        cwd-relative `./vault`, which is the one path `_pin_paths` cannot sandbox. This repo's
+        own root holds a gitignored `vault/` that CLAUDE.md's quickstart creates, so without
+        `chdir` the run reads the developer's REAL Obsidian vault, `preflight` reports the vault
+        present, no `vault_dir` row is emitted at all, and the mutant above SURVIVES 17/17
+        green. With the `chdir` it is killed. `tests/test_doctor_verdict.py::
+        test_an_unconfigured_vault_at_the_shipped_default_is_setup_and_exits_zero` is the
+        sibling that already had to learn this, and says so in its own docstring.
+      * every `SLUICE_*`/`CAMOFOX_*` variable gone, by PREFIX. The `test do` block sweeps them
+        with `/\A(SLUICE|CAMOFOX)_/` and conftest hand-lists instead, which is narrower:
+        `SLUICE_CLAUDE_HOST`, `SLUICE_CLAUDE_PATH` and `SLUICE_LOCATIONS` are read by `sluice/`
+        and pinned by nothing. Hand-listed names lose, so this sweeps the same way the formula
+        does rather than restating a list that has already been out of date once.
+
+    WHAT THIS DELIBERATELY DOES NOT RESTATE, because two reviewers have now asked: the rest of
+    the `test do` block's sandbox is already supplied by `tests/conftest.py::_pin_paths`, which
+    is autouse. Measured at the point `main()` runs below, `SEEN_DB`, `TRIAGE_AUDIT`,
+    `DOSSIER_DIR`, `SLUICE_CONFIG`, `SLUICE_HEALTH` and `SLUICE_DISABLED` are all unset, and
+    `HOME` plus all three `XDG_*_HOME` rungs are already inside `tmp_path`. Re-setting them here
+    would put the sandbox in two places: they could drift apart, and this test would then keep
+    passing through a `_pin_paths` regression that broke every other test in the suite.
+    `tests/test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var` is what stops that
+    fixture silently narrowing -- it re-derives the path variables from `sluice/` and fails if
+    one is missing. The three PREFIX cases above are the exception precisely because they are
+    NOT path variables, so that guard does not see them.
+
+    `main` is imported in the body rather than at module scope, matching
+    tests/test_doctor_verdict.py: this module is otherwise a set of offline pins over rendered
+    text, and nothing else in it needs the CLI.
+    """
+    from sluice.cli import main
+
+    formula = render(**FIXTURE)
+    match = _DOCTOR_EXIT_ASSERTION.search(formula)
+    assert match, (
+        f"the formula's `test do` block no longer asserts an explicit exit code for "
+        f"`doctor --offline`. `shell_output` defaults to 0, so dropping the argument keeps the "
+        f"assertion but removes the claim this guard reads -- state it explicitly:\n{formula}"
+    )
+    assert int(match.group("code")) == _EXPECTED_DOCTOR_EXIT_CODE, (
+        f"the formula expects `doctor --offline` to exit {match.group('code')}, but a clean "
+        f"install exits {_EXPECTED_DOCTOR_EXIT_CODE} (#243). `brew test` fails the release's "
+        f"`homebrew` job on a mismatch, and the tap then goes on serving the PREVIOUS version "
+        f"while every other channel ships -- which is what 2.7.0 and 2.8.0 did."
+    )
+
+    # The formula's own sandbox, reproduced. All three parts are load-bearing; see the docstring
+    # for the mutant each one is what kills.
+    for name in [k for k in os.environ if k.startswith(("SLUICE_", "CAMOFOX_"))]:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("VAULT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    real = main(["doctor", "--offline"])
+    capsys.readouterr()
+    assert real == _EXPECTED_DOCTOR_EXIT_CODE, (
+        f"`doctor --offline` exits {real} on a clean install, but the formula (and the literal "
+        f"above) expect {_EXPECTED_DOCTOR_EXIT_CODE}. Whichever moved, `brew test` now fails "
+        f"every release and the Homebrew channel silently stops updating -- fix both together."
     )
 
 
