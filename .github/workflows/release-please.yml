@@ -56,7 +56,13 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
-          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          # `client-id`, not the deprecated `app-id`: the action warns on the latter, and
+          # GitHub now recommends the client ID for the JWT `iss` claim. THE TWO ARE
+          # DIFFERENT VALUES -- the App ID is numeric, the client ID is the `Iv23li...`
+          # string on the App's settings page -- so this needs its own secret rather than
+          # a renamed key. A rename alone would fail JWT generation, and that failure is
+          # invisible until a release actually runs.
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
           # Scope the minted token DOWN to what release-please needs. Without these it
           # inherits the App installation's blanket permissions -- zizmor flags that as
@@ -516,7 +522,7 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: tap-token
         with:
-          app-id: ${{ secrets.RELEASE_PLEASE_APP_ID }}
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: homebrew-tap
