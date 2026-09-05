@@ -40,6 +40,38 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.4](https://github.com/MrReasonable/sluice/compare/v2.9.3...v2.9.4) (2026-09-05)
+
+
+### Documentation
+
+* move README's reference material into docs/, add a TOC and How it works ([fb26292](https://github.com/MrReasonable/sluice/commit/fb26292990706526f5eda858971cd33b3607e655))
+
+**If you have linked to a README anchor, two of them have moved.** `README.md#naming` and
+`README.md#shell-completion` no longer exist: naming is now in
+[`docs/FAQ.md`](https://github.com/MrReasonable/sluice/blob/main/docs/FAQ.md), and shell
+completion has its own section in
+[`docs/INSTALL.md`](https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md).
+`#install` is unchanged — the channel table stays in README, which remains the single place
+this project states which channels exist. Links inside the repo were repointed in the same
+commit; only external bookmarks are affected.
+
+README lost roughly a sixth of its length (3,893 to 3,236 words) with nothing deleted. The
+reference material moved to three new pages —
+[`GUARANTEES.md`](https://github.com/MrReasonable/sluice/blob/main/docs/GUARANTEES.md) for the
+five invariants and their mechanics,
+[`MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) for the server's tools
+and its read/write boundary, and `FAQ.md` — plus existing pages for shell completion, install
+detail, `doctor`'s flags and the release policy. What is new is a contents list and a "How it
+works" table naming the five pipeline stages, which nothing previously did.
+
+Nothing in `sluice/` changed, so no behaviour, config key, default, path or status transition
+is affected.
+
+<!-- The `ci:` commit in this release gets no user-facing line: it switches the release
+workflow's App-token minting from the deprecated `app-id` input to `client-id`. Invisible to
+every install, and the token is only used by this repository's own automation. -->
+
 ## [2.9.3](https://github.com/MrReasonable/sluice/compare/v2.9.2...v2.9.3) (2026-09-05)
 
 
