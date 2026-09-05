@@ -158,6 +158,16 @@ def _is_generated_relpath(rel_parts: tuple) -> bool:
     # still.
     if any(rel_parts[i : i + 2] == (".claude", "worktrees") for i in range(len(rel_parts) - 1)):
         return True
+    # `.worktrees/<name>/` is the SAME hazard by the other convention, and this repo declares
+    # it: `.gitignore` carries `/.worktrees/`, and superpowers' using-git-worktrees skill puts
+    # a worktree there when the directory exists. The rule above anticipated Claude Code's
+    # native location and not this one, so a worktree created the sanctioned way made this
+    # sweep fail permanently on `.worktrees/<name>/sluice/__init__.py` -- a byte-copy of the
+    # tracked file, marker and all. ROOT-SCOPED, unlike the `.claude` pair: `.gitignore`
+    # anchors it at the repo root (`/.worktrees/`), and a nested directory legitimately named
+    # `worktrees` deeper in a tracked tree is not this.
+    if rel_parts[:1] == (".worktrees",):
+        return True
     return rel_parts[:1] in (("build",), ("dist",))
 
 
@@ -232,6 +242,27 @@ def test_a_nested_claude_code_worktree_does_not_get_swept():
     assert not _is_generated_relpath((".claude", "settings.json"))
     assert not _is_generated_relpath(("worktrees", ".claude", "x"))
     assert not _is_generated_relpath(("some", "worktrees", "dir"))
+
+
+def test_a_dot_worktrees_checkout_does_not_get_swept():
+    """The sibling of the `.claude/worktrees` case, by this repo's own convention.
+
+    `.gitignore` carries `/.worktrees/`, and that is where superpowers' using-git-worktrees
+    skill places a worktree when the directory already exists -- so a worktree made the
+    sanctioned way is a full nested checkout the `rglob` walks. Reproduced for real:
+    `.worktrees/readme-restructure/sluice/__init__.py` carries the same marker as the tracked
+    file and failed this sweep until excluded.
+
+    ROOT-SCOPED, deliberately, unlike the `.claude`/`worktrees` PAIR above. That pair is safe
+    to match anywhere because `.claude` is not a component real tracked source uses; a bare
+    `worktrees` is not in that class, so anchoring it at the root is what stops this excluding
+    a legitimately-named directory deeper in the tree.
+    """
+    assert _is_generated_relpath((".worktrees", "readme-restructure", "sluice", "__init__.py"))
+    # Not root-anchored -> not this rule. A tracked directory that merely contains the name is
+    # ordinary source, and excluding it would blind the sweep to a real marker-carrying file.
+    assert not _is_generated_relpath(("sluice", ".worktrees", "x.py"))
+    assert not _is_generated_relpath(("worktrees", "sluice", "__init__.py"))
 
 
 def test_extra_files_names_every_file_carrying_the_marker():
