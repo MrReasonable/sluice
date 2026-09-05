@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.8.0](https://github.com/MrReasonable/sluice/compare/v2.7.0...v2.8.0) (2026-09-05)
+
+
+### Features
+
+* **cli:** add `job-sluice leads add` for a lead no scanner found ([f3d55e9](https://github.com/MrReasonable/sluice/commit/f3d55e9d059239a484b11590867fb518952feb19))
+
+
+### Bug Fixes
+
+* **cv:** state the SKILLS line shape the gate requires ([f7ba5e5](https://github.com/MrReasonable/sluice/commit/f7ba5e5cad8033a5062df00423bf04fd242c7a74))
+
 ## [2.7.0](https://github.com/MrReasonable/sluice/compare/v2.6.1...v2.7.0) (2026-09-04)
 
 ### What you need to do
