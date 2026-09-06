@@ -961,6 +961,155 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     return out
 
 
+# The Experience Library frontmatter field this module reads, named once. `_declared_skills`
+# and BOTH halves of the row `classify_skills_request` prints -- the subject and the detail
+# -- derive from it, so a renamed field cannot leave either labelled after the old one. The
+# detail is the half that matters there: it is the one an operator reads as an instruction,
+# and it spelled `Skills:` as a bare literal until review caught the constant reaching only
+# the subject.
+#
+# The constant itself carries NO trailing colon, which is why the detail adds one and the
+# subject does not. The subject is asserted verbatim in tests/, and `Skills:` followed by
+# anything in a test file is read as a declared skill VALUE by
+# `test_fixture_name_neutrality.py`'s collector -- measured: spelling the subject
+# `Experience Library (Skills:)` puts `)` on the reviewed-name roster and reddens that
+# guard. The detail keeps its colon because that is what an operator greps their notes for
+# and no test asserts that substring; one that did would trip the same collector, which
+# fails SAFE (the guard reddens and asks a human) but is worth knowing before writing it.
+_SKILLS_FIELD = "Skills"
+
+
+def _declared_skills(entry: dict):
+    """The `Skills:` names ONE experience entry declares: a set, or None when the value is
+    one `cv/bundle.py`'s `_skill_items` could not read at all.
+
+    The single reader of that field in this module, shared by `classify_skills_request`
+    and `classify_skills_reconciliation` below. The two rows ask different questions of
+    the same field -- "does this entry annotate anything at all" and "what does it claim"
+    -- and a second reader written for one of them would let the two disagree about the
+    same note. Same discipline as `core/vault.py`'s `_fold_note_name`: a reduction every
+    caller has to agree on gets one definition, not one per call site.
+
+    THREE outcomes, not two, because the gate has three. `_skill_items` returns no items
+    for a blank value, returns items for an annotated one, and RAISES for anything it
+    cannot read -- `.split` on a non-str. An empty set here means the first; None means
+    the third. Collapsing them (an earlier cut returned an empty set for both) made this
+    function report "no annotation" for a value that in fact stops `cv run` dead, and
+    `classify_skills_request` then fired a reassuring row about a corpus that composes
+    nothing. That is the same shape its non-blank suppression already exists to prevent,
+    on the one arm the suppression could not see; the two callers need the distinction, so
+    the reader draws it rather than each caller re-deriving it. Same
+    cannot-say-is-not-zero rule `classify_store` applies to an absent preflight count.
+
+    `.get(...)` returns None when the key is ABSENT, which is a genuine blank -- `_skill_items`
+    defaults it to `""` and reads no items -- so the missing key is normalised to `""` HERE
+    rather than falling into the non-str arm. What remains non-str is a value the Store
+    actually supplied: an explicit `None`, an int, a list. core/protocols.py's Store contract
+    forbids none of them, even though the real Vault never produces one (`_evidence_entries`
+    materialises every declared field via `fm.get(k, "")`).
+
+    Nothing here raises, and nothing is COERCED. doctor never refuses (this module's house
+    rule -- see `DoctorReport.exit_code` and CLAUDE.md), and stringifying a list would
+    render Python's own repr, whose brackets and quotes the comma-split would then read as
+    further "skill names" -- carrying a Store's returned content into a report these rows
+    promise holds only COUNTS.
+
+    Split HERE rather than through `_skill_items` itself -- `sluice/core/` must not import a
+    sub-app (CLAUDE.md's layering rule). Given the None arm the two readings now partition
+    a value the same way: blank under one is blank under the other, and every value
+    `_skill_items` raises on is one this returns None for. They still differ in DEGREE on a
+    non-blank value -- `_skill_items` also refuses an item carrying no name (`...`, `-`)
+    where this returns it as an item -- but both are then non-blank, which is all either
+    caller asks. `classify_skills_request` says why that residual difference cannot reach
+    a row.
+    """
+    raw = (entry.get("fields") or {}).get(_SKILLS_FIELD, "")
+    if not isinstance(raw, str):
+        return None
+    return {t.strip() for t in raw.split(",") if t.strip()}
+
+
+def classify_skills_request(experience_entries: list) -> list:
+    """One NOTICE naming the precondition a composed SKILLS section actually has, emitted
+    only while NO verified experience entry annotates a `Skills:` field (#259).
+
+    `cv/engine.py` asks for the section with
+    `skills_requested=any(es.skills for es in sources.entries.values())`, computed over
+    `bundle_sources(build_bundle(entries, ...))` where `entries` is
+    `read_evidence("experience", verified_only=True)` -- the FULL verified set on every
+    lead, since `cv/bundle.py`'s `rank` orders and never excludes. One corpus-wide fact
+    therefore decides it for every lead at once: with no `Skills:` value anywhere, no CV
+    ever gets a SKILLS section.
+
+    The Skills Inventory appears NOWHERE in that chain. It is framing the composer is
+    shown, licensing nothing (`EvidenceKind.read_by_composer`, `cited_by_gate=False`), and
+    `classify_store`'s row for it says exactly that -- while still being outweighed by the
+    `<verified> / <total>` ratio in front of the sentence and by sitting beside the
+    Experience Library row, where that same ratio genuinely IS what gates citability.
+    Measured on a vault whose every verified experience entry carried a blank `Skills:`:
+    that inventory row was the only thing doctor said on the subject, verifying all of it
+    changed nothing, and the real precondition was reported by nothing at all. This row is
+    that missing fact. It takes the `store` component so it is read beside the row it
+    corrects; `classify_skills_reconciliation` below uses `gates` because it
+    cross-references TWO corpora, whereas this is one corpus's own content, like
+    `classify_store`'s per-kind counts.
+
+    SUPPRESSED by any entry the gate would not read as blank, and that is what keeps the
+    claim exact rather than merely usually true. TWO shapes suppress, for one reason.
+    An entry that genuinely annotates the field is the obvious one. The other is an entry
+    `_skill_items` REFUSES -- a non-blank but nameless item (`...`, `-`), or a value it
+    cannot split at all (`_declared_skills` returns None) -- which raises out of
+    `build_bundle` before any compose and fails every lead in the batch. Firing there
+    would announce that no CV gets a SKILLS section about a corpus that in fact composes
+    no CV at all: true by accident, reassuring, and pointed at a remedy already taken.
+    So the row is emitted only where the two readings of the field agree that nothing is
+    annotated, which no difference in how strictly they read a NON-blank value can reach.
+    Zero is also the only count an operator can act on; a non-zero one asks for nothing.
+
+    It does NOT report the refused corpus itself. That is `classify_store`'s job -- it
+    already emits a per-kind DEAD row from the `<kind>_error` a store reports for a corpus
+    it cannot read -- and inventing a second, differently-worded row for it here would put
+    one fact in two places. This row's whole contribution is the count, so where the count
+    would mislead it says nothing.
+
+    ABSTAINS on an empty corpus rather than reporting `0 of 0`. `classify_store` already
+    emits a SETUP row there that BLOCKS `cv` (#242: `cv run` refuses a vault with nothing
+    verified), so the operator's next step is to verify an entry, not to annotate one that
+    does not exist yet -- and a row naming the further step would compete with the row
+    naming the blocking one.
+
+    NOTICE, never DEGRADED or SETUP, and no `blocks`: a vault with no `Skills:` annotation
+    anywhere is the shape EVERY vault had the day #168 landed (`_skill_items`' own "Blank
+    is absent") and is fully supported -- `cv run` composes a CV without the section, so
+    nothing is stopped. `--strict` in a cron job must not fail on it, the same posture
+    `classify_skills_reconciliation` and `classify_negatives_vs_skills` take and for the
+    same reason (see `DoctorReport.exit_code`).
+
+    Reports a COUNT, never a skill name. There is none to report at zero, and the rule
+    holds regardless: a `DoctorReport` is returned whole to MCP clients
+    (core/protocols.py's Store contract).
+    """
+    if not experience_entries:
+        return []
+    for e in experience_entries:
+        declared = _declared_skills(e)
+        # None (the gate cannot read this value) suppresses exactly as a real annotation
+        # does, and for the same reason: both mean this row's claim would be false.
+        if declared is None or declared:
+            return []
+    # Both labels derived from the registry `classify_store` reads its own subjects from,
+    # never hand-typed: the detail below distinguishes two corpora by name, and a second
+    # spelling of either is the two-sources-for-one-fact shape this file avoids elsewhere.
+    experience_label = EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1]
+    skills_label = EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]
+    return [ComponentCheck(
+        "store", f"{experience_label} ({_SKILLS_FIELD})", NOTICE,
+        f"0 of {len(experience_entries)} verified entries carry a {_SKILLS_FIELD}: field "
+        f"-- until one does, no CV gets a SKILLS section. The field goes on the "
+        f"{experience_label} entry note itself, not on a {skills_label} entry "
+        f"(job-sluice experience list)")]
+
+
 def classify_skills_reconciliation(experience_entries: list, skills_entries: list) -> list:
     """Up to two NOTICE rows cross-referencing verified experience entries' `Skills:`
     claims against the verified Skills Inventory (#168 Task 10) -- modelled on
@@ -1055,27 +1204,17 @@ def classify_skills_reconciliation(experience_entries: list, skills_entries: lis
         except ValueError:
             return {name}
 
+    # `_declared_skills` above, not a second split written here: `classify_skills_request`
+    # decides whether ANY entry annotates the field and this decides WHAT each one claims,
+    # and the two questions must be answered off one reading of the note. Its docstring
+    # carries the absent-key / None-value / non-str handling that used to live here.
     claimed = set()
     for e in experience_entries:
-        # `.get("Skills", "")` only supplies the default when the key is ABSENT; an
-        # explicit `None` VALUE (a Store returning `{"Skills": None}` rather than
-        # omitting the key -- core/protocols.py's Store contract does not forbid it,
-        # even though the real Vault never produces one) passes straight through and
-        # `.split` raises on it. `or ""` catches both shapes doctor must never refuse
-        # on: an absent key and a present-but-falsy one -- but NOT a non-string
-        # TRUTHY one (an int, a list): `or ""` never fires on a truthy value, so
-        # `.split` still raises on those too. `isinstance` closes the gap by
-        # ABSTAINING rather than coercing: stringifying a list would comma-split it
-        # into junk tokens derived from whatever the Store actually returned --
-        # exactly the "no doctor row carries user-authored text" guarantee this
-        # function exists to keep, applied one step earlier to the INPUT rather than
-        # the report. A malformed value is not a claim, so it contributes nothing,
-        # the same empty-means-abstain posture this codebase applies to a preference
-        # gate.
-        raw = (e.get("fields") or {}).get("Skills")
-        if not isinstance(raw, str):
-            continue
-        claimed |= {t.strip() for t in raw.split(",") if t.strip()}
+        # `or set()`: a value `_declared_skills` could not read (None) contributes no NAME
+        # here, which is what this row has always done with one -- unlike
+        # `classify_skills_request`, which must suppress on it. One reader, two mappings,
+        # each stated where it is made.
+        claimed |= _declared_skills(e) or set()
 
     titles = {e.get("title", "") for e in skills_entries}
     # The abstain, on the DERIVED vocabularies rather than the raw arguments -- the same

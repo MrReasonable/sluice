@@ -2537,41 +2537,75 @@ class Sluice:
                     components.append(_doctor.ComponentCheck(
                         "store", "preflight", _doctor.DEAD, str(e),
                         blocks=_doctor.ALL_CAPABILITIES))
-            # #165. Needs BOTH the store and cv_cfg, which is why it lives here and not in
-            # `Vault.preflight()` -- whose docstring commits it to COUNTS rather than
-            # content, and which is a Store-seam member every implementation would have to
-            # grow. The `except` covers only the store READ; the classifier below is pure
-            # and sits outside it, so a bug in it surfaces rather than being logged away.
-            if cv_cfg is not None:
-                try:
-                    _skills = store.read_evidence("skills", verified_only=True)
-                except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already
-                    # reported DEAD by classify_store above WHEN the store implements the
-                    # optional preflight hook; when it does not, this line is the only
-                    # signal, which is why it is WARNING rather than DEBUG.
-                    _log.warning("skills read for the negatives cross-check failed: %s", e)
-                else:
-                    components.extend(_doctor.classify_negatives_vs_skills(
-                        cv_cfg.negatives, _skills))
-
-            # #168 Task 10. A SEPARATE cross-check from the negatives one immediately
-            # above -- it needs no cv_cfg at all (the reconciliation is a property of
-            # the two evidence corpora alone, not of anything cv-configured), so it
-            # runs whether or not the `cv:` block loaded, unlike the `if cv_cfg is not
-            # None:` guard above. Both reads sit in ONE try, deliberately unlike that
-            # block's single-corpus read: this check needs BOTH corpora to say
-            # anything at all (either read failing leaves nothing to reconcile), so
-            # splitting them into two try blocks would only add a second near-
-            # identical except arm for no behavioural gain. An unreadable corpus is
-            # already reported DEAD by classify_store above WHEN the store implements
-            # the optional preflight hook, and WARNED here when it does not -- the
-            # same shape the negatives cross-check's own except uses.
+            # #259. Read HERE -- its own try, ahead of both cross-checks below -- for two
+            # reasons that are separate and both load-bearing.
+            #
+            # Its OWN try, not the reconciliation's two-corpus one further down: this row
+            # reports on the experience corpus alone, so an unreadable Skills Inventory must
+            # not withhold a fact about a healthy Experience Library. That is what sharing
+            # the read did, and the reconciliation's own comment (which argues one try is
+            # enough) was written when it was the only consumer.
+            #
+            # AHEAD of them so every `store`-component row prints contiguously:
+            # `cli.py`'s `_print_doctor` emits `components` in plain list order with no
+            # grouping or sort, and the negatives cross-check just below emits `gates` rows,
+            # so extending after it put a `gates` row in the middle of the store block --
+            # measured. Deliberately NOT stated as an ordering claim against the
+            # RECONCILIATION: the two classifiers are mutually exclusive by construction
+            # (this row fires only when no entry declares a skill, which is exactly the state
+            # the reconciliation abstains on), so their relative order is unobservable and a
+            # comment asserting it would be one no test could ever falsify.
+            #
+            # `verified_only=True` is the whole point of the row and not a default worth
+            # trusting to habit: `cv/engine.py` computes `skills_requested` over the
+            # VERIFIED set, so a doctor reading a wider one would report a precondition the
+            # gate does not use -- silently, and in the reassuring direction.
+            _experience = None
             try:
                 _experience = store.read_evidence("experience", verified_only=True)
-                _inventory = store.read_evidence("skills", verified_only=True)
-            except Exception as e:  # noqa: BLE001 -- see the comment above.
-                _log.warning("evidence read for the skills reconciliation failed: %s", e)
+            except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already reported
+                # DEAD by classify_store above WHEN the store implements the optional
+                # preflight hook; when it does not, this line is the only signal, which is why
+                # it is WARNING rather than DEBUG. Same shape as the two cross-checks below.
+                _log.warning("experience read for the skills rows failed: %s", e)
             else:
+                components.extend(_doctor.classify_skills_request(_experience))
+
+            # ONE read of the Skills Inventory per report, shared by both cross-checks below
+            # (CodeRabbit, PR #283). It used to be read twice -- once for the negatives
+            # cross-check and once for the reconciliation -- so the two rows could describe
+            # two different revisions of the same corpus inside a single report, which is
+            # the same one-report-one-vault-state rule the #259 read above already keeps for
+            # the Experience Library.
+            #
+            # Its OWN try, and deliberately NOT chained to that read: the review's suggested
+            # shape was to read the inventory after the Experience Library read succeeds,
+            # which would let an unreadable Experience Library silence the negatives row --
+            # a row that has nothing to do with that corpus. That is the same coupling the
+            # #259 read was split out to remove, applied to a different pair, so the concern
+            # is taken and the structure is not. Each classifier keeps its own precondition
+            # instead: the negatives one needs `cv_cfg` (#165 -- it reads a config key, which
+            # is why it cannot live in `Vault.preflight()`, whose docstring commits it to
+            # COUNTS rather than content), the reconciliation needs the experience corpus
+            # (#168 Task 10 -- a property of the two corpora alone, so it runs whether or not
+            # the `cv:` block loaded), and both need this read to have succeeded.
+            #
+            # The `except` covers only the store READ. Both classifiers are pure and sit
+            # outside it, so a bug in either surfaces rather than being logged away.
+            _inventory = None
+            try:
+                _inventory = store.read_evidence("skills", verified_only=True)
+            except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already reported
+                # DEAD by classify_store above WHEN the store implements the optional
+                # preflight hook; when it does not, this line is the only signal, which is why
+                # it is WARNING rather than DEBUG. Same shape as the #259 read above.
+                _log.warning("skills read for the evidence cross-checks failed: %s", e)
+
+            if cv_cfg is not None and _inventory is not None:
+                components.extend(_doctor.classify_negatives_vs_skills(
+                    cv_cfg.negatives, _inventory))
+
+            if _experience is not None and _inventory is not None:
                 components.extend(_doctor.classify_skills_reconciliation(
                     _experience, _inventory))
 

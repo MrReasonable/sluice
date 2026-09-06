@@ -351,6 +351,27 @@ actually answers, not just that a key is present.
   PENDING count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)`
   — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
   command.
+- **`notice`, `Experience Library (Skills)`** (#259): `0 of <n> verified entries carry a
+  Skills: field`. This is what gates a **SKILLS section** on a composed CV, and it is the
+  one number that used to be reported nowhere. `cv run` asks for the section only when at
+  least one verified Experience Library entry carries a `Skills:` value; the field goes on
+  that entry's own note, *not* on a Skills Inventory entry. The Skills Inventory row above
+  is easy to read as the lever here — it shows a `<verified> / <total>` ratio directly
+  beside the Experience Library row, where that ratio really does gate citability — but the
+  inventory is framing the composer is shown and licenses nothing, so verifying all of it
+  changes nothing about whether a SKILLS section appears. The row disappears as soon as one
+  entry is annotated, and it is never emitted for a corpus with nothing verified in it (the
+  `setup` row above is the blocker there, and verifying an entry is the step to take first).
+  It also disappears for a `Skills:` value the composer's own reader **refuses** — one that
+  is not blank but carries no name at all, such as `...` or a bare `-`. That is deliberate:
+  such a value does not merely skip the SKILLS section, it makes `cv run` fail *every* lead,
+  so a row saying "no CV gets a SKILLS section" would be reassuring about a corpus that
+  composes nothing. The cost is that doctor is then silent on this axis, so if you have
+  annotated an entry and `cv run` reports an error for every lead, check that entry's
+  `Skills:` value spells at least one real name. `cv run` logs a warning per failed lead
+  (`cv run failed for …: skill '…' is invalid: it contains no name at all…`) that quotes the
+  offending value; the per-lead result itself records only `error`, so the warning is where
+  the diagnosis is.
 - **`dead`, an evidence corpus that cannot be read**: `<Corpus> | dead | cannot be read — …`,
   and this one genuinely is `dead` rather than `setup` — the directory exists and the store
   cannot read it, which is a fault rather than an unfinished setup step, so it exits 1.
