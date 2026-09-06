@@ -40,6 +40,22 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.7](https://github.com/MrReasonable/sluice/compare/v2.9.6...v2.9.7) (2026-09-06)
+
+
+### Bug Fixes
+
+* **doctor:** report the precondition a SKILLS section actually has ([c817a4d](https://github.com/MrReasonable/sluice/commit/c817a4d8eb431ba8369613e0fb10ba75677cbbf9))
+
+  If your composed CVs have no SKILLS section, `job-sluice doctor --verbose` now says why.
+  A new `store | Experience Library (Skills)` row reports how many of your verified
+  Experience Library entries carry a `Skills:` field — which is what actually asks for
+  that section. Nothing about your config or vault changes, and no action is required
+  if your CVs already have one (the row appears only when none of your entries is
+  annotated). The Skills Inventory's own `verified / total` count was the only signal
+  doctor gave here before, and it gates nothing: those entries are framing shown to the
+  composer, so verifying all of them never produced a SKILLS section.
+
 ## [2.9.6](https://github.com/MrReasonable/sluice/compare/v2.9.5...v2.9.6) (2026-09-06)
 
 
