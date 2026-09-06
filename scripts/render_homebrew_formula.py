@@ -31,6 +31,29 @@ _SHIPPED_EXTRAS = ("render", "google", "mcp", "completion")
 # copy.
 _IMPORTABLE_CORE_FORMULAE = ("cffi", "cryptography", "pillow", "pydantic", "rpds-py")
 
+# VENDORED BACK IN, despite being a dependency of an excluded formula above.
+#
+# `brew update-python-resources` excludes each name above AND ITS WHOLE DEPENDENCY TREE, so
+# depending on homebrew-core's `pydantic` also gave away `annotated-types`,
+# `typing-inspection` and -- the one that mattered -- `typing-extensions`. The brewed pydantic
+# then supplied its own older copy from
+# /opt/homebrew/opt/pydantic/lib/python3.14/site-packages, and when vendored `anyio` (via
+# `mcp`) began importing `typing_extensions.sentinel`, that copy did not have it. `brew test`
+# failed the 2.9.4 release on `import mcp, googleapiclient, argcomplete` with an ImportError
+# naming that path. Nothing here moved: 2.9.3 built clean and 2.9.4 failed the next morning.
+#
+# `extra_packages` is `brew update-python-resources`' own mechanism for exactly this -- it
+# takes the name back out of the exclusion and resolves it as a normal resource, so the
+# version in our libexec is the one our closure asked for. A venv's own site-packages precedes
+# the system ones on sys.path, so ours wins over the brewed pydantic's.
+#
+# WHY NOT JUST VENDOR PYDANTIC. Measured, and rejected on the user's behalf: this tap publishes
+# NO BOTTLES, so every `brew install` builds from source. `pydantic` stays excluded because
+# homebrew-core's formula IS bottled -- dropping it means every user compiles `pydantic-core`
+# from Rust and first downloads a 432MB `rust` toolchain. `typing-extensions` is pure Python
+# and costs them nothing. Keep this list to packages with no build step.
+_EXTRA_PACKAGES = ("typing-extensions",)
+
 # Never depend on these. Two distinct hazards, one tuple because the consequence is identical:
 #   - NAME MATCH, different content: `click` is a Kubernetes CLI, `brotli` and `zopfli` are the
 #     Google C libraries rather than the Python bindings, `protobuf` is the C++ implementation.
@@ -118,6 +141,7 @@ def render(*, sdist_url: str, sha256: str) -> str:
         )
     depends_lines = "\n".join(f'  depends_on "{name}"' for name in depends)
     excludes = " ".join(_IMPORTABLE_CORE_FORMULAE)
+    extra_pkgs = " ".join(_EXTRA_PACKAGES)
     extras = ",".join(_SHIPPED_EXTRAS)
     return f'''class JobSluice < Formula
   include Language::Python::Virtualenv
@@ -143,6 +167,10 @@ def render(*, sdist_url: str, sha256: str) -> str:
   uses_from_macos "libffi"
 
   pypi_packages package_name:     "job-sluice[{extras}]",
+                # Padded to align with `exclude_packages:` below -- RuboCop's
+                # Layout/HashAlignment wants a multi-line hash literal's values in one
+                # column, and `brew audit --strict` runs it. Measured, not guessed.
+                extra_packages:   %w[{extra_pkgs}],
                 exclude_packages: %w[{excludes}]
 
   def install

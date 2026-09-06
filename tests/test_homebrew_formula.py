@@ -88,6 +88,12 @@ def test_the_formula_declares_exactly_the_shipped_extras():
 # excluded silently vendors a second copy -- re-adding a Rust build the whole approach exists
 # to remove.
 _EXPECTED_IMPORTABLE = {"cffi", "cryptography", "pillow", "pydantic", "rpds-py"}
+# Vendored back in even though an excluded formula above depends on it. Restated by hand like
+# every other expectation here. See the renderer's comment for the incident: excluding
+# `pydantic` also excluded `typing-extensions`, the brewed pydantic supplied a stale copy, and
+# `import mcp` failed the 2.9.4 release. Keep this to packages with NO build step -- this tap
+# publishes no bottles, so anything vendored here is compiled on every user's machine.
+_EXPECTED_EXTRA_PACKAGES = {"typing-extensions"}
 # Emitted as `depends_on` but NOT excluded: the interpreter and the native tree are not Python
 # packages, so `exclude_packages` has nothing to say about them.
 # Emitted as `depends_on` but NOT excluded: these are native libraries, not Python
@@ -110,6 +116,50 @@ def _exclude_packages(formula: str) -> set[str]:
     found = set(match.group(1).split())
     assert found, "exclude_packages parsed as empty"
     return found
+
+
+def _extra_packages(formula: str) -> set[str]:
+    match = re.search(r"extra_packages:\s*%w\[([^\]]*)\]", formula)
+    assert match, f"no extra_packages stanza parsed; checks on it are vacuous:\n{formula}"
+    found = set(match.group(1).split())
+    assert found, "extra_packages parsed as empty"
+    return found
+
+
+def test_extra_packages_rescues_names_the_exclusions_would_have_swallowed():
+    """`brew update-python-resources` excludes an excluded formula's WHOLE dependency tree.
+
+    That is how `typing-extensions` was lost: it is a dependency of `pydantic`, which is
+    excluded so users get homebrew-core's bottled build instead of compiling Rust. The brewed
+    pydantic then supplied its own older copy, vendored `anyio` imported
+    `typing_extensions.sentinel`, and `brew test` failed the 2.9.4 release on `import mcp`.
+
+    `extra_packages` takes the name back out of the exclusion. The two stanzas must not name
+    the same package -- that would be a contradiction the tool resolves silently, and which
+    of the two wins is not something this repository should be relying on.
+    """
+    formula = render(**FIXTURE)
+    extra = _extra_packages(formula)
+    assert extra == _EXPECTED_EXTRA_PACKAGES, (
+        f"extra_packages is {sorted(extra)}, expected {sorted(_EXPECTED_EXTRA_PACKAGES)}"
+    )
+    overlap = extra & _exclude_packages(formula)
+    assert not overlap, (
+        f"{sorted(overlap)} appears in BOTH extra_packages and exclude_packages. The tool "
+        f"resolves that silently and this repo should not depend on which side wins."
+    )
+
+
+def test_no_extra_package_is_also_depended_on_as_a_formula():
+    """An extra package is VENDORED. A name here that is also a `depends_on` would be supplied
+    twice -- the second-copy defect `test_every_python_package_depended_on_is_also_excluded`
+    guards for the exclusion side, asserted here for the inclusion side."""
+    formula = render(**FIXTURE)
+    both = _extra_packages(formula) & _depends_on(formula)
+    assert not both, (
+        f"{sorted(both)} is both vendored via extra_packages and depended on as a formula; "
+        f"one of the two copies is dead weight and which one loads is path-order dependent."
+    )
 
 
 def test_every_excluded_package_is_also_depended_on():
