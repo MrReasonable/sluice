@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.6](https://github.com/MrReasonable/sluice/compare/v2.9.5...v2.9.6) (2026-09-06)
+
+
+### Bug Fixes
+
+* **cv:** print the gate violations and audit flags, not just their counts ([28145a1](https://github.com/MrReasonable/sluice/commit/28145a10fcdca986fefe08feef09e4bbf80ac6b8))
+
 ## [2.9.5](https://github.com/MrReasonable/sluice/compare/v2.9.4...v2.9.5) (2026-09-06)
 
 
