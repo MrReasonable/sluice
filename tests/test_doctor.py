@@ -11,7 +11,7 @@ from sluice.core.doctor import (
     ComponentCheck,
     DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
     classify_negatives_vs_skills, classify_renderer, classify_skills_reconciliation,
-    classify_store, classify_track_google, enumerate_targets,
+    classify_skills_request, classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
 
@@ -2296,6 +2296,311 @@ def test_the_negatives_cross_check_runs_through_the_real_wiring(tmp_path, monkey
     # the NOTICE with the genuinely DEAD rows a bare tmp vault produces (no baseline CV, no
     # Candidate Profile), which is a different claim and one that would fail for the right
     # reasons.
+
+
+# ── #259: the precondition a composed SKILLS section actually has ─────────────
+#
+# Entries are literal nested dicts with the `Skills` key written out at each call site,
+# for the reason the #168 Task 10 section below states in full: a helper taking the value
+# as a PARAMETER hides it from both neutrality collectors in
+# tests/test_fixture_name_neutrality.py.
+
+
+def test_a_corpus_with_no_skills_annotation_anywhere_reports_the_precondition():
+    """The row #259 exists to add. Its absence was the whole defect: on this vault shape
+    doctor's only word on the subject was the Skills Inventory's own verified/total ratio,
+    which gates nothing, so an operator acted on the inventory and nothing changed."""
+    rows = classify_skills_request(
+        [{"fields": {"Skills": ""}}, {"fields": {"Skills": ""}}])
+    assert len(rows) == 1
+    row = rows[0]
+    # `store`, not `gates`: this row exists to be READ beside classify_store's own
+    # Skills Inventory row, which is what an operator otherwise acts on, and the printer
+    # emits components in list order rather than grouping them.
+    assert row.component == "store"
+    assert row.subject == "Experience Library (Skills)"
+    assert row.state == NOTICE, "a vault carrying no such annotation is fully supported"
+    assert row.blocks == (), "cv run composes a CV without a SKILLS section"
+    assert "0 of 2 verified entries" in row.detail
+    # Names BOTH corpora: the misdirection being corrected is specifically that the field
+    # looks like it belongs on a Skills Inventory entry.
+    assert "Experience Library entry note" in row.detail
+    assert "not on a Skills Inventory entry" in row.detail
+
+
+def test_one_annotated_entry_suppresses_the_row():
+    """The positive control: the row CAN stop firing, so the assertions above are not
+    satisfied by a function that returns a row unconditionally. One entry is enough --
+    `skills_requested` is `any(...)` over the whole verified set, which `cv/bundle.py`'s
+    `rank` orders and never excludes, so one annotation turns the section on for EVERY
+    lead."""
+    assert classify_skills_request(
+        [{"fields": {"Skills": ""}},
+         {"fields": {"Skills": "Example Widget"}}]) == []
+
+
+def test_an_empty_experience_corpus_abstains_rather_than_reporting_zero_of_zero():
+    """`classify_store` already emits a SETUP row that BLOCKS cv on this vault (#242:
+    `cv run` refuses a corpus with nothing verified). The operator's next step is to
+    verify an entry, not to annotate one that does not exist, so a second row naming the
+    later step would compete with the row naming the blocking one."""
+    assert classify_skills_request([]) == []
+
+
+@pytest.mark.parametrize("entry", [
+    {"fields": {"Skills": ""}},
+    {"fields": {"Skills": " "}},
+    {"fields": {"Skills": ","}},
+    {"fields": {"Skills": " , , "}},
+])
+def test_the_values_this_row_fires_on_are_exactly_the_ones_the_gate_reads_as_absent(entry):
+    """THE load-bearing claim, executed rather than argued.
+
+    `core/doctor.py` may not import a sub-app (CLAUDE.md's layering rule), so it splits
+    `Skills:` itself rather than through `cv/bundle.py:_skill_items` -- two readings of
+    one field. The row's claim ("no CV gets a SKILLS section") is only exact while the two
+    agree about what counts as NO annotation, so that agreement is asserted here against
+    the REAL gate function on every blank spelling, in both directions at once: doctor
+    fires the row, and `_skill_items` yields nothing for the same value.
+
+    A test asserting only doctor's own half would certify a divergence rather than catch
+    it -- the shape CLAUDE.md calls "a pattern consumed by two engines must be asserted
+    through the engine that RUNS it"."""
+    from sluice.cv.bundle import _skill_items
+
+    assert _skill_items(entry) == [], "the gate read this value as an annotation"
+    rows = classify_skills_request([entry])
+    assert len(rows) == 1, "doctor did not read this value as absent"
+    assert "0 of 1 verified entries" in rows[0].detail
+
+
+def test_a_nameless_skills_value_suppresses_the_row_because_the_gate_refuses_it():
+    """The one documented divergence, pinned so it cannot be "fixed" into a false row.
+
+    `_skill_items` REFUSES a non-blank item carrying no name (`...`, `-`), raising out of
+    `build_bundle` before any compose and failing every lead in the batch. So on this
+    corpus `cv run` does not merely skip the SKILLS section, it produces no CV at all --
+    and a row announcing "no CV gets a SKILLS section until one carries the field" would
+    be reassuring about a corpus that is broken outright, while pointing at a remedy
+    (annotate an entry) that is already done.
+
+    Suppressing at ANY non-blank value is what keeps doctor's only claim to the case where
+    the two readings provably agree. Tightening doctor's split to skip punctuation would
+    redden this and should: it would buy a wrong row, not a better one."""
+    from sluice.cv.bundle import _skill_items
+
+    entry = {"fields": {"Skills": "..."}}
+    with pytest.raises(ValueError):
+        _skill_items(entry)
+    assert classify_skills_request([entry]) == []
+
+
+def test_a_value_the_gate_cannot_read_suppresses_the_row_and_claims_no_name():
+    """A Store returning a `None`, a list or an int for this field -- none of which
+    core/protocols.py's Store contract forbids -- must SUPPRESS the row, for the same
+    reason a nameless `...` does: `_skill_items` cannot split it either, so it raises out
+    of `build_bundle` and fails every lead. A row there would say no CV gets a SKILLS
+    section about a corpus that composes no CV at all.
+
+    This is the arm the earlier cut got wrong, and it is why `_declared_skills` returns
+    None rather than an empty set: collapsing "no annotation" and "unreadable" made the row
+    fire on the second. Executed against the real gate below rather than asserted from the
+    docstring.
+
+    The reconciliation maps the SAME None to no claimed NAME -- one reader, two mappings --
+    so it still abstains rather than reporting a phantom name derived from a list's repr.
+
+    Built by subscript assignment, this file's stated exception to its own literal-dict
+    rule (see the two non-string reconciliation tests below): none of these values is a
+    candidate skill NAME, so there is nothing for a human to confirm invented-vs-real and
+    nothing being hidden from the neutrality sweep by writing it this way."""
+    from sluice.cv.bundle import _skill_items
+
+    weird = []
+    for bad in (None, ["a", "b"], 7):
+        e = {"fields": {}}
+        e["fields"]["Skills"] = bad
+        weird.append(e)
+        # The half that makes the suppression correct rather than merely chosen: the gate
+        # REFUSES this value, so "no SKILLS section is requested" is not what happens.
+        with pytest.raises((AttributeError, TypeError)):
+            _skill_items(e)
+
+    assert classify_skills_request(weird) == []
+    # One unreadable entry is enough to suppress, even beside genuinely blank ones -- the
+    # gate raises on the whole corpus, not on the entries after it.
+    assert classify_skills_request([{"fields": {"Skills": ""}}] + weird) == []
+    # A MISSING key is not an unreadable value: `_skill_items` defaults it to "" and reads
+    # no items, so these two shapes must still fire the row rather than ride the arm above.
+    assert len(classify_skills_request([{"fields": {}}, {}])) == 1
+    # And the reconciliation still abstains rather than reporting three unmatched names,
+    # which is what coercing a list to its repr and comma-splitting it would have produced.
+    assert classify_skills_reconciliation(weird, [_skill("example-widget")]) == []
+
+
+def test_both_evidence_cross_checks_see_one_inventory_snapshot(tmp_path, monkeypatch):
+    """The Skills Inventory is read ONCE per report and the same list reaches both
+    cross-checks (CodeRabbit, PR #283). It used to be read twice -- once for the negatives
+    check, once for the reconciliation -- so the two rows could describe two different
+    revisions of one corpus inside a single report.
+
+    Asserted on OBJECT IDENTITY rather than on a call count: a count would have to name how
+    many times `Vault.preflight` reads the corpus for its own tally too, which is a
+    different consumer through a different seam and would make this test fail on an
+    unrelated refactor there. Identity says the thing that actually matters -- these two
+    classifiers were handed the same snapshot."""
+    import os
+
+    from sluice.core import doctor as _doctor
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    exp = vault / "Job Applications" / "Experience Library"
+    sk = vault / "Job Applications" / "Skills Inventory"
+    os.makedirs(exp, exist_ok=True)
+    os.makedirs(sk, exist_ok=True)
+    (exp / "alpha.md").write_text(
+        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: Example Ghost\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
+    (sk / "example-orphan.md").write_text(
+        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
+        "Signal Value: depth\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
+
+    seen = {}
+    monkeypatch.setattr(_doctor, "classify_negatives_vs_skills",
+                        lambda negatives, skills: seen.setdefault("negatives", id(skills)) and [])
+    monkeypatch.setattr(_doctor, "classify_skills_reconciliation",
+                        lambda experience, skills: seen.setdefault("reconcile", id(skills)) and [])
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    assert set(seen) == {"negatives", "reconcile"}, (
+        "one of the two cross-checks did not run, so this test cannot compare their inputs")
+    assert seen["negatives"] == seen["reconcile"], (
+        "the two cross-checks were handed different Skills Inventory reads, so one report "
+        "can describe two revisions of the same corpus")
+
+
+def test_an_unreadable_experience_corpus_does_not_silence_the_negatives_row(tmp_path, monkeypatch):
+    """The coupling the single-snapshot fix must NOT introduce, pinned because the review
+    that asked for that fix proposed exactly it: reading the inventory only after the
+    Experience Library read succeeds.
+
+    `classify_negatives_vs_skills` compares a `cv.negatives` line against the Skills
+    Inventory. The Experience Library is not in that comparison, so an unreadable one must
+    leave the row alone -- the same independence the #259 read was split into its own try
+    to preserve, here in the other direction.
+
+    The experience read is made to fail while the inventory reads fine, which is the only
+    arrangement that can tell the two structures apart."""
+    import os
+
+    from sluice.core import doctor as _doctor
+    from sluice.core.config import Config
+    from sluice.core.vault import Vault
+
+    vault = tmp_path / "vault"
+    sk = vault / "Job Applications" / "Skills Inventory"
+    os.makedirs(sk, exist_ok=True)
+    (sk / "example-orphan.md").write_text(
+        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
+        "Signal Value: depth\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
+
+    real_read = Vault.read_evidence
+
+    def _read(self, kind, verified_only=True):
+        if kind == "experience":
+            raise OSError("experience corpus is unreadable")
+        return real_read(self, kind, verified_only)
+
+    monkeypatch.setattr(Vault, "read_evidence", _read)
+    called = []
+    monkeypatch.setattr(_doctor, "classify_negatives_vs_skills",
+                        lambda negatives, skills: called.append(len(skills)) or [])
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    assert called == [1], (
+        "an unreadable Experience Library silenced the negatives cross-check, which does "
+        "not read that corpus at all")
+
+
+def test_the_row_counts_the_verified_corpus_the_gate_itself_reads(tmp_path, monkeypatch):
+    """The surviving mutant every other test in this section is blind to: flipping the
+    `verified_only=True` on `Sluice.doctor`'s experience read to `False` left the whole
+    suite green while silently reintroducing #259's defect.
+
+    `cv/engine.py` computes `skills_requested` over
+    `read_evidence("experience", verified_only=True)`, so doctor must count that same
+    corpus. Reading a WIDER one lets an UNVERIFIED note's `Skills:` value suppress the
+    row -- doctor then reports nothing while the gate still requests no SKILLS section,
+    which is the precondition going unreported again, in the reassuring direction.
+
+    Every other test here either calls the pure classifier (which never sees this read) or
+    seats only verified notes, so none can distinguish the two corpora. This one seats a
+    VERIFIED note with a blank `Skills:` beside an UNVERIFIED one that annotates it: the
+    two reads disagree about this vault, which is what makes the row's presence and its
+    count evidence about which one was taken."""
+    import os
+
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    exp = vault / "Job Applications" / "Experience Library"
+    os.makedirs(exp, exist_ok=True)
+    (exp / "alpha.md").write_text(
+        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: \nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
+    # Seated in place rather than under `_inbox/` (which `read_evidence` cannot see at
+    # either setting, so it could not tell the two reads apart): an unverified note is one
+    # carrying no `verified:` key, and that is the only difference from the note above.
+    (exp / "beta.md").write_text(
+        "---\nCompany: Example Beta\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: Example Widget\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    rows = [c for c in report.components
+            if (c.component, c.subject) == ("store", "Experience Library (Skills)")]
+    assert len(rows) == 1, (
+        "the row went silent, so the read counted the unverified entry's annotation -- "
+        "a corpus cv/engine.py's skills_requested never sees")
+    # The COUNT is the second half of the same claim: one verified entry, not two.
+    assert "0 of 1 verified entries" in rows[0].detail
+
+
+def test_the_skills_request_row_runs_through_the_real_wiring(tmp_path, monkeypatch):
+    """Every test above calls the pure classifier directly, so the smallest DELETION in
+    production code -- removing the call site in `Sluice.doctor` -- leaves them all green.
+    This is the one that reddens. Follows
+    test_the_skills_reconciliation_runs_through_the_real_wiring's idiom exactly, including
+    restoring the REAL store this file's autouse `_harmless_components` fixture replaces
+    with a bare sentinel.
+
+    Filtered on the (component, subject) PAIR: `classify_store` emits its own
+    `store`-component rows for this same corpus, and the suffix is the only thing telling
+    them apart."""
+    import os
+
+    from sluice.core.config import Config
+
+    vault = tmp_path / "vault"
+    exp = vault / "Job Applications" / "Experience Library"
+    os.makedirs(exp, exist_ok=True)
+    (exp / "alpha.md").write_text(
+        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+        "Skills: \nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
+    monkeypatch.setenv("VAULT_DIR", str(vault))
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+
+    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
+    rows = [c for c in report.components
+            if (c.component, c.subject) == ("store", "Experience Library (Skills)")]
+    assert len(rows) == 1, "the #259 row did not reach the report through Sluice.doctor"
+    assert "0 of 1 verified entries" in rows[0].detail
 
 
 # ── #168 Task 10: an experience entry's `Skills:` claims vs the Skills Inventory ──

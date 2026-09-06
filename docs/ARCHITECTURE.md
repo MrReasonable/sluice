@@ -2037,7 +2037,29 @@ Inventory (unclaimed)` (an inventory skill no experience entry's `Skills:` claim
 each suppressed at zero and, the same posture, reporting only a COUNT rather than the
 skill's own name. Unlike the `cv.negatives[i]` check just named, it is not one of the
 `cv_cfg`-gated checks a few sentences up: it needs only both evidence corpora to be
-readable, so it still runs when `cv_cfg` failed to load. A gate row whose role IS
+readable, so it still runs when `cv_cfg` failed to load. #259 added a `store`-component row
+of its own, `core/doctor.py`'s `classify_skills_request`: `Experience Library (Skills)`,
+`notice`, emitted ONLY while no verified experience entry carries a `Skills:` value at all.
+That is the precondition a composed SKILLS section actually has -- `cv/engine.py` asks for
+one with `skills_requested=any(es.skills for es in sources.entries.values())` over the FULL
+verified set (`cv/bundle.py`'s `rank` orders and never excludes), so one corpus-wide fact
+decides it for every lead. The Skills Inventory is not in that chain, and its own row's
+`<verified> / <total>` ratio was being read as if it were -- verifying the whole inventory
+changes nothing, which is the misreading this row corrects, so it takes the `store`
+component to be read beside it. It is SUPPRESSED by any entry the gate would not
+read as blank, not merely reported differently, and that covers two shapes for one reason:
+an entry that genuinely annotates the field, and one `_skill_items` REFUSES -- a non-blank
+nameless value (`...`), or one it cannot split at all -- which raises out of `build_bundle`
+and fails every lead. Firing on the second would announce that no CV gets a SKILLS section
+about a corpus that composes no CV at all, so the row is emitted only where doctor's own
+split and `_skill_items` agree that nothing is annotated. `core/doctor.py`'s
+`_declared_skills` is what draws that line: it returns a set of names, or None for a value
+the gate could not read, and the two rows map that None differently on purpose -- the
+reconciliation to no claimed NAME, this row to a suppression. Reporting the refused corpus
+is `classify_store`'s job, via the per-kind DEAD row it already emits from a store's
+`<kind>_error`. This row also abstains on an EMPTY corpus, where `classify_store`'s own
+SETUP row already blocks `cv`.
+A gate row whose role IS
 declared never affects `exit_code`, under `--strict` or otherwise, because an abstaining
 gate (an unconfigured preference simply passes every lead through) is the shipped default
 and legitimate -- grading it as a failure would be the 672ad2a class of bug (see
