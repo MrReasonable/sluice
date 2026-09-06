@@ -40,6 +40,40 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.5](https://github.com/MrReasonable/sluice/compare/v2.9.4...v2.9.5) (2026-09-06)
+
+
+### Bug Fixes
+
+* **homebrew:** vendor typing-extensions the exclusions swallowed ([a0a90b4](https://github.com/MrReasonable/sluice/commit/a0a90b4e82af3aa056e9baf9d550b8d638e65d04))
+
+**Homebrew users: check what you actually have.** The tap has been on 2.6.0 or 2.9.3 through
+several releases whose notes said otherwise, so this one makes no promise:
+
+```
+brew update && brew info MrReasonable/tap/job-sluice
+```
+
+Nothing user-visible was ever broken. `sluice/` is byte-identical between 2.9.3 and 2.9.4, so
+anyone on the tap has been running the same software as everyone else; what stalled was the
+tap's ability to move forward.
+
+The last blocker was a dependency skew we did not control. `pydantic` is deliberately taken
+from homebrew-core rather than built here, so users get its bottle instead of compiling Rust —
+but excluding it also excluded its whole dependency tree, including `typing-extensions`, which
+is pure Python and has nothing to do with that. Homebrew's copy then went stale relative to
+what `mcp` needed, and the release's own smoke test caught it: `import mcp` raised
+`ImportError: cannot import name 'sentinel'`.
+
+`typing-extensions` is now vendored explicitly, so its version is the one this project
+resolves rather than whatever homebrew-core happens to ship. `pydantic` stays bottled, so no
+install got slower.
+
+<!-- Deliberately not claiming the upgrade works. 2.9.1 and 2.9.2 both told Homebrew users
+`brew upgrade` would move them and both shipped false, because the changelog is written before
+the job that would make it true. The verification that matters is `brew info`, which is what
+this note points at instead. -->
+
 ## [2.9.4](https://github.com/MrReasonable/sluice/compare/v2.9.3...v2.9.4) (2026-09-05)
 
 
