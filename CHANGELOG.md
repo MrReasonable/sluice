@@ -40,6 +40,14 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.9.7](https://github.com/MrReasonable/sluice/compare/v2.9.6...v2.9.7) (2026-09-06)
+
+
+### Bug Fixes
+
+* **doctor:** report the precondition a SKILLS section actually has ([c817a4d](https://github.com/MrReasonable/sluice/commit/c817a4d8eb431ba8369613e0fb10ba75677cbbf9))
+* **doctor:** scope the negatives cross-check to what a line negates ([a55c218](https://github.com/MrReasonable/sluice/commit/a55c218fd24020e01c26016afe5ca689dbe493f4))
+
 ## [2.9.6](https://github.com/MrReasonable/sluice/compare/v2.9.5...v2.9.6) (2026-09-06)
 
 
