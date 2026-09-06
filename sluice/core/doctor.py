@@ -28,6 +28,7 @@ reach the candidate. Nothing above probed for either, because nothing did.
 `ComponentCheck` below is the second table this module now classifies, one row
 per non-backend piece a run depends on.
 """
+import re
 from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
@@ -39,7 +40,7 @@ from sluice.core.protocols import (
     ALL_CAPABILITIES, BROKEN, CAPABILITIES, DEGRADED_CAP, EVIDENCE_KINDS,
     NEEDS_SETUP, READY,
 )
-from sluice.core.stem import stem_all
+from sluice.core.stem import stem, stem_all, tokens
 
 # Five states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -898,12 +899,97 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
 # Matches `cv/engine.py:_jd_keywords`' own `[a-z]{4,}`, so the two places that reduce prose
 # to comparable keywords agree on what is too short to carry meaning. A LENGTH floor, not a
 # stopword list -- see classify_negatives_vs_skills for the measured case it closes.
+#
+# It floors the TERMS and must never be applied to `_NEGATION_WORDS` below: `no`, `not` and
+# `nor` are all under it. They are function words whose whole job is grammatical, not topics
+# too short to mean anything, so one floor over both would silently leave the check firing
+# on the longer half of the vocabulary only.
 _MIN_TERM_LEN = 4
+
+# The words that FLIP what follows them (#260). This is not the stopword list this repo
+# declines to ship: a stopword list rules on which words carry meaning, in general and for
+# every caller; this is eleven words whose presence changes the meaning of a sentence, in
+# one check. `core/health.py`'s `_LOGIN_SEGMENTS` is the precedent for the narrow kind --
+# a handful of shipped words whose presence is the signal, with a matching rule chosen
+# after measuring the alternatives rather than assumed.
+#
+# Natural spellings, stemmed ONCE at import and compared against each token's stem, so
+# `avoiding` reaches `avoid` and no hand-stemmed literal can be typed wrong -- `exclude`
+# stems to `exclud`, and it is exactly the entry a hand-written set would get wrong.
+#
+# Contractions are deliberately absent. `tokens()` splits on `[a-z]+`, so `don't` arrives
+# as `don` + `t`, and `don` is an ordinary English word -- shipping it to catch the
+# contraction would fire on the word itself. A missed negation ABSTAINS, which is the
+# direction this check already prefers to fail in (see the docstring below), and
+# `cv.negatives` is terse imperative config where the contraction is rare.
+_NEGATION_WORDS = ("no", "not", "never", "none", "nor", "neither",
+                   "avoid", "exclude", "omit", "without", "cannot")
+_NEGATION_STEMS = frozenset(stem(w) for w in _NEGATION_WORDS)
+
+# Clause terminators. A negation negates its own clause, not the whole config line.
+# Measured before this existed: "Never use more than six bullets per role; keep the
+# platform section last" reported a contradiction, because the line CONTAINS `never` and
+# CONTAINS `platform` and nothing related the two. #260's observed false positives were
+# all long lines, so a presence-anywhere test would have been nearly as blunt as the bare
+# intersection it replaces.
+#
+# A run of two or more hyphens and the en/em dashes are here because this is prose a human
+# typed; a SINGLE hyphen is not, because it lives inside words. Widening this set can only
+# narrow what is reported, so the failure direction of adding one wrongly is a miss -- and
+# both of the following were exactly that, measured rather than predicted:
+#
+#   - A sentence terminator is required to be followed by WHITESPACE. Without that, the
+#     dot in a dotted technology name split the clause, and
+#     `cv.negatives` is the key written ABOUT technology names: "never claim experience
+#     with <something>.js or containers" put everything after the dot outside the
+#     negation's scope and reported nothing. A decimal ("never claim 2.5 years of
+#     container work") did the same. There is deliberately no end-of-line arm beside the
+#     whitespace one: a terminator with nothing after it splits off an empty trailing
+#     clause, which contributes no tokens, so `(?=\s|$)` and `(?=\s)` are the same
+#     function -- measured over ten trailing-terminator lines, the SPLIT differs on eight
+#     and `_negated_stems` on none. An arm no row could falsify reads as a checked
+#     mechanism and is not one.
+#   - `:` is NOT here. A colon continues its sentence rather than ending it, so breaking on
+#     it put the whole of "never claim: containers, dashboards" outside the scope. The
+#     forward scope is what makes leaving it in safe: in "keep the container section last:
+#     no tables" the term before the colon is still ahead of the negation, so it is not
+#     matched anyway.
+_CLAUSE_BREAK_RE = re.compile(r"[.;!?](?=\s)|\n|-{2,}|[\u2013\u2014]")
+
+
+def _negated_stems(neg: str) -> set:
+    """The stems `neg` actually FORBIDS: within each clause, every stem after the first
+    negation word, the negation words themselves excepted.
+
+    FORWARD scope, because that is how English negation works -- a term BEFORE the negation
+    is something the line asserts, not something it forbids, so "keep the platform section
+    last and never use tables" is a rule about tables. And clause-scoped rather than
+    windowed, because a window needs a token count nothing here can justify. An ordinary
+    imperative negative puts its forbidden terms anywhere from the very next token to the
+    end of a long list, so any N is either arbitrary or generous enough to be no filter at
+    all; the clause boundary, by contrast, is a mark the author actually typed. This is a
+    reason for preferring the boundary, not a measurement -- no distance distribution was
+    taken, and none is claimed.
+
+    A negation word is never itself returned as a term -- hence the `elif`, not a second
+    `if`. `never` is five characters, so it clears `_MIN_TERM_LEN`, and an inventory whose
+    prose happens to contain the word would otherwise match on it.
+    """
+    out = set()
+    for clause in _CLAUSE_BREAK_RE.split(neg or ""):
+        negated = False
+        for token in tokens(clause):
+            stemmed = stem(token)
+            if stemmed in _NEGATION_STEMS:
+                negated = True
+            elif negated:
+                out.add(stemmed)
+    return out
 
 
 def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
-    """One NOTICE per configured `cv.negatives` entry naming a skill the verified Skills
-    Inventory actually holds (#165).
+    """One NOTICE per configured `cv.negatives` entry that FORBIDS something the verified
+    Skills Inventory holds (#165, narrowed to what the line negates by #260).
 
     `cv.negatives` is prose asserting which technologies the candidate does and does not
     work in, maintained by hand and separately from the inventory that already answers
@@ -916,18 +1002,49 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
     user chose, so matching its stems makes an ordinary word in it ('skill', 'example')
     fire a NOTICE about nothing.
 
-    Both sides are then floored at `_MIN_TERM_LEN` characters. A `Domain` reading "Data and
+    The TERMS are floored at `_MIN_TERM_LEN` characters, and the intersection carries that
+    to the negative side for free -- flooring it there as well is provably dead code, since
+    every member of `terms` already clears the floor, so it is not written. A `Domain` reading "Data and
     analytics for the platform" otherwise contributes the stem `the`, and every negative
     containing the word "the" reports a contradiction -- measured, and NOT covered by the
     asymmetry this docstring used to claim was accepted. The floor is 4 to match
     `cv/engine.py:_jd_keywords`' own `[a-z]{4,}` extraction, so the two places in this
     codebase that turn prose into comparable keywords agree on what is too short to mean
-    anything. It is a LENGTH rule, not a vocabulary: no stopword list ships, which is the
-    thing this repo declines to do.
+    anything. It is a LENGTH rule and not a vocabulary of words too dull to match -- no
+    stopword list ships, which is the thing this repo declines to do. `_NEGATION_WORDS`
+    above IS a vocabulary and is deliberately not that one: it rules on which eleven words
+    flip the sentence after them, never on which words carry meaning.
 
-    Above the floor the NEGATIVE side stays unfiltered, and that asymmetry IS accepted: a
-    loose sentence that happens to contain the inventory's own domain word is still a
-    contradiction worth looking at.
+    Above the floor the negative side is scoped by NEGATION rather than taken whole (#260).
+    The bare intersection this replaced called any shared 4-character stem a contradiction,
+    and a shared word is not one. #260 reports the harm on a real install -- four negatives
+    flagged, every one of them a formatting, ordering or length rule -- and quotes none of
+    them, so the reproduction here is CONSTRUCTED to that shape rather than lifted from
+    anyone's vault: run against the code this replaced, the formatting rule "keep the
+    platform section last" and a skill whose `best_for` read "building data platforms"
+    reported "contradicts ... on 1 term(s) -- remove the line, or remove the skill", advice
+    that deletes a working rule. It scaled the wrong way besides, which is
+    the sharper argument: more verified skills is a larger `terms` set, so the signal
+    degraded exactly as an operator did the thing this row nudges them toward.
+    `_negated_stems` is the narrowing, and that docstring carries the scope rules.
+
+    Raising the COUNT instead was measured against the old predicate and rejected, and the
+    measurement has to straddle the threshold to mean anything -- the first cut of this
+    paragraph cited a 1-term false positive and a 2-term contradiction, which a floor of
+    two separates exactly, so it argued the opposite of what it claimed. Both counts carry
+    both classes: "never claim container work" against a `best_for` of "container
+    orchestration" is a genuine contradiction on ONE term, while "keep the data section and
+    the platform section last" against "building data platforms" is a formatting rule on
+    TWO -- and that last overlaps on `['data', 'platform']`, byte-identical to the genuine
+    two-term case, so no threshold and no comparison of the term sets separates them.
+    Matching the skill's NAME instead was rejected too -- that is the entry title, excluded
+    just above because it is a name the user chose.
+
+    It fails toward ABSTAIN. A contradiction phrased without a shipped negation word, or
+    with the negation in another clause, is missed and reported as nothing. That is the
+    right direction here for the same reason the title exclusion is: the row names no term
+    and so cannot be investigated, which makes a false report worse than a missed one --
+    its whole value is that it means something when it appears.
 
     The row NAMES THE INDEX and the overlap SIZE, never the configured text or the matched
     terms. A DoctorReport is returned whole to MCP clients (`sluice/mcpserver.py`), and
@@ -951,7 +1068,7 @@ def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
         return []
     out = []
     for i, neg in enumerate(negatives):
-        overlap = {t for t in stem_all(neg) if len(t) >= _MIN_TERM_LEN} & terms
+        overlap = _negated_stems(neg) & terms
         if overlap:
             out.append(ComponentCheck(
                 "gates", f"cv.negatives[{i}]", NOTICE,

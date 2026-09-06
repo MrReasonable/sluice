@@ -2,6 +2,7 @@
 wiring (with an injected probe so it stays offline), and the cmd_doctor exit
 codes. Everything here is hermetic -- no network, no browser, no real LLM."""
 import os
+import string
 from dataclasses import dataclass
 
 import pytest
@@ -14,6 +15,10 @@ from sluice.core.doctor import (
     classify_skills_request, classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
+# Private, and deliberately: both new tests below sweep a ROSTER rather than a
+# hand-list, so a word added to the vocabulary or a change to the floor is covered
+# without anyone remembering to edit a literal here.
+from sluice.core.doctor import _CLAUSE_BREAK_RE, _MIN_TERM_LEN, _NEGATION_WORDS
 
 
 @pytest.fixture(autouse=True)
@@ -2251,6 +2256,233 @@ def test_the_entry_title_is_not_a_matchable_term():
     assert classify_negatives_vs_skills(
         ["never claim these skills"],
         [{"best_for": "platform", "title": "Example Cloud Skill"}]) == []
+
+
+# ── #260: only a term the line actually NEGATES counts as a contradiction ──
+def test_a_line_that_merely_mentions_a_held_skill_is_not_a_contradiction():
+    """#260's shape, reproduced: a pure FORMATTING rule shares one 4-char stem with a
+    skill's `best_for` prose and is reported as a contradiction whose advice is "remove the
+    line, or remove the skill". Following that on a false positive deletes a working rule.
+
+    The strings are constructed to that shape, not taken from the install #260 observed --
+    the issue quotes none of its four flagged lines. Run against the code this replaced,
+    these two do report.
+
+    A shared word is not a contradiction, and this shape is close to inevitable: a rule
+    about how the SKILLS section is laid out is written in the same professional
+    vocabulary the inventory uses."""
+    assert classify_negatives_vs_skills(
+        ["Keep the platform section last"],
+        [{"best_for": "building data platforms"}]) == []
+    # ...while the genuine contradiction in the SAME vocabulary still reports, so the
+    # narrowing is a narrowing and not a switch-off.
+    assert classify_negatives_vs_skills(
+        ["Never claim data platform work"],
+        [{"best_for": "building data platforms"}])
+
+
+def test_a_negation_does_not_scope_across_a_clause_boundary():
+    """A negation negates its own clause, not the whole config line. Run against the code
+    this replaced, the constructed line below reported a contradiction: it CONTAINS `never`
+    and CONTAINS `platform` and nothing related the two. That is the shape #260 says is close
+    to inevitable -- the false positives observed were long lines -- and it is why
+    presence-anywhere would have been nearly as blunt as the bare intersection it
+    replaces."""
+    assert classify_negatives_vs_skills(
+        ["Never use more than six bullets per role; keep the platform section last"],
+        [{"best_for": "building data platforms"}]) == []
+    # The identical words with no clause boundary between them ARE in scope, which is
+    # what stops this test passing against a mutant that simply reports nothing.
+    assert classify_negatives_vs_skills(
+        ["Never use more than six bullets per role or the platform section"],
+        [{"best_for": "building data platforms"}])
+
+
+def test_a_period_inside_a_token_does_not_split_a_clause():
+    """A clause break is a period a human typed to end a sentence, so it is required to be
+    followed by whitespace or the end of the line. Measured before that requirement: a
+    dotted technology name -- the exact thing `cv.negatives` is written about -- split the
+    clause and dropped everything after the dot out of the negation's scope, so a genuine
+    contradiction went unreported. A decimal in a length rule does the same."""
+    assert classify_negatives_vs_skills(
+        ["Never claim experience with example.js or containers"],
+        [{"best_for": "container orchestration"}])
+    assert classify_negatives_vs_skills(
+        ["Never claim 2.5 years of container work"],
+        [{"best_for": "container orchestration"}])
+
+
+def test_a_colon_introduces_a_list_rather_than_ending_a_clause():
+    """A colon continues the sentence it is in -- "never claim: X, Y" negates X and Y --
+    so it is deliberately NOT a clause terminator. Measured while it was one: that line
+    put the whole list outside the negation's scope and reported nothing.
+
+    The forward scope is what makes the colon safe to leave in, and the second assertion
+    is that claim: with the negation AFTER the colon, the term before it is still
+    something the line asserts rather than forbids."""
+    assert classify_negatives_vs_skills(
+        ["Never claim: containers, dashboards"],
+        [{"best_for": "container orchestration"}])
+    assert classify_negatives_vs_skills(
+        ["Keep the container section last: no tables"],
+        [{"best_for": "container orchestration"}]) == []
+
+
+def test_the_clause_terminators_are_exactly_the_specified_set():
+    """One equality against a SPECIFICATION, then the behaviour each half implies.
+
+    A roster derived from `_CLAUSE_BREAK_RE` itself could not fail: shrink the pattern and
+    the derivation simply re-partitions, both halves still agreeing with it -- the
+    resolve-its-own-roster shape that makes a guard look like coverage. So the two lists
+    here are the claim, written down, and the equality is what reddens when the pattern
+    stops meeting it. Measured before this existed: reducing the pattern to `[;]` left the
+    whole module green.
+
+    The SWEEP is derived and only the specification is hand-written: quantifying the
+    equality over the two lists themselves would leave a terminator in NEITHER list
+    invisible to it, so the marks probed are every printable character plus the two dashes
+    and the double hyphen, and the equality target is the claim.
+
+    A construct added to `_CLAUSE_BREAK_RE` belongs in one of these two lists."""
+    must_break = (".", ";", "!", "?", "\n", "--", "\u2013", "\u2014")
+    must_not_break = (":", ",", "-", "/")
+    alphabet = sorted(set(string.printable) | set(must_break) | set(must_not_break))
+    assert {m for m in alphabet
+            if len(_CLAUSE_BREAK_RE.split(f"a{m} b")) > 1} == set(must_break)
+
+    skill = [{"best_for": "container orchestration"}]
+    for mark in must_break:
+        # The negation is in the first clause; the shared term is in the second.
+        assert classify_negatives_vs_skills(
+            [f"Never use tables{mark} keep the container section last"], skill) == [], mark
+    for mark in must_not_break:
+        # ...the same words, still one clause, so the term is inside the scope.
+        assert classify_negatives_vs_skills(
+            [f"Never use tables{mark} keep the container section last"], skill), mark
+
+
+def test_a_negation_in_a_later_clause_is_still_in_scope():
+    """Every clause is scanned, not just the first. The rows beside this one all put the
+    negation in clause ONE, so together they pin that a negation does not LEAK forward and
+    never that a later clause's own negation is HONOURED -- measured, restricting the loop
+    to `[:1]` or `[-1:]` left the whole suite green while dropping a whole class of line.
+
+    A `cv.negatives` entry carrying two rules is ordinary, and the middle-clause case is
+    what separates "scan every clause" from either end-of-list shortcut. The third
+    assertion keeps this row from being satisfied by a check that reports everything."""
+    skill = [{"best_for": "container orchestration"}]
+    assert classify_negatives_vs_skills(
+        ["Keep bullets short; never claim container work"], skill)
+    assert classify_negatives_vs_skills(
+        ["Keep bullets short; never claim container work; keep the summary short"], skill)
+    assert classify_negatives_vs_skills(
+        ["Keep the container section last; never use tables"], skill) == []
+
+
+def test_a_blank_negatives_entry_is_tolerated():
+    """A blank YAML list item is a real config, not a hypothetical: under
+
+        cv:
+          negatives:
+            -
+            - never claim container work
+
+    `load_cv_config` yields `[None, "never claim container work"]` -- `refuse_wrong_container`
+    validates the CONTAINER, not its elements -- so without the `neg or ""` guard
+    `job-sluice doctor` raises on a file whose only fault is a trailing dash. The code this
+    replaced tolerated it through `tokens()`' own `text or ""`, so losing the guard is a
+    regression rather than a new gap.
+
+    The subject assertion is the second half: a blank entry must not shift the INDEX the
+    row reports, or the operator is sent to the wrong line."""
+    skill = [{"best_for": "container orchestration"}]
+    rows = classify_negatives_vs_skills([None, "never claim container work"], skill)
+    assert [r.subject for r in rows] == ["cv.negatives[1]"]
+    assert classify_negatives_vs_skills([None], skill) == []
+    assert classify_negatives_vs_skills(["", "   "], skill) == []
+
+
+def test_a_negation_scopes_forward_not_backward():
+    """English negation scopes over what FOLLOWS it. A term before the negation is
+    something the line asserts, not something it forbids -- so the same two words in the
+    other order are a rule about tables, not about platforms."""
+    assert classify_negatives_vs_skills(
+        ["Keep the platform section last and never use tables"],
+        [{"best_for": "building data platforms"}]) == []
+    assert classify_negatives_vs_skills(
+        ["Never use tables and keep the platform section last"],
+        [{"best_for": "building data platforms"}])
+
+
+def test_an_inflected_negation_word_still_opens_a_scope():
+    """Same reason the TERMS are stemmed: `avoiding` and `avoid` are the same word, so the
+    vocabulary is compared against each token's STEM.
+
+    The sweep below reddens on a raw-token comparison too, but only by accident: `exclude`
+    is the one shipped word spelled differently from its own stem. Hand-stem that entry to
+    `exclud` and the sweep goes green while every inflected negation stops working --
+    measured, and this is then the only row that reddens.
+
+    The second assertion is what makes the first one about the VOCABULARY: without it, a
+    check that reports every line satisfies the first assertion too."""
+    assert classify_negatives_vs_skills(["avoiding documenting work"],
+                                        [{"best_for": "documentation"}])
+    assert classify_negatives_vs_skills(["requiring documenting work"],
+                                        [{"best_for": "documentation"}]) == []
+
+
+def test_a_negation_word_is_never_itself_a_matchable_term():
+    """`never` and `without` clear `_MIN_TERM_LEN`, so a vocabulary word left in the
+    returned set is a term like any other -- and an inventory whose own prose contains one
+    then matches on it. The negative below forbids nothing the skill holds; the only shared
+    word is the negation itself.
+
+    This is the `elif` in `_negated_stems`, and it is the one arm no other row here
+    reaches: with a second `if` in its place everything above stays green."""
+    assert classify_negatives_vs_skills(
+        ["never claim work without evidence"],
+        [{"best_for": "Deployments without downtime"}]) == []
+
+
+def test_the_negation_vocabulary_is_exactly_the_specified_set():
+    """The sweep below cannot see a DELETION: it derives its roster from `_NEGATION_WORDS`,
+    so removing a word simply sweeps fewer and stays green while operators stop being told
+    about every negative phrased with it. That is the same shape as a discovery sweep whose
+    matcher finds nothing -- passing by looking at less.
+
+    So the vocabulary is written down here as a specification, and adding or removing a
+    word has to be a decision someone makes rather than a narrowing that ships quietly.
+    Update this list deliberately."""
+    assert set(_NEGATION_WORDS) == {
+        "no", "not", "never", "none", "nor", "neither",
+        "avoid", "exclude", "omit", "without", "cannot"}
+
+
+def test_every_shipped_negation_word_opens_a_scope():
+    """Enumerated from the vocabulary itself, so a word added to it that does not survive
+    stemming (a contraction, say) reddens here rather than shipping inert.
+
+    The control is what makes this falsifiable: an ordinary verb in the identical sentence
+    must NOT report, so a mutant that scopes every line passes nothing here."""
+    assert _NEGATION_WORDS, "the negation vocabulary is empty, so this sweep asserts nothing"
+    assert len(set(_NEGATION_WORDS)) == len(_NEGATION_WORDS), "duplicate entry"
+    for word in _NEGATION_WORDS:
+        assert classify_negatives_vs_skills([f"{word} claim documentation"],
+                                            [{"best_for": "documentation"}]), word
+    assert classify_negatives_vs_skills(["always claim documentation"],
+                                        [{"best_for": "documentation"}]) == []
+
+
+def test_a_negation_word_below_the_term_floor_still_opens_a_scope():
+    """`_MIN_TERM_LEN` floors the TERMS -- a length rule about what is too short to carry
+    a topic. It must not reach the negation vocabulary, whose shortest members (`no`,
+    `not`) are function words whose whole job is grammatical. Applying one floor to both
+    would leave the check firing only on the longer words, silently."""
+    short = [w for w in _NEGATION_WORDS if len(w) < _MIN_TERM_LEN]
+    assert short, "no shipped negation word is below the floor, so this asserts nothing"
+    for word in short:
+        assert classify_negatives_vs_skills([f"{word} documenting"],
+                                            [{"best_for": "documentation"}]), word
 
 
 def test_the_row_never_affects_the_exit_code():

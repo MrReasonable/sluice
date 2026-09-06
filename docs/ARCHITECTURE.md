@@ -2029,7 +2029,19 @@ role, the silently-non-functional fallback the tool exists to catch. Component
 classification adds a fifth state, `notice`, for the gate-posture rows -- and, since
 #165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
 verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
-user's own text, since a report is returned whole to MCP clients. #168's Task 10 added a
+user's own text, since a report is returned whole to MCP clients. #260 narrowed what
+counts as a contradiction there: the overlap is taken against the stems the line NEGATES
+-- within each clause, every stem after the first word of a small shipped negation
+vocabulary (`core/doctor.py`'s `_NEGATION_WORDS`, modelled on `core/health.py`'s
+`_LOGIN_SEGMENTS`), the vocabulary's own words excepted -- not against the whole line.
+That exception is load-bearing rather than tidiness: `never` and `without` both clear the
+length floor, so a vocabulary word left in the set is a matchable term like any other. The bare intersection it replaced called
+any shared four-character stem a contradiction, so a pure formatting rule about the SKILLS
+section was reported against the very skills it formats, with advice ("remove the line, or
+remove the skill") that deletes a working rule; and it scaled the wrong way, since every
+newly verified skill widens the term set. The narrowing fails toward abstain, which is the
+direction this row already prefers: it names no term, so a false report is worse than a
+missed one. #168's Task 10 added a
 second cross-reference between the same two corpora, `core/doctor.py`'s
 `classify_skills_reconciliation`: up to two more `notice` rows, `Skills
 Inventory (unclaimed)` (an inventory skill no experience entry's `Skills:` claims) and
