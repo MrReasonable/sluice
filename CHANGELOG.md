@@ -46,7 +46,27 @@ it is accurate. -->
 ### Bug Fixes
 
 * **doctor:** report the precondition a SKILLS section actually has ([c817a4d](https://github.com/MrReasonable/sluice/commit/c817a4d8eb431ba8369613e0fb10ba75677cbbf9))
+
+  If your composed CVs have no SKILLS section, `job-sluice doctor --verbose` now says why.
+  A new `store | Experience Library (Skills)` row reports how many of your verified
+  Experience Library entries carry a `Skills:` field — which is what actually asks for
+  that section. Nothing about your config or vault changes, and no action is required
+  if your CVs already have one (the row appears only when none of your entries is
+  annotated). The Skills Inventory's own `verified / total` count was the only signal
+  doctor gave here before, and it gates nothing: those entries are framing shown to the
+  composer, so verifying all of them never produced a SKILLS section.
+
 * **doctor:** scope the negatives cross-check to what a line negates ([a55c218](https://github.com/MrReasonable/sluice/commit/a55c218fd24020e01c26016afe5ca689dbe493f4))
+
+  `job-sluice doctor` no longer reports a `cv.negatives` line as contradicting your
+  verified Skills Inventory just because the two happen to share a word. Any single
+  four-letter stem in common used to be enough, so a formatting rule like "keep the
+  skills section last" was flagged against the very skills it formats — and the advice
+  it gave ("remove the line, or remove the skill") would have deleted a working rule.
+  It also got worse the more of your inventory you verified. A line is now reported only
+  when it actually forbids something the inventory holds. Nothing about your config or
+  vault changes: you may simply see fewer of these notices, and the ones that remain are
+  worth acting on.
 
 ## [2.9.6](https://github.com/MrReasonable/sluice/compare/v2.9.5...v2.9.6) (2026-09-06)
 
