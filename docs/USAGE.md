@@ -216,11 +216,20 @@ Compose, gate, render and sign off a tailored CV.
 | `--no-serve` | skip staging the rendered PDF for `apply` |
 
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
-slop=<N> voice_flags=<N> dossier_failed=<bool>`, followed by one indented line per slop
-finding (`SLOP <label>: <snippet>`, already prefixed) and one per voice finding (`VOICE:
-<flag>`, opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md`) -- both empty on a
-clean run, so nothing extra prints. A summary line follows when any dossier fetch failed
-and composition proceeded blind. **Exit 1**
+slop=<N> voice_flags=<N> dossier_failed=<bool> skills_unreadable=<bool>`, followed by one
+indented line per finding, in that line's own field order and empty on a clean run (so
+nothing extra prints):
+
+| Kind | Indented line | Notes |
+|---|---|---|
+| `violations` | `<CATEGORY> ...` | the HARD fabrication gate's own findings. Each already opens with its producer's own ALL-CAPS category (`UNSOURCED SKILL`, `INVENTED METRIC`, `UNCITED BULLET`, `STRUCTURAL`, the `template` renderer's `FORMAT`, ...), so no label is added. A `skipped-gate` result rendered no CV, and these are what say why (#258) |
+| `audit_flags` | `AUDIT: <verdict>\t<claim>\t<cited-id>` | the advisory model-judged fabrication audit; `unsupported` is the verdict that withholds the send-ready pointer (`cv.require_signoff`) |
+| `slop` | `SLOP <label>: <snippet>` | the deterministic slop linter, already prefixed |
+| `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
+
+A summary line follows when any dossier fetch failed and composition proceeded blind, and
+a second when any CV was composed without the Skills Inventory because the corpus could
+not be read. **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
 Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).

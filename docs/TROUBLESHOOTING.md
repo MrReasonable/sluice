@@ -157,15 +157,72 @@ sources:
 Nothing shipped is affected: `sluice.yaml.example` and anything `job-sluice init` writes
 already use list syntax throughout.
 
+## `cv run` reports `skipped-gate` (no CV was produced)
+
+`skipped-gate` means no composition attempt ever cleared the hard fabrication gate, so
+nothing was rendered for that lead. The reasons print as indented lines directly under the
+per-result summary line (#258 — before it, only the `violations=<N>` count did, at every
+log level):
+
+```text
+cv: skipped-gate Job Applications/Job Leads/... served=None violations=2 audit_flags=0 ...
+  UNSOURCED SKILL 'Widget, Gadget': not in the bundle
+  STRUCTURAL: composed CV lacks the exact 'PROFILE' header, so the profile fabrication check did not run
+```
+
+Read the category that opens each line:
+
+- `UNSOURCED SKILL` — a **SKILLS** line whose text is not in the bundle's source blocks.
+  Often a *formatting* mismatch rather than an invented skill: the whole stripped line is
+  compared as one token sequence, so a category label or a reordering is refused even when
+  every term is real.
+- `MISATTRIBUTED SKILL` — a **WORK bullet** naming a skill that some entry in the corpus
+  does declare, but not one of the entries that bullet cites. Right skill, wrong role: the
+  fix is the citation, not the skill.
+- `INVENTED METRIC` / `UNCITED BULLET` / `BAD CITATION` — the citation gate on **WORK
+  bullets**. The figure or bullet is not derivable from the entry that bullet cites, so
+  the fix is the citation or the figure.
+- `INVENTED PROFILE METRIC` — the same question asked of **PROFILE prose**, which carries
+  no per-bullet citations at all. The figure has to appear somewhere in the whole source
+  set (the baseline plus every entry), not in a cited entry — so adding an `[id]` to
+  profile prose does not answer it, and is not meant to: the gate refuses to let prose
+  launder a citation.
+- `FABRICATED` / `MISSING EMPLOYER` / `NOT REVERSE-CHRONOLOGICAL` — whole-document checks.
+- `STRUCTURAL` — the composed CV's shape, not its content: a missing `PROFILE` /
+  `WORK EXPERIENCE` header, or a header block that does not match the Candidate Profile
+  note's declared name and contact block.
+- `FORMAT` — the `template` renderer's own grammar; see the next section. A `precheck`
+  refusal reports as `skipped-gate` like any other, even though the CV cleared the
+  fabrication gate itself.
+
+`violations=0` on a `skipped-gate` row does **not** mean there is nothing to read. The
+blocking tier is `violations` *plus* the slop linter's HARD findings, so an em dash or a
+literal `--` anywhere in the document bins the lead on its own, and the only indented lines
+are `SLOP EM-DASH:` / `SLOP DOUBLE-HYPHEN-DASH:`. Those are always answerable without
+inventing anything — rewrite the punctuation. Note the same block also carries the
+non-blocking STYLE tier (`SLOP <phrase>:`), so not every `SLOP` line you see is the reason
+the lead was binned; the two HARD labels are.
+
+These are the **last** attempt's findings and only those. The engine composes at most
+twice, feeding the first attempt's findings into the second, but it re-derives the list
+from scratch against each draft rather than accumulating — so a line here may be one the
+model was already shown and did not fix, or one the retry introduced while fixing
+something else. The first attempt's findings are neither printed nor logged, so a single
+run cannot tell you which. What does distinguish them is repetition **across runs**: a
+category that keeps coming back on fresh invocations points upstream of the model — the
+composer prompt, the evidence corpus, or the Candidate Profile note — rather than at a
+one-off bad draft.
+
 ## A gate-clean CV is still refused (a renderer `precheck` violation)
 
 The hard fabrication gate (`cv/validate.py`) can pass while the `template` renderer's own
 grammar check (`precheck`) still refuses — a formatting mismatch, not a fabrication one. The
 engine folds both into the same one retry the LLM gets, so this usually self-corrects; if it
-doesn't, the refusal message names the specific formatting rule it hit (a date-range
-separator, a missing field, a mis-cased section header, and so on — see
-`docs/ARCHITECTURE.md`'s "A renderer's `precheck`" section for the full list and why it exists
-as a *second*, narrower gate rather than being folded into `validate.py`). If the refusal
+doesn't, the refusal prints as a `FORMAT:` line under the `skipped-gate` summary (see the
+section above) naming the specific formatting rule it hit: a date-range separator, a missing
+field, a mis-cased section header, and so on — see `docs/ARCHITECTURE.md`'s "A renderer's
+`precheck`" section for the full list and why it exists as a *second*, narrower gate rather
+than being folded into `validate.py`. If the refusal
 asks for something that can't be answered without inventing content (a `LOCATION` field
 nothing upstream supplied, for instance), that is a known, deliberately-left gap — see
 `docs/ARCHITECTURE.md` — not something to work around by guessing a value.

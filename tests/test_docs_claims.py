@@ -1556,3 +1556,427 @@ def test_usage_md_documents_every_key_the_triage_summary_prints():
     assert not missing, (
         f"docs/USAGE.md's triage summary sentence omits {missing}, so a user reading it "
         "sees a line the tool no longer prints")
+
+
+# ── docs/TROUBLESHOOTING.md's `skipped-gate` category list (#258) ────────────────────────────
+#
+# #258 gave `CvResult.violations` a reader at the CLI, so the gate's own category words
+# (`UNSOURCED SKILL`, `STRUCTURAL`, ...) now reach an operator's terminal, and
+# docs/TROUBLESHOOTING.md explains what each one means. That explanation is a hand-written
+# roster over a set the code owns, which is this project's most-repeated stale-prose shape --
+# so it is derived and asserted here rather than trusted.
+#
+# Only the ONE direction is checkable this way, and the asymmetry is deliberate rather than an
+# oversight: a category the code can emit and the doc does not explain is a real gap, and that is
+# what this sweep catches. The reverse -- a category named in the doc that the code cannot emit --
+# is caught for the two FOLDED-IN producers below by a substring check against their own source,
+# but not for the nine, because the doc groups them into themed bullets rather than listing them
+# one per line, and parsing prose back into a set would be a second guess at the same text.
+_GATE_CATEGORY = re.compile(r"^([A-Z][A-Z-]*(?: [A-Z][A-Z-]*)*)[ :]")
+
+
+def _validate_appends():
+    """`{accumulator name: [leading literal or None per append]}` for sluice/cv/validate.py.
+
+    Keyed on the SHAPE (an `.append(...)`), never on the accumulator's variable name: a rename
+    of `v` would make a name-keyed sweep find nothing and pass every assertion over the empty
+    set. Which name IS the violations accumulator is then discovered from the literals it
+    carries, so nothing here hard-codes it either.
+
+    `.append` is the ONE shape this reads, stated plainly because the guard below turns that
+    limitation into an assertion rather than leaving it as a docstring's optimism.
+
+    `None` records an append whose first argument is not a leading string literal. Those are
+    kept rather than dropped, because the file's other accumulators (`profile`, `work`, `kept`,
+    `skills`) are not the only thing that produces one -- so does `msg = f"NEW THING: ..."`
+    followed by `v.append(msg)`, which is a real category this sweep cannot see. Keeping the
+    entry is what lets the guard below notice that shape instead of silently under-reporting.
+    """
+    import ast
+
+    tree = ast.parse(pathlib.Path("sluice/cv/validate.py").read_text(encoding="utf-8"))
+    out = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "append" and node.args):
+            continue
+        arg = node.args[0]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            lead = arg.value
+        elif (isinstance(arg, ast.JoinedStr) and arg.values
+              and isinstance(arg.values[0], ast.Constant)):
+            lead = arg.values[0].value
+        else:
+            lead = None
+        out.setdefault(ast.unparse(node.func.value), []).append(lead)
+    return out
+
+
+def _violation_accumulators(appends):
+    """The name(s) carrying ALL-CAPS-leading literals -- i.e. the violations list."""
+    return {name for name, leads in appends.items()
+            if any(lead and _GATE_CATEGORY.match(lead) for lead in leads)}
+
+
+def _validate_categories():
+    """Every ALL-CAPS category `sluice/cv/validate.py` can prepend to a gate violation."""
+    out = set()
+    for leads in _validate_appends().values():
+        for lead in leads:
+            m = _GATE_CATEGORY.match(lead) if lead else None
+            if m:
+                out.add(m.group(1))
+    return out
+
+
+def test_every_violation_append_carries_its_category_as_a_literal():
+    """The sweep's own PRECONDITION, asserted rather than assumed.
+
+    `_validate_categories` can only see a category spelled inline at the `.append(...)` call.
+    A tenth category written `msg = f"NEW THING: ..."` and then `v.append(msg)` is invisible to
+    it, and -- measured by a reviewer on this branch, in a scratch copy -- leaves every other
+    guard here GREEN: the coverage test has nothing new to demand of the doc, and the `>= 9`
+    floor does not ratchet. A guard that quietly stops covering a case is worse than no guard,
+    so the precondition becomes a check: every append on the violations accumulator must carry
+    its category inline. Inline the literal, or teach `_validate_appends` the new shape.
+    """
+    appends = _validate_appends()
+    accumulators = _violation_accumulators(appends)
+    # Scope, both halves. Zero would make the loop below vacuous; more than one means the
+    # discovery is picking up something that is not the violations list, and the per-append
+    # assertion would then be policing the wrong collection.
+    assert len(accumulators) == 1, (
+        f"expected exactly one violations accumulator in cv/validate.py, found "
+        f"{sorted(accumulators)}")
+    name = accumulators.pop()
+    # Filtered through `_GATE_CATEGORY`, not merely "is it a literal". A literal check passes
+    # `v.append(f"New thing: a tenth category")` -- measured to survive the whole suite: the
+    # category sweep cannot see it, the count stays 9 so the floor holds, and no doc entry is
+    # demanded. The ALL-CAPS shape is what the rest of the chain actually depends on, and THREE
+    # shipped places assert it with no falsifying row of their own: cli.py's comment ("entries
+    # all arrive with their own ALL-CAPS category", which is why it prints them unlabelled),
+    # USAGE.md's finding-kind table, and this test's own name. This is that row.
+    uncategorised = [lead for lead in appends[name]
+                     if not (lead and _GATE_CATEGORY.match(lead))]
+    assert not uncategorised, (
+        f"{len(uncategorised)} `{name}.append(...)` call(s) in sluice/cv/validate.py do not open "
+        f"with an ALL-CAPS category spelled inline -- cli.py prints these UNLABELLED precisely "
+        f"because each carries its own, and the category sweep in this file cannot see them. "
+        f"Inline an ALL-CAPS category at the call, or extend _validate_appends to follow the "
+        f"binding")
+
+    # The OTHER half, and the one a reviewer measured rather than argued: closing the
+    # `msg = f"..."` / `append(msg)` shape leaves `v.extend([f"..."])` just as invisible, and
+    # a tenth category added that way left this whole module green -- the count stays 9, the
+    # floor holds, the anchors are present, and the coverage test has nothing new to demand of
+    # the doc. So the claim is not "appends carry literals" but "nothing else REACHES the
+    # accumulator". Scoped to the discovered accumulator, never to the module: `i += 1` is an
+    # honest AugAssign on a counter and must not fire.
+    #
+    # Covered, each with a mutant behind it: another method on the name (`.extend`, `.insert`),
+    # an AugAssign, a rebind through any non-empty expression (`v = v + [...]`, `v = [*v, ...]`),
+    # a Subscript target (`v[:] = ...`, `v[len(v):] = ...`), and binding the list to a second
+    # name. NOT a totality proof -- a list reached through a container, an attribute, or a
+    # function that is handed it would all walk past this. Stated rather than claimed away,
+    # because "the sweep is total" is precisely the kind of sentence this repo keeps finding
+    # false in its own writing.
+    import ast
+
+    tree = ast.parse(pathlib.Path("sluice/cv/validate.py").read_text(encoding="utf-8"))
+    other = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr != "append"
+                and ast.unparse(node.func.value) == name):
+            other.append(ast.unparse(node)[:60])
+        elif isinstance(node, ast.AugAssign) and ast.unparse(node.target) == name:
+            other.append(ast.unparse(node)[:60])
+        elif (isinstance(node, ast.Assign)
+              and any(ast.unparse(t) == name for t in node.targets)
+              # A fresh `v = []` initialisation is the one rebinding that adds nothing and
+              # must not fire. Everything else that rebinds the name -- `v = v + [...]`,
+              # `v = [*v, msg]`, `v = list(v) + [...]` -- can carry a category, so the test
+              # is "is this the empty-list init?", not an enumeration of the guilty shapes.
+              # Enumerating them is what left `[*v, ...]` and the slice form out of the
+              # first version of this check (CodeRabbit).
+              and not (isinstance(node.value, ast.List) and not node.value.elts)):
+            other.append(ast.unparse(node)[:60])
+        elif (isinstance(node, ast.Assign)
+              and any(isinstance(t, ast.Subscript) and ast.unparse(t.value) == name
+                      for t in node.targets)):
+            # `v[:] = [...]` mutates in place without ever naming `.append`.
+            other.append(ast.unparse(node)[:60])
+        elif (isinstance(node, ast.Assign) and isinstance(node.value, ast.Name)
+              and node.value.id == name):
+            # `_w = v` then `_w.extend([...])`: the alias has no append of its own, so
+            # `_violation_accumulators` never discovers it and the arms above compare against
+            # the wrong name. Measured to survive before this arm existed. Binding the list to
+            # a second name is reported here rather than followed, because following it is a
+            # dataflow analysis and refusing the alias costs nothing real.
+            other.append(ast.unparse(node)[:60])
+    assert not other, (
+        # "REACHES", not "grows": `v.sort(key=len)` is caught by the method arm above and grows
+        # nothing, so a message promising growth would be actively wrong for that input. The
+        # arm still fires on it deliberately -- a false fire is visible and cheap to dismiss,
+        # a category this sweep cannot see is silent, and that asymmetry is the whole point.
+        f"sluice/cv/validate.py reaches `{name}` by something other than `{name}.append(...)`: "
+        f"{other} -- the category sweep in this file reads appends ONLY, so a message added "
+        f"that way is documented by nothing and reddens nothing. Use `{name}.append(<literal>)`, "
+        f"or teach _validate_appends the new shape and widen this assertion with it")
+
+
+_FOLDED_IN_CATEGORIES = {"STRUCTURAL": "sluice/cv/engine.py",
+                         "FORMAT": "sluice/renderers/template.py"}
+
+
+def _skipped_gate_section():
+    """docs/TROUBLESHOOTING.md's `skipped-gate` section, sliced off the rest of the file.
+
+    Every guard below reads THIS, never the whole document, and that is the correction a
+    reviewer measured rather than argued: searching the file for a bare category word is
+    satisfied by the section's own sample OUTPUT block (which shows `UNSOURCED SKILL` and
+    `STRUCTURAL`) and by the NEXT section (which mentions a `FORMAT:` line), so deleting the
+    explanation bullet for any of those three left the whole suite green. Three of eleven
+    categories were unguarded by guards written to guard them.
+
+    `.index` rather than a search-and-shrug: a renamed heading raises here, loudly, instead of
+    quietly returning a slice that happens to satisfy everything.
+    """
+    doc = pathlib.Path("docs/TROUBLESHOOTING.md").read_text(encoding="utf-8")
+    section = doc[doc.index("## `cv run` reports `skipped-gate`"):]
+    return section[:section.index("\n## ", 3)]
+
+
+def _troubleshooting_category_bullets():
+    """The categories the `skipped-gate` section actually EXPLAINS, one entry per name.
+
+    Read from each bullet's HEAD -- the backticked names before the em dash -- rather than
+    from the bullet's whole text, so a category merely mentioned inside someone else's
+    explanation (`a missing PROFILE / WORK EXPERIENCE header`) is not mistaken for having one
+    of its own. Bullets legitimately name several categories that share a mechanism, so every
+    backticked ALL-CAPS token in the head counts, not just the first.
+    """
+    block = _skipped_gate_section()
+    block = block[block.index("Read the category that opens each line:"):]
+    out = set()
+    for line in block.splitlines():
+        if line.startswith("- `"):
+            out |= set(_GATE_CATEGORY_TOKEN.findall(line.split(" \u2014 ", 1)[0]))
+    return out
+
+
+_GATE_CATEGORY_TOKEN = re.compile(r"`([A-Z][A-Z-]*(?: [A-Z][A-Z-]*)*)`")
+
+
+def test_the_gate_category_sweep_is_not_vacuous():
+    """The SCOPE assertion. A sweep that discovers nothing satisfies the coverage test below
+    for every doc, including one that explains no category at all."""
+    cats = _validate_categories()
+    assert len(cats) >= 9, f"the violation-category sweep found only {sorted(cats)}"
+    # Named anchors, not just a count: an extraction that started matching some OTHER
+    # ALL-CAPS-leading append would keep the count up while missing the real categories.
+    for anchor in ("UNSOURCED SKILL", "INVENTED METRIC", "UNCITED BULLET", "MISSING EMPLOYER"):
+        assert anchor in cats, f"{anchor} vanished from the sweep: {sorted(cats)}"
+
+
+def test_troubleshooting_explains_every_gate_violation_category():
+    """An EXPLANATION for every category, and no category explained that cannot occur.
+
+    Equality, both sides derived: the left is what the section's bullets explain, the right is
+    what cv/validate.py can emit plus the two folded-in producers (whose own sources are
+    checked by the test below). A subset check in either direction leaves one way to drift --
+    and the earlier version of this test was weaker still, searching the whole FILE, where the
+    section's own sample output satisfied three of the names for free.
+
+    PRESENCE, not truth. This asserts the category word appears; it cannot tell whether the
+    sentence beside it describes the right check, and a green run here must never be read as
+    certifying that it does. Measured on this test's own branch: the first draft grouped
+    `MISATTRIBUTED SKILL` (a WORK bullet citing entries that do not declare the skill) with
+    `UNSOURCED SKILL` (a SKILLS line absent from the source blocks) as one mechanism, and this
+    test passed throughout. A reviewer caught it. Nothing executable can take that job over --
+    the check a category names is a claim about cv/validate.py's control flow, which a doc
+    states in prose and no sweep can compare against."""
+    explained = _troubleshooting_category_bullets()
+    assert explained, "the `skipped-gate` section's category bullets did not parse"
+    expected = _validate_categories() | set(_FOLDED_IN_CATEGORIES)
+    assert explained == expected, (
+        f"docs/TROUBLESHOOTING.md's `skipped-gate` bullets explain {sorted(explained)} but the "
+        f"code can emit {sorted(expected)}. Unexplained: {sorted(expected - explained)}; "
+        f"explained but unreachable: {sorted(explained - expected)}")
+
+
+def test_troubleshooting_names_the_two_folded_in_violation_producers():
+    """`STRUCTURAL` and `FORMAT` reach `violations` from outside cv/validate.py -- the engine's
+    own inline guards and the `template` renderer's `precheck` -- so the sweep above cannot see
+    them. Asserted in BOTH directions here (the doc names them, and each source still emits it),
+    which is what catches a rename on either side."""
+    bullets = _troubleshooting_category_bullets()
+    for category, source in _FOLDED_IN_CATEGORIES.items():
+        # The DOC direction reads the bullet heads, not the file: `FORMAT` and `STRUCTURAL`
+        # both appear elsewhere on the page (the sample output, and the next section's prose),
+        # so a whole-file membership check was satisfied with the bullet deleted -- measured.
+        assert category in bullets, (
+            f"docs/TROUBLESHOOTING.md's `skipped-gate` bullets stopped explaining {category}")
+        assert f'"{category}: ' in pathlib.Path(source).read_text(encoding="utf-8"), (
+            f"{source} no longer emits a {category!r}-prefixed violation, so the "
+            f"troubleshooting entry naming it is now wrong")
+
+
+def test_the_troubleshooting_example_quotes_a_message_the_engine_really_emits():
+    """The `skipped-gate` section shows a sample `STRUCTURAL:` line. An ILLUSTRATIVE example
+    that quotes a real message is a claim like any other -- an operator greps for the text they
+    were shown -- and the first draft of it invented a plausible ending rather than quoting one,
+    which is why this exists.
+
+    Read through `ast`, not as raw text: cv/engine.py builds the message from two adjacent
+    string literals, so a substring search over the file's BYTES cannot find it, and the
+    obvious fix (splicing the quotes back out with a regex) is the "pattern consumed by two
+    engines" shape this repo has already been bitten by. Reading `ast.Constant.value` off the
+    parsed tree is what the interpreter itself sees.
+    """
+    import ast
+
+    doc = pathlib.Path("docs/TROUBLESHOOTING.md").read_text(encoding="utf-8")
+    quoted = [ln.strip() for ln in doc.splitlines() if ln.strip().startswith("STRUCTURAL:")]
+    assert quoted, "the skipped-gate section no longer shows a STRUCTURAL example"
+
+    tree = ast.parse(pathlib.Path("sluice/cv/engine.py").read_text(encoding="utf-8"))
+    emitted = {n.value for n in ast.walk(tree)
+               if isinstance(n, ast.Constant) and isinstance(n.value, str)}
+    # Scope: the sweep must actually be seeing the engine's messages, or every assertion
+    # below it holds over an empty set.
+    assert any(v.startswith("STRUCTURAL: ") for v in emitted), (
+        "the literal sweep found no STRUCTURAL message in cv/engine.py at all")
+    for line in quoted:
+        assert line in emitted, (
+            f"docs/TROUBLESHOOTING.md shows {line!r}, which sluice/cv/engine.py does not emit -- "
+            f"quote the real message or the operator greps for text that does not exist")
+
+
+# ── docs/USAGE.md's `cv run` per-result line (#258) ──────────────────────────────────────────
+#
+# The cv sibling of the triage summary guard above, and the drift it closes is the argument for
+# it: `cmd_cv_run` has printed `skills_unreadable=` since #165 while USAGE.md's sentence stopped
+# at `dossier_failed`, and nothing in this repo was red for it. #258 rewrote that sentence, which
+# is when the gap was noticed BY HAND -- the failure mode a derived guard exists to remove.
+#
+# Keyed on `{r.` rather than on `print(f"cv: `, mirroring the triage helper's own reasoning: the
+# shorter prefix also matches `cmd_cv_run`'s other `cv: ` lines (the no-match, skipped-config,
+# ambiguous and blind/unframed summaries), none of which interpolate these keys.
+_CV_SUMMARY_KEY = re.compile(r"(\w+)=\{(?:[a-z_]+\()?r\.")
+
+
+def _printed_cv_summary_keys():
+    """The `key=` names `cmd_cv_run`'s per-result f-string actually interpolates."""
+    src = inspect.getsource(cli.cmd_cv_run)
+    body = src[src.index('print(f"cv: {r.status}'):]
+    return set(_CV_SUMMARY_KEY.findall(body[:body.index("file=sys.stderr")]))
+
+
+def test_the_cv_summary_key_extraction_is_not_vacuous():
+    """SCOPE, as an EQUALITY rather than a floor -- the shape the triage sibling uses, for its
+    stated reason: the verdict below is a subset check and the empty set is a subset of
+    everything, so a regex that stopped matching would certify the doc against nothing, and a
+    floor would let one key silently replace another."""
+    assert _printed_cv_summary_keys() == {
+        "served", "violations", "audit_flags", "slop", "voice_flags", "dossier_failed",
+        "skills_unreadable"}, (
+        "the cv per-result line changed. Update this set AND the `Per-result line to stderr` "
+        "paragraph in docs/USAGE.md that it guards.")
+
+
+def test_usage_md_documents_every_key_the_cv_per_result_line_prints():
+    doc = pathlib.Path("docs/USAGE.md").read_text(encoding="utf-8")
+    para = doc[doc.index("Per-result line to stderr:"):]
+    para = para[:para.index("**Exit 1**")]
+    missing = sorted(k for k in _printed_cv_summary_keys() if f"{k}=" not in para)
+    assert not missing, (
+        f"docs/USAGE.md's cv per-result paragraph omits {missing}, so a user reading it sees a "
+        f"line the tool does not print -- exactly the `skills_unreadable` drift #258 found by "
+        f"hand")
+
+
+def _cv_finding_labels():
+    """`{CvResult field: the literal prefix cmd_cv_run prints before each entry}`.
+
+    Derived from the function's own AST rather than from a substring search, because the
+    question is per-FIELD -- which loop prints which prefix -- and a text search can only
+    answer "does this label appear somewhere in the function". Anchored on `for <x> in
+    r.<field>:` so a fifth finding kind added later joins the mapping automatically and the
+    equality scope check below notices it.
+    """
+    import ast
+    import textwrap
+
+    fn = ast.parse(textwrap.dedent(inspect.getsource(cli.cmd_cv_run))).body[0]
+    out = {}
+    for node in ast.walk(fn):
+        if not (isinstance(node, ast.For) and isinstance(node.iter, ast.Attribute)
+                and isinstance(node.iter.value, ast.Name) and node.iter.value.id == "r"):
+            continue
+        for inner in ast.walk(node):
+            if (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name)
+                    and inner.func.id == "print" and inner.args
+                    and isinstance(inner.args[0], ast.JoinedStr)
+                    and isinstance(inner.args[0].values[0], ast.Constant)):
+                out[node.iter.attr] = inner.args[0].values[0].value
+    return out
+
+
+def test_usage_md_documents_the_label_each_finding_kind_actually_gets():
+    """The four-row table claims an exact indented line per kind. The half `cmd_cv_run` itself
+    contributes -- the `AUDIT: `/`VOICE: ` prefixes -- is a literal in the code, so it is
+    derivable and must not be restated by hand. A label changed in code while the table kept the
+    old one is the same defect class as a missing summary key, and the table is what an operator
+    greps their terminal against.
+
+    Deliberately NOT asserted: that `violations` and `slop` show no prefix in the table. They
+    take none from `cmd_cv_run`, but both arrive already prefixed by their producers (their rows
+    say so), so an absence check there would be asserting something the table does not claim.
+    """
+    labels = _cv_finding_labels()
+    # SCOPE, as an equality: a fifth finding kind printed without a table row must redden here,
+    # and one kind silently replacing another must not slip past a floor.
+    assert labels == {"violations": "  ", "audit_flags": "  AUDIT: ", "slop": "  ",
+                      "voice_flags": "  VOICE: "}, (
+        f"cmd_cv_run's per-finding lines changed to {labels}. Update this set AND the "
+        f"finding-kind table in docs/USAGE.md that it guards.")
+
+    doc = pathlib.Path("docs/USAGE.md").read_text(encoding="utf-8")
+    table = doc[doc.index("| Kind | Indented line | Notes |"):]
+    table = table[:table.index("\n\n")]
+    for field, prefix in labels.items():
+        assert f"`{field}`" in table, f"docs/USAGE.md's finding-kind table has no {field} row"
+        label = prefix.strip()
+        if label:
+            assert f"`{label} " in table, (
+                f"docs/USAGE.md's table does not show the {label!r} prefix cmd_cv_run really "
+                f"prints for {field}")
+
+
+def test_troubleshooting_names_every_blocking_slop_label():
+    """The `skipped-gate` section says a lead can be binned with `violations=0` by the slop
+    linter's HARD tier alone, and names the two labels an operator will see. Those come from
+    `sluice/cv/slop.py`'s importable `HARD` roster, so they are derived here rather than
+    restated -- a third blocking rule added there must reach the doc, or an operator hits a
+    `skipped-gate` whose only indented lines the troubleshooting page does not mention.
+
+    That is the gap this closes: `hard_msgs = violations + [SLOP ...]` in cv/engine.py means
+    the HARD tier bins on its own, and the section's first draft described the violation
+    categories only -- `SLOP` appeared nowhere on the page. Found by a reviewer, not by the
+    category sweep, which reads cv/validate.py and cannot see cv/slop.py at all.
+    """
+    from sluice.cv.slop import HARD
+
+    labels = [label for label, _rx in HARD]
+    # Scope: an empty roster would make the loop below vacuous, and the section's claim that
+    # these two labels are what you see would be certified by nothing.
+    assert labels, "sluice/cv/slop.py's HARD roster is empty"
+    # The SECTION, not the file -- this guard was written in the same whole-file shape a
+    # reviewer had just measured as satisfiable by unrelated prose elsewhere on the page.
+    text = _skipped_gate_section()
+    missing = sorted(label for label in labels if f"SLOP {label}" not in text)
+    assert not missing, (
+        f"docs/TROUBLESHOOTING.md's `skipped-gate` section does not name {missing} -- the slop "
+        f"linter's HARD tier bins a lead on its own, so these are the only lines some "
+        f"`skipped-gate` rows show")

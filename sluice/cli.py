@@ -1081,19 +1081,67 @@ def cmd_cv_run(args, config) -> int:
               f"dossier_failed={r.dossier_failed} "
               f"skills_unreadable={r.skills_unreadable}",
               file=sys.stderr)
-        # slop (cv/slop.py's deterministic linter, both tiers) and voice_flags (the
-        # opt-in model-judged voice check) are the two signals #167 opened over: each
-        # was computed by cv/engine.py's retry loop and then discarded, never reaching
-        # a human. A bare count above would repeat that mistake one level up, so every
-        # finding also prints on its own line -- mirroring _print_signoff_claims's
-        # content-not-just-count discipline for the same two judges at `cv signoff`.
-        # `r.slop` entries already carry their own "SLOP <label>: <snippet>" prefix
-        # (cv/engine.py); `voice_flags` entries do not (cv/voice.py hands back the raw
-        # "flag\t..." line), so the "VOICE:" label is added here to read the same way.
+        # Every finding the summary line COUNTS also prints in full, in that line's own
+        # field order so a reader never matches a block to a count by guessing. #167
+        # opened over `slop` and `voice_flags` -- each computed by cv/engine.py's retry
+        # loop and then discarded, never reaching a human, a bare count above repeating
+        # that mistake one level up. #258 is the identical defect on the two that were
+        # left. `violations` is the worst of the four, because it is the one that BINS
+        # the lead: a `skipped-gate` row produced no CV at all, and the count was the
+        # entire diagnostic surface at EVERY log level -- nothing in cv/engine.py logs
+        # these, so SLUICE_LOG_LEVEL reaches nothing, and `--verbose` is a `doctor`-only
+        # option. Diagnosing one real case meant monkeypatching cv.engine._validate from
+        # a driver script, and the findings named a one-line prompt defect (#257).
+        # mcpserver.py's `cv_run` already returns every one of the four in full -- the two
+        # here since #131, `slop`/`voice_flags` since #167 Task 16 -- so this surfaces data
+        # that already exists rather than computing anything new. NOT "all four since
+        # #131": that was this comment's first wording and mcpserver.py's own comments
+        # falsify it, which is worth leaving stated, because the CLI having been the last
+        # reader to catch up is the whole shape of the defect.
+        #
+        # NOT gated on the status, though `skipped-gate` is today the only CvResult
+        # constructor in cv/engine.py that passes `violations=`. A status condition (what
+        # #258 suggested) is equivalent now and would silently re-create this very defect
+        # the moment a status that populates the field is added; printing what the field
+        # HOLDS cannot.
+        #
+        # LABELS only where the producer does not label itself -- the rule #167 set here.
+        # `r.violations` entries all arrive with their own ALL-CAPS category
+        # (cv/validate.py's UNSOURCED SKILL / INVENTED METRIC / ..., cv/engine.py's
+        # STRUCTURAL, renderers/template.py's FORMAT, whose `precheck` docstring says it
+        # chose that prefix to match "the shape the engine's other gate messages take"),
+        # and `r.slop` entries their own "SLOP <label>: <snippet>" (cv/engine.py);
+        # `audit_flags` (cv/audit.py's raw "<verdict>\t<claim>\t<cited-id>") and
+        # `voice_flags` (cv/voice.py's raw "flag\t...") do not, so a label is added here
+        # to make the four read alike. Mirrors _print_signoff_claims's
+        # content-not-just-count discipline for the same judges at `cv signoff`.
+        #
+        # The three counts these expand stay on the summary line: it is the one-line,
+        # greppable row a script keys on, and #167's own reason for putting the detail
+        # BELOW it rather than in it holds unchanged for the two added here.
+        #
+        # UNSANITISED, deliberately, and worth stating because it looks like an oversight.
+        # Several of these embed a raw slice of the composed CV (cv/validate.py's
+        # `{prose.strip()[:50]}` arms; `slop`'s `[:80]` snippet), which is LLM output
+        # derived from an attacker-controlled job description -- mcpserver.py classifies
+        # the identical payload as UNTRUSTED DERIVED CONTENT -- so a terminal control
+        # sequence that survived into a CV reaches the operator's terminal verbatim. That
+        # is NOT introduced here: `slop`/`voice_flags` already print this way, so does
+        # _print_signoff_claims below, and nothing in sluice sanitises terminal output at
+        # any site. Sanitising THIS loop alone would leave the others raw while reading as
+        # coverage -- the fix-one-instance shape this codebase treats as worse than the
+        # gap, since the next reader sees a guarded site and infers a policy that does not
+        # exist. It needs one decision across every site (escape, strip, or only when
+        # stdout is a TTY), which is a wider change than #258, so it is #280 rather than
+        # half-done here.
+        for v in r.violations:
+            print(f"  {v}", file=sys.stderr)
+        for a in r.audit_flags:
+            print(f"  AUDIT: {a}", file=sys.stderr)
         for s in r.slop:
             print(f"  {s}", file=sys.stderr)
-        for v in r.voice_flags:
-            print(f"  VOICE: {v}", file=sys.stderr)
+        for vf in r.voice_flags:
+            print(f"  VOICE: {vf}", file=sys.stderr)
     # #18: a job description that did not arrive does not stop composition (cv/engine.py
     # proceeds either way so the fabrication gate still runs), so "rendered" alone would
     # silently hide that some of these CVs were composed against no real job description
