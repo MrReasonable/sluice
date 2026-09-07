@@ -26,6 +26,10 @@ output does not, and escaping it would mangle every path sluice prints. That cho
 makes `escape_for_terminal` IDEMPOTENT, which matters because a log record passes through both
 the Formatter and the wrapped stream.
 """
+import sys
+import traceback
+from contextlib import contextmanager
+
 # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a literal
 # one actually SPLITS the source line -- Python treats it as a line break.
 _TERMINAL_KEEP = ("\n", "\t")
@@ -84,3 +88,61 @@ def escape_for_terminal(text: str) -> str:
         hex_escape(ch) if is_control(ch) and ch not in _TERMINAL_KEEP else ch
         for ch in text
     )
+
+
+class _Escaped:
+    """A text stream that escapes the threat set on the way out.
+
+    Delegation is by `__getattr__` and must stay GENUINE rather than a partial `TextIOBase`
+    subclass: `mcp`'s stdio transport reaches through for `.buffer.fileno()`, and a wrapper
+    without `.buffer` kills `job-sluice mcp serve` at startup (see `test_the_wrapper_delegates_
+    buffer_and_fileno`). Nothing in `sluice/` itself reaches through -- measured with a
+    must-be-present control -- so the requirement comes entirely from that third party.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        self._stream.write(escape_for_terminal(text))
+        # The PRE-escape length: callers that check a return value are asking how much of
+        # THEIR string was accepted, not how many bytes the escaping happened to produce.
+        return len(text)
+
+    def writelines(self, lines) -> None:
+        # Overridden rather than delegated: `__getattr__` would hand this to the inner stream
+        # and every line would bypass the escaping.
+        for line in lines:
+            self.write(line)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+@contextmanager
+def installed():
+    r"""Escape everything printed to stdout/stderr for the duration, restoring on every exit.
+
+    Covers every `print` site with no call-site change, so a print added later is protected by
+    construction rather than by remembering to call a helper.
+
+    The traceback is escaped HERE, by catching, rather than by a `sys.excepthook`. A hook
+    installed and restored alongside the wrapper is inert: the `finally` restores it during
+    unwinding, BEFORE the interpreter calls it, and the traceback then reaches the terminal raw.
+    Measured -- a `RuntimeError` carrying a scraped title delivered a live screen-clear that way.
+    An uncaught exception therefore becomes `SystemExit(1)`, which prints no second traceback.
+
+    `SystemExit` and `KeyboardInterrupt` are re-raised untouched: neither carries derived text,
+    and both have exit behaviour a caller depends on (argparse's `--help` is a `SystemExit(0)`).
+    """
+    saved_out, saved_err = sys.stdout, sys.stderr
+    sys.stdout, sys.stderr = _Escaped(saved_out), _Escaped(saved_err)
+    try:
+        yield
+    except (SystemExit, KeyboardInterrupt):
+        raise
+    except BaseException:
+        traceback.print_exc(file=sys.stderr)
+        raise SystemExit(1) from None
+    finally:
+        sys.stdout, sys.stderr = saved_out, saved_err
