@@ -1,16 +1,15 @@
 r"""Escape characters that would drive the operator's TERMINAL rather than print to it (#280).
 
 `sluice` prints scraped board text, LLM output about a composed CV, and Gmail message fields
-verbatim. A terminal is not a display surface: a `` byte in that text is an instruction --
+verbatim. A terminal is not a display surface: a `\x1b` byte in that text is an instruction --
 it can recolour, reposition the cursor, clear the screen, set the window title, and on a
 permissive terminal write the clipboard via OSC 52.
 
 The character class is `onboard/emit.py::_needs_hex`'s, which was MEASURED against a real
 PyYAML parser rather than reasoned about; this module is now its one home and `emit.py` imports
-from here. The terminal set is that set MINUS `
-` and `	`:
+from here. The terminal set is that set MINUS `\n` and `\t`:
 
-- `	` is not a terminal-control character. It advances to the next tab stop and can do nothing
+- `\t` is not a terminal-control character. It advances to the next tab stop and can do nothing
   else -- it cannot recolour, reposition arbitrarily, hide output or reach the clipboard. It is
   also load-bearing: `cv/audit.py` and `cv/voice.py` emit tab-separated records and `cmd_cv_run`
   prints them with the tabs intact as columns. A blanket control strip would destroy that.
@@ -41,7 +40,7 @@ def is_control(ch: str) -> bool:
     """
     o = ord(ch)
     return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or 0xD800 <= o <= 0xDFFF
-            or ch in (" ", " "))
+            or ch in ("\u2028", "\u2029"))
 
 
 def hex_escape(ch: str) -> str:

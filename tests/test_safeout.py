@@ -13,7 +13,7 @@ from sluice.core.safeout import escape_for_terminal, hex_escape, is_control
     "\x00", "\x07", "\x08", "\x0b", "\x0c", "\r", "\x1b", "\x1f",   # C0 minus \n \t
     "\x7f",                                                          # DEL
     "\x80", "\x9b", "\x9f",                                          # C1, incl. CSI
-    " ", " ",                                              # line separators
+    "\u2028", "\u2029",                                              # line separators
     "\ud800", "\udfff",                                              # lone surrogates
 ])
 def test_every_threat_character_is_escaped(ch):
@@ -51,7 +51,7 @@ def test_hex_escape_uses_four_digits_above_one_byte():
     """`\\xNN` takes exactly two hex digits, so it cannot express U+2028: `\\x2028` reads
     back as `\\x20` followed by a literal '28'."""
     assert hex_escape("\x1b") == "\\x1b"
-    assert hex_escape(" ") == "\\u2028"
+    assert hex_escape("\u2028") == "\\u2028"
 
 
 def test_is_control_rejects_ordinary_text():
