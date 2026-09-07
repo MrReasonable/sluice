@@ -255,7 +255,7 @@ def _render_candidate(candidate_answers):
     `_fm_dict`'s strip regardless of `scalar()`; an interior character from `scalar()`'s named
     escape table (`emit._ESCAPES` -- `"` and `\\` are two of its five members, not the whole set) is
     escaped into two literal characters that `_fm_dict` then reads back literally instead of
-    restoring; and a control character `scalar()` hex-escapes (`emit._needs_hex`) comes back as the
+    restoring; and a control character `scalar()` hex-escapes (`safeout.is_control`) comes back as the
     literal multi-character escape sequence instead of itself. No separate "reject control
     characters" (or "reject interior quotes") check is needed or added: reusing `scalar()`'s
     existing, already-tested escape table is what makes every one of those three diverge from
