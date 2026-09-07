@@ -909,6 +909,32 @@ up executing it.
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
 consistently engineers out; see `_select_backend`'s guard in `cli.py`.
 
+**Terminal output is escaped at two chokepoints, both applying one policy function (#280).**
+`sluice` prints scraped board text and LLM output about a composed CV verbatim, so a terminal
+control character (ESC, CR, the rest of C0, DEL, the C1 block, a lone surrogate, U+2028/U+2029 --
+`core/safeout.py::is_control`) surviving into either would drive the operator's terminal rather
+than print to it. `core/safeout.py::escape_for_terminal` is the one function both chokepoints
+call. `cli.py::main` installs it as a stream wrapper (`safeout.installed()`) over stdout and
+stderr for the whole invocation, covering every `print` call including an uncaught traceback --
+caught INSIDE that same context manager and turned into `SystemExit(1)`, never via a
+`sys.excepthook`, because a hook installed and restored alongside the wrapper is inert (the
+`finally` restores it during unwinding, before the interpreter would call it, so the raw
+traceback reaches the terminal first). `core/log.py::get_logger` is the second, independent
+chokepoint, and it is NOT redundant with the wrapper: `logging.StreamHandler` binds its stream at
+construction, and importing `sluice.cli` builds loggers before `main()` installs the wrapper, so
+those handlers hold the ORIGINAL stderr and the wrapper never sees their records -- an escaping
+`Formatter` covers them instead. Both leave two characters alone, deliberately. `\t` is never
+escaped: it advances to the next tab stop and cannot recolour, reposition, hide output or reach
+the clipboard, and it is load-bearing -- `audit_flags`/`voice_flags` (`cli.py::cmd_cv_run`) are
+tab-separated columns a blanket strip would destroy. `\n` is never escaped either, and that IS a
+stated residual: an injected newline forges an extra output line. It is bounded -- hiding or
+repositioning prior output needs CR or ESC, and both are escaped -- and only the call site could
+tell an injected newline from sluice's own formatting. `apply/packet.py::render_json` must stay on
+`json.dumps`'s default `ensure_ascii=True`: at `ensure_ascii=False` it emits DEL, the C1 block and
+U+2028 raw, since JSON's own escaping rule covers C0 only, and the terminal wrapper would then
+rewrite one of those raw bytes into a `\x`/`\u` sequence the JSON it sits inside cannot parse --
+turning the one documented machine-readable channel unparseable on a single scraped byte.
+
 ## Conventions
 
 - Comments explain *why* — the invariant being upheld, the bug being prevented, the trade-off taken.

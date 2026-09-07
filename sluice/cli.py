@@ -1130,20 +1130,20 @@ def cmd_cv_run(args, config) -> int:
         # greppable row a script keys on, and #167's own reason for putting the detail
         # BELOW it rather than in it holds unchanged for the two added here.
         #
-        # UNSANITISED, deliberately, and worth stating because it looks like an oversight.
-        # Several of these embed a raw slice of the composed CV (cv/validate.py's
-        # `{prose.strip()[:50]}` arms; `slop`'s `[:80]` snippet), which is LLM output
-        # derived from an attacker-controlled job description -- mcpserver.py classifies
-        # the identical payload as UNTRUSTED DERIVED CONTENT -- so a terminal control
-        # sequence that survived into a CV reaches the operator's terminal verbatim. That
-        # is NOT introduced here: `slop`/`voice_flags` already print this way, so does
-        # _print_signoff_claims below, and nothing in sluice sanitises terminal output at
-        # any site. Sanitising THIS loop alone would leave the others raw while reading as
-        # coverage -- the fix-one-instance shape this codebase treats as worse than the
-        # gap, since the next reader sees a guarded site and infers a policy that does not
-        # exist. It needs one decision across every site (escape, strip, or only when
-        # stdout is a TTY), which is a wider change than #258, so it is #280 rather than
-        # half-done here.
+        # ESCAPED, at the stream rather than here (#280). These lines embed a raw slice of the
+        # composed CV -- LLM output derived from an attacker-controlled job description, which
+        # `mcpserver.py` classifies as UNTRUSTED DERIVED CONTENT -- so a terminal control
+        # sequence that survived into a CV would otherwise reach the operator's terminal
+        # verbatim. `cli.py::main` installs `core/safeout.py`'s filter over stdout and stderr for
+        # the whole invocation, so no print site opts in and none can opt out.
+        #
+        # TAB is deliberately NOT escaped, which is what keeps `audit_flags`
+        # ("<verdict>\t<claim>\t<cited-id>") and `voice_flags` ("flag\t<phrase>\t<why>") readable
+        # as columns here: a tab advances to the next tab stop and cannot recolour, reposition,
+        # hide output or reach the clipboard. NEWLINE is not escaped either, and that one IS a
+        # residual: an injected newline forges an extra output line. It is bounded -- hiding or
+        # repositioning needs CR or ESC, both of which are escaped -- and only the call site
+        # could tell an injected newline from this file's own formatting.
         for v in r.violations:
             print(f"  {v}", file=sys.stderr)
         for a in r.audit_flags:

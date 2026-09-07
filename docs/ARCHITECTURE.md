@@ -165,13 +165,15 @@ Shared by every sub-app:
   the one tolerated empty: that is a real first-run state.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
-- `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`: health
-  reporting, per-lead dossier assembly (`DossierCache`, keyed on a stable url
+- `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`, `safeout.py`:
+  health reporting, per-lead dossier assembly (`DossierCache`, keyed on a stable url
   hash rather than the company/role slug so a #109 mid-run company mutation
   does not double-fetch; also captures `page_title`/`structured_data` for
   triage's tier-2 AND tier-3 company resolution, both excluded from what
   `slim()` sends the judge), the source-agnostic `Lead` model, logging, and
-  the relevance gate.
+  the relevance gate. `safeout.py` (#280) is the terminal output escaping
+  policy: the control-character class, and the stream wrapper `cli.py::main`
+  installs.
   Re-keying `cache_key` makes every dossier cached before this version
   unreachable, so expect one full re-fetch on the first triage or cv run after
   upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
@@ -963,6 +965,21 @@ moment #175 registered a sixth. No count of THOSE either — three reviewers tal
 the stale statements and returned three different totals, which is the argument for
 enumerating rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
 assertions pin the roster at both privilege levels; prose cannot.
+
+`cli.py::main` is not purely a thin shell either: it wraps the whole invocation in
+`core/safeout.py::installed()`, a stream wrapper that escapes terminal control characters on
+every write to stdout and stderr, for the lifetime of the process (#280) -- `sluice` prints
+scraped board text and LLM output about a composed CV verbatim, and an escape sequence surviving
+into either would otherwise drive the operator's terminal rather than print to it. That wrapper
+is one of TWO chokepoints, not the whole design: `logging.StreamHandler` binds its stream at
+construction, and importing `sluice.cli` builds loggers before `main()` installs the wrapper, so
+those handlers hold the original stderr and never see it. `core/log.py::get_logger` closes that
+gap with its own escaping `Formatter`, applying the identical policy function
+(`safeout.escape_for_terminal`) to whatever stream a logger's handler ends up holding.
+Documenting only the wrapper would describe a one-chokepoint design that leaves every log record
+unescaped. One residual is deliberate in both: a newline is never escaped, so an injected one
+still forges an extra output line -- bounded, because hiding or repositioning prior output needs
+CR or ESC, and both of those are escaped.
 
 `list_evidence` has a PROPOSE counterpart since #175 and still has no VERIFY
 counterpart at any privilege level -- that, not "read-only", is the standing property.
