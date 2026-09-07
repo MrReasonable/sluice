@@ -5,9 +5,9 @@ verbatim. A terminal is not a display surface: a `\x1b` byte in that text is an 
 it can recolour, reposition the cursor, clear the screen, set the window title, and on a
 permissive terminal write the clipboard via OSC 52.
 
-The character class is `onboard/emit.py::_needs_hex`'s, which was MEASURED against a real
-PyYAML parser rather than reasoned about; this module is now its one home and `emit.py` imports
-from here. The terminal set is that set MINUS `\n` and `\t`:
+The character class was MEASURED against a real PyYAML parser rather than reasoned about; see
+`is_control` for the measurements. This module is now its one home and `emit.py` imports from
+here. The terminal set is that class MINUS `\n` and `\t`:
 
 - `\t` is not a terminal-control character. It advances to the next tab stop and can do nothing
   else -- it cannot recolour, reposition arbitrarily, hide output or reach the clipboard. It is
@@ -35,8 +35,26 @@ def is_control(ch: str) -> bool:
     r"""Is `ch` a control character a reader is entitled to reject?
 
     C0 (< 0x20), DEL, the WHOLE C1 block (0x80-0x9f -- not just NEL at 0x85), lone surrogates
-    (no valid encoding), and the two Unicode line separators. Moved here from
-    `onboard/emit.py::_needs_hex`, whose docstring carries the measurement that produced it.
+    (no valid encoding), and the two Unicode line separators.
+
+    This character class was MEASURED against a real PyYAML parser rather than reasoned about.
+    Without the `r` prefix on this docstring, every `\x..` would be interpreted, holding six
+    real control characters. Measured, which is the only reason it was noticed.
+
+    The five standard YAML escapes (`\\`, `"`, `\n`, `\r`, `\t`) cover only themselves.
+    Measured against PyYAML, an unescaped `\x1b`, `\x07`, `\x0b` or `\x00` makes a config file
+    unreadable to every later sluice command (`ReaderError`), and `\x85` silently round-trips to
+    a space -- a value corruption with nothing raising.
+
+    The reachable path is ordinary rather than adversarial: `cv_employers` is prompted as free
+    text and names are pasted out of a CV or PDF, where `\x0b` and `\x0c` are routine extraction
+    artefacts.
+
+    C1 was previously represented by `\x85` alone, which is the only one PyYAML treats as a line
+    break -- but the rest are still control characters a reader is entitled to reject, and
+    escaping them costs nothing. Lone surrogates (0xD800-0xDFFF) have no valid YAML representation,
+    so an unescaped one writes a config every later sluice command rejects with ReaderError.
+    Reachable from any paste of mis-decoded text.
     """
     o = ord(ch)
     return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or 0xD800 <= o <= 0xDFFF

@@ -12,54 +12,13 @@ than lucky -- which the tests prove by loading every emission back with a real p
 inspecting the string.
 """
 
+from sluice.core.safeout import hex_escape, is_control
+
 # Double-quoted YAML understands JSON's escapes. `\` FIRST: escaping it after `"` would re-escape
 # the backslashes this table itself introduces.
 _ESCAPES = (("\\", "\\\\"), ('"', '\\"'), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"))
 
 
-def _needs_hex(ch: str) -> bool:
-    r"""Characters the five named escapes above do not cover, and that a YAML reader REJECTS raw.
-
-    RAW docstring on purpose: without the `r` prefix, every `\x..` written below is interpreted, so
-    this docstring itself held six real control characters. Measured, which is the only reason it
-    was noticed.
-
-    These five were once described as "a total escape grammar", which was false and untested: the
-    corpus contained no control character. Measured against PyYAML, an unescaped `\x1b`, `\x07`,
-    `\x0b` or `\x00` makes the config `sluice init` just wrote unreadable to every later sluice
-    command (`ReaderError`), and `\x85` silently round-trips to a space -- a value corruption with
-    nothing raising.
-
-    The reachable path is ordinary rather than adversarial: `cv_employers` is prompted as "Places
-    you have worked, comma-separated?" -- one of the catalogue's free-text `parse_csv` questions
-    -- i.e. names pasted out of a CV or a PDF, where `\x0b` and `\x0c` are routine extraction
-    artefacts.
-    """
-    # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a
-    # literal one here actually SPLIT this source line -- Python treats it as a line break.
-    o = ord(ch)
-    # C0 (< 0x20), DEL, the WHOLE C1 block (0x80-0x9f -- not just NEL at 0x85), and the two
-    # Unicode line separators. C1 was previously represented by \x85 alone, which is the only
-    # one PyYAML treats as a line break -- but the rest are still control characters a reader
-    # is entitled to reject, and escaping them costs nothing.
-    # Lone surrogates too (0xD800-0xDFFF): YAML has no representation for them, so an unescaped
-    # one writes a config every later sluice command rejects with ReaderError. Reachable from
-    # any paste of mis-decoded text.
-    return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or 0xD800 <= o <= 0xDFFF
-            or ch in ("\u2028", "\u2029"))
-
-
-def _hex_escape(ch: str) -> str:
-    r"""The narrowest escape form that can hold `ch`.
-
-    `\xNN` takes exactly two hex digits, so it cannot express U+2028: `\x2028` reads back as `\x20`
-    followed by a literal "28" -- a silent corruption, and the same class of bug as the raw
-    character it was meant to fix. Measured, which is how the two-digit assumption was caught.
-    """
-    o = ord(ch)
-    if o <= 0xFF:
-        return f"\\x{o:02x}"
-    return f"\\u{o:04x}" if o <= 0xFFFF else f"\\U{o:08x}"
 
 
 def scalar(value) -> str:
@@ -77,7 +36,7 @@ def scalar(value) -> str:
         text = text.replace(raw, escaped)
     # AFTER the named table, never before: the table has already doubled every backslash, so the
     # escape sequences introduced here keep their single escaping backslash.
-    text = "".join(_hex_escape(ch) if _needs_hex(ch) else ch for ch in text)
+    text = "".join(hex_escape(ch) if is_control(ch) else ch for ch in text)
     return f'"{text}"'
 
 
