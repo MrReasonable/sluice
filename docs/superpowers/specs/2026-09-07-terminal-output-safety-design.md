@@ -372,14 +372,40 @@ assert a decision that no longer holds.
   persistence, and closing it would destroy the `audit_flags`/`voice_flags` contract (§1.3).
 - **A child process inheriting fd 1 or 2.** A Python-level text wrapper cannot cover a subprocess
   writing to the terminal directly. Vacuous today for a reason worth stating rather than relying
-  on: every sluice subprocess that could carry untrusted output captures it
+  on: every sluice subprocess that COULD carry untrusted output captures it
   (`core/backends.py`, `cv/render.py` both pass `capture_output=True`). A later
-  `capture_output=False` reopens this silently.
+  `capture_output=False` reopens this silently. A third subprocess site inherits fds BY DESIGN
+  rather than by omission: `onboard/ask.py::edit_in_editor`'s `subprocess.call(argv)` opens the
+  user's own `$EDITOR` on a temp file and deliberately does not capture, since the whole point is
+  an interactive editor session at the real terminal. It stays benign because the temp file holds
+  only sluice's own scaffold prose (the `init` wizard's prompt, rendered as `#` comment lines) —
+  never scraped or LLM-derived text — so there is nothing untrusted for the inherited fds to carry.
+  A grep for `capture_output` alone will not surface this site; it is named here so a reader
+  auditing the residual does not have to rediscover it.
 - **A note a human placed in the vault by hand — not a residual, listed to prevent a misreading.**
   Such a note may carry a filename stem holding `\x7f` or a C1 character `_sanitize` never saw.
-  On the way to a **terminal** that stem is escaped like anything else; this design covers it.
-  What remains uncovered is the stem *on disk*, which is `_sanitize`'s scope and a separate
-  concern. Do not cite §2.2's `_sanitize` bullet as terminal protection.
+  On the way to a **terminal** that stem is escaped by the `print`/logging chokepoints like
+  anything else — but NOT on the way through `input()` (see the next bullet, which is the actual
+  residual this one used to claim did not exist). What remains uncovered regardless is the stem
+  *on disk*, which is `_sanitize`'s scope and a separate concern. Do not cite §2.2's `_sanitize`
+  bullet as terminal protection.
+- **`input()` on a real tty bypasses both chokepoints, and is covered by neither by
+  construction — a residual closed per call site, not by the wrapper.** CPython's `input()` takes
+  the C-level `PyOS_Readline` path when `sys.stdin`/`sys.stdout` report tty file descriptors, and
+  writes its prompt through that path directly — never through `sys.stdout.write`, so
+  `core/safeout.py::_Escaped.write` never sees it. Measured under a pty: an adjacent `print()` was
+  correctly escaped while the `input()` prompt on the same command delivered a live `ESC[2J`
+  screen clear. `sluice/cli.py::cmd_cv_signoff` is the only `input()` call in `sluice/`, prompting
+  with a note slug that is reachable from a scraped company string (`_sanitize` maps only
+  `\x00-\x1f`, so `\x9b`/`\x7f`/U+2028 survive into it) — it now escapes its own prompt with
+  `safeout.escape_for_terminal` explicitly, because nothing upstream can do it for the call site.
+  `tests/test_output_safety_sweeps.py`'s AST sweep over every `input(...)` call in `sluice/` is
+  what keeps this closed going forward — but it is a SYNTACTIC sweep (constant-literal or an
+  `escape_for_terminal(...)`-wrapped argument), not a semantic proof: a prompt built by a helper
+  function that itself forgets to escape, or an aliased import the sweep's name-matching does not
+  anticipate, could slip past it undetected. The residual is therefore real, narrower than before
+  this fix, and enforced by a guard rather than by the wrapper's own construction the way every
+  `print`/logging site is.
 - **Bidirectional-override characters** (U+202A-U+202E, U+2066-U+2069). They reorder text visually
   without being control characters in the C0/C1 sense. Deliberately out of scope: a *rendering*
   concern with real false-positive risk for legitimate right-to-left text, and admitting them
@@ -500,15 +526,33 @@ Two opposite outcomes:
 network" and drives `build_server(...)` directly, so `sys.stdout` is never wrapped — green either
 way, which is §3.2's "gate that hides a guard" inside this fix's own verification story.
 
-The verification is instead: a unit test that the wrapper forwards `.buffer`, `.fileno()` and
-`.encoding`; plus an **end-to-end** smoke test driving `job-sluice mcp serve` over real stdio,
-requesting a tool whose response carries a C1 and a non-ASCII character, asserting the received
-frame parses and the value round-trips. End-to-end rather than liveness-only because the runtime
-constraint is a range (`mcp>=2.0.0,<3`) while only the test extra pins a version, so the
-dup-and-divert mechanism is a third-party implementation detail this repo does not control. The
-subprocess must **inherit the ambient environment** — no explicit `env=` dict — so `conftest.py`'s
-`monkeypatch.setenv` sandbox reaches it and it can never touch a real config or vault; it needs no
-credentials, since `build_server` does no I/O at construction.
+**What shipped, corrected against this section's own earlier draft.** This paragraph originally
+specified an end-to-end smoke test that requests a tool whose response carries a C1 and a
+non-ASCII character, asserting the received frame parses and the value round-trips. That test was
+not written; `tests/functional/test_mcp_stdio_smoke.py` is **liveness-only** — it drives
+`job-sluice mcp serve` over real stdio, sends `initialize`, and asserts a frame comes back and
+parses (`json.loads(line)["id"] == 1`). The reason is `build_server()`'s own shape
+(`sluice/mcpserver.py::build_server`): every registered tool closes over one `Sluice(config)` built
+at server construction, so a real tool CALL — as opposed to the handshake this test drives — needs
+a working vault and config to answer at all. `test_mcp_stdio_smoke.py`'s own docstring states the
+sandboxing reason the subprocess inherits the ambient environment rather than an explicit `env=`
+dict: `conftest.py`'s `monkeypatch.setenv` sandbox must reach the child, or a tool call would touch
+a developer's real config and vault. Building that vault state inside a smoke test is a materially
+bigger test than the delegation regression it exists to guard (see that file's own docstring: its
+entire value is as a regression check on `_Escaped.__getattr__`'s `.buffer` delegation, not as a
+first exercise of a real tool), so the unit test named above (`.buffer`/`.fileno()`/`.encoding`
+forwarding) plus this liveness check are the verification that shipped.
+
+**Stated residual, not closed by anything above.** The runtime constraint is a range
+(`mcp>=2.0.0,<3`) while only the `test`/`mcp` extras pin `mcp==2.1.1`, so the dup-and-divert
+mechanism §7.1 verified above is a third-party implementation detail this repo does not control
+going forward. An in-range future `mcp` that writes frames through `sys.stdout` as *text* rather
+than dup'ing fd 1 would route every response through `_Escaped.write`, which rewrites a raw
+DEL/C1/U+2028 character inside a JSON string into its `\xNN`/`\uNNNN` escape — turning a valid JSON
+string body into an invalid one, the same class of bug `apply/packet.py::render_json` was
+changed to prevent (`ensure_ascii=False` plus the wrapper) on the channel that IS guarded. No test
+here would catch that regression until it ships, because nothing in this repo pins `mcp`'s stdio
+transport behaviour — only its version range.
 
 ### 7.2 The `emit.py` extraction changes YAML output
 
