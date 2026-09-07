@@ -30,7 +30,7 @@ except ImportError:  # pragma: no cover - exercised by not having the extra inst
     argcomplete = None
 
 from sluice import __version__
-from sluice.core import status as _status
+from sluice.core import safeout, status as _status
 from sluice.core.config import load_config
 from sluice.core.health import RATE_SIGNALS as HEALTH_RATE_SIGNALS, HealthStore
 from sluice.core.log import get_logger, notify
@@ -2591,31 +2591,35 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    parser = _build_parser()
-    if argcomplete is not None:
-        argcomplete.autocomplete(parser)
-    args = parser.parse_args(argv)
-    try:
-        config = load_config()
-        return args.func(args, config)
-    except ValueError as exc:
-        # A retired or malformed config key is a USAGE error, not a crash. It reached the user as a
-        # raw traceback, and the command it blocked hardest was `job-sluice init` -- the one that would
-        # have written them a correct config -- plus `doctor`, which exists to diagnose exactly this.
-        #
-        # #120: widened from wrapping only load_config() to wrapping the whole dispatch. Every
-        # sub-app config (triage/cv/track/apply) is loaded LAZILY, inside its own Sluice.* method,
-        # not here -- so a malformed triage:/cv:/track: block (this round's own
-        # company_resolve_llm cross-field check, and the pre-existing quoted-bool check every
-        # *Config loader already shares) previously escaped THIS except entirely and surfaced as a
-        # raw traceback instead of the identical "job-sluice: <message>" / exit 2 shape a malformed
-        # ROOT config key already gets. All REACHABLE ValueError sites in this dispatch path are
-        # usage-error class raises (config or argument validation) — unreachable internal-invariant
-        # guards exist too (paths.py::resolve's kind check, track_dismiss's selector guard) but cannot
-        # currently fire from any live call site, so the widening's real-world effect is purely
-        # improving UX for config errors that previously escaped as raw tracebacks.
-        print(f"job-sluice: {exc}", file=sys.stderr)
-        return 2
+    # Installed BEFORE the parser is built: `parse_args` exits on --help or a bad command, and
+    # `argcomplete.autocomplete` exits the process outright, so anything installed after them
+    # would miss those paths entirely (#280).
+    with safeout.installed():
+        parser = _build_parser()
+        if argcomplete is not None:
+            argcomplete.autocomplete(parser)
+        args = parser.parse_args(argv)
+        try:
+            config = load_config()
+            return args.func(args, config)
+        except ValueError as exc:
+            # A retired or malformed config key is a USAGE error, not a crash. It reached the user as a
+            # raw traceback, and the command it blocked hardest was `job-sluice init` -- the one that would
+            # have written them a correct config -- plus `doctor`, which exists to diagnose exactly this.
+            #
+            # #120: widened from wrapping only load_config() to wrapping the whole dispatch. Every
+            # sub-app config (triage/cv/track/apply) is loaded LAZILY, inside its own Sluice.* method,
+            # not here -- so a malformed triage:/cv:/track: block (this round's own
+            # company_resolve_llm cross-field check, and the pre-existing quoted-bool check every
+            # *Config loader already shares) previously escaped THIS except entirely and surfaced as a
+            # raw traceback instead of the identical "job-sluice: <message>" / exit 2 shape a malformed
+            # ROOT config key already gets. All REACHABLE ValueError sites in this dispatch path are
+            # usage-error class raises (config or argument validation) — unreachable internal-invariant
+            # guards exist too (paths.py::resolve's kind check, track_dismiss's selector guard) but cannot
+            # currently fire from any live call site, so the widening's real-world effect is purely
+            # improving UX for config errors that previously escaped as raw tracebacks.
+            print(f"job-sluice: {exc}", file=sys.stderr)
+            return 2
 
 
 if __name__ == "__main__":
