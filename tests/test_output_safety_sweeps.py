@@ -1,12 +1,20 @@
-"""Two repo-wide sweeps supporting the terminal-escaping policy (#280).
+"""Repo-wide sweeps supporting the terminal-escaping policy (#280).
 
-BOTH are green against the tree from the moment they are written -- there is nothing to find
-today. That makes the in-test positive control the load-bearing part: it is the only thing that
-distinguishes 'clean' from 'the scanner never ran'. A negative guard whose matcher breaks
+Every sweep here is green against the tree from the moment it is written -- there is nothing to
+find today. That makes the in-test positive control the load-bearing part: it is the only thing
+that distinguishes 'clean' from 'the scanner never ran'. A negative guard whose matcher breaks
 enumerates nothing and passes every assertion over it, because `all([])` is True.
 """
 import ast
 import pathlib
+
+import sluice
+
+# Anchored on the installed package, not the cwd `pathlib.Path("sluice")` a bare relative walk
+# would use: from any cwd other than the repo root that resolves to zero files, and a sweep with
+# no floor over it passes having enumerated nothing (measured from /tmp -- see the review finding
+# behind `test_nothing_captures_a_stream_before_the_wrapper_is_installed` below).
+_PKG = pathlib.Path(sluice.__file__).resolve().parent
 
 
 # The SAME class `core/safeout.py::is_control` uses, minus the two characters the policy
@@ -45,7 +53,7 @@ def test_no_literal_control_character_in_sluice_source():
     assert not offenders, f"raw control characters in source: {offenders}"
 
 
-def _module_scope_captures(root="sluice"):
+def _module_scope_captures(root=_PKG):
     """Names bound at MODULE scope from a stream or a stream-holding constructor.
 
     A SYNTACTIC proxy for 'captured before `cli.py::main` installs the wrapper', and the proxy
@@ -54,9 +62,9 @@ def _module_scope_captures(root="sluice"):
     Formatter chokepoint rather than by this sweep -- which is why the Formatter is not
     redundant with the wrapper.
 
-    `root` defaults to the real tree (`"sluice"`); the positive control below passes a `tmp_path`
-    holding a synthetic module instead, so it exercises this exact matcher rather than a copy of
-    part of it.
+    `root` defaults to the real tree (`_PKG`, anchored on `sluice.__file__` rather than the cwd);
+    the positive control below passes a `tmp_path` holding a synthetic module instead, so it
+    exercises this exact matcher rather than a copy of part of it.
     """
     hits = []
     for path in sorted(pathlib.Path(root).rglob("*.py")):
@@ -112,5 +120,85 @@ def test_the_bypass_sweep_fires(tmp_path):
 
 def test_nothing_captures_a_stream_before_the_wrapper_is_installed():
     """Hand-written target: empty. A stream captured at module scope keeps the ORIGINAL, so
-    every write through it would bypass the filter `cli.py::main` installs."""
+    every write through it would bypass the filter `cli.py::main` installs.
+
+    Asserts its own scope floor rather than trusting `_module_scope_captures`'s default: a
+    cwd-relative walk with no floor passes vacuously from any cwd but the repo root (measured
+    from /tmp -- zero files enumerated, `== []` trivially true), which is exactly the shape its
+    two sibling sweeps in this file avoid.
+    """
+    files = sorted(_PKG.rglob("*.py"))
+    assert len(files) > 50, "the walk found almost nothing -- it is broken, not the tree"
     assert _module_scope_captures() == []
+
+
+def _unescaped_input_calls(root=_PKG):
+    """Every `input(...)` call in `root` whose prompt argument is not provably escaped.
+
+    `input()`'s prompt is written by CPython's C-level `PyOS_Readline` path when stdin/stdout
+    report tty file descriptors -- bypassing `core/safeout.py::_Escaped.write` entirely, unlike
+    `print`/logging, which the installed wrapper covers by construction (#280 IMPORTANT 1). So an
+    `input(...)` call must escape its OWN argument; nothing upstream can do it for the call site.
+
+    'Provably escaped' is narrow on purpose: a plain string literal (`ast.Constant` holding a
+    `str`, which cannot carry an interpolated value), or a call whose outermost function is named
+    `escape_for_terminal` -- matched by NAME (`Name.id` for a bare import, `Attribute.attr` for
+    `safeout.escape_for_terminal(...)`), the same matching style `_module_scope_captures` uses
+    above and for the identical reason: a hand-listed import path loses to an alias, a name does
+    not. Anything else -- an f-string, `.format()`, `%`, string concatenation, a bare variable --
+    is flagged, because each of those can carry a value this sweep cannot trace back to a source,
+    and the cost of a false positive (rewrap a genuinely-safe prompt) is far below the cost of a
+    false negative (a live escape sequence at a real tty).
+    """
+    hits = []
+    for path in sorted(pathlib.Path(root).rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "input"):
+                continue
+            if not node.args:
+                continue  # a bare input() with no prompt carries nothing to escape
+            arg = node.args[0]
+            if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                continue
+            if isinstance(arg, ast.Call):
+                name = getattr(arg.func, "id", "") or getattr(arg.func, "attr", "")
+                if name == "escape_for_terminal":
+                    continue
+            hits.append(f"{path}: input(...) with an unescaped prompt")
+    return hits
+
+
+def test_the_input_sweep_fires(tmp_path):
+    """Positive control, run through the real matcher against a synthetic module. Plants one
+    unsafe shape (an f-string prompt, the shape `cmd_cv_signoff`'s prompt actually was before the
+    #280 IMPORTANT-1 fix) beside two safe ones -- a plain literal and an `escape_for_terminal`-
+    wrapped prompt -- so the matcher's negative case is exercised too, not only its positive one.
+    """
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "def unsafe(slug):\n"
+        "    return input(f'sign off {slug}? ')\n"
+        "def safe_literal():\n"
+        "    return input('continue? ')\n"
+        "def safe_escaped(slug):\n"
+        "    return input(escape_for_terminal(f'sign off {slug}? '))\n"
+        "def safe_aliased(slug):\n"
+        "    return input(safeout.escape_for_terminal(f'sign off {slug}? '))\n"
+        "def safe_no_prompt():\n"
+        "    return input()\n",
+        encoding="utf-8",
+    )
+    found = _unescaped_input_calls(tmp_path)
+    assert found == [f"{probe}: input(...) with an unescaped prompt"], found
+
+
+def test_no_input_call_in_sluice_interpolates_an_unescaped_value():
+    """Hand-written target: empty. `cli.py::cmd_cv_signoff` is the only `input()` in `sluice/`
+    (grep `\\binput(` confirms it), reachable from a scraped company string via the note slug it
+    prompts with, and its prompt is wrapped in `safeout.escape_for_terminal` for exactly that
+    reason -- see the IMPORTANT-1 comment beside that call.
+    """
+    files = sorted(_PKG.rglob("*.py"))
+    assert len(files) > 50, "the walk found almost nothing -- it is broken, not the tree"
+    assert _unescaped_input_calls() == []
