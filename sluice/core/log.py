@@ -11,14 +11,35 @@ import os
 import sys
 import urllib.request
 
+from sluice.core.safeout import escape_for_terminal
+
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+
+
+class _EscapingFormatter(logging.Formatter):
+    """Escapes terminal control characters in the formatted record (#280).
+
+    The second of two chokepoints, and it is not redundant with the stream wrapper
+    `cli.py::main` installs. `logging.StreamHandler` binds its stream AT CONSTRUCTION, and
+    importing `sluice.cli` instantiates loggers before `main()` runs -- so those handlers hold
+    the ORIGINAL stderr and the wrapper never sees their records. A Formatter escapes whatever
+    stream its handler ends up holding; a `main()`-scoped wrapper can only escape the stream
+    object it replaced.
+
+    Escaping the FORMATTED record, not the message, so the level, name and timestamp are
+    covered too. Double escaping is harmless: `escape_for_terminal` is idempotent, which is what
+    lets a record pass through both this and the wrapped stream unchanged.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        return escape_for_terminal(super().format(record))
 
 
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(f"sluice.{name}")
     if not logger.handlers:
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+        handler.setFormatter(_EscapingFormatter(_LOG_FORMAT))
         logger.addHandler(handler)
         logger.setLevel(os.environ.get("SLUICE_LOG_LEVEL", "INFO").upper())
         logger.propagate = False  # don't double-log through the root logger
