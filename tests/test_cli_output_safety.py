@@ -65,11 +65,19 @@ def test_a_command_error_traceback_is_escaped(monkeypatch, capsys):
     assert _streams() == before
 
 
-def test_help_output_carries_no_escape_sequences(capsys):
+def test_help_output_carries_no_escape_sequences(capsys, monkeypatch):
     """argparse colourises help on 3.14, and `main()` now escapes control characters on their way
     out -- so unsuppressed colour would reach the user as literal `\\x1b[1;34m` text on the
     most-run command. Asserting on the rendered output rather than on the kwarg keeps this true
-    on 3.12/3.13, where argparse never colours and the kwarg does not exist."""
+    on 3.12/3.13, where argparse never colours and the kwarg does not exist.
+
+    `PYTHON_COLORS=1` forces `_colorize.can_colorize()` true regardless of the runner: without it
+    this test's subject (`cli._ARGPARSE_COLOR`) is never actually exercised under pytest's capture,
+    which is not a tty, and CI (no `FORCE_COLOR`) hits exactly that blind spot -- measured by
+    deleting `_ARGPARSE_COLOR`'s effect and confirming this test still passed with no color env set
+    at all. `PYTHON_COLORS` is checked first in `can_colorize`, ahead of `NO_COLOR`/`TERM=dumb`/the
+    isatty probe, so it is the one override that cannot be defeated by the runner's own environment."""
+    monkeypatch.setenv("PYTHON_COLORS", "1")
     before = _streams()
     with pytest.raises(SystemExit):
         cli.main(["--help"])
