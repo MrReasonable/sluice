@@ -45,7 +45,7 @@ def test_no_literal_control_character_in_sluice_source():
     assert not offenders, f"raw control characters in source: {offenders}"
 
 
-def _module_scope_captures():
+def _module_scope_captures(root="sluice"):
     """Names bound at MODULE scope from a stream or a stream-holding constructor.
 
     A SYNTACTIC proxy for 'captured before `cli.py::main` installs the wrapper', and the proxy
@@ -53,16 +53,20 @@ def _module_scope_captures():
     invisible to it. `core/log.py::get_logger` is exactly that case, and it is covered by the
     Formatter chokepoint rather than by this sweep -- which is why the Formatter is not
     redundant with the wrapper.
+
+    `root` defaults to the real tree (`"sluice"`); the positive control below passes a `tmp_path`
+    holding a synthetic module instead, so it exercises this exact matcher rather than a copy of
+    part of it.
     """
     hits = []
-    for path in sorted(pathlib.Path("sluice").rglob("*.py")):
+    for path in sorted(pathlib.Path(root).rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in tree.body:
             # Skip defs and classes BEFORE walking. `ast.walk` on a top-level FunctionDef
             # descends into its body, so without this the sweep reports every `file=sys.stderr`
-            # in the tree -- measured, 93 hits, and the `== []` target could never pass. A
-            # capture inside a def happens when that def RUNS, which is the case this sweep
-            # documents as out of scope.
+            # in the tree -- a three-figure hit count against a target of `[]`, so it could
+            # never pass. A capture inside a def happens when that def RUNS, which is the case
+            # this sweep documents as out of scope.
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             for inner in ast.walk(node):
@@ -77,13 +81,33 @@ def _module_scope_captures():
 
 
 def test_the_bypass_sweep_fires(tmp_path):
-    """Positive control, run against a synthetic module rather than the tree."""
+    """Positive control, run against a synthetic module rather than the tree -- and through the
+    real matcher (`_module_scope_captures`), not a reimplementation of part of it. A control that
+    hand-rolls its own ad hoc AST check can stay green while the real matcher's own arm is
+    deleted; calling the function under test is what makes that impossible.
+
+    Plants BOTH arms `_module_scope_captures` matches, in one synthetic module: a module-scope
+    `sys.stdout` attribute capture, and module-scope `TtyAsker(...)`/`StreamHandler(...)` calls.
+    Each is asserted individually, so deleting either arm of the matcher reddens this control.
+    """
     probe = tmp_path / "probe.py"
-    probe.write_text("import sys\nOUT = sys.stdout\n", encoding="utf-8")
-    tree = ast.parse(probe.read_text(encoding="utf-8"))
-    found = [n for node in tree.body for n in ast.walk(node)
-             if isinstance(n, ast.Attribute) and n.attr == "stdout"]
-    assert found, "the AST probe does not detect a module-scope sys.stdout capture"
+    probe.write_text(
+        "import sys\n"
+        "OUT = sys.stdout\n"
+        "ASKER = TtyAsker()\n"
+        "HANDLER = StreamHandler()\n",
+        encoding="utf-8",
+    )
+    found = _module_scope_captures(tmp_path)
+    assert any("module-scope sys.stdout" in hit for hit in found), (
+        f"the sys.stdout attribute arm did not fire: {found}"
+    )
+    assert any("module-scope TtyAsker(...)" in hit for hit in found), (
+        f"the TtyAsker call arm did not fire: {found}"
+    )
+    assert any("module-scope StreamHandler(...)" in hit for hit in found), (
+        f"the StreamHandler call arm did not fire: {found}"
+    )
 
 
 def test_nothing_captures_a_stream_before_the_wrapper_is_installed():
