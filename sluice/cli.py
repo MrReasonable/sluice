@@ -47,6 +47,16 @@ from sluice.ingest import sources as registry
 _log = get_logger("cli")
 
 
+# argparse gained a `color` keyword in 3.14 and colourises help output by default. Those are
+# real ANSI escapes, and cli.py::main now runs inside core/safeout.py::installed, which
+# escapes control characters on their way to the terminal -- so the colour would render as
+# literal `\x1b[1;34m` text on the most-run command in the tool. Suppressing it at the source
+# is what keeps the filter's rule simple: nothing sluice emits legitimately contains an escape.
+# The result matches what 3.12 and 3.13 users already see. Version-gated because passing an
+# unknown keyword raises on those versions.
+_ARGPARSE_COLOR = {"color": False} if sys.version_info >= (3, 14) else {}
+
+
 # Resolve the disabled-overlay path lazily (each call) so env overrides - and tests'
 # monkeypatch - win; an import-time snapshot would be unpatchable. The health path's
 # equivalent resolution lives solely in HealthStore.__init__ (sluice/core/health.py) --
@@ -2258,7 +2268,7 @@ def _complete_status(prefix, parsed_args, **kwargs):
 
 # ── argument parsing ─────────────────────────────────────────────────────────
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="job-sluice")
+    p = argparse.ArgumentParser(prog="job-sluice", **_ARGPARSE_COLOR)
     # `job-sluice --version` is what a user pastes into a bug report, so it must answer without
     # demanding a subcommand -- argparse's version action fires while parsing and exits
     # before the required-subcommand check is reached. That is a property of the ACTION,

@@ -63,3 +63,19 @@ def test_a_command_error_traceback_is_escaped(monkeypatch, capsys):
     assert "\x1b" not in err and "\x9b" not in err
     assert "\\x1b[2J" in err
     assert _streams() == before
+
+
+def test_help_output_carries_no_escape_sequences(capsys):
+    """argparse colourises help on 3.14, and `main()` now escapes control characters on their way
+    out -- so unsuppressed colour would reach the user as literal `\\x1b[1;34m` text on the
+    most-run command. Asserting on the rendered output rather than on the kwarg keeps this true
+    on 3.12/3.13, where argparse never colours and the kwarg does not exist."""
+    before = _streams()
+    with pytest.raises(SystemExit):
+        cli.main(["--help"])
+    out = capsys.readouterr().out
+    assert out, "no help output captured"
+    assert "\\x1b" not in out and "\x1b" not in out, (
+        "help output carries an escape sequence -- raw would drive the terminal, literal would "
+        "render as garbage")
+    assert _streams() == before
