@@ -227,4 +227,9 @@ def render_text(p):
 
 
 def render_json(p):
-    return json.dumps(p, ensure_ascii=False)
+    # DEFAULT ensure_ascii, deliberately (#280). At `ensure_ascii=False` this emitted raw DEL,
+    # C1 and U+2028 -- JSON mandates escaping C0 only -- and the terminal filter `cli.py::main`
+    # installs would then rewrite a raw \x9b to a `\x` sequence JSON cannot parse, making the
+    # documented machine-readable channel unparseable on one scraped byte. The visible cost is
+    # non-ASCII emitted as \uNNNN, which is still valid JSON and still round-trips.
+    return json.dumps(p)
