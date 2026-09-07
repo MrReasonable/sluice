@@ -7,6 +7,7 @@ from sluice.apply.config import ApplyConfig
 from sluice.apply import packet
 from sluice.apply.packet import build_packet, render_text, resolve_how_heard
 from sluice.core.protocols import CandidateProfile
+from sluice.core.safeout import escape_for_terminal
 
 
 def _note(**fm):
@@ -63,6 +64,20 @@ def test_render_json_roundtrips():
     n = _note(company="Example Northgate", role="Analyst", location="", salary="", url="https://example-northgate.invalid/x")
     d = json.loads(packet.render_json(build_packet(n, cfg, profile=CandidateProfile(), today="2026-08-19", cv_staged=False)))
     assert d["company"] == "Example Northgate" and d["cv_path"] is None
+
+
+def test_render_json_output_is_parseable_after_terminal_escaping():
+    """`json.dumps(..., ensure_ascii=False)` leaves DEL, C1 and U+2028 raw -- JSON mandates
+    escaping C0 only, which is why a probe using a lone ESC reports the whole class safe. The
+    terminal filter then turns a raw C1 byte into a `\\x` sequence JSON has no escape for, and
+    the documented machine-readable channel stops parsing on one scraped byte.
+
+    The control characters sit in `role`, never in `company`: a control character in an identity
+    field is collected by `tests/test_fixture_name_neutrality.py` and fails its roster check.
+    """
+    p = {"company": "Example Co", "role": "Engineer\x9b[2J\x7f\u2028",
+         "location": "", "salary": "", "url": "", "listing_host": "", "cv_path": ""}
+    json.loads(escape_for_terminal(packet.render_json(p)))
 
 
 _SYNTHETIC_WARNED = {
