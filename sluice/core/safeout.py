@@ -13,11 +13,9 @@ here. The terminal set is that class MINUS `\n` and `\t`:
   else -- it cannot recolour, reposition arbitrarily, hide output or reach the clipboard. It is
   also load-bearing: `cv/audit.py` and `cv/voice.py` emit tab-separated records and `cmd_cv_run`
   prints them with the tabs intact as columns. A blanket control strip would destroy that.
-- `
-` is the one character a STREAM cannot judge. `cli.py` legitimately prints "\nNext:", and an
+- `\n` is the one character a STREAM cannot judge. `cli.py` legitimately prints "\nNext:", and an
   injected newline inside a scraped title is byte-identical. Escaping it here would turn every
-  deliberate blank line into a literal `
-`. The residual is stated in the design doc: an
+  deliberate blank line into a literal `\n`. The residual is stated in the design doc: an
   injected newline forges an output LINE, which is bounded -- it cannot hide prior output,
   recolour or reposition, all of which need CR or ESC and all of which this module closes.
 
@@ -30,8 +28,6 @@ import sys
 import traceback
 from contextlib import contextmanager
 
-# Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a literal
-# one actually SPLITS the source line -- Python treats it as a line break.
 _TERMINAL_KEEP = ("\n", "\t")
 
 
@@ -42,8 +38,13 @@ def is_control(ch: str) -> bool:
     (no valid encoding), and the two Unicode line separators.
 
     This character class was MEASURED against a real PyYAML parser rather than reasoned about.
-    Without the `r` prefix on this docstring, every `\x..` would be interpreted, holding six
-    real control characters. Measured, which is the only reason it was noticed.
+    RAW docstring on purpose: the text below names several valid two-digit `\xNN` escapes
+    (`\x1b`, `\x07`, `\x0b`, `\x00`, `\x85`, `\x0c`) -- without the `r` prefix Python interprets
+    each one at compile time rather than displaying it. Not hypothetical: the docstring this one
+    replaced -- a `_needs_hex` helper `onboard/emit.py` carried before this module absorbed it,
+    see `git log -S 'RAW docstring on purpose' -- sluice/onboard/emit.py` -- was once written
+    non-raw and silently held six real control characters as a result. Measured, which is the
+    only reason it was noticed.
 
     The five standard YAML escapes (`\\`, `"`, `\n`, `\r`, `\t`) cover only themselves.
     Measured against PyYAML, an unescaped `\x1b`, `\x07`, `\x0b` or `\x00` makes a config file
@@ -62,6 +63,9 @@ def is_control(ch: str) -> bool:
     """
     o = ord(ch)
     return (o < 0x20 or o == 0x7F or 0x80 <= o <= 0x9F or 0xD800 <= o <= 0xDFFF
+            # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor,
+            # and a literal one actually SPLITS the source line -- Python treats it as a line
+            # break.
             or ch in ("\u2028", "\u2029"))
 
 

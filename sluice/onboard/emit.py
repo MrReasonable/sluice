@@ -19,8 +19,6 @@ from sluice.core.safeout import hex_escape, is_control
 _ESCAPES = (("\\", "\\\\"), ('"', '\\"'), ("\n", "\\n"), ("\r", "\\r"), ("\t", "\\t"))
 
 
-
-
 def scalar(value) -> str:
     """One YAML scalar for `value`.
 
