@@ -43,7 +43,7 @@ def test_no_literal_control_character_in_sluice_source():
     A byte scan, not a grep: a regex over file bytes is the wrong engine for a question about
     bytes, and this repo has twice been bitten by a sweep that silently under-reported.
     """
-    files = sorted(pathlib.Path("sluice").rglob("*.py"))
+    files = sorted(_PKG.rglob("*.py"))
     assert len(files) > 50, "the walk found almost nothing -- it is broken, not the tree"
     offenders = {}
     for path in files:
@@ -51,6 +51,59 @@ def test_no_literal_control_character_in_sluice_source():
         if found:
             offenders[str(path)] = found
     assert not offenders, f"raw control characters in source: {offenders}"
+
+
+def _import_time_nodes(node, *, annotations_evaluated=True):
+    """Yield the nodes under `node` that EXECUTE when the module is imported.
+
+    `ast.walk` cannot express this distinction, and getting it wrong costs accuracy in BOTH
+    directions -- measured, before this was scope-aware:
+
+    - A CLASS BODY runs at import, so `class Foo: OUT = sys.stdout` captures the pre-wrapper
+      stream. Skipping `ClassDef` to avoid descending into functions made the sweep miss it.
+    - A FUNCTION nested inside module-level control flow does NOT run at import, so
+      `if TYPE_CHECKING:` around a `def` that touches `sys.stdout` was falsely flagged.
+
+    So: descend into class bodies and module-level control flow, never into a function body. A
+    function's DECORATORS and DEFAULT ARGUMENTS do evaluate at import (`def f(x=sys.stdout)`
+    captures), so those are visited even though the body is not.
+    """
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            eager = list(getattr(child, "decorator_list", []))
+            eager += list(getattr(child.args, "defaults", []))
+            eager += [d for d in getattr(child.args, "kw_defaults", []) if d is not None]
+            if annotations_evaluated:
+                # ANNOTATIONS evaluate at import and are stored in `__annotations__`, so
+                # `def f(x: sys.stdout)` really does capture the pre-wrapper stream object --
+                # measured. Under `from __future__ import annotations` (PEP 563) they are
+                # stringised and never evaluated, so flagging them there would be a false
+                # positive; that is what `annotations_evaluated` gates.
+                args = child.args
+                for a in (list(args.args) + list(args.posonlyargs) + list(args.kwonlyargs)
+                          + [args.vararg, args.kwarg]):
+                    if a is not None and a.annotation is not None:
+                        eager.append(a.annotation)
+                if getattr(child, "returns", None) is not None:
+                    eager.append(child.returns)
+            for sub in eager:
+                yield sub
+                yield from _import_time_nodes(sub, annotations_evaluated=annotations_evaluated)
+            continue
+        if isinstance(child, ast.AnnAssign) and not annotations_evaluated:
+            # A VARIABLE annotation is postponed by PEP 563 exactly as a function one is --
+            # measured, `OUT: sys.stdout` under `from __future__ import annotations` leaves
+            # `__annotations__ == {'OUT': 'sys.stdout'}`, a string. The generic recursion below
+            # would still descend into `.annotation` and report it, so it is skipped here. The
+            # VALUE is not postponed and is still visited: `OUT: object = sys.stdout` really
+            # does capture.
+            for sub in (child.target, child.value):
+                if sub is not None:
+                    yield sub
+                    yield from _import_time_nodes(sub, annotations_evaluated=annotations_evaluated)
+            continue
+        yield child
+        yield from _import_time_nodes(child, annotations_evaluated=annotations_evaluated)
 
 
 def _module_scope_captures(root=_PKG):
@@ -69,22 +122,17 @@ def _module_scope_captures(root=_PKG):
     hits = []
     for path in sorted(pathlib.Path(root).rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:
-            # Skip defs and classes BEFORE walking. `ast.walk` on a top-level FunctionDef
-            # descends into its body, so without this the sweep reports every `file=sys.stderr`
-            # in the tree -- a three-figure hit count against a target of `[]`, so it could
-            # never pass. A capture inside a def happens when that def RUNS, which is the case
-            # this sweep documents as out of scope.
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                continue
-            for inner in ast.walk(node):
-                if isinstance(inner, ast.Call):
-                    name = getattr(inner.func, "id", "") or getattr(inner.func, "attr", "")
-                    if name in ("TtyAsker", "StreamHandler"):
-                        hits.append(f"{path}: module-scope {name}(...)")
-                if (isinstance(inner, ast.Attribute) and inner.attr in ("stdout", "stderr")
-                        and getattr(inner.value, "id", "") == "sys"):
-                    hits.append(f"{path}: module-scope sys.{inner.attr}")
+        postponed = any(isinstance(n, ast.ImportFrom) and n.module == "__future__"
+                        and any(a.name == "annotations" for a in n.names)
+                        for n in tree.body)
+        for inner in _import_time_nodes(tree, annotations_evaluated=not postponed):
+            if isinstance(inner, ast.Call):
+                name = getattr(inner.func, "id", "") or getattr(inner.func, "attr", "")
+                if name in ("TtyAsker", "StreamHandler"):
+                    hits.append(f"{path}: module-scope {name}(...)")
+            if (isinstance(inner, ast.Attribute) and inner.attr in ("stdout", "stderr")
+                    and getattr(inner.value, "id", "") == "sys"):
+                hits.append(f"{path}: module-scope sys.{inner.attr}")
     return hits
 
 
@@ -116,6 +164,46 @@ def test_the_bypass_sweep_fires(tmp_path):
     assert any("module-scope StreamHandler(...)" in hit for hit in found), (
         f"the StreamHandler call arm did not fire: {found}"
     )
+
+
+def test_the_bypass_sweep_matches_import_time_scope(tmp_path):
+    """Positive controls for WHICH scopes the sweep treats as import-time, in both directions.
+
+    The distinction is the whole correctness of this guard and it was wrong both ways before:
+    skipping `ClassDef` to avoid descending into functions made a class-body capture invisible,
+    while walking module-level control flow descended into functions nested inside it and flagged
+    a capture that only runs when called. Each row below reddened one of those two bugs.
+    """
+    caught = {
+        "class body": "import sys\nclass Foo:\n    OUT = sys.stdout\n",
+        "module-level if": "import sys\nif True:\n    OUT = sys.stdout\n",
+        "try block": "import sys\ntry:\n    OUT = sys.stdout\nexcept Exception:\n    pass\n",
+        "default argument": "import sys\ndef f(x=sys.stdout):\n    pass\n",
+        "module-scope TtyAsker": "ASKER = TtyAsker()\n",
+        "evaluated parameter annotation": "import sys\ndef f(x: sys.stdout = None):\n    pass\n",
+        "evaluated return annotation": "import sys\ndef f() -> sys.stdout:\n    pass\n",
+        "eager variable annotation": "import sys\nOUT: sys.stdout\n",
+        "postponed annotation but eager VALUE":
+            "from __future__ import annotations\nimport sys\nOUT: object = sys.stdout\n",
+    }
+    skipped = {
+        "function nested in module-level if": "import sys\nif True:\n    def f():\n        return sys.stdout\n",
+        "plain function body": "import sys\ndef f():\n    return sys.stdout\n",
+        "method body": "import sys\nclass F:\n    def m(self):\n        return sys.stdout\n",
+        "postponed annotation (PEP 563)":
+            "from __future__ import annotations\nimport sys\ndef f(x: sys.stdout = None):\n    pass\n",
+        "postponed module-level variable annotation":
+            "from __future__ import annotations\nimport sys\nOUT: sys.stdout\n",
+        "postponed class-level variable annotation":
+            "from __future__ import annotations\nimport sys\nclass C:\n    OUT: sys.stdout\n",
+    }
+    for name, src in caught.items():
+        (tmp_path / "m.py").write_text(src, encoding="utf-8")
+        assert _module_scope_captures(tmp_path), f"{name} runs at import and must be flagged"
+    for name, src in skipped.items():
+        (tmp_path / "m.py").write_text(src, encoding="utf-8")
+        assert not _module_scope_captures(tmp_path), (
+            f"{name} runs when CALLED, not at import, and must not be flagged")
 
 
 def test_nothing_captures_a_stream_before_the_wrapper_is_installed():
@@ -154,7 +242,13 @@ def _unescaped_input_calls(root=_PKG):
     for path in sorted(pathlib.Path(root).rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "input"):
+            if not isinstance(node, ast.Call):
+                continue
+            # `Name.id` OR `Attribute.attr`, so `builtins.input(...)` is caught as well as a
+            # bare `input(...)`. Matching on the NAME rather than a hand-listed path is the
+            # rule this docstring already states for the escape call below; it was not applied
+            # to the primary matcher, so a qualified call slipped the sweep entirely.
+            if (getattr(node.func, "id", "") or getattr(node.func, "attr", "")) != "input":
                 continue
             if not node.args:
                 continue  # a bare input() with no prompt carries nothing to escape
@@ -165,7 +259,10 @@ def _unescaped_input_calls(root=_PKG):
                 name = getattr(arg.func, "id", "") or getattr(arg.func, "attr", "")
                 if name == "escape_for_terminal":
                     continue
-            hits.append(f"{path}: input(...) with an unescaped prompt")
+            # `ast.unparse(node.func)` rather than a fixed "input": the message then names the
+            # shape that actually fired (`input` vs `builtins.input`), which is what tells a
+            # reader whether the qualified arm is doing any work.
+            hits.append(f"{path}: {ast.unparse(node.func)}(...) with an unescaped prompt")
     return hits
 
 
@@ -186,11 +283,15 @@ def test_the_input_sweep_fires(tmp_path):
         "def safe_aliased(slug):\n"
         "    return input(safeout.escape_for_terminal(f'sign off {slug}? '))\n"
         "def safe_no_prompt():\n"
-        "    return input()\n",
+        "    return input()\n"
+        "import builtins\n"
+        "def unsafe_qualified(slug):\n"
+        "    return builtins.input(f'sign off {slug}? ')\n",
         encoding="utf-8",
     )
     found = _unescaped_input_calls(tmp_path)
-    assert found == [f"{probe}: input(...) with an unescaped prompt"], found
+    assert found == [f"{probe}: input(...) with an unescaped prompt",
+                     f"{probe}: builtins.input(...) with an unescaped prompt"], found
 
 
 def test_no_input_call_in_sluice_interpolates_an_unescaped_value():
