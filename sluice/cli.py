@@ -1233,7 +1233,14 @@ def cmd_cv_signoff(args, config) -> int:
         def confirm(slug, pending, claims):
             _print_signoff_claims(slug, claims)
             print(f"served CV: {pending}", file=sys.stderr)
-            return input(f"sign off {slug}? [y/N] ").strip().lower() in ("y", "yes")
+            # `slug` is note-name-derived, reachable from a scraped company string
+            # (`core/vault.py::_sanitize` maps only \x00-\x1f, so \x9b/\x7f/U+2028 survive into
+            # it) -- and CPython's `input()` writes its prompt via the C-level PyOS_Readline path
+            # on a real tty, bypassing `core/safeout.py`'s `_Escaped.write` entirely (#280). Every
+            # other print in this function goes through the installed stream wrapper; this is the
+            # one call that does not, so it escapes explicitly.
+            return input(safeout.escape_for_terminal(
+                f"sign off {slug}? [y/N] ")).strip().lower() in ("y", "yes")
 
     result = Sluice(config).sign_off_cv(lead=args.lead, accept=not args.discard, confirm=confirm)
     if result.outcome == "not_found":
