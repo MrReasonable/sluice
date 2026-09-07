@@ -132,10 +132,6 @@ output does not, and escaping it would mangle every path sluice prints. That cho
 makes `escape_for_terminal` IDEMPOTENT, which matters because a log record passes through both
 the Formatter and the wrapped stream.
 """
-import sys
-import traceback
-from contextlib import contextmanager
-
 # Written as escapes, never as literals: U+2028/U+2029 are invisible in an editor, and a literal
 # one actually SPLITS the source line -- Python treats it as a line break.
 _TERMINAL_KEEP = ("\n", "\t")
@@ -379,7 +375,17 @@ Expected: FAIL — `AttributeError: module 'sluice.core.safeout' has no attribut
 
 - [ ] **Step 3: Write the implementation**
 
-Append to `sluice/core/safeout.py`:
+Add these imports at the top of `sluice/core/safeout.py` (they belong to this task, not
+Task 1 -- ruff selects `F`, so importing them before they are used fails `ruff check` on
+F401):
+
+```python
+import sys
+import traceback
+from contextlib import contextmanager
+```
+
+Then append:
 
 ```python
 class _Escaped:
@@ -469,7 +475,7 @@ git commit -m "feat(core): add the escaping stream wrapper and its install conte
 
 **Interfaces:**
 - Consumes: `installed()` from Task 3.
-- Produces: nothing new; `main`'s signature and return codes are unchanged for every path except an uncaught non-`ValueError`, which now exits 1 via `SystemExit` instead of propagating.
+- Produces: nothing new; `main`'s signature and return codes are unchanged for every path except an uncaught exception, which now exits 1 via `SystemExit` instead of propagating. `SystemExit` and `KeyboardInterrupt` are excluded and re-raised untouched by `installed()`, so argparse's exit codes (`--help` is `SystemExit(0)`) survive and Ctrl-C still propagates as `KeyboardInterrupt`; `ValueError` is excluded too, caught by `main`'s own handler and reported as exit 2.
 
 **Verify the assumption first.** Only `SystemExit` is expected out of `main()` today — measured
 by AST walk, 3 sites in 2 files, and the `pytest.raises(ValueError)` sites in
@@ -1038,7 +1044,14 @@ def _module_scope_captures():
     hits = []
     for path in sorted(pathlib.Path("sluice").rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        for node in tree.body:                      # module scope only, deliberately
+        for node in tree.body:
+            # Skip defs and classes BEFORE walking. `ast.walk` on a top-level FunctionDef
+            # descends into its body, so without this the sweep reports every `file=sys.stderr`
+            # in the tree -- measured, 93 hits, and the `== []` target could never pass. A
+            # capture inside a def happens when that def RUNS, which is the case this sweep
+            # documents as out of scope.
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
             for inner in ast.walk(node):
                 if isinstance(inner, ast.Call):
                     name = getattr(inner.func, "id", "") or getattr(inner.func, "attr", "")
