@@ -850,7 +850,8 @@ def test_ci_image_smoke_covers_every_baked_extra():
     # ambiguous rather than silently pinning the wrong step -- the right behaviour, and the
     # reason this is tightened here rather than the arity check being relaxed there.
     step = _step_containing("docker", '--entrypoint python job-sluice:ci')
-    for module in ("weasyprint", "jinja2", "googleapiclient", "mcp", "argcomplete"):
+    for module in ("weasyprint", "jinja2", "googleapiclient", "google_auth_oauthlib", "mcp",
+                   "argcomplete"):
         assert module in step, (
             f"ci.yml's docker job no longer smoke-imports {module!r}; a missing extra would "
             f"ship with nothing red"
