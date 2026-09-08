@@ -871,7 +871,8 @@ rule keyed on bare lowercase city names corrupts a real error string.
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module; the Google client libraries, imported lazily inside
-functions in `track/google_client.py`; `jinja2`/`weasyprint`, both imported lazily inside
+functions in `track/google_client.py`; `google_auth_oauthlib`, imported lazily inside functions in
+`track/auth.py` (#201, and see below); `jinja2`/`weasyprint`, both imported lazily inside
 `renderers/template.py` (`renderers/weasyprint.py` -- the old bundled renderer -- is DELETED;
 selecting the retired `weasyprint` renderer name now raises via `plugins._RETIRED`, naming
 `template` as the replacement); and `argcomplete`, imported under the same guarded
@@ -880,6 +881,24 @@ selecting the retired `weasyprint` renderer name now raises via `plugins._RETIRE
 `_ARGCOMPLETE`, so importing it costs nothing on an ordinary invocation, and its `.completer`
 callbacks (see `_complete_source_id`/`_complete_status`) must never raise, since an exception
 there breaks the user's shell on every TAB press, not just the one command.
+
+**The two google entries are a deliberate SPLIT, and `track/auth.py`'s placement is a property
+rather than a style match.** They are not folded into one because `pip install -U` does not
+re-resolve extras: every `[google]` install predating #201 carries the client libraries and NOT
+`google-auth-oauthlib` while `track run` keeps working perfectly, so a probe demanding both would
+report SETUP across that whole population on upgrade. And the import must stay INSIDE the
+functions -- at module scope `probe_flow_available`, the function whose entire job is to report
+the package's absence politely, becomes unreachable on exactly the installs that lack it, since
+the import fails first, and its crafted message is replaced by a raw traceback. That is NOT a
+claim that no test would notice a hoist -- measured, hoisting both imports to module scope and
+running `tests/test_track_auth.py tests/test_doctor.py` turns 79 of them red with
+`ModuleNotFoundError` at `auth.py`'s own import line: every test in both files does `from
+sluice.track import auth` unstubbed (the one test that pokes `sys.modules` sets the entry to
+`None`, which makes the import RAISE rather than succeed), and CI's `[test]` install never
+carries `google-auth-oauthlib` (`google` is a separate extra exercised through fakes). This is
+written down anyway because the PLACEMENT argument above -- WHICH population's polite message a
+hoist would break -- is not something a `ModuleNotFoundError` traceback states, not because the
+suite is blind to the mutation.
 
 And `mcp`, imported lazily inside `build_server()`'s own function body in
 `sluice/mcpserver.py` (never at module scope, and nowhere in `cli.py` at all) behind

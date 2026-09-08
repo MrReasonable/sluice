@@ -661,6 +661,7 @@ _EXPANDUSER_SITES = {
     "onboard/questions.py": "an answer typed at the wizard prompt",
     "cli.py": "--vault against $VAULT_DIR, and the preset handed to `sluice init`",
     "renderers/template.py": "cv.template, read from YAML where no shell expanded it",
+    "track/auth.py": "--client-secrets, in its `=`-joined form no shell expands",
 }
 
 
