@@ -5,6 +5,7 @@ from datetime import datetime
 
 import pytest
 
+from sluice.core import status as _status
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
 from sluice.triage.config import TriageConfig
@@ -1103,8 +1104,14 @@ def test_a_verdict_for_an_unmatched_lead_id_is_reported_not_silently_dropped(tmp
     after = v.read_leads()[0]
     assert after.status == "new", "no note matches the mis-echoed id, so none is written"
     assert report.judged == 1, "the verdict was still produced -- only routing it failed"
-    assert len(report.failures) == 1, report.failures
-    assert "no note matches" in report.failures[0]
+    # TWO entries, not one: the mis-echoed id is unroutable (named here, since only a
+    # message can say WHICH id was unusable) AND the dossier it was for came back with no
+    # verdict, so that lead was never judged. The second was invisible while the engine
+    # reconciled verdict COUNTS instead of ids -- one verdict for one dossier matched on
+    # length while nothing had been judged at all.
+    assert len(report.failures) == 2, report.failures
+    assert any("no note matches" in f for f in report.failures)
+    assert any("came back with no verdict" in f for f in report.failures)
 
 
 # ── tier 3 (#120): engine-level wiring ─────────────────────────────────────────
@@ -2385,3 +2392,198 @@ def test_an_untouched_note_still_gets_its_observation(tmp_path):
     assert fresh.fm["role_type"] == "contract"
     assert fresh.fm["role_type_source"] == "observed"
     assert report.observed_role_types["filled"] == 1
+
+
+def test_the_report_records_which_leads_the_judge_surfaced(tmp_path, titles):
+    """The notification names the surfaced roles, so the report has to carry them.
+
+    `counts` says how MANY were shortlisted; it cannot say WHICH, and a phone
+    notification reading "1 shortlist" sends the reader to the machine to find out what
+    it was. A new field rather than a row inside `counts`, for the reason `resolved` and
+    `observed_role_types` are also separate: counts rows are lead OUTCOMES, and mixing a
+    list into that dict breaks every consumer that sums them.
+
+    Only the SURFACED verdicts (shortlist, research) are recorded. A dismissed lead is
+    one the reader is deliberately not asked to look at, and naming 29 of them is the
+    noise this exists to remove.
+    """
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", accept[0].title()))   # keep -> judged shortlist
+    _note(v, "dir.md", _fields("Beta", reject[0].title()))    # deterministic reject
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.reject_titles = list(reject)
+
+    report = run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
+
+    assert report.surfaced == [("shortlist", "Acme", accept[0].title())]
+    # The digest reads its headline and its per-verdict headings off this list, and its
+    # `counts` rows off the dict. They are written at one site, one line apart, and nothing
+    # else says they must agree -- so pin it here, at the only place that can break it.
+    assert len(report.surfaced) == sum(report.counts[v] for v in _status.SURFACED), (
+        "`counts` and `surfaced` disagree; the digest would contradict itself")
+
+
+def test_a_dismissed_lead_is_not_recorded_as_surfaced(tmp_path, titles):
+    """The other half, and the one that keeps the notification short: a judge verdict of
+    `dismiss` is counted and never named."""
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    report = run(v, cfg, _CompanyKeyedBackend({"Acme": "dismiss"}),
+                 _cache(tmp_path), audit, statuses=("new",))
+
+    assert report.counts["dismiss"] == 1
+    assert report.surfaced == []
+
+
+def test_a_preview_names_no_lead_it_did_not_write(tmp_path, titles):
+    """The `key in _status.SURFACED` guard's whole point, and nothing pinned it.
+
+    Recording off the model's RAW verdict instead of off the written `key` -- the defect
+    the comment at the append site exists to prevent -- left the entire suite green. Under
+    `dry_run` the judge really runs and really returns `shortlist`, but every write is
+    forced to `skipped`, so a run that wrote NOTHING would have pushed a notification
+    naming a lead as shortlisted. The same branch covers a verdict the vault refused.
+
+    All three facts are asserted, because any one alone is also satisfied by a run that
+    simply never judged: the judge ran, its verdict was counted as `skipped`, and nothing
+    was named.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    report = run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",),
+                 dry_run=True)
+
+    assert report.judged == 1, "the judge did not run, so this proves nothing"
+    assert report.counts["skipped"] == 1
+    assert report.counts["shortlist"] == 0
+    assert report.surfaced == [], (
+        "a preview named a lead it never wrote: `surfaced` must be recorded off the "
+        "written `key`, never off the model's raw verdict")
+
+
+class _RaisingBackend:
+    """Every call fails, exactly as a revoked key or a dead endpoint does.
+
+    `judge()` catches bare `Exception` around `backend.complete`, retries once, logs a
+    warning and drops the batch, so this returns no verdicts at all without raising out.
+    """
+    last_backend = None
+
+    def complete(self, prompt):
+        raise RuntimeError("backend unreachable")
+
+
+def test_a_judge_outage_is_recorded_as_a_failure(tmp_path, titles):
+    """`judge()` holds no reference to the report, so before this the whole judge stage
+    could fail and the run reported `failures=0`, `backend=None`, exit 0 -- indistinguishable
+    from a healthy `--no-llm` pass on every channel including the notification.
+
+    Both numbers are asserted: the judge was SENT work, and none came back. Either alone is
+    satisfied by a run that simply had nothing to judge.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", accept[0].title()))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+
+    report = run(v, cfg, _RaisingBackend(), _cache(tmp_path), audit, statuses=("new",))
+
+    assert report.sent_to_judge == 1
+    assert report.judged == 0
+    assert any("came back with no verdict" in f for f in report.failures), (
+        f"a total judge outage recorded no failure: {report.failures}")
+
+
+def test_a_re_judged_lead_that_does_not_move_is_not_reported_as_surfaced(tmp_path, titles):
+    """The second run of the same day on a lead already at its verdict.
+
+    `update_fields` appends a day-stamped note tag only when absent, so the write is an
+    `unchanged` no-op, `key` becomes `skipped`, and `surfaced` stays empty while the lead
+    sits in the vault at `research`. `research` is in DEFAULT_TRIAGE_STATUSES, so this is
+    the ordinary cron path, and the digest's headline claimed "nothing surfaced this pass"
+    over it.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", "Engineering Manager", status="research"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    cfg = TriageConfig()
+    backend = _CompanyKeyedBackend({"Acme": "research"})
+
+    first = run(v, cfg, backend, _cache(tmp_path), audit, statuses=("research",))
+    assert first.surfaced, "the first run did not surface it, so the second proves nothing"
+
+    second = run(v, cfg, backend, _cache(tmp_path), audit, statuses=("research",))
+
+    assert second.judged == 1, "the judge did run on the second pass"
+    assert second.surfaced == []
+    assert second.counts["skipped"] == 1
+    assert [n.status for n in v.read_leads()] == ["research"], (
+        "the lead is still there; an empty `surfaced` is not evidence it is not")
+
+
+class _DuplicateVerdictBackend:
+    """Two verdicts for the FIRST lead and none for the second.
+
+    `len(verdicts) == len(dossiers)`, which is exactly what makes this invisible to a
+    reconciliation that compares counts.
+    """
+    last_backend = "primary"
+
+    def complete(self, prompt):
+        first = re.findall(_DOSSIER_ID, prompt)[0]
+        return json.dumps([
+            {"lead_id": first, "verdict": "shortlist", "relevance_score": 90},
+            {"lead_id": first, "verdict": "dismiss", "relevance_score": 10},
+        ])
+
+
+def test_a_duplicate_verdict_is_refused_and_the_unjudged_lead_is_reported(tmp_path):
+    """A model returning the same `lead_id` twice wrote one lead twice with CONFLICTING
+    verdicts and left the other unjudged, silently.
+
+    Measured before the fix: `Acme` ended at `dismiss` (terminal, never re-selected) having
+    passed through `shortlist`; `Alpha` stayed `new`; `counts` claimed one shortlist AND one
+    dismiss for a single lead; `failures` was empty because two verdicts for two dossiers
+    matched on length. Worst of all, `surfaced` named `Acme` as shortlisted while the vault
+    held it at `dismiss` -- the notification naming a lead the reader cannot act on, which
+    is the class of lie the digest exists to remove.
+
+    The first verdict wins rather than the batch being rejected: discarding verdicts that
+    did arrive to punish a malformed sibling loses good work.
+    """
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "a.md", _fields("Acme", "Engineering Manager", url="https://x/a"))
+    _note(v, "b.md", _fields("Alpha", "Engineering Manager", url="https://x/b"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+
+    report = run(v, TriageConfig(), _DuplicateVerdictBackend(), _cache(tmp_path), audit,
+                 statuses=("new",))
+
+    statuses = {n.fm["company"]: n.status for n in v.read_leads()}
+    assert statuses["Acme"] == "shortlist", "the second, conflicting verdict was applied"
+    assert statuses["Alpha"] == "new", "a lead nothing judged must not be written"
+    assert report.counts["dismiss"] == 0, "one lead was counted under two verdicts"
+    assert any("second verdict for the same lead" in f for f in report.failures), (
+        f"the duplicate verdict was not reported: {report.failures}")
+    assert any("no verdict" in f for f in report.failures), (
+        f"the lead that was never judged was not reported: {report.failures}")
+    # The invariant the digest rests on: a lead it names as surfaced is at that status.
+    for verdict, company, _role in report.surfaced:
+        assert statuses[company] == verdict, (
+            f"the digest would name {company} as {verdict} while the vault holds "
+            f"{statuses[company]}")

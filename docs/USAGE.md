@@ -188,10 +188,25 @@ consuming it. Leads already at `dismiss` are not re-selected by a later run, so 
 any the old gate binned needs a deliberate `--status dismiss` sweep.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
-observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr and
-Telegram-notifies. `tests/test_docs_claims.py` derives those key names from `cli.py` and
-fails when this line and the real one disagree, because every previous version of this
-sentence went stale silently. Exit 0 always.
+observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr.
+`tests/test_docs_claims.py` derives those key names from `cli.py` and fails when this
+line and the real one disagree, because every previous version of this sentence went
+stale silently. Exit 0 always.
+
+The Telegram notification is a **separate, human-readable digest**, not a copy of that
+line: it is read on a phone, where a dict of seven mostly-zero rows names none of the
+leads it counts. It names the surfaced roles under a per-verdict heading carrying that
+verdict's count, capped, with the unnamed remainder counted; spells the other non-zero
+counts out and omits the zero ones; reports `keep` as the pre-gate stage it is rather
+than as a verdict, and only when it differs from the judged count; names the backend only
+when there is one to name, since a run with no fallback leg configured reports none while
+judging perfectly well; distinguishes a judge that was never called from one that was
+called and returned nothing; and gives a `--dry-run` its own headline. Its empty-handed
+headline says "nothing **new**", never "nothing surfaced": a re-judge that does not move a
+lead writes nothing and so cannot establish the latter. Built by `_format_triage_digest`
+in `cli.py` for the ordinary run (the `#223` deferred arm pushes its own hand-built
+notice), with row coverage held by a test rather than by this sentence
+(`test_every_counts_row_the_digest_can_receive_is_rendered_somewhere`).
 
 ### `job-sluice triage normalize-status [--dry-run]`
 

@@ -1,7 +1,10 @@
 """Batched LLM judgment over the ambiguous (kept) leads. Each batch is one backend
 call returning a JSON verdict array; parsing tolerates surrounding prose. A batch
-that will not parse after one retry is skipped (recorded upstream) rather than
-aborting the whole run."""
+that will not parse after one retry is skipped rather than aborting the whole run;
+this function holds no reference to the report, so `triage/engine.py` reconciles
+`len(verdicts)` against the dossiers it sent and records the shortfall in
+`report.failures`. Without that, a total outage returned `[]` here and read
+downstream as a run with nothing to do."""
 import json
 import re
 
