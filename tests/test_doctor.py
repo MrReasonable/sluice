@@ -938,6 +938,45 @@ def test_classify_track_google_ready_is_ok():
     assert c.state == OK
 
 
+def test_classify_track_google_no_token_and_no_flow_names_the_missing_package():
+    """The remedy `job-sluice track auth --client-secrets ...` is wrong for exactly this
+    population: the command cannot mint a token here, because the consent-flow package
+    itself is not importable on this install (a `[google]` install predating #201, whose
+    extras `pip install -U` never re-resolved). The message must say that instead of
+    sending the reader at a command that fails the moment they run it."""
+    c = classify_track_google(available=True, import_error=None, token_present=False,
+                              flow_available=False)
+    assert c.state == SETUP
+    assert c.blocks == ("track",)
+    assert "google_auth_oauthlib" in c.detail
+    assert "track auth --client-secrets" not in c.detail, (
+        "the remedy still names a command that cannot mint a token on this install")
+
+
+def test_classify_track_google_no_token_and_flow_available_names_the_command():
+    """The mirror of the row above: on an install that CAN mint a token, the message must
+    keep naming `job-sluice track auth` -- `flow_available` defaults True so this is also
+    what every existing direct caller in the suite gets."""
+    c = classify_track_google(available=True, import_error=None, token_present=False,
+                              flow_available=True)
+    assert c.state == SETUP
+    assert "track auth --client-secrets" in c.detail
+    assert "google_auth_oauthlib" not in c.detail
+
+
+def test_classify_track_google_with_a_token_ignores_flow_available():
+    """Minting is not needed once a token exists, so `flow_available` must change
+    NOTHING about the row -- not merely in intent, in the actual returned object. Compared
+    field-for-field against the pre-existing call with no `flow_available` argument at
+    all, so a stray reference to the parameter anywhere in the token-present arms would
+    be caught rather than merely unexercised."""
+    with_default = classify_track_google(available=True, import_error=None,
+                                         token_present=True)
+    with_false = classify_track_google(available=True, import_error=None,
+                                       token_present=True, flow_available=False)
+    assert with_false == with_default
+
+
 def test_list_typed_fields_ignores_non_list_fields():
     @dataclass
     class _Sample:
@@ -1522,6 +1561,18 @@ def test_sluice_doctor_wires_the_real_token_path_into_track_google(monkeypatch, 
 
     from sluice.track.config import TrackConfig
 
+    # #201's legacy-token NOTICE checks `os.path.exists("./google_token.json")` against
+    # the REAL cwd -- `_pin_paths` (conftest.py) pins env vars, never cwd, so it cannot
+    # sandbox this. The final OK assertion below would silently read NOTICE instead if
+    # this process happened to be invoked from a directory holding a stray legacy file
+    # (the exact file someone following the pre-#201 INSTALL.md procedure would have
+    # sitting in a clone's root). A SEPARATE subdirectory, not `tmp_path` itself: the
+    # resolved `token_path` below already lives at `tmp_path/google_token.json`, so
+    # chdir-ing straight into `tmp_path` would make "./google_token.json" name that same
+    # file and manufacture a legacy-match collision this test does not intend to exercise.
+    cwd_dir = tmp_path / "cwd"
+    cwd_dir.mkdir()
+    monkeypatch.chdir(cwd_dir)
     monkeypatch.setattr("sluice.track.google_client.probe_availability",
                         lambda: (True, None))
     token_path = tmp_path / "google_token.json"
@@ -2177,6 +2228,90 @@ def test_doctor_passes_the_RESOLVED_token_path_through_to_the_google_row(monkeyp
     assert google, f"no missing-token row: {[c.subject for c in rep.components]}"
     assert str(tmp_path) in google[0].detail, (
         f"the row does not name the resolved token path: {google[0].detail}")
+
+
+def test_doctor_wires_probe_flow_available_into_the_google_row(monkeypatch, tmp_path):
+    """The CALL SITE, same #170 shape as the RESOLVED-token-path test above: a unit test of
+    `classify_track_google` alone would stay green even if `Sluice.doctor` quietly stopped
+    passing `flow_available=` at its call site, silently reverting to the always-True
+    default and telling an install that cannot mint a token to run the command that mints
+    one. Drives the REAL `sluice.track.auth.probe_flow_available` with `google_client`'s
+    own libs mocked available and the token absent, so the only thing left undetermined is
+    whether the flow package itself can be imported.
+    """
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("sluice.track.google_client.probe_availability", lambda: (True, None))
+    monkeypatch.setattr("sluice.track.auth.probe_flow_available",
+                        lambda: (False, "no module named google_auth_oauthlib"))
+
+    rep = Sluice().doctor(offline=True, probe=lambda b: None)
+    google = [c for c in rep.components if c.subject == "google_token.json"]
+    assert google, f"no missing-token row: {[c.subject for c in rep.components]}"
+    assert "google_auth_oauthlib" in google[0].detail, (
+        f"the row did not reach through to the real flow probe: {google[0].detail}")
+    assert "track auth --client-secrets" not in google[0].detail
+
+
+def test_the_missing_token_remedy_names_the_command_that_mints_one():
+    """#201 shipped `job-sluice track auth`, which is exactly the OAuth consent flow the
+    old message disclaimed. Leaving that disclaimer in place after the command existed
+    would tell a reader the tool cannot do the thing it can now do -- so the message must
+    name the command instead of pointing at a manual procedure."""
+    c = classify_track_google(available=True, import_error=None, token_present=False,
+                              token_path="/x/google_token.json")
+    assert "track auth" in c.detail
+    assert "does not run the OAuth consent flow" not in c.detail, (
+        "the disclaimer is false now that `track auth` exists")
+
+
+def test_a_legacy_token_in_the_working_directory_is_reported():
+    """`resolve`'s _LEGACY notice is keyed on the RESOLVED path not existing, and
+    `paths.py` warns that a writer which creates it disarms the notice for ever. A user
+    who followed the pre-XDG instructions has a live credential in their cwd; minting a
+    new one at the resolved path would silence the only thing naming the old one.
+
+    doctor is the durable home for that: it is the command whose job is to report a
+    relocated file, and a row here survives the run that disarmed the warning. NOTICE,
+    not SETUP -- the install works (a good token is in use), so there is nothing here
+    for `doctor`'s default view to demand action on; a stale file merely still exists.
+    """
+    c = classify_track_google(available=True, import_error=None, token_present=True,
+                              token_path="/x/google_token.json",
+                              legacy_token_path="./google_token.json")
+    assert c.state == NOTICE
+    assert "./google_token.json" in c.detail
+
+
+def test_doctor_reports_a_legacy_token_through_the_real_wiring(monkeypatch, tmp_path):
+    """The CALL SITE, not the helper -- same #170 shape as
+    `test_doctor_passes_the_RESOLVED_token_path_through_to_the_google_row` above. Every
+    `classify_track_google` unit test in this file would stay green even if
+    `Sluice.doctor` quietly stopped passing `legacy_token_path=legacy` at its call site,
+    which would silently stop reporting a real orphaned credential -- exactly the gap
+    `resolve`'s own `_LEGACY` notice leaves once a mint at the resolved location disarms
+    it for good. So this drives the real wiring: a token at the RESOLVED path (making the
+    row fall through the missing-token branch) and a second file at `_LEGACY`'s own
+    cwd-relative name -- read from the table rather than retyped, so a moved entry moves
+    this test with it instead of leaving it to check a path the real code no longer does.
+    """
+    from sluice.core.paths import _LEGACY
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    monkeypatch.setattr("sluice.track.google_client.probe_availability", lambda: (True, None))
+
+    resolved_dir = tmp_path / "sluice"
+    resolved_dir.mkdir()
+    (resolved_dir / "google_token.json").write_text("{}", encoding="utf-8")
+    # `os.path.exists` in `Sluice.doctor` checks this cwd-relative literal directly
+    # (never resolving it to an absolute path), which is why the file is planted under
+    # the chdir'd `tmp_path` rather than at a computed absolute location.
+    (tmp_path / _LEGACY["google_token.json"]).write_text("{}", encoding="utf-8")
+
+    rep = Sluice().doctor(offline=True, probe=lambda b: None)
+    google = [c for c in rep.components if c.subject == "google_token.json"]
+    assert google, f"no google_token.json row: {[c.subject for c in rep.components]}"
+    assert google[0].state == NOTICE, google[0]
+    assert _LEGACY["google_token.json"] in google[0].detail, google[0].detail
 
 
 # ── #165: a configured negative that contradicts the verified Skills Inventory ──

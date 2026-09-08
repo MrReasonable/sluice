@@ -699,11 +699,14 @@ def classify_store(facts: dict | None) -> list:
 
 
 def classify_track_google(*, available: bool, import_error: str | None,
-                           token_present: bool, token_path: str = "") -> ComponentCheck:
+                           token_present: bool, token_path: str = "",
+                           legacy_token_path: str = "",
+                           flow_available: bool = True,
+                           flow_import_error: str | None = None) -> ComponentCheck:
     """`track run` reconciles Gmail + Calendar over `sluice/track/google_client.py`,
     which lazy-imports the google client libraries so the rest of sluice stays
-    importable without them (`sluice/` is stdlib-only except for the three
-    named, deliberate exceptions -- see CLAUDE.md). DEGRADED only, never DEAD:
+    importable without them (`sluice/` is stdlib-only except for the named,
+    deliberate exceptions -- see CLAUDE.md). DEGRADED only, never DEAD:
     track is one optional sub-app among five, and a job hunt can run entirely
     on the other four.
 
@@ -720,7 +723,41 @@ def classify_track_google(*, available: bool, import_error: str | None,
     The state change has one consequence worth stating rather than discovering: `--strict`
     used to fail on both of these and no longer does. That is the intended reading -- an
     optional sub-app the user has not set up is not a fault -- but it is a change to what a
-    cron alert fires on, not a tidy-up."""
+    cron alert fires on, not a tidy-up.
+
+    `legacy_token_path` is #201's addition: a NOTICE, not a SETUP, reported once a good
+    token is already in use elsewhere. `core/paths.py::resolve`'s own `_LEGACY` warning is
+    keyed on the RESOLVED path not existing, so the run that mints a fresh token there --
+    `job-sluice track auth`, itself #201 -- silently disarms that warning for good, and a
+    credential left behind in the pre-XDG cwd location goes unremarked forever after. This
+    row survives that disarming because it is keyed on the CALLER supplying a legacy path
+    that still exists, not on the resolved path's absence. NOTICE rather than SETUP because
+    nothing here blocks anything -- the install works, a good token is in use -- so it must
+    not join `doctor`'s default view of rows demanding action; see `DoctorReport.exit_code`
+    for why NOTICE stays out of the exit code and `--strict` alike.
+
+    `flow_available` is `sluice/track/auth.py::probe_flow_available`'s verdict, RESOLVED by
+    the caller and passed in -- never computed here, and never by importing `track.auth` at
+    this module's scope, for the exact reason that module's own docstring states: an install
+    holding the `google` extra but not `google-auth-oauthlib` (the entire pre-#201 `[google]`
+    population, since `pip install -U job-sluice` never re-resolves extras) must keep getting
+    the SAME `available`/`token_present` verdicts it always has, unaffected by whether a
+    consent flow can be built. Defaulted `True` for the same reason `token_path` is defaulted
+    -- so the many direct callers already in the suite are unaffected -- and it is read ONLY
+    inside the `not token_present` arm below: when a token already exists nothing needs
+    minting, so whether `track auth` COULD mint one changes neither the row's state nor its
+    detail. Naming the missing PACKAGE rather than the missing extra, deliberately: Homebrew
+    and Docker already bake `[google]` in, so "pip install 'job-sluice[google]'" would be
+    wrong for exactly the population a probe skew reaches -- the same reasoning
+    `probe_flow_available`'s own message already applies to itself.
+
+    `flow_import_error` is that same call's SECOND element, threaded through for the reason
+    `probe_flow_available` catches `(ImportError, OSError)` rather than `ImportError` alone:
+    a missing NATIVE dependency underneath the package does not always raise ImportError, so
+    a caller that keeps only `flow_available` misdiagnoses that case as the generic "not
+    importable" on the one row built to name it. Defaulted `None` so the direct callers
+    already in the suite, none of which supplies one, keep getting the pre-existing wording
+    below verbatim."""
     if not available:
         return ComponentCheck(
             "track", "google client libs", SETUP,
@@ -733,13 +770,50 @@ def classify_track_google(*, available: bool, import_error: str | None,
         # to be actionable. Defaulted rather than required so the ~existing direct callers in the
         # suite keep working; the caller that matters passes it.
         where = f" at {token_path}" if token_path else " at track.token_path"
+        if not flow_available:
+            # The remedy the OTHER branch names cannot work here: `job-sluice track auth`
+            # exists on this install (it ships with sluice itself), but it cannot MINT a
+            # token without `google_auth_oauthlib`, which this install's probe says is not
+            # importable. Naming the command anyway would send exactly the population this
+            # branch exists for at a command that fails the moment they run it -- the wrong
+            # remedy for the population that needs one most. No install instruction either
+            # (see the docstring above): the population reaching this arm most often already
+            # has `[google]` baked in via Homebrew or Docker, where the gap is a probe skew
+            # rather than a missing extra.
+            #
+            # `flow_import_error`, when given, already carries the doc link
+            # `probe_flow_available` appended to it, so it REPLACES the trailing "See
+            # <url>" sentence rather than sitting beside it -- appending both would print
+            # the same link twice. The fallback (no reason passed) keeps that sentence, for
+            # the direct callers already in the suite that construct this row with
+            # `flow_available=False` alone.
+            reason = flow_import_error or (
+                "google_auth_oauthlib is not importable. See "
+                "https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md"
+                "#google-access-for-track")
+            return ComponentCheck(
+                "track", "google_token.json", SETUP,
+                f"google libs are importable but no token file exists yet{where}. "
+                "`job-sluice track auth` exists but cannot mint one on this install: "
+                f"{reason}",
+                blocks=("track",))
         return ComponentCheck(
             "track", "google_token.json", SETUP,
             f"google libs are importable but no token file exists yet{where} -- "
-            "`track run` cannot reach Gmail/Calendar until one does. sluice does not run "
-            "the OAuth consent flow itself; see https://github.com/MrReasonable/sluice/"
-            "blob/main/docs/INSTALL.md#google-access-for-track for how to produce the token",
+            "`track run` cannot reach Gmail/Calendar until one does. Run "
+            "`job-sluice track auth --client-secrets <your client_secret.json>`; see "
+            "https://github.com/MrReasonable/sluice/blob/main/docs/INSTALL.md"
+            "#google-access-for-track for the Cloud console steps first",
             blocks=("track",))
+    if legacy_token_path:
+        # Reported, never acted on: doctor is the one command that must not refuse on a
+        # relocated file, and this row is what survives after a mint at the resolved path
+        # disarms `resolve`'s own _LEGACY notice.
+        return ComponentCheck(
+            "track", "google_token.json", NOTICE,
+            f"a token is in use{f' at {token_path}' if token_path else ''}, but a legacy "
+            f"credential is still at {legacy_token_path} -- sluice no longer reads it. "
+            "Delete it once you are sure nothing else uses it.")
     return ComponentCheck("track", "google", OK, "libs importable, token present")
 
 
