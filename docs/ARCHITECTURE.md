@@ -810,6 +810,37 @@ whichever neighbour it was written next to:
    run digest, alongside the log-stream trace, since the digest is what
    survives under cron.
 
+   The credential all of that reads is minted by `job-sluice track auth`
+   (`track/auth.py`, #201) -- a SEPARATE module from `track/google_client.py`
+   rather than a branch inside it, because the two answer different questions
+   (can I USE a credential, can I MINT one) and `classify_track_google` must
+   keep answering the first without depending on `google-auth-oauthlib`, which
+   `pip install -U` does not add to an existing `[google]` install. The file
+   boundary is a lifecycle judgement rather than a forced constraint --
+   `google_client.py`'s google imports are already function-local -- and the
+   lifecycle is the point: that module runs on every `track run`, this one runs
+   once. `run_consent_flow` returns a report dict rather than raising, so the
+   CLI turns each outcome into its own line and exit code -- including the
+   ordinary ones a browser round-trip produces, a denied consent and a `--port`
+   already bound, which is why the flow itself is caught rather than left to
+   raise a traceback. Order is load-bearing. Everything knowable before the
+   browser opens is checked before it opens, because a consent round-trip cannot
+   be handed back -- `probe_flow_available` leads that pre-flight, ahead of even
+   the client-secrets check, since a missing `google-auth-oauthlib` is a gap in
+   the INSTALL rather than in the argument the user just typed, and it is
+   skipped when a `flow_factory` is injected, which needs no package at all. The
+   credential is then validated IN MEMORY before anything is
+   written; and archiving the existing token under `--force` happens LAST, after
+   every refusal that can still be decided from that in-memory credential --
+   archiving earlier would strand a WORKING credential at an unannounced sibling
+   path the moment validation then refused. That pre-flight existence check is a
+   COURTESY, not the guard: the guard is `write_token(exclusive=True)`, which
+   refuses in the kernel rather than from a snapshot taken before a browser wait
+   that can last minutes -- the same stale-snapshot reasoning that keeps
+   `require_status` inside `update_fields` rather than in its caller. `track
+   run` itself gained no path that can produce a credential, so a token-less run
+   still records a failure and prompts nobody.
+
 ## `onboard/` — a command package, not a sixth sub-app
 
 `sluice/onboard/` backs `job-sluice init` (#8). It sits BESIDE the pipeline rather
@@ -2224,6 +2255,13 @@ entry, and are passed in by the caller:
 
 - **`client`**, **`now_iso`** — parameters of `Sluice.track()`: the Google API
   client, and the run timestamp that becomes the `lastrun` watermark.
+- **`flow_factory`** — a parameter of `Sluice.track_auth()` (#201): what builds
+  the `InstalledAppFlow` a consent run drives, threaded down to
+  `track/auth.py::run_consent_flow`. Same reasoning as `client` beside it —
+  there is one Google, so a name-keyed registry would advertise a choice that
+  does not exist, and the only other caller is a test. Passed through rather
+  than resolved in `track_auth`, because a seam resolved inside the method it
+  serves is not a seam.
 - **`sleep`**, **`today`**, **`resolve_host`** — `Sluice.__init__` keyword-only
   parameters. `sleep` and `today` are threaded into `ingest.base.Ctx` and
   `ingest.sink.VaultSink`: the page-settle wait and the date stamp. Two clock
@@ -2257,9 +2295,12 @@ adapter seams and so pointing at the wrong fix. `resolve_host` was the third
 `__init__` collaborator and triggered the tightening this paragraph used to
 defer: the raise now carries a hint naming the collaborators and the seams
 *separately*, and `_COLLABORATORS` is pinned to the real signature by a guard
-test. The scope is `__init__` keywords only — `client`/`now_iso` are
-`Sluice.track()` parameters, never reach `**overrides`, and a typo there is
-already a plain `TypeError`.
+test. The scope is `__init__` keywords only — `client`/`now_iso`
+(`Sluice.track()`) and `flow_factory` (`Sluice.track_auth()`) are METHOD
+parameters, never reach `**overrides`, and a typo there is already a plain
+`TypeError`. So nothing mechanical keeps the method-parameter half of this list
+in step with the code: that guard cannot see them, and this paragraph is the
+only place saying so.
 
 **The Candidate Profile read cadence is the same kind of deliberate divergence as the
 clock shapes above, decided once here rather than left as an inconsistency between two

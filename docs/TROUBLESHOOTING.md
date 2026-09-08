@@ -393,17 +393,37 @@ actually answers, not just that a key is present.
 
 `track run` exits 1 with `track: google reauth needed (token refresh failed)` when the stored
 OAuth token is genuinely dead — Google REFUSED the refresh, or the file is present but
-unparseable. Delete the file at `track.token_path` (see `docs/CONFIGURATION.md`; default
-`<XDG_STATE_HOME>/sluice/google_token.json`) and produce a fresh one the same way you produced
-the first: sluice reads and refreshes the token but never runs the OAuth consent flow itself, so
-nothing here will prompt you. [`docs/INSTALL.md`](INSTALL.md#google-access-for-track) has the
-procedure and the scopes. Needs the `google` extra.
+unparseable. Mint a replacement:
+
+```bash
+job-sluice track auth --client-secrets <your client_secret.json> --force
+```
+
+`--force` is required because the dead token is still sitting at `track.token_path` (see
+`docs/CONFIGURATION.md`; default `<XDG_STATE_HOME>/sluice/google_token.json`), and it archives
+that file beside itself rather than discarding it. The client secrets JSON is the one you
+downloaded from the Google Cloud console — [`docs/INSTALL.md`](INSTALL.md#google-access-for-track)
+has where it comes from and the scopes. Needs the `google` extra. `track run` itself still prompts
+for nothing: it only reads and refreshes an existing credential, and `track auth` is the only
+command that runs a consent.
+
+**If this comes back roughly every week, the credential is not dying — it is expiring on a
+schedule.** An *External* consent screen left in *Testing* issues refresh tokens that expire after
+seven days, so re-authorising buys another seven and no more. Do the step titled *Set the consent
+screen's publishing status to In Production* in
+[INSTALL's Google section](INSTALL.md#google-access-for-track) before minting the next one; the
+seven-day cap is a property of that status, not of the token.
 
 **A network problem does not produce this.** A dropped connection, a DNS failure, a Google
 5xx or a disk-full error while writing the refreshed token are reported as ordinary run
 failures — named in the digest, recorded in the dead-letter store, and retried — precisely so
 that deleting a perfectly good credential is never the remedy for a Wi-Fi blip (#142). If you
 see a transport error rather than this message, re-run rather than re-authorising.
+
+**A leftover credential at the pre-XDG `./google_token.json` is reported only under
+`--verbose`.** `job-sluice doctor --verbose` names it once `track.token_path` itself holds a good
+token — it changes nothing and blocks nothing, so it is not in the default view; delete the old
+file once you are sure nothing else still reads it.
 
 ## Shell completion isn't offering anything
 

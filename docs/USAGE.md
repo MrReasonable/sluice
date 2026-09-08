@@ -351,6 +351,50 @@ Clears a dead-letter proposal without changing any lead's status — for a propo
 out to need no action. `--id` and `--lead` are mutually exclusive and one is required. Always
 exit 0: `track-dismiss: <cleared|would clear> N entr(y|ies)`.
 
+### `job-sluice track auth --client-secrets PATH [--port N] [--no-browser] [--force]`
+
+Mints the Google OAuth credential `track run` reads, at `track.token_path`. The only command that
+runs an interactive consent: it drives the flow in a browser against the *Desktop app* OAuth
+client whose JSON `--client-secrets` names, checks what the consent actually granted, and writes
+the credential `0600`. Needs the `google` extra, and the Google Cloud console setup in
+[`docs/INSTALL.md`](INSTALL.md#google-access-for-track) first — including the consent screen's
+publishing status, which is what decides whether the credential outlives seven days.
+
+`--port N` binds a fixed port instead of an ephemeral one, so the callback can be forwarded over
+SSH from a headless box; `--no-browser` suppresses the attempt to OPEN a browser, and the consent
+URL is printed either way. An existing token is never overwritten: without `--force` the command
+refuses and writes nothing, and with it the old credential is archived beside the new one first,
+at `<token_path>.replaced-<UTC timestamp>` (`.1`, `.2`… on a same-second collision).
+
+**Two streams, and the difference matters under `--no-browser`.** sluice's own `track-auth:` lines
+go to **stderr**; the consent URL does not, because it is printed by `google-auth-oauthlib` with a
+bare `print()` and lands on **stdout**. On a headless run that URL is the only thing you need, so
+redirecting stdout to a file hides it.
+
+Exit 0 → `track-auth: wrote <token_path>`, plus `previous credential archived at <path>` when
+`--force` replaced one. Exit 1 → `track-auth: <reason>`, one line naming the refusal, in the order
+they are reached:
+
+- `google-auth-oauthlib` is not importable — an install predating this command, whose `google`
+  extra was never re-resolved. Checked first, ahead of anything you typed, because it is a gap in
+  the install rather than in an argument;
+- the secrets file is not at that path, or a token is already there and `--force` was not passed;
+- the consent failed or was denied;
+- the credential carries no `refresh_token`, so it would stop working within the hour;
+- the credential reported no `granted_scopes` at all, so sluice cannot tell a complete grant from
+  a partial one. That also fires on a genuinely complete grant when the installed `google-auth`
+  predates `granted_scopes` reporting — the message says so, and `pip install -U google-auth` is
+  the fix in that case;
+- the grant was short of the scopes `track` needs;
+- under `--force`, the existing token could not be archived;
+- the new token could not be written — reachable on a first-time mint too, not only under
+  `--force`: a concurrent `track auth` losing the exclusive-create race, no space left on the
+  device, or a state directory that is not writable.
+
+Every one of those leaves the disk as it found it, with a single exception: a token write that
+failed AFTER the archive succeeded. Your previous credential is then at a path you have never
+seen, so that message names it, which is the whole of what makes it recoverable.
+
 ## `job-sluice leads`
 
 Maintenance passes. **Report by default; none of these offers `--dry-run`, because the

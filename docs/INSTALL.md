@@ -365,7 +365,7 @@ python -m pytest
 | Extra | Unlocks | Included by |
 |---|---|---|
 | `render` | `cv.renderer: template` — the default renderer, which fills a Jinja2 template via WeasyPrint | Docker, Homebrew; recommended by deb/rpm |
-| `google` | `track`'s Gmail and Calendar access | Docker, Homebrew; available from distro packages on deb/rpm |
+| `google` | `track`'s Gmail and Calendar access, and the consent flow `track auth` mints its token with | Docker, Homebrew; available from distro packages on deb/rpm |
 | `mcp` | `job-sluice mcp serve` | Docker, Homebrew |
 | `completion` | shell completion of commands, flags and live values — the extra alone is inert until the shell hook is registered, see [Shell completion](#shell-completion) | Docker, Homebrew; available from distro packages on deb/rpm |
 
@@ -495,70 +495,78 @@ a keyless *primary* is not. `job-sluice doctor` tells you which you have.
 `track run` reconciles Gmail and Calendar. It needs the `google` extra **and** an OAuth token at
 `track.token_path` (by default `<XDG_STATE_HOME>/sluice/google_token.json`).
 
-**sluice does not obtain that token for you.** There is no consent flow in the codebase: the
-Google client reads an existing authorized-user credential and refreshes it, and with no token
-present a `track run` reports a failure rather than prompting for anything. Producing the token is
-a manual, one-time step you do yourself.
+`job-sluice track auth` mints that token. It runs an interactive Google consent in your browser,
+and it is the only command that does: `track run` still prompts for nothing, because it only reads
+and refreshes a credential it finds, and with no token present it records a failure and exits 0.
 
-You need an OAuth client of your own — a *Desktop app* client ID from a Google Cloud project with
-the Gmail and Calendar APIs enabled. Download its JSON from the Google Cloud console (the button
-is *Download JSON* on the credential), save it as `client_secret.json`, and run the script below
-from the directory holding it — both filenames are resolved against the working directory, not
-against the script.
+What sluice cannot do for you is create the OAuth client the consent runs against: Google issues
+those per project, to you. So the console steps come first, once.
 
-The consent run grants exactly the access sluice uses:
+1. **Create a Google Cloud project** (or reuse one of your own) and enable the **Gmail API** and
+   the **Google Calendar API** on it.
 
-| Scope | Why |
-|---|---|
-| `https://www.googleapis.com/auth/gmail.readonly` | sluice only lists and reads messages and their attachments; it never modifies or deletes mail |
-| `https://www.googleapis.com/auth/calendar.events` | sluice lists, creates, updates and deletes events on your primary calendar |
+2. **Configure the OAuth consent screen**, adding the scopes below. They are exactly the
+   access sluice uses, and nothing here asks for more:
 
-A one-off script using `google-auth-oauthlib` produces the file. sluice does not depend on that
-package and no channel installs it, so install it yourself — in a throwaway virtual environment,
-which keeps a package you need exactly once out of the environment job-sluice runs in, and is
-required outright on a distro or Homebrew Python for the [PEP 668 reason above](#pip):
+   | Scope | Why |
+   |---|---|
+   | `https://www.googleapis.com/auth/gmail.readonly` | sluice only lists and reads messages and their attachments; it never modifies or deletes mail |
+   | `https://www.googleapis.com/auth/calendar.events` | sluice lists, creates, updates and deletes events on your primary calendar |
+
+3. **Set the consent screen's publishing status to *In Production*.** An *External* screen left in
+   *Testing* — the default for a new one — issues refresh tokens that **expire after seven days**,
+   so `track` would need re-authorising every week. Publishing removes that cap. The app stays
+   unverified, so you will see a warning screen once and click through it; a user cap applies to
+   unverified apps, which is irrelevant for a single user. (A Google Workspace account can make
+   the screen *Internal* instead, which is not subject to the *Testing* cap at all.)
+
+4. **Create a *Desktop app* OAuth client** on that project and download its JSON — the button is
+   *Download JSON* on the credential.
+
+Then run the consent flow against that file:
 
 ```bash
-python3 -m venv /tmp/sluice-oauth
-/tmp/sluice-oauth/bin/pip install google-auth-oauthlib
-/tmp/sluice-oauth/bin/python get_token.py
+job-sluice track auth --client-secrets ~/Downloads/client_secret_xxx.json
 ```
 
-```python
-# get_token.py -- opens a browser, writes token.json into the working directory.
-import os
+It opens a browser, waits for you to grant the scopes it asks for, and writes the credential to
+`track.token_path` at mode `0600`. If the consent screen's per-permission checkboxes leave one
+unticked it refuses and writes nothing, rather than minting a credential whose gaps would surface
+as a failing `track run` later. [`docs/CONFIGURATION.md`](CONFIGURATION.md) has the path's
+resolution order if you have set the key or moved the XDG root.
 
-from google_auth_oauthlib.flow import InstalledAppFlow
+On a headless box, forward the port and skip the browser:
 
-SCOPES = ["https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/calendar.events"]
-
-flow = InstalledAppFlow.from_client_secrets_file("client_secret.json", SCOPES)
-creds = flow.run_local_server(port=0)
-# Written, not printed. `run_local_server` prints its own "Please visit this URL..." prompt to
-# stdout, so redirecting this script's output to a file would capture that line ahead of the
-# JSON -- leaving an unparseable credential AND hiding the URL you need when the browser does
-# not open on its own, which is exactly the case on a headless box.
-# Created 0600 in one step: a plain write followed by a chmod leaves the credential briefly
-# world-readable, and `Path.touch(mode=...)` does not re-apply the mode to a file that already
-# exists (measured). O_EXCL means a re-run refuses rather than silently overwriting a working
-# token -- delete the old one first if you are deliberately re-authorising.
-fd = os.open("token.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, "w") as f:
-    f.write(creds.to_json())
-print("wrote token.json")
+```bash
+ssh -L 8765:localhost:8765 you@example.invalid
+job-sluice track auth --client-secrets client_secret.json --port 8765 --no-browser
 ```
 
-Move `token.json` to `track.token_path` — by default
-`<XDG_STATE_HOME>/sluice/google_token.json`, and [`docs/CONFIGURATION.md`](CONFIGURATION.md) has
-the resolution order if you have set the key or moved the XDG root. Then delete
-`/tmp/sluice-oauth`; nothing needs it again unless you re-authorise. It is an authorized-user credential — sluice's reader
-requires `refresh_token`, `client_id` and `client_secret` in it — and it is a live secret: sluice
-writes it `0600` whenever it refreshes it, so store it at least as tightly.
+`--port` is what makes that forwardable — left to itself the flow binds an ephemeral port, which
+you cannot forward ahead of time. `--no-browser` suppresses the attempt to OPEN a browser; the
+consent URL is printed either way. **That URL goes to stdout**, printed by `google-auth-oauthlib`
+rather than by sluice, while sluice's own `track-auth:` result line goes to stderr — so on the one
+run where the URL is the only thing you have, do not redirect stdout to a file.
+
+A token already at the path is never overwritten: `track auth` refuses unless you pass `--force`,
+which archives the existing credential beside it — `<token path>.replaced-<UTC timestamp>`, with a
+`.1`, `.2`… suffix if an archive from that same second is already there — before writing the new
+one. What lands is an authorized-user credential — sluice's reader requires
+`refresh_token`, `client_id` and `client_secret` in it — and it is a live secret, kept at `0600`
+through every refresh, so store it at least as tightly.
+
+`track auth` needs `google-auth-oauthlib`, which the `google` extra has carried only since this
+command shipped. If it reports that package is not importable on an install where `track run`
+works perfectly, that is what happened: an in-place upgrade does not necessarily re-resolve an
+extra's contents. Re-install naming the extra — `pip install -U 'job-sluice[google]'`, or your
+channel's equivalent. From a source checkout, name the checkout rather than the published
+distribution: `pip install -e '.[google]'`. The first form would fetch job-sluice from PyPI and
+install it *alongside* the tree you are working in, which is not what a checkout user wants and
+is confusing to unpick afterwards.
 
 If the token later stops working, [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md) distinguishes a
-genuinely dead credential (which needs this step again) from a transient network failure (which
-does not, and where deleting the token would be the wrong move).
+genuinely dead credential (which needs another `track auth`, with `--force`) from a transient
+network failure (which does not, and where discarding the token would be the wrong move).
 
 ## Upgrading
 
