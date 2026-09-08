@@ -40,6 +40,41 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.10.0](https://github.com/MrReasonable/sluice/compare/v2.9.7...v2.10.0) (2026-09-08)
+
+
+### Features
+
+* **core:** add the escaping stream wrapper and its install context manager ([5c0ef73](https://github.com/MrReasonable/sluice/commit/5c0ef7303f88b11de5a98bdc011af10ea591a104))
+* **core:** add the terminal output escaping policy ([ec5c7a7](https://github.com/MrReasonable/sluice/commit/ec5c7a7a74a3d52a584dd61085317403c794fca2))
+
+
+### Bug Fixes
+
+* **apply:** emit ASCII-safe JSON so terminal escaping cannot corrupt it ([0a0b44f](https://github.com/MrReasonable/sluice/commit/0a0b44f520bccbdba79ff9b385b1af113d5ab530))
+* **cli:** escape terminal control characters in all command output ([7a10368](https://github.com/MrReasonable/sluice/commit/7a103683a4bd9f22c56e1aeacc18175bff881bad))
+* **cli:** escape the cv-signoff input() prompt against a real tty ([#280](https://github.com/MrReasonable/sluice/issues/280)) ([70be360](https://github.com/MrReasonable/sluice/commit/70be360e761a308f981f8dd7e1d31a3e40e77c0a))
+* **cli:** suppress argparse colour on Python 3.14 to avoid escape-sequence regression ([cffeb42](https://github.com/MrReasonable/sluice/commit/cffeb42fd6b9ece972513249f69c38f9ed658771))
+* **core/safeout:** repair broken prose left by the emit.py extraction ([#280](https://github.com/MrReasonable/sluice/issues/280)) ([091dc9a](https://github.com/MrReasonable/sluice/commit/091dc9a2ba1ed0d2a71276ce95818d97b61ef567))
+* **core/safeout:** replace literal control bytes with escape sequences in source ([72aedd1](https://github.com/MrReasonable/sluice/commit/72aedd1b446792386b57122c8bbd7fed6dac2c82))
+* **core:** escape terminal control characters in log records ([f5229dd](https://github.com/MrReasonable/sluice/commit/f5229ddf4fc28ccfed3ac90d952a81107e85889f))
+* **mcp:** bound the stdio smoke test's read so a stall fails fast ([0d4674c](https://github.com/MrReasonable/sluice/commit/0d4674cbddedd2ef4894902f239f0d8c03341643))
+* **test:** catch qualified input() calls and anchor the source sweep ([3f3b343](https://github.com/MrReasonable/sluice/commit/3f3b343d231a3aa0928dbb2ee12699601086294e))
+
+
+### Refactoring
+
+* **onboard:** read the control-character class from core.safeout ([3705c0c](https://github.com/MrReasonable/sluice/commit/3705c0c9a14acb80d339c7dd489163716899b10b))
+
+
+### Documentation
+
+* **core:** record the terminal output escaping policy and its residuals ([455c591](https://github.com/MrReasonable/sluice/commit/455c5914f7c1da3cf953253f9545e098aef364a8))
+* **plan:** add the terminal output safety implementation plan ([7241980](https://github.com/MrReasonable/sluice/commit/7241980746a29824689fe0a329b5954f29425a5c))
+* **plan:** fix two defects found by the pre-flight scan ([cff94b8](https://github.com/MrReasonable/sluice/commit/cff94b8585d4d4518c1c5dbfa74822ae8f0402c9))
+* **spec:** correct the terminal-output-safety design against what shipped ([#280](https://github.com/MrReasonable/sluice/issues/280)) ([a606f26](https://github.com/MrReasonable/sluice/commit/a606f26afbdbcf9dbdb2177c09a81ab89638d9db))
+* **spec:** design terminal output safety for untrusted derived text ([5bf8171](https://github.com/MrReasonable/sluice/commit/5bf81717d61086617004ffa3c961e0c4c2236669))
+
 ## [2.9.7](https://github.com/MrReasonable/sluice/compare/v2.9.6...v2.9.7) (2026-09-06)
 
 
