@@ -17,7 +17,7 @@ class GoogleAuthError(Exception):
     pass
 
 
-def _write_token(path: str, data: str) -> None:
+def write_token(path: str, data: str, *, exclusive: bool = False) -> None:
     """Write the OAuth token, creating its parent and forcing mode 0600.
 
     Two things the bare `open(path, "w")` this replaces got wrong. It created no parent
@@ -45,21 +45,54 @@ def _write_token(path: str, data: str) -> None:
     be a surprise from a token write.
 
     Stdlib only, like the rest of `sluice/`.
+
+    `exclusive=True` is the MINT path, and the refusal has to live here rather than in a
+    caller. A caller that checks `os.path.exists`, runs a consent flow that can block for
+    minutes, and then writes is the stale-snapshot shape this repo already knows is
+    byte-identical to no guard -- the reason `update_fields`' `require_status` could not be
+    hoisted into its caller either.
+
+    The shape is `_reserve_and_move`'s (`core/vault.py`), not `_write(exclusive=True)`'s.
+    That one opens with mode "x", which gives O_CREAT|O_EXCL but CANNOT set a creation
+    mode: measured 0644 under umask 022, a world-readable credential. `os.link` is not it
+    either -- `_reserve_and_move`'s docstring records that shape as rejected on #23, and it
+    does not consume the temp, so every successful mint would leave a second copy of the
+    refresh token beside the real one.
+
+    So: reserve the destination with O_EXCL at 0600, then `os.replace` the temp over it.
+    The replace carries mkstemp's 0600 and consumes the temp. If anything fails AFTER the
+    reservation, the 0-byte destination is removed -- `classify_track_google` reports OK on
+    presence alone, so an empty token would read as healthy for ever.
     """
     parent = os.path.dirname(path) or "."
     os.makedirs(parent, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=parent, prefix=".google_token.", suffix=".tmp")
+    reserved = False
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+        if exclusive:
+            # `reserved` is set the instant `os.open` returns a handle -- BETWEEN the
+            # open and the close, not after both. `os.open` succeeding is what actually
+            # created the 0-byte file the cleanup below exists to remove; a raise from
+            # the following `os.close` (EIO, EDQUOT, a full disk) must not skip that
+            # cleanup just because it happens on the very next line.
+            reserve_fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            reserved = True
+            os.close(reserve_fd)
         os.replace(tmp, path)
     except BaseException:
         # Never leave a stray 0600 temp behind on failure -- including on KeyboardInterrupt,
         # which is why this catches BaseException and re-raises rather than `except OSError`.
         with contextlib.suppress(OSError):
             os.unlink(tmp)
+        if reserved:
+            # Ownership is "our O_EXCL open returned a handle", never os.path.exists, which
+            # a race could fool into unlinking a token a concurrent minter just landed.
+            with contextlib.suppress(OSError):
+                os.unlink(path)
         raise
 
 
@@ -67,10 +100,21 @@ def probe_availability() -> tuple[bool, str | None]:
     """Can `RealGoogleClient` actually be built in this process? Returns
     (available, import_error). Used by `sluice doctor` (core/app.py) to report
     on track's Google adapter WITHOUT importing the google client libs itself --
-    this module is the ONE sanctioned site (see CLAUDE.md's stdlib-only rule for
-    `sluice/`), so a second copy of these three imports living in core/app.py
-    would duplicate knowledge of exactly which submodules matter and could
-    silently drift out of step with `_creds`/`gmail`/`calendar` below.
+    this module is the ONE sanctioned site for the google CLIENT libraries (see
+    CLAUDE.md's stdlib-only rule for `sluice/`), so a second copy of these three
+    imports living in core/app.py would duplicate knowledge of exactly which
+    submodules matter and could silently drift out of step with
+    `_creds`/`gmail`/`calendar` below.
+
+    It stopped being the only sanctioned google import ANYWHERE in `sluice/` at
+    #201: `track/auth.py` imports `google_auth_oauthlib` for the consent flow
+    `job-sluice track auth` runs. That split is deliberate and load-bearing, not
+    an oversight to be tidied up -- read that module's docstring before fusing
+    the two probes. The short of it: `pip install -U` does not re-resolve
+    extras, so every `[google]` install predating #201 has the libraries these
+    three imports come from and not `google-auth-oauthlib`, while `track run`
+    keeps working perfectly -- and a probe requiring both would report SETUP
+    across that whole population on upgrade.
 
     `(ImportError, OSError)`, not `ImportError` alone, for the same reason
     `renderers/template.py`'s `_make` catches both: a missing NATIVE dependency
@@ -135,7 +179,7 @@ class RealGoogleClient:
         it, `cmd_track_run` exits 1, and `docs/TROUBLESHOOTING.md` tells the operator to DELETE
         the token file and re-authorise.
 
-        The previous `except Exception` spanned `creds.refresh()` and `_write_token()`, so a
+        The previous `except Exception` spanned `creds.refresh()` and `write_token()`, so a
         Wi-Fi blip, a DNS failure, a Google 5xx or a disk-full `OSError` all became "reauth
         needed" -- and the documented remedy then threw away a perfectly good credential and
         forced an interactive browser flow, on a transient error that would have cleared
@@ -159,7 +203,7 @@ class RealGoogleClient:
         try:
             if not creds.valid and creds.refresh_token:
                 creds.refresh(Request())
-                _write_token(self.token_path, creds.to_json())
+                write_token(self.token_path, creds.to_json())
         except _auth_failures() as e:
             raise GoogleAuthError(f"google token refresh was REFUSED: {e}") from e
         # Every other exception -- TransportError, ConnectionError, socket timeout, OSError

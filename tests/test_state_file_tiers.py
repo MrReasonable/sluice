@@ -458,7 +458,7 @@ def test_the_remedy_does_not_clobber_a_companion_at_the_destination(
 def test_the_state_directory_the_remedy_creates_stays_private(monkeypatch, tmp_path):
     """`mkdir -p` then an explicit `chmod 700`.
 
-    The same directory holds the OAuth token, and `_write_token`'s
+    The same directory holds the OAuth token, and `write_token`'s
     `makedirs(mode=0o700, exist_ok=True)` no-ops once it exists -- so the parent's mode
     has to be set by whoever gets there first. `mkdir -m` cannot do it: that flag applies
     only to directories mkdir CREATES, and by the time a user runs this the directory
