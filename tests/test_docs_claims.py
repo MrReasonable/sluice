@@ -103,12 +103,13 @@ def test_the_command_tree_walk_is_not_vacuous():
 
     The prior `>= 15` floor was itself the bug this file exists to catch: the real count moved
     from 20 to 29 across #164 and the floor caught none of it (Task 7 review, MINOR 4) -- a
-    floor that trails reality by 14 asserts nothing. The literal (`21`) is the NON-EVIDENCE
+    floor that trails reality by 14 asserts nothing. The literal (`22`) is the NON-EVIDENCE
     groups' own subcommand total; the evidence contribution is DERIVED from EVIDENCE_KINDS (3
     subcommands -- add/list/verify -- per kind) so a future fourth kind needs no edit here.
 
-    The literal is edited by hand ON PURPOSE, and #241 is the worked example: it was `20` until
-    `leads add` made it 21, and this assertion is what said so. An earlier version of this note
+    The literal is edited by hand ON PURPOSE, and it moves whenever a subcommand does: it was
+    `20` until #241's `leads add` made it 21, and 21 until #201's `track auth` made it 22. Each
+    time, this assertion is what said so. An earlier version of this note
     justified the literal by claiming the count "does NOT grow on its own" -- which read as a
     property of the tree when it is only a property of the LITERAL, and would have invited
     deriving it from the walk the next time it moved. A derived expected value compares the walk
@@ -123,9 +124,9 @@ def test_the_command_tree_walk_is_not_vacuous():
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    expected = 21 + 3 * len(EVIDENCE_KINDS)
+    expected = 22 + 3 * len(EVIDENCE_KINDS)
     assert total_subs == expected, (
-        f"expected {expected} subcommands (21 non-evidence + 3 per evidence kind), found "
+        f"expected {expected} subcommands (22 non-evidence + 3 per evidence kind), found "
         f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
         f"this needs updating, along with docs/USAGE.md and README's Commands table")
 
@@ -1507,6 +1508,71 @@ def test_every_evidence_add_flag_is_documented(kind):
         f"`job-sluice {kind} add` accepts {missing} but docs/USAGE.md's heading does not "
         f"list them. The flags are generated from EVIDENCE_KINDS[{kind!r}].fields, so a new "
         f"field creates a new flag with no other prompt to document it.")
+
+
+def test_every_track_auth_flag_is_documented_both_ways():
+    """`test_every_real_command_is_documented_in_usage_md` compares COMMANDS and never
+    looks at flags. Bidirectional here, unlike its evidence-add model, which diffs
+    `real - documented` only -- that catches a flag added to the parser but not one
+    DROPPED from it while the doc still instructs it.
+    """
+    real = _parser_flags("track", "auth")
+    assert real, "walked no flags for `track auth` -- the vacuous-pass shape"
+    usage = dict(_read_all()).get("docs/USAGE.md", "")
+    assert usage, "docs/USAGE.md was not readable, so this would pass vacuously"
+    documented = _documented_flags(usage, "track", "auth")
+    assert not (real - documented), f"undocumented: {sorted(real - documented)}"
+    assert not (documented - real), f"documented but not real: {sorted(documented - real)}"
+
+
+def test_every_track_auth_flag_used_in_prose_is_real():
+    """The gap CLAUDE.md names: nothing runs a command in INSTALL.md against the thing
+    serving it, so a renamed flag ships green. `_documented_flags` matches only a USAGE.md
+    heading and returns the empty set for any other file, so this needs its own extractor.
+
+    The anti-vacuity assertion is keyed on which files contributed a FLAG, and requires one
+    from INSTALL.md or TROUBLESHOOTING.md BY NAME -- two narrowings measured to matter, plus
+    a third caught by review rather than by running anything. A bare `invoked` flag is
+    satisfied by USAGE's own heading, which `test_every_track_auth_flag_is_documented_both_ways`
+    already covers in full -- so deleting the INSTALL and TROUBLESHOOTING invocations, the
+    exact prose this test exists for, left it green (MEASURED). Merely counting files that
+    MENTION the command is satisfied by README's and AI-SETUP's flagless
+    `` `job-sluice track auth` `` -- measured: with both real invocations renamed away, a
+    mention-keyed assertion still passed. The THIRD narrowing -- naming the two instructional
+    docs rather than merely excluding docs/USAGE.md -- is a CodeRabbit finding, not a
+    measurement: `flagged_in - {"docs/USAGE.md"}` is satisfied by ANY other doc that happens
+    to carry a flagged invocation, and nothing about a document being outside USAGE.md makes
+    it instructional -- CHANGELOG.md, which records a past change rather than a procedure a
+    reader follows, is the example that makes the gap concrete even though it carries no such
+    invocation today.
+    """
+    real = _parser_flags("track", "auth")
+    assert real, "walked no flags for `track auth`"
+    seen, flagged_in = set(), set()
+    for rel, text in _read_all():
+        # `\b` after `auth`, and it was added on a measurement rather than for tidiness:
+        # without it the capture group swallows the rest of the token, so renaming an
+        # invocation to `job-sluice track authX --client-secrets ...` still matched and
+        # still harvested its flags. That is the safe direction for the comparison below
+        # (an over-match can only add to `seen`), but it silently defeats the anti-vacuity
+        # assertion, which is the half that has to be able to notice prose disappearing.
+        for m in re.finditer(r"job-sluice track auth\b([^\n`]*)", text):
+            found = set(re.findall(r"--[\w-]+", m.group(1)))
+            seen |= found
+            if found:
+                flagged_in.add(rel)
+    # Intersected with the two INSTRUCTIONAL docs by name, not merely subtracted from
+    # USAGE.md: `flagged_in - {"docs/USAGE.md"}` is satisfied by ANY other doc that
+    # happens to carry a flagged invocation, CHANGELOG.md included -- which documents a
+    # past change, not a procedure a reader follows. The gap this test exists to catch is
+    # specifically INSTALL.md/TROUBLESHOOTING.md going stale, so the anti-vacuity check
+    # must name them rather than accept whichever doc happens to satisfy a looser one.
+    assert flagged_in & {"docs/INSTALL.md", "docs/TROUBLESHOOTING.md"}, (
+        f"no doc outside docs/USAGE.md instructs `job-sluice track auth` WITH a flag -- the "
+        f"prose this test exists to check is gone, and USAGE's own heading (already covered "
+        f"by test_every_track_auth_flag_is_documented_both_ways) is all that was swept: "
+        f"{sorted(flagged_in)}")
+    assert not (seen - real), f"prose instructs flags the parser rejects: {sorted(seen - real)}"
 
 
 # ── the triage summary line, derived rather than restated (#223) ──────────────

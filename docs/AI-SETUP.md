@@ -79,7 +79,8 @@ under their name.
 
 Two things you cannot do at all, and should say so plainly rather than working around: logging into
 a job board (it is their account, over an interactive browser), and minting the Google OAuth token
-`track` needs.
+`track` needs. `job-sluice track auth` is the command for that second one, but it opens a browser
+and waits on their Google consent, so running it is theirs.
 
 ---
 
@@ -241,7 +242,8 @@ End by telling them, concretely:
 - what `doctor` still lists under `Needs setup` or `Degraded`, and which command each one
   blocks, if any -- not every row blocks something. A missing Judging Profile is `degraded`
   and blocks nothing: triage falls back to the shipped neutral criteria rather than stopping
-- that `track` is not set up, and needs a Google OAuth token they mint themselves
+- that `track` is not set up, and needs a Google OAuth token they mint themselves with
+  `job-sluice track auth` — after the Google Cloud console steps in `docs/INSTALL.md`
 
 ---
 
