@@ -2279,6 +2279,36 @@ class Sluice:
              else dl.clear_lead(lead, status_only=False))
         return {"cleared": n, "dry_run": False}
 
+    def track_auth(self, *, client_secrets, port=0, open_browser=True, force=False,
+                   flow_factory=None):
+        """Mint the Google credential `track run` reads. Returns `run_consent_flow`'s dict.
+
+        `load_track_config()` WITHOUT `refuse_relocated_seen_db=True`, and that omission is
+        deliberate rather than an oversight. Every sibling passes it because it reads or
+        writes the dedup or dead-letter store and would report nothing to do against a
+        relocated one. This command touches neither, so the refusal would only mean a moved
+        `track-seen.db` blocks minting a credential unrelated to it -- and the population
+        that reaches this command is precisely the one whose `track` has never run.
+
+        `flow_factory` is threaded through rather than resolved here, exactly as `track`
+        threads `client`: one shape, nothing in config selecting among implementations, so
+        it is a test seam and not a `plugins.get` registry.
+
+        `client_secrets` is a CLI argument rather than a config key for the same reason
+        `tests/test_track_auth.py`'s `test_client_secrets_is_required` states it at the
+        parser: the file is read exactly once, here, and after consent the client id and
+        secret live in the minted token itself -- a config key would assert a path
+        consulted on every `track run`, which is not what happens.
+        """
+        from sluice.track.auth import run_consent_flow
+        from sluice.track.config import load_track_config
+
+        tcfg = load_track_config()
+        return run_consent_flow(client_secrets_path=client_secrets,
+                                token_path=tcfg.token_path, port=port,
+                                open_browser=open_browser, force=force,
+                                flow_factory=flow_factory)
+
     def doctor(self, *, offline=False, probe=None):
         """Preflight every configured backend (primary + fallback, per sub-app):
         is the provider known, is a model resolved, are the credentials present
@@ -2616,10 +2646,38 @@ class Sluice:
         from sluice.track.google_client import probe_availability
 
         google_available, google_import_error = probe_availability()
+        # A SEPARATE probe, deliberately not folded into `google_available` above: whether
+        # the consent FLOW can be built is a different question from whether `track run`
+        # can read a credential, and `sluice/track/auth.py`'s own module docstring states
+        # why `classify_track_google` must not let the two mix -- fusing them would report
+        # this row's no-token remedy as broken on every pre-#201 `[google]` install that
+        # has never re-resolved its extras, even though `track run` itself works fine
+        # there. Imported here, lazily, the same way `probe_availability` above is.
+        from sluice.track.auth import probe_flow_available
+
+        # BOTH elements, not just `[0]`: `probe_flow_available` catches
+        # `(ImportError, OSError)` for the same reason `google_client.probe_availability`
+        # does -- a missing NATIVE dependency underneath a Python package does not always
+        # surface as ImportError -- so the reason can name something other than "not
+        # importable", and discarding it misdiagnoses that case on the one surface built
+        # to diagnose it. `classify_track_google` interpolates it when given and falls
+        # back to its own wording otherwise, so the many direct callers in the test suite
+        # that pass `flow_available` alone are unaffected.
+        flow_available, flow_import_error = probe_flow_available()
+        # The legacy location comes from paths.py's own table, never a second literal --
+        # a hand-typed "./google_token.json" here would drift from `_LEGACY` silently the
+        # day someone renamed the entry there. Checked for existence here (not inside the
+        # classifier, which stays pure): `resolve`'s own _LEGACY notice fires only once,
+        # on the run that discovers the file, so this is the one place left after that
+        # run that still has to look for it.
+        from sluice.core.paths import _LEGACY
+        legacy = _LEGACY.get("google_token.json", "")
+        legacy = legacy if legacy and os.path.exists(legacy) else ""
         components.append(_doctor.classify_track_google(
             available=google_available, import_error=google_import_error,
             token_present=os.path.exists(track_cfg.token_path),
-            token_path=track_cfg.token_path))
+            token_path=track_cfg.token_path, legacy_token_path=legacy,
+            flow_available=flow_available, flow_import_error=flow_import_error))
 
         # Which browser profile an ingest run will drive. Read from the environment, never by
         # constructing a client: `Camofox.__init__` warns on the same misconfiguration this

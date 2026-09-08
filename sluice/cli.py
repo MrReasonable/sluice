@@ -1482,6 +1482,20 @@ def cmd_track_dismiss(args, config) -> int:
     return 0
 
 
+def cmd_track_auth(args, config) -> int:
+    from sluice.core.app import Sluice
+
+    out = Sluice(config).track_auth(client_secrets=args.client_secrets, port=args.port,
+                                    open_browser=not args.no_browser, force=args.force)
+    if out["ok"]:
+        print(f"track-auth: wrote {out['token_path']}", file=sys.stderr)
+        if out["archived"]:
+            print(f"  previous credential archived at {out['archived']}", file=sys.stderr)
+        return 0
+    print(f"track-auth: {out['reason']}", file=sys.stderr)
+    return 1
+
+
 # ── init ──────────────────────────────────────────────────────────────────────
 def cmd_init(args, config, *, asker=None) -> int:
     """Scaffold a config, a Judging Profile and a Candidate Profile (#8, #133/#107).
@@ -2409,6 +2423,19 @@ def _build_parser() -> argparse.ArgumentParser:
     tdg.add_argument("--lead", help="clear a lead's dead-letter entries without advancing status")
     tdis.add_argument("--dry-run", action="store_true")
     tdis.set_defaults(func=cmd_track_dismiss)
+
+    tauth = track.add_parser("auth", help="mint the Google OAuth token track run needs")
+    tauth.add_argument("--client-secrets", required=True,
+                       help="path to the Desktop-app OAuth client JSON you downloaded "
+                            "from the Google Cloud console")
+    tauth.add_argument("--port", type=int, default=0,
+                       help="bind this fixed port instead of an ephemeral one, so it can "
+                            "be forwarded over SSH (see docs/INSTALL.md)")
+    tauth.add_argument("--no-browser", action="store_true",
+                       help="print the consent URL instead of opening a browser")
+    tauth.add_argument("--force", action="store_true",
+                       help="replace an existing token; the old one is archived beside it")
+    tauth.set_defaults(func=cmd_track_auth)
 
     leads = top.add_parser("leads", help="lead maintenance").add_subparsers(
         dest="cmd", required=True)
