@@ -1291,9 +1291,13 @@ def test_a_missing_google_token_is_a_failure_row_not_a_reauth_and_not_a_prompt(t
     it would silently skip whatever arrived while the credential was missing.
 
     A failure row names the cause, because a run reporting nothing is indistinguishable from a
-    quiet inbox. sluice never prompts for consent here -- it has no consent flow at all, which is
-    why producing the token is documented as the user's own step (see
-    tests/test_no_false_consent_flow_claim.py).
+    quiet inbox. `track run` prompts for consent nowhere on this path, and since #201 that is a
+    claim about THIS command rather than about the codebase: the consent flow exists, behind its
+    own command (`job-sluice track auth`, `sluice/track/auth.py`), and nothing here can reach it --
+    `RealGoogleClient` still only reads and refreshes a credential it finds. Which is why the
+    install guide documents minting the token as a step of its own, and why
+    tests/test_no_false_consent_flow_claim.py is now a ratchet over the sentences that shipped
+    false rather than an absence proof.
 
     WHAT THIS ADDS over its siblings, stated rather than implied: each property above is
     separately pinned elsewhere -- `test_an_unreadable_token_FILE_is_not_reported_as_reauth`
