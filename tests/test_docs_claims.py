@@ -1980,3 +1980,20 @@ def test_troubleshooting_names_every_blocking_slop_label():
         f"docs/TROUBLESHOOTING.md's `skipped-gate` section does not name {missing} -- the slop "
         f"linter's HARD tier bins a lead on its own, so these are the only lines some "
         f"`skipped-gate` rows show")
+
+
+def test_usage_md_points_at_the_symbol_that_builds_the_digest():
+    """The push and the stderr line diverged, and the doc described them as one thing.
+
+    USAGE.md said the tool "Prints `job-sluice triage: <counts> ...` to stderr and
+    Telegram-notifies", which read as one format going to two places. The notification is
+    now a separate human-readable digest, so the doc has to point at the thing that builds
+    it. Asserting the SYMBOL rather than a sample of its output keeps this from becoming
+    the next restated-format drift surface -- it fails on a rename or a removal, and stays
+    silent on a wording change, which is exactly the split we want.
+    """
+    doc = open("docs/USAGE.md", encoding="utf-8").read()
+    assert "_format_triage_digest" in doc, (
+        "USAGE.md does not say where the Telegram digest comes from")
+    assert hasattr(cli, "_format_triage_digest"), (
+        "USAGE.md points at `_format_triage_digest`, which no longer exists in cli.py")

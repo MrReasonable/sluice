@@ -666,6 +666,166 @@ def _format_degraded(report) -> str:
     return "job-sluice: degraded sources this run:\n" + "\n".join(lines)
 
 
+# How many surfaced leads the triage push NAMES before it starts counting instead. A big
+# run can surface twenty; naming every one turns the notification back into the wall of
+# text this formatting exists to replace, and its tail is the least interesting part.
+_PUSH_NAME_CAP = 5
+
+# The `counts` rows for outcomes the reader is NOT being asked to look at, in reading
+# order, with the words the digest spells them as. `{s}` is the verb's singular `s`, so
+# one lead reads "1 needs review" rather than "1 need review"; rows whose wording does not
+# inflect simply carry no `{s}`.
+#
+# Two kinds of row are deliberately absent: `keep`, which is a STAGE rather than an
+# outcome, and the `_status.SURFACED` verdicts, which are named individually above instead
+# of counted here. A new judge verdict belongs in exactly one of those two places, and
+# `test_every_counts_row_the_digest_can_receive_is_rendered_somewhere` fails until it is
+# -- it checks both that nothing is unrendered AND that these keys are disjoint from
+# `_status.SURFACED`, since a verdict in both would be named as a heading and counted as a
+# word in the same message.
+_TRIAGE_FILTERED_WORDS = (
+    ("dismiss", "{n} dismissed"),
+    ("needs_review", "{n} need{s} review"),
+    ("skipped", "{n} skipped"),
+    ("unjudgeable", "{n} with no JD fetched"),
+)
+
+
+def _lead_label(company: str, role: str) -> str:
+    """`Company, Role`, degrading to whichever half exists.
+
+    A judged lead can still carry a blank company: the posting never named one, no resolve
+    tier recovered it, or -- the common case on a default install -- tier 3 never ran at
+    all, since it needs both `triage.company_resolve_llm` and a threaded-in
+    `resolve_backend`. A dangling `", Engineering Manager"` reads as a formatting bug
+    rather than as missing data."""
+    parts = [p for p in ((company or "").strip(), (role or "").strip()) if p]
+    return ", ".join(parts) or "(unnamed lead)"
+
+
+def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> str:
+    """The `triage run` notification body, as prose rather than `counts`' `repr`.
+
+    `alert` is an urgent clause that leads the message, used by the #223 APPLIED arm. It
+    is built INTO the first line rather than concatenated onto this function's output by
+    the caller: the first line already carries the product name, so a caller-side prefix
+    carrying it too would say "job-sluice triage" twice in two lines. That first line is
+    what a phone renders as the preview, so exactly one of them may carry the name -- and
+    when there is an alert it has to be the alert, since that arm has just dismissed leads
+    irreversibly.
+
+    This is read on a phone. It used to be an f-string interpolation of the counts DICT,
+    so it put all seven rows on screen -- most of them zero on a typical run -- named none
+    of the leads it counted, and could therefore only ever send its reader to the machine.
+    `ingest`'s `_format_degraded` above is the nearest precedent -- a named formatter
+    returning a header plus one bullet per named entity, used as a notify body -- though it
+    caps nothing, which is the one thing a triage run needs (see `_PUSH_NAME_CAP`).
+
+    Three fields cannot be rendered at face value, and are not:
+
+    `counts["keep"]` is incremented at the pre-gate (`triage/engine.py`) and never
+    decremented, so a lead counted `keep` MAY be counted again under whatever the judge
+    later decides -- not always, since an ambiguous slug, a dossier failure, a
+    `VaultConflict`, an unmatched `lead_id` or `--no-llm` all leave it counted once. Either
+    way the rows do not partition the leads, and printing `keep` beside `dismiss` invites
+    exactly the reading that they do, which is how `{'keep': 55, ... 'dismiss': 29}` came
+    to be unreadable. It is named as the STAGE it is.
+
+    `report.backend` goes null on three occasions, and only the third is an outage: the
+    judge was never called (`--no-llm`, a classify-only pass, nothing to judge); it judged
+    perfectly well on a backend with no fallback leg to name, since `last_backend` is set
+    by `FallbackBackend` alone (see `Sluice.backend`, which returns a bare provider for
+    `--backend primary`, `--backend fallback`, and `auto` with no fallback configured); or
+    every batch raised and `triage/judge.py` swallowed it. The name is printed only when
+    there is one, and the three cases are told apart by `report.sent_to_judge` rather than
+    by the null.
+
+    An empty `report.surfaced` is NOT evidence that nothing is worth looking at. It records
+    writes that LANDED, so a `--dry-run` and a re-run that re-judges `research` leads to
+    `research` (an `unchanged` write, and `research` is in `DEFAULT_TRIAGE_STATUSES`, so
+    this is the ordinary second-run-of-the-day cron path) both leave it empty with the
+    leads still sitting in the vault. The headline says "nothing NEW", which is a claim
+    about this run -- the only thing a run can know.
+    """
+    counts = report.counts
+    groups = [(verdict, [(company, role) for v, company, role in report.surfaced
+                         if v == verdict])
+              for verdict in _status.SURFACED]
+    groups = [(verdict, entries) for verdict, entries in groups if entries]
+    # Derived from the SAME list the headings count, never from `counts`. The two had
+    # different sources and nothing made them agree, so a report carrying `shortlist: 2`
+    # beside one surfaced lead rendered "2 to look at" above a single name. The tail below
+    # already followed this rule; the headline was the one number that escaped it.
+    to_look_at = sum(len(entries) for _, entries in groups)
+    headline = ("dry run, nothing written" if dry_run
+                else f"{to_look_at} to look at" if to_look_at
+                else "nothing new to look at")
+    # `str.capitalize()` would also lower-case everything after the first character.
+    lines = ([f"job-sluice triage {alert}", headline[:1].upper() + headline[1:]]
+             if alert else [f"job-sluice triage: {headline}"])
+
+    # Every non-empty group is guaranteed ONE name before any group may spend the rest of
+    # the budget. A single shared budget plus `SURFACED`'s shortlist-first ordering erased
+    # the `Research:` heading outright on a run with six shortlists, so the reader could
+    # not tell that any research leads existed at all.
+    spare = max(_PUSH_NAME_CAP - len(groups), 0)
+    named = 0
+    for verdict, entries in groups:
+        take = 1 + min(len(entries) - 1, spare)
+        spare -= take - 1
+        # The heading carries the group's OWN count, off the same list as the names. The
+        # headline sums the groups and the cap can hide names, so without this the
+        # per-verdict split is not recoverable from the message.
+        lines.append(f"{verdict.capitalize()} ({len(entries)}):")
+        lines.extend(f"- {_lead_label(company, role)}" for company, role in entries[:take])
+        named += take
+    # Derived from what the loop actually NAMED, never from `len(report.surfaced)`: this
+    # loop renders only verdicts in `_status.SURFACED`, so any other verdict reaching the
+    # list would make the tail contradict the names printed above it. Such a verdict is
+    # silently dropped here rather than reported, because `_status.SURFACED` is shared with
+    # the engine precisely so the two cannot disagree -- one arriving means that shared
+    # constant has already failed, and a formatter is the wrong place to raise it.
+    if named < to_look_at:
+        # NOT a bullet: rendered as one it sits under the last heading and reads as that
+        # group's remainder, when it is the total across every group.
+        lines.append(f"({to_look_at - named} more not named)")
+
+    filtered = [word.format(n=(n := counts.get(key, 0)), s="s" if n == 1 else "")
+                for key, word in _TRIAGE_FILTERED_WORDS if counts.get(key, 0)]
+    if filtered:
+        lines.append(", ".join(filtered) + ".")
+
+    keep = counts.get("keep", 0)
+    if report.judged:
+        # The pre-gate total earns its place only when it is LARGER -- when some of those
+        # leads never reached the judge. "Judged 18 of the 18" is the common case and
+        # reads as a template that forgot to collapse, and `!=` also admits the
+        # judged-exceeds-kept case (`judged` is `len(verdicts)`, and a model can return
+        # more objects than the batch held), which renders "Judged 20 of the 18".
+        of_keep = f" of the {keep} that passed the pre-gate" if keep > report.judged else ""
+        via = (f"{',' if of_keep else ''} via {report.backend}") if report.backend else ""
+        lines.append(f"Judged {report.judged}{of_keep}{via}.")
+    elif report.sent_to_judge:
+        # The judge WAS called and returned nothing. `triage/judge.py` swallows every
+        # backend error and parse failure, so a revoked key, an exhausted quota, both legs
+        # down, or a plain TypeError in our own prompt building all land here -- and before
+        # `sent_to_judge` existed this arm said "no judge ran", which is the opposite of
+        # what happened, on the one channel an unattended install reads.
+        lines.append(f"The judge was called for {report.sent_to_judge} lead(s) and "
+                     "returned NOTHING. Treat this run as failed, not as empty.")
+    elif keep:
+        # Reached only when no call was made at all (`--no-llm`, or nothing to judge).
+        # These leads are neither filtered nor surfaced; they are waiting, and that is the
+        # one actionable fact about them.
+        lines.append(f"{keep} passed the pre-gate but no judge ran, so they are still "
+                     "waiting.")
+
+    if report.failures:
+        lines.append(f"{len(report.failures)} failure"
+                     f"{'' if len(report.failures) == 1 else 's'}, check the run log.")
+    return "\n".join(lines)
+
+
 # ── triage ───────────────────────────────────────────────────────────────────
 def cmd_triage_normalize(args, config) -> int:
     from sluice.core.app import Sluice
@@ -968,6 +1128,16 @@ def cmd_triage_run(args, config) -> int:
         # three times before anything applied.
         nudge = ("Re-run WITHOUT --dry-run to apply them." if args.dry_run
                  else "Review these, then run it again to apply them:")
+        # The push's own wording. On stderr the colon introduces the per-lead list
+        # printed immediately below it; the push carries no such list, so the shared
+        # sentence ended a message mid-sentence on exactly the unattended install the
+        # notice exists for. It differs in more than the punctuation -- with no list to
+        # point at, "Review these" has no referent either, so the push says where to look.
+        # In the `--dry-run` arm it IS `nudge`, by reference rather than by a second copy
+        # of the literal: that sentence names no list, so there is nothing to diverge
+        # about, and two copies of it is how they diverge anyway.
+        push_nudge = (nudge if args.dry_run
+                      else "Check the run output, then run it again to apply them.")
         print(f"triage: WROTE NOTHING. {len(report.reverdict_pending)} lead(s) are "
               "judged differently by this version: a role_type recorded before sluice "
               "tracked where it came from is no longer trusted as a fact about the "
@@ -983,13 +1153,16 @@ def cmd_triage_run(args, config) -> int:
         # only one a human sees, and this is the one run where it has something urgent to
         # say. Sending nothing here made the notice invisible to exactly the setup the
         # re-verdict is most dangerous for.
-        # `nudge`, not a second copy of the sentence. The push body carried "Run it again
-        # to apply" unconditionally, so a dry run pushed an instruction that would never
-        # come true -- the same defect `nudge` exists to fix, on the one channel an
-        # unattended install actually reads.
+        # `push_nudge` -- which IS a second variant of the sentence, deliberately, and
+        # the comment that used to sit here said the opposite. The two channels differ in
+        # what they can point at (see `push_nudge` above), so one string cannot serve
+        # both. What must NOT diverge is the dry-run split: the push body once carried
+        # "Run it again to apply" unconditionally, so a dry run pushed an instruction that
+        # would never come true -- the same defect `nudge` exists to fix, on the one
+        # channel an unattended install actually reads.
         _notify_reporting(
             f"job-sluice triage: WROTE NOTHING -- {len(report.reverdict_pending)} lead(s) "
-            f"are judged differently by this version (#223). {nudge}",
+            f"are judged differently by this version (#223). {push_nudge}",
             config=config, label="triage-summary")
         return 0
     print(f"triage: {report.counts} judged={report.judged} "
@@ -1011,12 +1184,14 @@ def cmd_triage_run(args, config) -> int:
     # a summary indistinguishable from an ordinary run. On a cron or container install
     # the push is the only surface a human sees, and `dismiss` is never re-selected, so
     # the alert was on the recoverable arm and absent from the unrecoverable one.
-    applied = (f"APPLIED a re-verdict it could not record first -- "
-               f"{len(report.reverdict_pending)} lead(s) judged differently (#223). "
-               if report.reverdict_pending else "")
-    _notify_reporting(
-        f"job-sluice triage: {applied}{report.counts} (backend {report.backend})",
-        config=config, label="triage-summary")
+    # Leads the message rather than sitting inside the headline: the digest opens with
+    # what the reader has to act on, and an irreversible re-verdict buried mid-sentence in
+    # front of that is how it gets skimmed past.
+    alert = (f"APPLIED a re-verdict it could not record first: "
+             f"{len(report.reverdict_pending)} lead(s) judged differently (#223)."
+             if report.reverdict_pending else "")
+    _notify_reporting(_format_triage_digest(report, alert, dry_run=args.dry_run),
+                      config=config, label="triage-summary")
     return 0
 
 

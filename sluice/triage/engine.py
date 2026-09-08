@@ -68,6 +68,12 @@ class TriageReport:
         "keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
         "needs_review": 0, "skipped": 0, "unjudgeable": 0})
     judged: int = 0
+    # How many dossiers were HANDED to the judge, as against `judged`, which counts the
+    # verdicts that came back. Two numbers because `triage/judge.py` swallows every backend
+    # error and parse failure and returns a short list, so `judged == 0` alone cannot say
+    # whether the judge was never called or was called and failed outright. The digest says
+    # opposite things in those two cases, and said the wrong one before this existed.
+    sent_to_judge: int = 0
     backend: str | None = None
     failures: list = field(default_factory=list)
     # #120: which tier actually filled a blank/placeholder company, counted only where the
@@ -78,20 +84,36 @@ class TriageReport:
     # rejected, NONE, or a backend error) -- the abstain rate is what tells an
     # operator the tier's real cost per lead it actually recovers. Both are NEW
     # fields, not new rows inside `counts`: counts rows are lead OUTCOMES
-    # (keep/shortlist/...) that cmd_triage_run prints and notify() sends to
-    # Telegram verbatim -- mixing resolution PROVENANCE into that dict would make
-    # its rows stop summing to the lead total a human reads in a phone notification.
+    # (keep/shortlist/...) that every consumer reads as a per-outcome number --
+    # mixing resolution PROVENANCE into that dict would put a row there that is not
+    # one. (Two older justifications for this rule were retired when the digest was
+    # written: `notify()` no longer sends `counts` verbatim, it sends
+    # `cli._format_triage_digest`'s prose; and the rows do not reliably sum to the lead
+    # total, because `keep` below is incremented at the pre-gate and MAY be counted again
+    # under the judge's verdict -- see that formatter's docstring for the five paths that
+    # leave it counted once.)
     resolved: dict = field(default_factory=lambda: {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0})
     llm_calls: int = 0
     # #223 §2.4: how many leads had `role_type` written from the POSTING, split by what
     # the observation replaced. `filled` had nothing; `confirmed` already agreed and only
     # gains the stronger provenance; `corrected` had the tool's own guess; `conflicted`
     # had the user's own declaration. NEW fields rather than rows inside `counts` for the
-    # reason stated above it: counts rows are lead OUTCOMES that sum to the lead total a
-    # human reads in a phone notification.
+    # reason stated above it: counts rows are lead OUTCOMES that a consumer reads as
+    # per-outcome numbers, and these are neither.
     observed_role_types: dict = field(
         default_factory=lambda: {"filled": 0, "confirmed": 0, "corrected": 0,
                                  "conflicted": 0})
+    # Which leads the judge SURFACED, as `(verdict, company, role)` in judge order.
+    # `counts` says how MANY were shortlisted and cannot say WHICH, so a notification
+    # built from it alone reads "1 shortlist" and sends its reader to the machine to find
+    # out what that was. A NEW field rather than a row inside `counts`, for the reason
+    # `resolved` and `observed_role_types` give above: counts rows are lead OUTCOMES that
+    # a consumer reads as numbers, and a list among them breaks all of them.
+    #
+    # SURFACED verdicts only (`_status.SURFACED`). A dismissed lead is one the reader is
+    # deliberately not being asked to look at, and naming a run's worth of dismissals is
+    # precisely the noise a readable digest exists to remove.
+    surfaced: list = field(default_factory=list)
     # One message per `conflicted` lead, printed like `failures` -- §2.5's second
     # obligation, that a disagreement is surfaced rather than silently overridden.
     # Deliberately NOT in `failures`: nothing failed, and a user scanning a failure
@@ -689,18 +711,60 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # (their editable source of truth), falling back to the baked-in default
         # if it is missing.
         system_prompt = build_system_prompt_from(vault.read_criteria())
+        report.sent_to_judge = len(dossiers)
         verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
                          system_prompt=system_prompt)
         report.judged = len(verdicts)
         report.backend = getattr(backend, "last_backend", None)
+        # `judge()` drops a batch it cannot get a parseable answer for -- every backend
+        # exception and every parse failure, twice per batch -- and holds no reference to
+        # `report`, so a total outage returned an empty list with `failures` untouched,
+        # `backend` None, exit 0, and a digest that read like an ordinary quiet run.
+        # Reconciled HERE, where both numbers are in scope, rather than by widening
+        # judge()'s return type: the count is the whole signal, and this keeps the judge's
+        # own contract (verdicts in, verdicts out) unchanged.
+        #
+        # Distinct dossier ids that actually came back with a verdict, NOT a comparison of
+        # lengths. A length check let a duplicate cancel out an omission: two verdicts for
+        # lead A and none for lead B is 2 against 2 dossiers, so it passed while B went
+        # unjudged and A was written twice with conflicting verdicts (measured -- A ended
+        # at `dismiss`, which is terminal, having passed through `shortlist`, and
+        # `surfaced` named it as shortlisted). Intersected with `note_by_id` so an id the
+        # model paraphrased counts its DOSSIER as unjudged, which it is; the per-verdict
+        # message below still names which id was unusable, and the count cannot.
+        judged_ids = {v.get("lead_id") for v in verdicts} & set(note_by_id)
+        if (unjudged := len(dossiers) - len(judged_ids)) > 0:
+            report.failures.append(
+                f"judge: {unjudged} of {len(dossiers)} dossier(s) came back with no "
+                "verdict -- a dropped batch after a backend error or an unparseable "
+                "reply, or a verdict naming another lead (see the log). Those leads were "
+                "NOT judged")
         # A bare comprehension, and safe as one only because of the two facts above: every
         # `lead_id` in `dossiers` is a `note.slug`, and no two notes reaching this line share
         # one -- `keeps` holds each note once (read_leads yields one LeadNote per path) and
         # index_by_slug removed every slug two of them claimed. Take either away and this
         # silently keeps the last twin again, which is the whole defect.
         by_id = {d["lead_id"]: d for d in dossiers}
+        decided = set()
         for verdict in verdicts:
-            note = note_by_id.get(verdict.get("lead_id"))
+            lead_id = verdict.get("lead_id")
+            # FIRST verdict wins. Applying both wrote one lead twice with conflicting
+            # verdicts -- and since triage owns every status either write lands, so a lead
+            # could pass through `shortlist` and come to rest at `dismiss`, which no later
+            # run re-selects. It also counted one lead under two outcomes and let
+            # `surfaced` name it at a status the vault does not hold, which is the one
+            # thing the digest must never do.
+            #
+            # The batch is NOT rejected wholesale: discarding verdicts that did arrive, to
+            # punish a malformed sibling, loses good work for leads that were judged fine.
+            # Deduped BEFORE the note lookup, so two copies of an unknown id report once.
+            if lead_id in decided:
+                report.failures.append(
+                    f"judge {lead_id!r}: a second verdict for the same lead in one run, "
+                    "ignored -- the first was applied")
+                continue
+            decided.add(lead_id)
+            note = note_by_id.get(lead_id)
             if note is None:
                 # `lead_id` is now the note's slug -- prose, not an opaque hash -- so a
                 # model that paraphrases it (collapses whitespace, swaps a dash) produces
@@ -735,6 +799,17 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             key = "skipped" if outcome in ("skipped", "unchanged") else clamp_verdict(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
+            # Recorded off `key`, so this list and the counts row can never disagree about
+            # a lead -- including the clamp, which is the whole reason `key` exists rather
+            # than the raw model string. A skipped or unchanged write yields `"skipped"`,
+            # which is not in `SURFACED`, so a verdict the vault refused is never named as
+            # something to go and look at; a `dry_run` forces that same branch, so a
+            # preview surfaces nothing. Those leads are still COUNTED, under `skipped`,
+            # so an empty `surfaced` never means "nothing was worth surfacing" -- it means
+            # no write landed, which a consumer has to account for.
+            if key in _status.SURFACED:
+                report.surfaced.append((key, note.fm.get("company", ""),
+                                        note.fm.get("role", "")))
             if outcome not in ("skipped", "unchanged"):
                 _audit({"ts": today, "slug": verdict["lead_id"],
                         "company": note.fm.get("company", ""),

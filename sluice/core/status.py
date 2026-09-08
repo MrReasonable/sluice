@@ -12,6 +12,21 @@ through untouched so a genuinely new state is never silently rewritten.
 """
 
 TRIAGE_OWNED = ("new", "shortlist", "research", "needs_review", "dismiss", "unjudgeable")
+# The judge verdicts that name a lead worth OPENING: a positive call on a specific role.
+# `needs_review` is excluded deliberately, though it plainly also asks a human to look --
+# it is `clamp_verdict`'s fallback for a verdict the model garbled, so there is no
+# recommendation to carry and nothing worth naming; it is counted as a word instead.
+#
+# ORDERED, and the order is load-bearing rather than a reading preference: the first group
+# spends the digest's shared name budget first (`cli._PUSH_NAME_CAP`), so reversing this
+# tuple gives the weaker call the names and the top of the message. Pinned by
+# `tests/test_triage_run_cli.py::test_the_push_names_the_surfaced_leads`.
+#
+# Here rather than in `triage/engine.py` because two modules read it and they must not
+# drift: the engine decides which leads to record in `TriageReport.surfaced`, and `cli`
+# decides which to name in the notification. A second copy is how the two come to disagree
+# about what "surfaced" means.
+SURFACED = ("shortlist", "research")
 APPLICATION_OWNED = (
     "applied", "phone_screen", "interview", "offer",
     "rejected", "accepted", "withdrawn",
