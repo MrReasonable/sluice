@@ -113,7 +113,19 @@ render = ["weasyprint>=69,<70", "jinja2>=3,<4"]
 # such exception here is `mcp`, documented at its own line. None of these floors carries test
 # backing anyway -- CI installs `[test]`, and `render`/`google`/`mcp`/`completion` are separate
 # extras exercised through fakes -- which is a further reason to claim the least we can.
-google = ["google-api-python-client>=2,<3", "google-auth>=2,<3"]
+google = ["google-api-python-client>=2,<3", "google-auth>=2,<3",
+          # `job-sluice track auth`'s consent flow (#201). Major-boundary floor, per this
+          # file's own rule: the ceiling is what Dependabot tracks, and a floor younger
+          # than a day is invisible to `brew update-python-resources`.
+          #
+          # No second, explicit google-auth floor here even though `track/auth.py`'s scope
+          # check reads `Credentials.granted_scopes` -- measured, google-auth-oauthlib 1.x
+          # already declares `google-auth>=2.15.0`, and google-auth 2.15.0 carries
+          # `granted_scopes` as both an `__init__` parameter and a property. So the floor
+          # this dependency needs is satisfied TRANSITIVELY by google-auth-oauthlib's own
+          # requirement; a second, hand-written floor here would just be a second value to
+          # drift from the real one.
+          "google-auth-oauthlib>=1,<2"]
 # Shell completion (zsh, bash, tcsh, fish). Same shape as `render`/`google`: a bare install
 # never needs it, `sluice/cli.py` guards the import (`try/except ImportError`), and
 # `argcomplete.autocomplete(parser)` is itself a no-op unless a shell's completion hook has

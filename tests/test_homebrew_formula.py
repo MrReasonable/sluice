@@ -745,7 +745,7 @@ def test_the_formula_probes_the_non_render_extras_against_the_brewed_interpreter
     `test_the_expectations_are_not_imported_from_the_renderer`.
     """
     formula = render(**FIXTURE)
-    expected_imports = "mcp, googleapiclient, argcomplete"
+    expected_imports = "mcp, googleapiclient, google_auth_oauthlib, argcomplete"
     probe = f'system libexec/"bin/python", "-c", "import {expected_imports}"'
     assert probe in formula, (
         f"the formula's `test do` block no longer contains {probe!r} -- a skew between the "

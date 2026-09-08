@@ -177,7 +177,7 @@ jobs:
       # `pip install` only WARNS on an unknown extra -- a typo'd or renamed one would otherwise
       # ship an image silently missing google, mcp or completion with nothing red anywhere.
       - name: Smoke -- every baked extra imports, system libraries included
-        run: docker run --rm --entrypoint python job-sluice:ci -c "import weasyprint, jinja2, googleapiclient, mcp, argcomplete"
+        run: docker run --rm --entrypoint python job-sluice:ci -c "import weasyprint, jinja2, googleapiclient, google_auth_oauthlib, mcp, argcomplete"
       # The compose file is a shipped artefact too -- docs/INSTALL.md tells people to use it --
       # and `tests/test_docker_channel.py` asserts a great deal about it, but only STATICALLY,
       # from the file's own text. Rendering is a different question: whether the real Compose

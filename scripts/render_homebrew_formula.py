@@ -285,9 +285,10 @@ def render(*, sdist_url: str, sha256: str) -> str:
     # and `mcp` in particular carries a hard pydantic version floor -- so a skew between what
     # this formula ships and what a brewed interpreter's homebrew-core dependencies actually
     # provide would surface as a user-facing ImportError on `mcp`/`google`/`completion` with
-    # this job still green. Import each of the other three extras' top-level module the same
-    # way the render extra is proven above, against the SAME installed libexec interpreter.
-    system libexec/"bin/python", "-c", "import mcp, googleapiclient, argcomplete"
+    # this job still green. Import each of the other three extras' top-level module or
+    # modules the same way the render extra is proven above, against the SAME installed
+    # libexec interpreter.
+    system libexec/"bin/python", "-c", "import mcp, googleapiclient, google_auth_oauthlib, argcomplete"
   end
 end
 '''
