@@ -30,8 +30,9 @@ home and two of them read as contradicting each other:
     expanduser at INGRESS -- wherever a path first arrives from outside: this module's
     explicit branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`,
     `cli.py` (both its `--vault`-versus-`$VAULT_DIR` comparison and the preset it hands
-    `sluice init`), and `renderers/template.py` (`cv.template`, read out of YAML where
-    no shell expanded it). Deliberately NO count: this paragraph has carried a wrong
+    `sluice init`), `renderers/template.py` (`cv.template`, read out of YAML where
+    no shell expanded it), and `track/auth.py` (`--client-secrets`, in its `=`-joined
+    form no shell expands). Deliberately NO count: this paragraph has carried a wrong
     one twice -- it said four when there were five, and five when a sixth landed -- and
     nothing went red either time, because a number in prose is not a check.
     `tests/test_path_tilde.py::test_the_expanduser_roster_matches_the_source` derives the
