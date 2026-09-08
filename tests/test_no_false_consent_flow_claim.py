@@ -1,83 +1,131 @@
-"""sluice has no OAuth consent flow, and no shipped text may say it has (#104 PR 7).
+"""No shipped text may repeat a consent claim that was measured false (#104 PR 7, #201).
 
-WHY THIS EXISTS. `docs/INSTALL.md`'s Google section documents obtaining `google_token.json` as a
-manual, one-time step you perform yourself, because that is what the code does: `GoogleClient._creds`
-calls `Credentials.from_authorized_user_file` and refreshes what it finds, and nothing anywhere
-mints a credential. Three shipped surfaces nonetheless told users a sluice command would walk them
-through consent -- `README.md`, `docs/TROUBLESHOOTING.md` and `sluice/core/doctor.py`'s own DEGRADED
-message, the last of which prints on a real install. Measured on a packaged install: `doctor` said
-"the first `track run` will need an interactive OAuth consent" while a token-less `track run` in
-fact records a failure row and prompts for nothing. The claim was never true, in any release.
+WHY THIS EXISTS. Three shipped surfaces once told users a sluice command would walk them through
+Google's OAuth consent while nothing in the tree could open a browser: `README.md`,
+`docs/TROUBLESHOOTING.md`, and `sluice/core/doctor.py::classify_track_google`'s own message, the
+last of which prints on a real install. Measured on a packaged install, `doctor` said "the first
+`track run` will need an interactive OAuth consent" while a token-less `track run` in fact recorded
+a failure row and prompted for nothing. That measurement is scoped to the DOCTOR string alone --
+the other two sentences were read off the docs, not executed -- and an earlier draft of this
+paragraph over-attributed it to all three.
 
-TWO ASSERTIONS, and the first is what licenses the second:
+WHAT #201 CHANGED, and why the guard this file replaces could not survive it. The old guard rested
+on two assertions, the first licensing the second:
 
-1. The mechanism is absent -- no `google-auth-oauthlib` (the package supplying `InstalledAppFlow`)
-   in any dependency list, and no flow entry point in `sluice/`.
-2. Given 1, no shipped doc and no `sluice/` string asserts an interactive consent.
+1. The mechanism is absent -- no `google-auth-oauthlib` in any dependency list, no flow entry point
+   and no Google OAuth host anywhere in `sluice/`.
+2. Given 1, no shipped doc and no `sluice/` string asserts an interactive consent, because while no
+   flow exists the claim cannot be true.
 
-So this guard LIFTS ITSELF the day someone implements the flow: assertion 1 fails first, and its
-message names the four places whose prose then has to change. A guard that fought a legitimate
-feature would just be deleted by whoever added it, taking the doc sync with it.
+#201 implements the flow (`sluice/track/auth.py::run_consent_flow`, reached through
+`sluice/core/app.py::track_auth` by `job-sluice track auth`), so assertion 1 is false BY DESIGN
+and every test
+that rested on it dies with it. The old docstring said this guard would lift itself the day someone
+implemented the flow; this is that day. `git log -- tests/test_no_false_consent_flow_claim.py` has
+the mechanism machinery -- `_identifiers`, the flow-entry-point and OAuth-host patterns, and the
+rows pinning that a COMMENT denying the flow must not read as evidence of one -- if a future change
+ever needs to assert absence again.
 
-FOUR THINGS THIS GUARD GOT WRONG FIRST, each found by review and each fixed by measurement rather
-than by argument -- recorded because every one of them failed GREEN:
+THE PROPERTY THAT SURVIVES is narrower and still true. The mint lives in its own module behind its
+own command: `RealGoogleClient._creds` still only READS and refreshes a credential it finds, and
+gained no path that can produce one -- #201's only edit to it is the renamed writer it calls. So a
+token-less `track run` still records a failure row and exits without prompting anyone, which
+`test_track_engine.py::test_a_missing_google_token_is_a_failure_row_not_a_reauth_and_not_a_prompt`
+executes rather than asserts from the code. What must never reappear is a sentence attributing
+consent to `track run` -- or to bare `track`.
 
-- **A Python string literal can be re-wrapped, and the phrase then spans a quote boundary.**
-  `doctor.py`'s message is three adjacent literals; only where the wrap happened to fall kept the
-  first version of this pattern honest. Measured, same false sentence, wrap moved one word left:
-  `"... an interactive " "OAuth consent")` did NOT match, while the identical text on one line did.
-  A `ruff` reflow is routine, so the guard would have gone blind to the exact string it was written
-  for.
-- **The first fix for that was a regex, and it was wrong twice over.** Joining on a
-  quote-whitespace-quote boundary misses a PREFIXED continuation (`"an interactive " f"consent"` -- a shape that ships live in this
-  repo today), and it FUSES two adjacent triple-quoted strings into text nobody wrote, which can
-  only invent a violation. Both measured. So this parses instead of patching: `ast.parse` hands back
-  each string constant with implicit concatenation already resolved by Python's own tokenizer, which
-  is correct for every prefix, every quote style and every escape by construction, and cannot fuse
-  two separate literals at all. That is this repo's standing rule -- when a narrowing needs a third
-  patch, stop patching and parse -- applied on the second.
-- **A consent flow written to THIS repo's own stdlib-only rule trips neither licence check.**
-  `urllib` + `http.server` + `webbrowser` imports no `InstalledAppFlow` and adds no dependency, so
-  the guard would have kept forbidding the prose after the prose became true -- blocking an honest
-  doc, which is the failure direction that gets a guard deleted. Google's OAuth endpoint hosts are
-  checked too: no flow can avoid talking to them.
-- **CHANGELOG.md and `.rulesync/` are deliberately OUT of scope.** A changelog RECORDS what changed,
-  and a hand-edited release entry saying which false sentence was removed is doing its job; the same
-  goes for `.rulesync/rules/CLAUDE.md`, which is where this repo writes incidents down verbatim so
-  the next author does not repeat them. A forbidden-string guard cannot tell "instructs X" from
-  "records that X was removed" -- the #170 failure exactly. Neither file is user-facing prose, so
-  excluding them costs nothing the guard exists to protect. (An earlier version of this comment
-  justified the CHANGELOG exclusion by claiming release-please copies commit BODIES into it. It does
-  not -- it renders SUBJECTS and footers, verified against this repo's own generated 2.0.1 section.
-  The exclusion is right; that reason for it was not.)
+WHY THERE IS NO LONGER A PATTERN. Attribution is not mechanically expressible as one, and three
+measurements say so rather than three arguments:
 
-KNOWN GAP, stated rather than disguised. Assertion 2 sweeps the spelling that actually shipped
-three times (`interactive ... consent`), not every way English can assert a flow. A sentence
-claiming one without that word is not caught. The alternative considered -- flagging every
-"consent flow" mention unless a negation appears within N characters -- was dropped after measuring
-it: the doctor string's own "**no** token file exists yet" sits 60 characters ahead of its false
-claim, so the negation window that admits this file's correct replacements ALSO admits the exact
-sentence the guard exists to catch, at any N large enough to be useful. A tuned distance is not a
-rule, and this repo has been bitten before by narrowings that each admitted one more construct.
+- **The old `interactive ... consent` pattern matches the HONEST new prose.** It has to: what
+  `track auth` now does IS an interactive consent, so every true sentence about it reaches for the
+  same two words. Measured against honest sentences about what the command does ("`job-sluice
+  track auth` runs the interactive consent flow in your browser"), the pattern matches all of
+  them. Armed
+  unchanged it fails the build on true text, which the old docstring itself names as the failure
+  direction that gets a guard deleted.
+- **Keying on the command does not separate them either, in either direction.** One of the three
+  sentences that actually shipped attributes consent to bare `track` ("`track` will walk you
+  through the interactive consent flow again") and contains no `track run` at all -- measured, so a
+  check keyed on `track run` drops it silently. Keyed on bare `track` instead, the check fails every
+  honest new sentence, because all of them carry that token in `track auth`. No proximity or
+  negation window separates the two: the old docstring already records that approach being tried
+  and rejected on the doctor string, whose own "no token file exists yet" sits some sixty characters
+  ahead of its false claim, so any window wide enough to admit the corrections also admits the
+  sentence the guard exists to catch.
+- **The old `corrected` roster cannot serve as a must-keep-passing set.** None of those three
+  sentences contains the word `interactive`, so they pass the old pattern today and cannot
+  distinguish a narrowed pattern from an unnarrowed one -- and they are denials near-verbatim the
+  live prose #201 deletes.
+
+SO THIS IS A RATCHET, which is what this repo does when nothing local can classify --
+`tests/test_fixture_name_neutrality.py`'s reviewed-identity roster is the same shape.
+`_SHIPPED_FALSE` holds the sentences that ACTUALLY shipped false, as data, compared as
+normalised exact strings. A ratchet over known values cannot be defeated by phrasing, because it
+makes no claim about phrasing.
+
+TWO MECHANISMS STAY, and both are still load-bearing under exact-string comparison:
+
+- **`_searchable` PARSES rather than greps the code half.** A Python string literal can be
+  re-wrapped and the phrase then straddles a quote boundary: measured on `doctor.py`'s three-literal
+  message, the same false sentence with the wrap moved one word left did NOT match a raw search
+  while the identical text on one line did. A `ruff` reflow is routine, so a raw search would go
+  blind to the exact string it was written for. The first fix for that was a regex join across a
+  quote-whitespace-quote boundary, and it was wrong in BOTH directions, each measured: it MISSES a
+  prefixed continuation (`"an interactive " f"consent"`, a shape that ships live in this repo
+  today), and it FUSES two adjacent triple-quoted strings into text nobody wrote, which can only
+  invent a violation. `tests/test_doc_links_from_code.py` cites this file as the record of that
+  cost, so both halves are kept here rather than summarised. `ast.parse` hands back each constant
+  with implicit concatenation already resolved by Python's own tokenizer -- correct for every
+  prefix, quote style and escape by construction -- and cannot fuse two separate literals at all.
+  That is this repo's standing rule: when a narrowing needs a third patch, stop patching and
+  parse.
+- **Whitespace is normalised on BOTH sides.** The code half arrives pre-joined, but the prose half
+  arrives as raw markdown, and two of these sentences shipped in README and TROUBLESHOOTING where a
+  reflow moves the line breaks. Normalising only the needle would silently stop matching. TWO
+  things together make that falsifiable, and neither is sufficient alone. The comparison
+  lives in ONE function, `_catches`, called by the ratchet and by
+  `test_the_comparator_catches_a_planted_sentence` alike, so a deletion lands in code the
+  partner executes -- measured while the two compared inline, deleting the haystack half from
+  the ratchet's own loop left the partner green and blinded the ratchet to reflowed prose. And
+  that partner plants its markdown copy REFLOWED across a line break, asserting the raw text
+  misses it, because through a shared comparator a ONE-LINE fixture would still match with the
+  haystack half deleted.
+
+SCOPE. `CHANGELOG.md` and `.rulesync/` are deliberately OUT of it. A changelog RECORDS what changed,
+and a hand-edited release entry naming which false sentence was removed is doing its job; the same
+goes for `.rulesync/rules/CLAUDE.md`, which is where this repo writes incidents down verbatim so the
+next author does not repeat them. A forbidden-string check cannot tell "instructs X" from "records
+that X was removed" -- the #170 failure exactly. Neither is user-facing prose, so excluding them
+costs nothing this guard exists to protect. The same latitude is NOT extended to `sluice/` source
+comments, which are swept as raw text: a false sentence quoted verbatim in a comment trips the
+ratchet, and the place to record one is the changelog or `.rulesync/`.
+
+RESIDUAL, stated rather than disguised. A NEW false attribution, worded differently from the three
+below, is not caught here. That is a real loss against the old guard's AMBITION and not against its
+reach, since the old pattern could not distinguish attribution either -- the three measurements
+above are why. The doctor row is the one narrow inverse cover: whatever else that message says, the
+command it names must be one the real parser accepts, which is what a partial doc edit leaving an
+inverse claim printing on every fresh install would break.
 """
 import ast
 import glob
 import re
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).parent.parent
 
-# The literal assertive spelling, tolerant of what sat between the two words in the three real
-# instances ("interactive consent flow", "interactive OAuth consent"). Bounded to stay inside one
-# phrase rather than spanning a paragraph.
-_CONSENT_CLAIM = re.compile(r"interactive(?:[\w ]|\n(?!\s*\n)){0,12}consent", re.I)
-
-# No consent flow can avoid Google's own OAuth endpoints, whatever library (or none) reaches them.
-_OAUTH_ENDPOINT = re.compile(r"accounts\.google\.com|oauth2\.googleapis\.com")
-
-# Flow entry points from the usual libraries. Kept alongside the endpoint check rather than
-# replaced by it: a vendored or mocked helper may name the class without the host, and vice versa.
-_FLOW_ENTRY = re.compile(r"InstalledAppFlow|run_local_server|run_console|from_client_secrets_file")
+# The sentences that ACTUALLY SHIPPED false, kept as DATA. A ratchet over known values, not a
+# classifier: nothing local can decide whether a NEW sentence misattributes consent, and this
+# module's docstring records the three measurements that killed every attempt to pattern-match it.
+_SHIPPED_FALSE = (
+    "obtained on first `track run` via an interactive consent flow",
+    "`track` will walk you through the interactive consent flow again",
+    "google libs are importable but no token file exists yet -- the first `track run` "
+    "will need an interactive OAuth consent",
+)
 
 # What a user reads, plus the modules whose runtime strings are what they see on a real install.
 # CHANGELOG.md and .rulesync/ are excluded ON PURPOSE -- see this module's docstring.
@@ -87,45 +135,37 @@ _CODE = sorted(glob.glob("sluice/**/*.py", root_dir=ROOT, recursive=True))
 _SHIPPED = _PROSE + _CODE
 
 
-def _identifiers(rel: str, text: str) -> set[str]:
-    """Every NAME a Python module binds or references, plus its string constants.
+def _norm(text: str) -> str:
+    """Collapse whitespace, applied to the HAYSTACK as well as the needle.
 
-    Deliberately not the raw source: comments and docstrings are prose, and prose that DENIES the
-    flow ("no `run_local_server` anywhere in this codebase") is exactly what a repo with this
-    comment convention would write. Reading it as evidence of a mechanism makes the guard fail
-    the build for a correct explanation.
+    The code half arrives pre-joined by `ast`, but the prose half is raw markdown and two of these
+    sentences shipped in README/TROUBLESHOOTING, where a reflow moves the line breaks. Comparing
+    raw would silently stop matching the exact text this guard exists to hold down.
     """
-    names: set[str] = set()
-    tree = ast.parse(text)
-    # DOCSTRINGS are prose, exactly like comments, and must not count as evidence either -- a
-    # module docstring saying "this module deliberately has no InstalledAppFlow" is the same
-    # denial in a different node type. Identified by POSITION (the first statement of a module,
-    # class or function), which is what makes a docstring a docstring; a string constant
-    # anywhere else is a value the code actually uses.
-    docstrings = set()
-    for n in ast.walk(tree):
-        if isinstance(n, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            body = getattr(n, "body", None)
-            if (body and isinstance(body[0], ast.Expr)
-                    and isinstance(body[0].value, ast.Constant)
-                    and isinstance(body[0].value.value, str)):
-                docstrings.add(id(body[0].value))
-    for n in ast.walk(tree):
-        if isinstance(n, ast.Constant) and id(n) in docstrings:
-            continue
-        if isinstance(n, ast.Name):
-            names.add(n.id)
-        elif isinstance(n, ast.Attribute):
-            names.add(n.attr)
-        elif isinstance(n, ast.alias):
-            names.add(n.name)
-            if n.asname:
-                names.add(n.asname)
-        elif isinstance(n, ast.ImportFrom) and n.module:
-            names.add(n.module)
-        elif isinstance(n, ast.Constant) and isinstance(n.value, str):
-            names.add(n.value)
-    return names
+    return " ".join(text.split())
+
+
+def _catches(texts, sentence: str) -> bool:
+    """THE comparator. One function, called by the ratchet and by its anti-vacuity partner alike.
+
+    It is a function rather than two inline comprehensions because the partner can only falsify a
+    line it actually EXECUTES. Measured while both sites compared inline: deleting the haystack
+    half of the normalisation from the ratchet's own loop (`[_norm(t) for t in texts]` ->
+    `list(texts)`) left the partner GREEN while blinding the ratchet to reflowed prose -- which is
+    how two of the three `_SHIPPED_FALSE` sentences actually shipped. The mutant was not
+    equivalent; against the sentence planted across a line break it went True -> False with the
+    whole suite passing.
+
+    So the rule this file already applies to fixtures applies to comparators too: a guard's
+    falsify-partner must exercise the SAME code the verdict is read from, not a copy of it.
+    """
+    needle = _norm(sentence)
+    # Normalised per TEXT and never concatenated into one haystack. Joining a file's string
+    # constants would fuse two separate literals into a phrase nobody wrote, which can only INVENT
+    # a violation -- the failure direction that is worse than missing one, and the measured reason
+    # `_searchable` parses instead of grepping. `test_two_separate_literals_are_never_fused`
+    # is what holds this, and it reddens if the join is ever reintroduced here.
+    return any(needle in _norm(t) for t in texts)
 
 
 def _searchable(rel: str, text: str) -> list[str]:
@@ -198,171 +238,119 @@ def test_the_sweep_reads_the_files_it_means_to():
         "incidents verbatim, and it is not user-facing prose")
 
 
-def test_sluice_ships_no_oauth_consent_flow():
-    """The fact `docs/INSTALL.md`'s Google section is written from.
+def test_no_shipped_text_repeats_a_sentence_that_was_false():
+    """THE RATCHET. Exact normalised strings, no pattern -- this module's docstring says why.
 
-    If you are here because you ADDED a consent flow: good -- delete this test, and update
-    `docs/INSTALL.md`'s "Google access for `track`" section, `README.md`'s requirements list,
-    `docs/TROUBLESHOOTING.md`'s reauth section, and `classify_track_google`'s DEGRADED message in
-    `sluice/core/doctor.py`. All four currently tell the user the acquisition step is theirs.
+    Read the SCOPE assertion above before this verdict: finding nothing is the success case here,
+    so a sweep that read nothing would satisfy this test in full.
     """
-    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert "google-auth-oauthlib" not in pyproject and "google_auth_oauthlib" not in pyproject, (
-        "google-auth-oauthlib is declared -- if sluice now runs the OAuth consent flow, the four "
-        "doc sites named in this test's docstring describe the old manual procedure and are wrong")
-    offenders = []
-    for rel in _CODE:
-        p = ROOT / rel
-        if not p.exists():
-            continue
-        idents = _identifiers(rel, p.read_text(encoding="utf-8"))
-        if any(_FLOW_ENTRY.search(i) or _OAUTH_ENDPOINT.search(i) for i in idents):
-            offenders.append(rel)
+    offenders = [(rel, s) for rel, texts in _shipped_texts()
+                 for s in _SHIPPED_FALSE if _catches(texts, s)]
     assert not offenders, (
-        f"a consent-flow entry point or a Google OAuth endpoint appeared in {offenders} -- see "
-        "this test's docstring for the four doc sites that then need updating")
+        f"shipped text repeats a sentence that was measured false: {offenders}. "
+        "`job-sluice track auth` mints the credential; `track run` still never prompts, and "
+        "neither does bare `track`.")
 
 
-def test_no_shipped_text_claims_an_interactive_consent():
-    """The prose half. Licensed by the test above: while no flow exists, this claim cannot be true.
+@pytest.mark.parametrize("sentence", _SHIPPED_FALSE)
+def test_the_comparator_catches_a_planted_sentence(sentence):
+    """ANTI-VACUITY, and the scope test above cannot stand in for it.
 
-    Every legitimate mention in this repo denies the flow ("never runs the consent flow itself",
-    "There is no consent flow in the codebase"), and none reaches for the word `interactive` to do
-    it -- which is why this needs no negation handling and so cannot be defeated by phrasing that
-    happens to put a `no` somewhere earlier in the sentence.
+    That test asserts what is READ; this one asserts what is FOUND. A comparator broken in any way
+    -- a normalisation dropped, the `ast` half of `_searchable` deleted, a needle mistyped -- finds
+    nothing, and finding nothing is exactly what success looks like for a negative guard. This
+    repo has shipped that shape before.
+
+    Both fixtures are deliberately hostile, and each carries a partner assertion that the RAW
+    text misses the sentence. Without those partners a fixture can rot into a plain one-line
+    copy that matches whatever the comparator does, and the row goes on passing while proving
+    nothing. The two partners compare DIFFERENTLY on purpose, because they pin different
+    mechanisms: the markdown one is checked against UNNORMALISED text, since normalising the
+    haystack is exactly what must rescue it, while the Python one is checked against
+    NORMALISED text, since no amount of whitespace collapsing can cross a quote boundary and
+    only `ast` can.
     """
-    offenders = [(rel, m.group(0))
-                 for rel, texts in _shipped_texts()
-                 for m in (next((x for x in map(_CONSENT_CLAIM.search, texts) if x), None),)
-                 if m]
-    assert not offenders, (
-        f"shipped text asserts an interactive OAuth consent sluice does not perform: {offenders}. "
-        "sluice reads and refreshes an existing token; producing it is the user's step -- see "
-        "docs/INSTALL.md's 'Google access for track'.")
+    # PROSE half, REFLOWED across a line break on purpose: two of these sentences shipped in
+    # README/TROUBLESHOOTING, where a reflow is routine. A one-line fixture would still match with
+    # the haystack half of `_norm` deleted, leaving that half unfalsifiable.
+    cut = sentence.rfind(" ", 0, len(sentence) // 2)
+    assert cut > 0, f"fixture needs a word boundary to wrap at: {sentence!r}"
+    md = f"Some prose.\n{sentence[:cut]}\n{sentence[cut + 1:]}\nMore prose.\n"
+    assert _norm(sentence) not in md, (
+        "the markdown fixture is not actually reflowed, so it would match without normalising the "
+        "haystack and proves nothing about it")
+    assert _catches(_searchable("x.md", md), sentence), (
+        "a reflowed markdown sentence hid from the comparator")
+
+    # CODE half, split MID-SENTENCE so the phrase straddles a quote boundary -- the shape that
+    # measurably hid `doctor.py`'s message from a raw search when a wrap moved one word left.
+    # Each half is rendered with `%r` rather than interpolated raw, so a ratchet entry added later
+    # carrying a quote or a backslash yields a real literal instead of a parse error.
+    half = len(sentence) // 2
+    src = "MSG = (\n    %r\n    %r\n)\n" % (sentence[:half], sentence[half:])
+    assert _norm(sentence) not in _norm(src), (
+        "the python fixture is not re-wrapped, so it would match on raw text and proves nothing "
+        "about `ast` resolving implicit concatenation")
+    assert _catches(_searchable("x.py", src), sentence), (
+        "a re-wrapped python literal hid the sentence from the comparator")
 
 
-def test_the_claim_pattern_catches_the_three_sentences_that_actually_shipped():
-    """The falsify partner, against SYNTHETIC input.
+@pytest.mark.parametrize("sentence", _SHIPPED_FALSE)
+def test_two_separate_literals_are_never_fused(sentence):
+    """The failure direction that is WORSE than missing one: inventing a violation.
 
-    Pinned here rather than against the live tree because the live tree is CLEAN now: an assertion
-    made against the real files passes today and would start failing for the wrong reason the
-    moment the shape reappears. The three strings below are the ones this PR removed; the three
-    after them are their replacements, which must NOT trip the pattern.
+    A comparator that joins a file's texts into one haystack reports prose nobody wrote -- it would
+    fail the build on a sentence that exists in no file, and the only actionable reading of that
+    failure is to delete text that is already correct. Two adjacent triple-quoted literals are the
+    shape that does it: separate `ast.Constant` nodes, never implicitly concatenated, sitting next
+    to each other in the source. This was a test of the old pattern and is re-expressed here
+    without one -- the hazard belongs to the COMPARATOR, not to how the needle is spelled.
+
+    Measured: with `_catches` mutated to `needle in _norm(" ".join(texts))`, every row here goes
+    red, which is what makes this a guard rather than a comment.
     """
-    shipped_and_false = [
-        "obtained on first `track run` via an interactive consent flow",
-        "`track` will walk you through the interactive consent flow again",
-        "google libs are importable but no token file exists yet -- the first `track run` "
-        "will need an interactive OAuth consent",
-    ]
-    for sentence in shipped_and_false:
-        assert _CONSENT_CLAIM.search(sentence), f"pattern missed a real instance: {sentence!r}"
-
-    corrected = [
-        "sluice reads and refreshes that credential but never runs the consent flow itself",
-        "sluice reads and refreshes the token but never runs the OAuth consent flow itself",
-        "sluice does not run the OAuth consent flow itself; see docs/INSTALL.md",
-    ]
-    for sentence in corrected:
-        assert not _CONSENT_CLAIM.search(sentence), f"pattern flags correct prose: {sentence!r}"
-
-
-def test_a_re_wrapped_python_literal_cannot_hide_the_claim():
-    """The wrap-position hole, pinned as real Python SOURCE rather than as a pre-joined string.
-
-    `doctor.py`'s message spans three adjacent literals. With the wrap one word to the left the
-    phrase straddles a quote boundary and a search over the raw file misses it entirely -- which is
-    how this guard would have gone blind to the exact sentence it was written for, silently, on a
-    routine reflow. The raw miss is asserted too, so this row cannot quietly become a no-op if the
-    pattern is ever widened to cross quotes on its own.
-
-    The f-prefixed row is the one a REGEX fix got wrong: a prefix on the continuation is not a
-    quote-to-quote boundary, and that shape ships live in this repo today, so the earlier
-    quote-whitespace-quote join left the hole open for it. Parsing has no such case to remember.
-    """
-    for label, src in (
-        ("plain continuation",
-         'MSG = ("no token file exists yet -- the "\n'
-         '       "first `track run` will need an interactive "\n'
-         '       "OAuth consent")\n'),
-        ("f-prefixed continuation",
-         'MSG = ("no token file exists yet -- the "\n'
-         '       f"first `track run` will need an interactive "\n'
-         '       "OAuth consent")\n'),
-        ("implicitly joined on one line",
-         'MSG = ("will need an interactive " "OAuth consent")\n'),
-    ):
-        assert not _CONSENT_CLAIM.search(src), (
-            f"[{label}] the raw pattern is expected to miss this -- if it now matches, parsing is "
-            "no longer what closes the wrap hole and this row proves nothing")
-        assert any(_CONSENT_CLAIM.search(t) for t in _searchable("sluice/core/doctor.py", src)), (
-            f"[{label}] a re-wrapped literal hid the claim from the sweep")
-
-
-def test_parsing_never_fuses_two_separate_literals():
-    """The failure direction that INVENTS a violation, which is worse than missing one.
-
-    A regex join across `"` … `"` fuses two adjacent triple-quoted strings into text nobody wrote,
-    and would fail the build on prose that does not exist in the file. `ast` cannot do this: each
-    constant is a separate node, and only genuine implicit concatenation is ever one node.
-    """
-    src = ('A = """ends in interactive"""\n'
-           'B = """consent begins"""\n'
-           'C = ("interactive", "consent")\n'
-           'D = {"interactive": "consent"}\n'
-           'E = "interactive" + "consent"\n')
-    assert not any(_CONSENT_CLAIM.search(t) for t in _searchable("x.py", src)), (
-        "separate literals were fused into a phrase that is not in the source")
-    joined = _searchable("x.py", 'M = ("inter" "active consent")\n')
-    assert any("interactive consent" == t for t in joined), (
-        "genuine implicit concatenation was not resolved")
+    assert '"' not in sentence, (
+        f"fixture needs a quote-free sentence to sit in a triple-quoted literal: {sentence!r}")
+    cut = sentence.rfind(" ", 0, len(sentence) // 2)
+    assert cut > 0, f"fixture needs a word boundary to split at: {sentence!r}"
+    src = 'A = """%s"""\nB = """%s"""\n' % (sentence[:cut], sentence[cut + 1:])
+    assert not _catches(_searchable("x.py", src), sentence), (
+        "two separate literals were fused into a phrase that is in no file, which would fail the "
+        "build on prose nobody wrote")
 
 
 def test_a_python_file_that_cannot_be_parsed_is_loud_rather_than_skipped():
     """A NEGATIVE sweep that silently drops a file reports success for the file it never read."""
-    import pytest
     with pytest.raises(AssertionError, match="does not parse"):
         _searchable("sluice/broken.py", "def (:\n")
 
 
-def test_a_comment_denying_the_flow_does_not_read_as_evidence_of_one():
-    """The FALSE-POSITIVE direction, which is the worse one for a guard like this.
+def test_doctors_missing_token_remedy_is_an_invocation_the_real_parser_accepts():
+    """The one runtime string the original incident was measured on, and the one #201 hand-edits.
 
-    The mechanism check first searched raw source, so a comment written to DENY the flow tripped
-    it -- measured, `# no run_local_server anywhere in this codebase` failed the build with a
-    message asserting a flow had been added. In a repo whose convention is dense explanatory
-    comments, the only actionable reading of that failure is "delete the explanation", so the
-    guard would have destroyed the very prose it exists to keep honest.
+    The inverse cover for the ratchet's residual: the ratchet holds down the sentence that shipped,
+    while this holds down the sentence that replaced it. A partial doc edit that left the old
+    attribution in place, or renamed the command out from under it, prints on every fresh install
+    where no doc sweep would ever see it -- so the remedy is fed to the REAL parser rather than
+    compared against a name written down twice.
 
-    An import, a call and an attribute are what a real flow needs. A comment cannot authorise one.
+    It checks the WHOLE invocation, flags included, not just the group and subcommand -- an earlier
+    cut asserted only the command while hardcoding `--client-secrets`, so a renamed flag failed a
+    test whose name claimed to check something else. The flags are taken from the message itself,
+    so nothing here is a second place to keep that spelling in step. Angle-bracketed placeholders
+    are the message's own convention for "your value here" and stand in for one argument each.
+
+    `allow_abbrev` is left ON, so an unambiguous PREFIX of a real flag passes here. That is right
+    rather than a gap: the question is whether the invocation the message prints works when a user
+    types it, and an abbreviation does. A genuine rename does not -- measured, `--secrets-file`
+    exits 2 on the required argument it no longer supplies.
     """
-    for denial in ("# we never contact accounts.google.com ourselves\nx = 1\n",
-                   "# no run_local_server anywhere in this codebase\nx = 1\n",
-                   '"""This module deliberately has no InstalledAppFlow."""\nx = 1\n'):
-        idents = _identifiers("sluice/x.py", denial)
-        assert not any(_FLOW_ENTRY.search(i) or _OAUTH_ENDPOINT.search(i) for i in idents), denial
-
-
-def test_a_real_mechanism_is_still_caught_however_it_is_spelled():
-    """The partner to the row above: narrowing to identifiers must not narrow past the target.
-
-    Four spellings, each a different AST node -- an import alias, a method call, an attribute, and
-    a bare endpoint literal (the stdlib-only flow this repo's own rules would push someone toward,
-    which imports nothing recognisable and so is caught by the host instead).
-    """
-    for label, src in (("import", "from google_auth_oauthlib.flow import InstalledAppFlow\n"),
-                       ("aliased", "from x import InstalledAppFlow as _f\n"),
-                       ("call", "flow.run_local_server(port=0)\n"),
-                       ("endpoint", 'AUTH = "https://accounts.google.com/o/oauth2/v2/auth"\n')):
-        idents = _identifiers("sluice/x.py", src)
-        assert any(_FLOW_ENTRY.search(i) or _OAUTH_ENDPOINT.search(i) for i in idents), label
-
-
-def test_the_claim_pattern_does_not_span_a_paragraph_break():
-    """`[\\w\\s]` includes a newline, so two unrelated sentences could match across a blank line.
-
-    A SINGLE newline must still match -- markdown reflow legitimately puts one between the two
-    words, and that is the whole reason the gap is permissive at all.
-    """
-    assert not _CONSENT_CLAIM.search("...was interactive.\n\nConsent is yours to obtain.")
-    assert _CONSENT_CLAIM.search("will need an interactive OAuth\nconsent")
+    from sluice.cli import _build_parser
+    from sluice.core.doctor import classify_track_google
+    detail = classify_track_google(available=True, import_error=None,
+                                   token_present=False, token_path="/x/t.json").detail
+    m = re.search(r"`job-sluice ([^`]+)`", detail)
+    assert m, f"doctor's remedy names no backticked job-sluice invocation: {detail!r}"
+    argv = re.sub(r"<[^>]*>", "PLACEHOLDER", m.group(1)).split()
+    assert len(argv) >= 2, f"the remedy names no group and subcommand: {m.group(1)!r}"
+    _build_parser().parse_args(argv)
