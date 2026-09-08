@@ -204,3 +204,10 @@ dossiers/
 # contributor following the docs otherwise commits lead notes (employer names, job URLs, verdicts)
 # into a PUBLIC checkout. Unanchored on purpose; also refused by tests/test_no_leaked_files.py.
 vault/
+
+# uv writes this whenever a `uv` command runs in the tree. The project installs with pip
+# (CI, the Dockerfile, every packaging channel) and tracks no lockfile of its own, so this
+# is local scratch. Ignored rather than merely untracked because it regenerates on its own
+# and a `git add -A` has swept it into a commit once already. `uv tool install job-sluice`
+# in docs/INSTALL.md is a USER install channel and says nothing about the repo tracking one.
+uv.lock
