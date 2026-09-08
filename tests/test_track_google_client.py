@@ -221,9 +221,9 @@ def _mode(path):
 
 
 def test_a_fresh_token_is_written_private(tmp_path, pinned_umask):
-    from sluice.track.google_client import _write_token
+    from sluice.track.google_client import write_token
     p = tmp_path / "google_token.json"
-    _write_token(str(p), '{"token": "x"}')
+    write_token(str(p), '{"token": "x"}')
     assert _mode(p) == 0o600, "an OAuth token is a credential, not a data file"
     assert p.read_text(encoding="utf-8") == '{"token": "x"}'
 
@@ -233,11 +233,11 @@ def test_a_refresh_over_a_world_readable_token_tightens_it(tmp_path, pinned_umas
     # EXISTING file's mode, so a refresh over a token left at 0644 by an older sluice
     # (or by a user's own editor) would silently stay 0644 forever -- the mode nobody
     # ever looks at again.
-    from sluice.track.google_client import _write_token
+    from sluice.track.google_client import write_token
     p = tmp_path / "google_token.json"
     p.write_text("old", encoding="utf-8")
     os.chmod(p, 0o644)
-    _write_token(str(p), "new")
+    write_token(str(p), "new")
     assert _mode(p) == 0o600
 
 
@@ -245,16 +245,16 @@ def test_writing_a_token_creates_its_parent_directory(tmp_path, pinned_umask):
     # #80 moved this file under the per-system state root, which on a fresh install
     # does not exist yet. The old bare `open(path, "w")` would raise FileNotFoundError
     # on the first refresh -- during an auth flow, which is the worst moment.
-    from sluice.track.google_client import _write_token
+    from sluice.track.google_client import write_token
     p = tmp_path / "state" / "sluice" / "google_token.json"
-    _write_token(str(p), "tok")
+    write_token(str(p), "tok")
     assert p.read_text(encoding="utf-8") == "tok"
 
 
 def test_the_refresh_path_writes_through_write_token(tmp_path, monkeypatch, pinned_umask):
     """The CALLER half, which the three rows above cannot see.
 
-    They drive `_write_token` directly, so reverting `_creds` to its old bare
+    They drive `write_token` directly, so reverting `_creds` to its old bare
     `open(self.token_path, "w")` leaves every one of them green -- measured, not
     assumed. The google libs live only in the container venv, so this stands fake
     modules up under their import names; `_creds` imports them lazily, inside the
@@ -295,14 +295,14 @@ def test_a_fresh_token_is_private_at_every_instant(tmp_path, monkeypatch, pinned
     from sluice.track import google_client as mod
     monkeypatch.setattr(mod.os, "chmod", lambda *a, **k: None)
     p = tmp_path / "google_token.json"
-    mod._write_token(str(p), "tok")
+    mod.write_token(str(p), "tok")
     assert _mode(p) == 0o600, "the token was world-readable at some point during the write"
 
 
 def test_the_token_parent_directory_is_private(tmp_path, pinned_umask):
-    from sluice.track.google_client import _write_token
+    from sluice.track.google_client import write_token
     parent = tmp_path / "state" / "sluice"
-    _write_token(str(parent / "google_token.json"), "tok")
+    write_token(str(parent / "google_token.json"), "tok")
     assert _mode(parent) == 0o700, "sluice's state directory holds a credential"
 
 
@@ -313,13 +313,13 @@ def test_an_interrupted_write_leaves_no_stray_temp(tmp_path, monkeypatch, pinned
     p = tmp_path / "google_token.json"
     monkeypatch.setattr(mod.os, "replace", lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
     with pytest.raises(OSError):
-        mod._write_token(str(p), "tok")
+        mod.write_token(str(p), "tok")
     assert list(tmp_path.iterdir()) == [], f"stray temp left behind: {list(tmp_path.iterdir())}"
 
 
 def test_an_interrupted_write_cleans_up_on_keyboard_interrupt(tmp_path, monkeypatch,
                                                               pinned_umask):
-    """The reason `_write_token` catches BaseException rather than Exception.
+    """The reason `write_token` catches BaseException rather than Exception.
 
     Ctrl-C during a token refresh is the realistic interruption, and `KeyboardInterrupt`
     does not inherit from `Exception` -- so an `except Exception` would leave a 0600
@@ -335,8 +335,88 @@ def test_an_interrupted_write_cleans_up_on_keyboard_interrupt(tmp_path, monkeypa
 
     monkeypatch.setattr(mod.os, "replace", _interrupt)
     with pytest.raises(KeyboardInterrupt):
-        mod._write_token(str(p), "tok")
+        mod.write_token(str(p), "tok")
     assert list(tmp_path.iterdir()) == [], "a temp survived Ctrl-C during a token write"
+
+
+def test_an_exclusive_write_refuses_an_existing_token(tmp_path, pinned_umask):
+    """The refusal must be AT THE WRITE, not at a caller's pre-flight check.
+
+    A caller that checks os.path.exists, runs a minutes-long consent flow, then writes
+    is a stale snapshot: two concurrent `track auth` runs both clear the check and the
+    last silently wins, possibly for a different Google account. Only the kernel can
+    decide this, so O_EXCL decides it.
+    """
+    from sluice.track.google_client import write_token
+    p = tmp_path / "google_token.json"
+    write_token(str(p), '{"refresh_token": "FIRST"}', exclusive=True)
+    with pytest.raises(FileExistsError):
+        write_token(str(p), '{"refresh_token": "SECOND"}', exclusive=True)
+    assert "FIRST" in p.read_text(), "the refused write clobbered the existing token"
+
+
+def test_an_exclusive_write_creates_the_credential_private(tmp_path, pinned_umask):
+    """0600, on the EXCLUSIVE path specifically.
+
+    `open(path, "x")` gives O_CREAT|O_EXCL but cannot set a creation mode -- measured at
+    0644 under umask 022, a world-readable credential carrying gmail.readonly and
+    read-write calendar.events. Every other mode row in this file drives the no-flag
+    path, so an unqualified assertion would pass while the mint path shipped 0644.
+    """
+    from sluice.track.google_client import write_token
+    p = tmp_path / "google_token.json"
+    write_token(str(p), "tok", exclusive=True)
+    assert _mode(str(p)) == 0o600
+
+
+def test_an_exclusive_write_leaves_no_temp_on_the_SUCCESS_path(tmp_path, pinned_umask):
+    """The assertion that catches an os.link-shaped implementation.
+
+    `os.link` creates a second name for the same inode rather than consuming the source,
+    so a successful mint leaves a byte-identical copy of the refresh token behind, one
+    per run. `test_an_interrupted_write_leaves_no_stray_temp` cannot see this: it patches
+    os.replace to raise, so it only ever walks the failure arm.
+    """
+    from sluice.track.google_client import write_token
+    write_token(str(tmp_path / "google_token.json"), "tok", exclusive=True)
+    assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+
+def test_a_failure_after_the_reservation_adopts_no_empty_token(tmp_path, monkeypatch,
+                                                               pinned_umask):
+    """The reservation creates a 0-byte destination; a later failure must remove it.
+
+    `classify_track_google` reports OK on file PRESENCE alone, so a 0-byte token left
+    behind reads as `track google OK` for ever while every Gmail call fails.
+    """
+    from sluice.track import google_client as mod
+    p = tmp_path / "google_token.json"
+    monkeypatch.setattr(mod.os, "replace",
+                        lambda *a: (_ for _ in ()).throw(OSError(28, "No space")))
+    with pytest.raises(OSError):
+        mod.write_token(str(p), "tok", exclusive=True)
+    assert not p.exists(), "a 0-byte reservation was left where doctor reports OK"
+    assert not [q for q in tmp_path.iterdir() if q.name.endswith(".tmp")]
+
+
+def test_a_close_failure_after_the_reservation_still_cleans_up(tmp_path, monkeypatch,
+                                                                pinned_umask):
+    """`reserved = True` has to be set the instant `os.open`'s O_EXCL call returns a
+    handle -- between the open and the close, not after both. Setting it only after
+    `os.close` too means a raise from `os.close` ITSELF (EIO, EDQUOT, a full disk) skips
+    the cleanup this flag exists to trigger, even though the open already created the
+    0-byte destination `classify_track_google` reports OK on presence alone.
+    `test_a_failure_after_the_reservation_adopts_no_empty_token` above cannot see this --
+    it fails `os.replace`, which runs strictly after both the open and the close have
+    already succeeded -- so this drives the earlier failure point directly.
+    """
+    from sluice.track import google_client as mod
+    p = tmp_path / "google_token.json"
+    monkeypatch.setattr(mod.os, "close",
+                        lambda *a: (_ for _ in ()).throw(OSError(5, "I/O error")))
+    with pytest.raises(OSError):
+        mod.write_token(str(p), "tok", exclusive=True)
+    assert not p.exists(), "a 0-byte reservation was left after os.close itself failed"
 
 
 # ---- #142: only a dead CREDENTIAL means "reauth", never a bad network ----------------------
