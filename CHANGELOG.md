@@ -42,6 +42,33 @@ it is accurate. -->
 
 ## [2.10.0](https://github.com/MrReasonable/sluice/compare/v2.9.7...v2.10.0) (2026-09-08)
 
+**Terminal control characters in untrusted output are now escaped (#280).** Every prior version
+printed scraped job-board text, LLM output about a composed CV, and Gmail message fields to your
+terminal verbatim. A terminal is not a display surface: an ESC byte in that text is an
+instruction, able to recolour, reposition the cursor, clear the screen, set the window title,
+and on a permissive terminal write the clipboard. Nothing filtered it, on any path, and
+`ingest`, `triage`, `cv run`, `apply prep`, `track run` and `leads dedupe` all print derived text
+on an ordinary invocation. **The exposure was real in 2.9.7 and earlier; upgrading closes it.**
+
+Escaping is applied at two points nothing opts out of: a wrapper over stdout/stderr installed for
+the whole invocation, covering every `print`, and a logging formatter covering every log record.
+The second is not redundant — a log handler binds its stream when it is constructed, which
+happens before the wrapper is installed, so the wrapper never sees those records.
+
+Two characters are deliberately never escaped. **Tab** is not a terminal-control character and
+carries the tab-separated field structure `cv run` prints as columns. **Newline** is
+indistinguishable at a stream from sluice's own line breaks; the residual — an injected newline
+can forge an output line — is documented in `docs/ARCHITECTURE.md` rather than silently accepted.
+
+Two consequences worth knowing before you upgrade:
+
+* `apply prep --json` now emits `\uNNNN` escapes for non-ASCII. Still valid JSON and still
+  round-trips; it is what stops a scraped control byte making the output unparseable.
+* `--help` is no longer colourised on Python 3.14, matching 3.12 and 3.13. Suppressed at the
+  source, because argparse's own colour would otherwise have reached you as literal `\x1b[...]`
+  text once the filter was in place.
+
+
 
 ### Features
 
@@ -54,12 +81,7 @@ it is accurate. -->
 * **apply:** emit ASCII-safe JSON so terminal escaping cannot corrupt it ([0a0b44f](https://github.com/MrReasonable/sluice/commit/0a0b44f520bccbdba79ff9b385b1af113d5ab530))
 * **cli:** escape terminal control characters in all command output ([7a10368](https://github.com/MrReasonable/sluice/commit/7a103683a4bd9f22c56e1aeacc18175bff881bad))
 * **cli:** escape the cv-signoff input() prompt against a real tty ([#280](https://github.com/MrReasonable/sluice/issues/280)) ([70be360](https://github.com/MrReasonable/sluice/commit/70be360e761a308f981f8dd7e1d31a3e40e77c0a))
-* **cli:** suppress argparse colour on Python 3.14 to avoid escape-sequence regression ([cffeb42](https://github.com/MrReasonable/sluice/commit/cffeb42fd6b9ece972513249f69c38f9ed658771))
-* **core/safeout:** repair broken prose left by the emit.py extraction ([#280](https://github.com/MrReasonable/sluice/issues/280)) ([091dc9a](https://github.com/MrReasonable/sluice/commit/091dc9a2ba1ed0d2a71276ce95818d97b61ef567))
-* **core/safeout:** replace literal control bytes with escape sequences in source ([72aedd1](https://github.com/MrReasonable/sluice/commit/72aedd1b446792386b57122c8bbd7fed6dac2c82))
 * **core:** escape terminal control characters in log records ([f5229dd](https://github.com/MrReasonable/sluice/commit/f5229ddf4fc28ccfed3ac90d952a81107e85889f))
-* **mcp:** bound the stdio smoke test's read so a stall fails fast ([0d4674c](https://github.com/MrReasonable/sluice/commit/0d4674cbddedd2ef4894902f239f0d8c03341643))
-* **test:** catch qualified input() calls and anchor the source sweep ([3f3b343](https://github.com/MrReasonable/sluice/commit/3f3b343d231a3aa0928dbb2ee12699601086294e))
 
 
 ### Refactoring
