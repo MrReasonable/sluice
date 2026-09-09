@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.12.0](https://github.com/MrReasonable/sluice/compare/v2.11.0...v2.12.0) (2026-09-09)
+
+
+### Features
+
+* **triage:** make the Telegram digest readable instead of a dict repr ([595009a](https://github.com/MrReasonable/sluice/commit/595009af32e7523a850990f93aa3fd7d0d96fd8c))
+
 ## [2.11.0](https://github.com/MrReasonable/sluice/compare/v2.10.0...v2.11.0) (2026-09-09)
 
 `job-sluice track auth` mints the Google credential `track run` reads, so obtaining one is a
