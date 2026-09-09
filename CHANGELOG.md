@@ -48,6 +48,39 @@ it is accurate. -->
 * **triage:** honour never-clobber on research, split unjudgeable by producer ([60b5b8d](https://github.com/MrReasonable/sluice/commit/60b5b8dc87b9bcb13e529310afafa0bc83d8401f))
 * **triage:** let the judge say a page is not a job description ([daa9146](https://github.com/MrReasonable/sluice/commit/daa91464736e2755878bd23c480083bf49696d46))
 
+The judge's verdict schema offered `shortlist`, `research` and `dismiss`, none of which
+means "the page I was handed is not a job description". A bot-check interstitial, a consent
+wall or an error body was therefore scored conservatively, landed at or just above the
+dismiss threshold, and filed itself as `research` — a task for a human. Because `research`
+is in `triage run`'s selection default, those leads were refetched and re-judged every
+night, returning the same non-answer each time; an unchanged verdict appends no note, so
+their `relevance_notes` still showed the single entry from the day they were first judged
+and read as judged-once-and-forgotten. The judge can now say `unjudgeable`, and says it on
+the first judgement while the lead is still `new`.
+
+**`unjudgeable` is not a new status.** It, and its nightly re-selection, shipped in `1.2.0`
+for job descriptions that never arrived at all. What is new is the judge being able to
+reach it — for a page that did arrive and was not a posting. The digest names the two
+producers separately, because they are repaired in different places: a JD that never
+arrived points at the scraper or the network, a page that was not a posting points at
+bot-blocking. It now reads `7 with no usable job description (3 not fetched, 4 not a
+posting)`, dropping a zero term.
+
+### What a status transition may now do
+
+`unjudgeable` may be written only over `new` or `unjudgeable`. It will not overwrite
+`research`, demote a `shortlist` or reopen a `dismiss`. `status` records where a lead is,
+never how it got there, so a lead sitting in `research` because of a conservative score is
+indistinguishable from one you put there by hand in Obsidian — and the second is yours.
+
+**Leads the old behaviour already parked in `research` stay there.** This release fixes the
+forward path only. Clearing the backlog would rewrite your queue in bulk, so it is not done
+for you: those leads keep being re-selected nightly and now resolve to a refused write.
+Clearing them is [#302](https://github.com/MrReasonable/sluice/issues/302), as a one-shot
+migration you opt into after seeing what it would move.
+
+No config change, no vault migration.
+
 ## [2.12.0](https://github.com/MrReasonable/sluice/compare/v2.11.0...v2.12.0) (2026-09-09)
 
 
