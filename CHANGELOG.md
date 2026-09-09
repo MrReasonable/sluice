@@ -46,6 +46,25 @@ it is accurate. -->
 ### Bug Fixes
 
 * **vault:** treat a case-variant name as taken when archiving a loser ([4870f4d](https://github.com/MrReasonable/sluice/commit/4870f4d429b85aba339e932f385f3f353f67f865))
+* **vault:** fold Unicode normalization into lead identity, not just case ([1e3e58b](https://github.com/MrReasonable/sluice/commit/1e3e58ba6cbef70af6e4ccd8f867f734317752fb))
+
+### What this means for an existing vault
+
+Two spellings of one employer are now one lead when they differ only in capitalisation
+**or in Unicode composition**. The second half is new here: 2.6.1's note said NFC and NFD
+spellings were still two leads, and that is no longer true.
+
+Nothing is renamed and nothing is migrated. On a store that already holds such a pair,
+measured: `read_leads` returns both and warns, a re-scrape matching one spelling exactly
+updates that note, a third spelling is refused with both paths named, and nothing is
+created or lost. `job-sluice leads dedupe` clusters the pair, but `--merge` completes only
+where their statuses agree and reports `conflict` otherwise — so a `shortlist`/`dismiss`
+twin still needs a human to pick the survivor.
+
+It matters most if the vault is replicated to macOS. A filesystem that folds either axis —
+every macOS vault folds normalization, and case too unless the volume was created
+case-sensitive — cannot hold both spellings at once, which is what was aborting Syncthing
+scans and leaving that replica blind to local changes.
 
 ## [2.12.1](https://github.com/MrReasonable/sluice/compare/v2.12.0...v2.12.1) (2026-09-09)
 
