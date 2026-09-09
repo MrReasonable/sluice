@@ -1071,7 +1071,8 @@ recorded identity is the note NAME the loser was seated at, so a re-scrape whose
 has drifted past every `Company - Title` name candidate `_resolve_path` builds is still
 created -- a visible duplicate a human can merge again.
 
-Comparing that recorded name up to CASE is #205's second half, and it was a live breach rather
+Comparing that recorded name up to CASE is #205's second half (#299 later widened the same
+comparison to canonical equivalence), and it was a live breach rather
 than a tidy-up: measured on the code before it, merging a lead away and re-scraping it with the
 company spelled `EXAMPLE CO` instead of `Example Co` returned `created`. The exact-casing control
 suppressed correctly, so the guard was working and the re-scrape simply walked past it — undoing
@@ -1283,20 +1284,30 @@ candidate name is reconciled against as though it were a lead, unchanged from th
 flat store. A name resolving to two or more notes is ambiguous identity and `upsert`
 refuses.
 
-**That name is matched up to CASE** (#205). A board renders one employer several ways and the
+**That name is matched up to CASE, and since #299 up to canonical equivalence too** (#205). A
+board renders one employer several ways and the
 name is built from the company string verbatim, so a byte-for-byte match seated a separate note
 per spelling, each with its own status — one spelling holding a live `shortlist` while its twin
 held a `dismiss`, so dismissing the role under one did not stop it returning as `new` under the
 other. It also wedged replication silently: a case-insensitive filesystem cannot hold the pair,
 and Syncthing reports the folder `state=idle` while delivering neither note. `_fold_note_name` is
 the one fold, and every path that resolves a lead by NAME goes through it — `_locate`,
-`_archived_match`, `read_leads`' report, and `reconcile_names`. Stated as that obligation rather
-than a roster, because the roster shipped as three and was stale inside the same branch. They
+`_archived_match`, `read_leads`' report, and `reconcile_names`. That is a LOWER BOUND, not the
+whole set: #298 added two consumers that fold to choose an archive FILENAME rather than to
+resolve a lead (`_folded_archive_names`, `_archive_name_candidates`), and they are bound by the
+same guard. Stated as an obligation rather than a roster, because the roster shipped as three
+and was stale inside the same branch. They
 cannot be allowed to drift: a `_locate` that folds against an `_archived_match` that does not is
 measurably a **resurrection**, and a `reconcile_names` that does not measurably **mints** the pair
-— both were live here before review. It is CASE only: Unicode normalization is a real and separate axis (a macOS
-filesystem may return NFD for a name written NFC), and every widening past case claims two
-differently spelled names are one job.
+— both were live here before review. It folds CASE and CANONICAL EQUIVALENCE, and stops there
+(#205 then #299): the fold is UAX #15's canonical caseless match, `NFD(casefold(NFD(x)))`, because
+`casefold` alone normalizes nothing, so two boards publishing one accented employer in different
+composition forms seated two notes with two statuses — measured on Linux as `created, created`, and
+a two-accent name seated four. Canonical equivalence is not a widening past spelling: it says the
+two strings **are** the same text. COMPATIBILITY equivalence (NFKD/NFKC) would be, since it merges a
+superscript with its digit, and every such step claims two differently spelled names are one job.
+`core/leads.py`'s `_norm_tokens` does apply NFKD — that compares token SETS for the human-gated
+dedupe report, never filenames for a write decision, and the choice must not be carried across.
 
 `_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the cost
 where it was — the exact probe does not move as the store grows, while the folded listing is about

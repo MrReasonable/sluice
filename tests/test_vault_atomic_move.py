@@ -10,8 +10,9 @@ import os
 
 import pytest
 
-from sluice.core.vault import _archive_name_candidates, _fold_note_name, _reserve_and_move
-from tests.conftest import require_case_sensitive_fs
+from sluice.core.vault import (_archive_name_candidates, _fold_note_name,
+                               _folded_archive_names, _reserve_and_move)
+from tests.conftest import UNREADABLE_DIR, require_case_sensitive_fs
 
 
 def _note(path, text="---\ncompany: Example Ltd\n---\nbody\n"):
@@ -291,3 +292,88 @@ def test_the_refusing_caller_is_untouched_by_a_case_variant(tmp_path):
 
     assert got == os.path.join(dest_dir, "EXAMPLE CO - Role.md")
     assert open(got, encoding="utf-8").read() == "MINE"
+
+
+def test_the_taken_set_is_full_basenames_including_files_that_are_not_notes(tmp_path):
+    """`_folded_archive_names` folds the WHOLE basename, `.md` included, and does not filter
+    to notes. Both choices are load-bearing and neither was pinned.
+
+    A stray `.syncthing.*.tmp` beside an archived note is just as unable to coexist with its
+    folded twin on the replica as a note is, so filtering to `.md` would hide from the check
+    exactly the files a replication conflict is most likely to involve.
+
+    Keeping the extension is what folds `X.md` and `X.MD` TOGETHER, and the direction matters
+    -- an earlier draft of this docstring had it exactly backwards. Stripping is conditional
+    on `endswith(".md")`, which is case-SENSITIVE, so `X.md` loses its extension and becomes
+    `x` while `X.MD` keeps its and becomes `x.md`: the pair comes APART, lands in the taken-set
+    as two entries, and the collision between two names a case-insensitive replica cannot both
+    hold is missed. Folding the whole basename maps both to `x.md`, which is the one entry that
+    catches it."""
+    dest_dir = str(tmp_path / "merged")
+    os.makedirs(dest_dir)
+    _note(os.path.join(dest_dir, "Example Co - Role.md"), "a note")
+    _note(os.path.join(dest_dir, ".syncthing.Example Co - Role.md.tmp"), "not a note")
+
+    taken = _folded_archive_names(dest_dir)
+
+    assert _fold_note_name("EXAMPLE CO - ROLE.MD") in taken, (
+        "the extension was stripped before folding, so a name spelled `X.MD` no longer folds "
+        "onto the seated `X.md` and the replica collision between them goes undetected")
+    assert _fold_note_name(".SYNCTHING.EXAMPLE CO - ROLE.MD.TMP") in taken, (
+        "a non-note file was filtered out, though it collides on the replica like any other")
+    assert len(taken) == 2, taken
+
+
+@UNREADABLE_DIR
+def test_an_unreadable_destination_raises_rather_than_reading_as_no_collisions(tmp_path):
+    """`_folded_archive_names` must not answer "nothing is taken" for a directory it could
+    not read. That is the disarm its own docstring forbids, and without this row the forbidding
+    is prose alone: adding `except OSError: return frozenset()` left the FULL suite green
+    (measured), so the guard could be removed by someone tidying up and nothing would say so.
+
+    The harm is specific rather than theoretical. An empty taken-set makes every candidate
+    look free, so the #298 skip never fires, and `_merged/` regains the pair a replica cannot
+    hold -- silently, on exactly the vault whose permissions are already odd."""
+    dest_dir = str(tmp_path / "unreadable")
+    os.makedirs(dest_dir)
+    _note(os.path.join(dest_dir, "Example Co - Role.md"), "ALREADY THERE")
+    os.chmod(dest_dir, 0o300)                      # writable + traversable, NOT readable
+    try:
+        with pytest.raises(OSError):
+            _folded_archive_names(dest_dir)
+
+        # And through the real primitive: it must not silently seat the colliding name.
+        src = _note(str(tmp_path / "from" / "EXAMPLE CO - Role.md"), "LOSER")
+        with pytest.raises(OSError):
+            _reserve_and_move(src, dest_dir, "EXAMPLE CO - Role.md", suffix_on_collision=True)
+        assert os.path.exists(src), "the loser must stay put so it can self-heal next run"
+    finally:
+        os.chmod(dest_dir, 0o700)                  # else tmp_path cleanup fails
+
+
+def test_a_racing_collision_still_falls_through_to_the_next_suffix(tmp_path, monkeypatch):
+    """`O_EXCL` remains the arbiter, and #298's pre-filter did not quietly replace it.
+
+    The pre-filter now short-circuits every collision it can SEE, so the
+    `except FileExistsError: ... continue` arm below it is reachable only when the listing
+    was stale -- which is exactly the race the docstring says `O_EXCL` still arbitrates.
+    Nothing covered that arm afterwards: deleting it left the suite green, because the two
+    pre-existing collision rows now never reach it. A guard whose remaining job is invisible
+    to the suite is one a later tidy-up removes.
+
+    A stale listing IS the race, so it is simulated by handing the pre-filter an empty set
+    rather than by threads: the name is genuinely taken on disk, the pre-filter genuinely
+    does not know, and the code below has to cope. That makes the row deterministic and
+    filesystem-independent."""
+    src = _note(str(tmp_path / "from" / "N.md"), "LOSER")
+    dest_dir = str(tmp_path / "to")
+    _note(os.path.join(dest_dir, "N.md"), "ALREADY THERE")
+    monkeypatch.setattr("sluice.core.vault._folded_archive_names",
+                        lambda _dest: frozenset())
+
+    got = _reserve_and_move(src, dest_dir, "N.md", suffix_on_collision=True)
+
+    assert got == os.path.join(dest_dir, "N.1.md")
+    assert open(got, encoding="utf-8").read() == "LOSER"
+    assert open(os.path.join(dest_dir, "N.md"),
+                encoding="utf-8").read() == "ALREADY THERE", "the racer's file was clobbered"

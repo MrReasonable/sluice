@@ -41,8 +41,9 @@ advanced out of. An unrecognised status is passed through untouched rather than 
 rewritten, because a status sluice does not understand is more likely to be yours than corrupt.
 
 A lead you merged away is not re-created by a later scrape that still matches the identity
-recorded at merge time — and identity is compared up to case, because job boards render one
-employer several ways. Where the posting's identity has drifted past what was recorded, the lead
+recorded at merge time — and identity is compared up to case, and up to Unicode canonical
+equivalence, because job boards render one employer several ways and may publish an accented
+name in different composition forms. Where the posting's identity has drifted past what was recorded, the lead
 is re-created **visibly**, as a duplicate you can see and merge again. That is the direction to
 fail in: a visible duplicate costs you a moment, and a silent suppression costs you the job.
 

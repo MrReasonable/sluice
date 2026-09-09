@@ -687,7 +687,14 @@ class Store(Protocol):
         A store MAY match that recorded identity up to an equivalence of its own, and it
         MUST then apply the SAME equivalence on every path that resolves a lead -- the
         create walk as well as the archive probe. The vault matches note names up to CASE
-        (#205, `_fold_note_name`), because a board renders one employer several ways.
+        and to CANONICAL EQUIVALENCE (#205 and #299, `_fold_note_name`), because a board
+        renders one employer several ways and two boards may publish the same accented name
+        in different composition forms. It stops at compatibility NORMALIZATION: a store MUST
+        NOT apply NFKC/NFKD, which would call a superscript and its digit, or a full-width
+        letter and its ASCII form, one job. Stated as "no compatibility EQUIVALENCE" this
+        would be breached by the reference implementation itself -- full case folding merges
+        the fi/ff/ffi ligatures on its own, with no NFKD involved -- so the ceiling is on the
+        normalization applied, not on the equivalence that results.
         Applying it in one place and not the other is not a partial improvement, it is a
         RESURRECTION: measured on the vault before the fold reached the archive probe, a
         `EXAMPLE CO` re-scrape of a lead merged away as `Example Co` returned "created"

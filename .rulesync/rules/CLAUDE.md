@@ -444,7 +444,7 @@ contract states the obligation as bounded, not absolute: a merged-away loser mus
 discoverable through the identity the store RECORDED at merge time, and a re-scrape whose identity
 has drifted past that (for the vault, past every name candidate) is outside the guarantee and is
 created — a visible duplicate, the direction to fail in. That recorded name is compared up to CASE
-(#205), and the fold was a LIVE BREACH rather than a tidy-up: measured before it, merging a lead
+and canonical equivalence (#205, then #299), and the fold was a LIVE BREACH rather than a tidy-up: measured before it, merging a lead
 away and re-scraping it as `EXAMPLE CO` rather than `Example Co` returned `created` while the
 exact-casing control suppressed correctly — the guard worked and the re-scrape walked past it.
 Folding can only suppress MORE, never resurrect more, and it does not widen `seen.db`, since that
@@ -453,8 +453,20 @@ arm stays gated on `url_proven`, which no name folding can manufacture. The fold
 `_locate`, `_archived_match`, `read_leads`' report and `reconcile_names`. Do not restate that as a
 count; it shipped as three and was stale inside the same branch. A `_locate` that folds against an
 `_archived_match` that does not is measurably a resurrection, and a `reconcile_names` that does not
-measurably mints the pair, so these are not independent `.casefold()` calls. It is CASE only — Unicode normalization is a
-separate axis, and every widening past case claims two differently spelled names are one job.
+measurably mint the pair, so these are not independent `.casefold()` calls. It folds CASE and
+CANONICAL EQUIVALENCE and stops there (#205 then #299): the shape is UAX #15's canonical caseless
+match, `NFD(casefold(NFD(x)))`, since `casefold` alone normalizes nothing and two composition forms
+of one accented employer therefore seated two notes with two statuses. Canonical equivalence is not
+a widening past spelling — it says the two strings ARE the same text. The ceiling is on the
+NORMALIZATION applied, not on the equivalence that results: `casefold` is FULL case folding
+and merges the fi/ff/ffi ligatures by itself (measured), so "no compatibility equivalence"
+would be breached by the shipped code. What must stay out is NFKD/NFKC, which would also
+merge a superscript with its digit and a full-width letter with its ASCII form. Do not carry
+`core/leads.py`'s `_norm_tokens` NFKD across: that compares token SETS for a human-gated report,
+not filenames for a write decision. The fold ALSO has a second kind of consumer since #298 —
+`_folded_archive_names`/`_archive_name_candidates` fold to choose an archive FILENAME rather than
+to resolve a lead, and both halves must fold identically or the collision skip silently stops
+firing.
 `_merged/` is load-bearing retention, not
 scratch: do not prune it. The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME
 (`_PRIVATE_SUBDIRS`, at the TOP LEVEL only) rather than by the accident that a flat `os.listdir` never descended into
@@ -462,7 +474,8 @@ it -- deleting that prune resurfaces every archived loser and undoes this invari
 See `core/protocols.py`, `docs/ARCHITECTURE.md`, and
 `tests/conformance/test_store_contract.py::test_merged_away_lead_is_never_recreated`.
 
-**A lead's identity is its note name UP TO CASE (#205), and the fold has one home.** Boards render
+**A lead's identity is its note name UP TO CASE and UNICODE CANONICAL EQUIVALENCE (#205,
+then #299), and the fold has one home.** Boards render
 one employer several ways and the name is built from the company string verbatim, so a byte-for-byte
 match seated a note per spelling, each with its own status — one holding a live `shortlist` at score
 86 while its twin held a `dismiss`, so dismissing the role under one spelling did not stop it

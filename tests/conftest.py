@@ -6,6 +6,7 @@ deterministic enough to assert on, and revealing nothing about whoever runs slui
 """
 import logging
 import os
+import unicodedata
 
 import pytest
 from faker import Faker
@@ -226,6 +227,47 @@ def require_case_sensitive_fs(tmp_path):
             "before sluice sees them -- so the defect does not exist to be caught. Rows "
             "that only need the collided STATE are seated across subfolders and run here. "
             "CI (ubuntu-latest) is case-sensitive and runs everything."
+        )
+
+
+def require_normalization_sensitive_fs(tmp_path):
+    """Skip unless the filesystem under `tmp_path` distinguishes two Unicode NORMALIZATIONS
+    of one name. A SECOND probe rather than a parameter on the case one, because the two
+    properties are independent and this machine has them in OPPOSITE states: measured
+    2026-09-09, a case-sensitive APFS volume created with `hdiutil -fs "Case-sensitive APFS"`
+    distinguishes `CaseProbe` from `caseprobe` and STILL conflates the composed and
+    decomposed forms of one accented name. So `require_case_sensitive_fs` passing says
+    nothing at all about this axis, and gating a normalization row on it would run that row
+    against a filesystem that cannot hold the pair -- green, and certifying nothing.
+
+    The pair is written with an explicit ESCAPE rather than a literal accented character,
+    and the assertion below fails closed if the two forms ever compare equal. A literal
+    would be unreadable in the one file where the distinction IS the subject -- and worse,
+    this docstring's first draft used two literals that landed in DIFFERENT normalizations,
+    so a sentence naming NFC and NFD was true only by accident and could not be checked by
+    reading it. A tool that normalized this source would silently collapse the pair and
+    leave a probe that always reports "distinguishes".
+
+    Practically this skips on macOS in BOTH filesystem configurations and runs on Linux, so
+    CI is the only place the rows gated on it execute. That is said in the skip reason
+    rather than left for a reader to infer from a silent green tick."""
+    probe = tmp_path / "_nfc_probe"
+    probe.mkdir(exist_ok=True)
+    nfc = unicodedata.normalize("NFC", "Caf\u00e9")
+    nfd = unicodedata.normalize("NFD", "Caf\u00e9")
+    assert nfc != nfd, "the probe's own pair must differ before it can test anything"
+    (probe / nfc).write_text("")
+    collides = (probe / nfd).exists()
+    for entry in probe.iterdir():
+        entry.unlink()
+    probe.rmdir()
+    if collides:
+        pytest.skip(
+            "needs a normalization-sensitive filesystem: this row needs two composition "
+            "forms of one name to be two paths, and macOS conflates them on APFS in both "
+            "its case-sensitive and case-insensitive variants -- so the pair cannot be "
+            "seated here and the defect does not exist to be caught. CI (ubuntu-latest) "
+            "is normalization-sensitive and runs everything."
         )
 
 
