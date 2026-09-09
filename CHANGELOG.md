@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.12.2](https://github.com/MrReasonable/sluice/compare/v2.12.1...v2.12.2) (2026-09-09)
+
+
+### Bug Fixes
+
+* **vault:** treat a case-variant name as taken when archiving a loser ([4870f4d](https://github.com/MrReasonable/sluice/commit/4870f4d429b85aba339e932f385f3f353f67f865))
+
 ## [2.12.1](https://github.com/MrReasonable/sluice/compare/v2.12.0...v2.12.1) (2026-09-09)
 
 
