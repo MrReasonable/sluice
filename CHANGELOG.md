@@ -40,6 +40,50 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.11.0](https://github.com/MrReasonable/sluice/compare/v2.10.0...v2.11.0) (2026-09-09)
+
+`job-sluice track auth` mints the Google credential `track run` reads, so obtaining one is a
+supported command rather than a hand-written script. It drives the consent flow, validates the
+credential in memory -- a refresh token is present, the scopes were actually granted -- before
+writing anything, and under `--force` archives an existing token beside itself rather than
+overwriting it.
+
+**Upgrading an existing `[google]` install needs an explicit reinstall.** `pip install -U` does
+not re-resolve extras, so an install predating this release carries the Google client libraries
+but not `google-auth-oauthlib`. The symptom is easy to misread as a bug: `track auth` reports the
+package missing while `track run` keeps working perfectly. Name the extra to fix it --
+`pip install -U 'job-sluice[google]'`, or your channel's equivalent. From a source checkout, name
+the checkout instead: `pip install -e '.[google]'`.
+
+**A consent screen left in Testing mode issues refresh tokens that expire after 7 days.** That is
+Google policy rather than a sluice limit, and it is why `docs/INSTALL.md` now walks through
+setting the publishing status. Nothing in sluice can detect it in advance; the symptom is a
+credential that simply stops working a week after it was minted.
+
+`job-sluice doctor` also gained a notice for a legacy `./google_token.json` -- the cwd-relative
+location from before paths were XDG-resolved. It is reported once a good token exists at the
+resolved path, which is exactly when the older relocation warning stops firing and the stale file
+would otherwise go unmentioned for good. Nothing is moved or deleted for you.
+
+
+### Features
+
+* **track:** add the OAuth consent flow behind an injected factory ([79f1d28](https://github.com/MrReasonable/sluice/commit/79f1d28645b31c751204572c6ed51d3ecdac4ba4))
+* **track:** expose the consent flow as job-sluice track auth ([efb0bd2](https://github.com/MrReasonable/sluice/commit/efb0bd297116d5fefce5b084ab936df0d100ca45))
+* **track:** give write_token an exclusive create for the mint path ([18e8e84](https://github.com/MrReasonable/sluice/commit/18e8e84a74c26c48cff8b380f4b040a1adb5c9ec))
+
+
+### Bug Fixes
+
+* **doctor:** name track auth as the remedy and report a legacy token ([3920a7e](https://github.com/MrReasonable/sluice/commit/3920a7eb730bf012f1e3aac225978ec9f7bec250))
+
+
+### Documentation
+
+* document job-sluice track auth and the consent-screen publishing fix ([481d2fb](https://github.com/MrReasonable/sluice/commit/481d2fb4dd78d25af151b3047a383722980587c9))
+* **plan:** implementation plan for job-sluice track auth ([#201](https://github.com/MrReasonable/sluice/issues/201)) ([96871d8](https://github.com/MrReasonable/sluice/commit/96871d8e7f9cb947fdc34f455de8171afb74ed1f))
+* **spec:** design job-sluice track auth for the Google token ([#201](https://github.com/MrReasonable/sluice/issues/201)) ([7a895b7](https://github.com/MrReasonable/sluice/commit/7a895b7ea09753cd681d701b5e1f3c4bad8ac0b1))
+
 ## [2.10.0](https://github.com/MrReasonable/sluice/compare/v2.9.7...v2.10.0) (2026-09-08)
 
 **Terminal control characters in untrusted output are now escaped (#280).** Every prior version
