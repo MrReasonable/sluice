@@ -506,7 +506,10 @@ def test_the_push_loses_no_non_zero_count(monkeypatch, tmp_path):
     assert "5 need review" in body
     assert "4 dismissed" in body
     assert "6 skipped" in body
-    assert "7 with no JD fetched" in body
+    # #300: the phrase names the OUTCOME, not one cause of it. `unjudgeable` now has two
+    # producers -- the `jd_arrived` pre-gate (nothing came back) and a judge verdict (a
+    # page came back and was not a posting) -- and "no JD fetched" is false for the second.
+    assert "7 with no usable job description" in body
     # Joined, like every assertion above it: `"7" in body` holds only because 7 happens
     # to be unique in this fixture, which is the coincidence the distinct values were
     # chosen to rule out.

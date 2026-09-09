@@ -106,3 +106,83 @@ def test_apply_verdict_clamps_an_out_of_vocabulary_status_to_needs_review(tmp_pa
     verdict = {"verdict": "applied", "relevance_score": 82, "fit_reasoning": "fit"}
     assert apply_verdict(v, note, verdict, {}) == "applied"    # the WRITE outcome, unchanged
     assert v.read_leads()[0].status == "needs_review"          # the WRITTEN status is clamped
+
+
+def test_the_judge_may_return_unjudgeable_and_it_survives_the_clamp():
+    # #300: the judge had no verdict meaning "the JD never arrived", so prompt.py told it
+    # to score conservatively instead. A conservative score on a blocked page lands just
+    # above the dismiss threshold and routes to `research`, which means "a human should
+    # investigate this" -- so fetch failures accumulated in the human queue forever.
+    # Admitting the word is the whole fix; the status, its routing and its nightly
+    # re-selection (DEFAULT_TRIAGE_STATUSES) already existed for the pre-gate path.
+    assert clamp_verdict("unjudgeable") == "unjudgeable"
+    # _status._ALIASES already folds the common misspelling; the clamp must see the
+    # normalised token, not the raw one, or the alias table is dead on this path.
+    assert clamp_verdict("unjudgable") == "unjudgeable"
+
+
+def test_a_judge_returned_unjudgeable_clears_a_lead_parked_in_research(tmp_path):
+    # #300, the case the issue exists for: a lead sitting in `research` ONLY because a
+    # blocked page was scored conservatively. The judge can now name the failure, and the
+    # write must LAND -- `unjudgeable` is in DEFAULT_TRIAGE_STATUSES, so the lead is
+    # refetched next run instead of waiting on a human who can add nothing to it.
+    #
+    # This is the test that fails if the write guard below is copied from
+    # `_DECISION_REQUIRE["unjudgeable"]` ({"new", "unjudgeable"}) without thought: that
+    # set excludes `research`, every write would be refused, and the 189-lead clog this
+    # issue is about would sit exactly where it is while the suite went green.
+    v = Vault(str(tmp_path))
+    _note(v, "R.md", ['company: "Epsilon"', "status: research", "score: 60",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"research"})[0]
+    verdict = {"verdict": "unjudgeable", "relevance_score": 0,
+               "fit_reasoning": "The JD body is a bot-check page, not a job description."}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].status == "unjudgeable"
+
+
+def test_a_judge_returned_unjudgeable_must_not_demote_a_shortlisted_lead(tmp_path):
+    # The #169 harm, reached through the judge rather than the pre-gate: a transient block
+    # on a lead already shortlisted (and possibly carrying a composed CV pointer, which
+    # would be left pointing at nothing) must not erase that conclusion.
+    # `apply_classification` already guards its own `unjudgeable` arm via
+    # `_DECISION_REQUIRE`; the verdict path had no equivalent, so opening the vocabulary
+    # without adding one would reintroduce the measured #169 incident through a new door.
+    v = Vault(str(tmp_path))
+    _note(v, "S.md", ['company: "Widget"', "status: shortlist", "score: 88",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"shortlist"})[0]
+    verdict = {"verdict": "unjudgeable", "relevance_score": 0,
+               "fit_reasoning": "The JD body is a bot-check page, not a job description."}
+    assert apply_verdict(v, note, verdict, {}) == "unchanged"
+    assert v.read_leads()[0].status == "shortlist"     # the conclusion survives
+
+
+def test_a_judge_returned_unjudgeable_must_not_erase_a_dismissal(tmp_path):
+    # Same rule, the other side of it. `dismiss` is a conclusion someone reached on
+    # evidence; a later blocked fetch is not grounds to reopen it, and reopening would
+    # put the lead back into DEFAULT_TRIAGE_STATUSES to be refetched and re-judged
+    # nightly forever -- the exact treadmill this issue exists to stop.
+    v = Vault(str(tmp_path))
+    _note(v, "D.md", ['company: "Delta"', "status: dismiss", "score: 20",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"dismiss"})[0]
+    verdict = {"verdict": "unjudgeable", "relevance_score": 0,
+               "fit_reasoning": "The JD body is a bot-check page, not a job description."}
+    assert apply_verdict(v, note, verdict, {}) == "unchanged"
+    assert v.read_leads()[0].status == "dismiss"
+
+
+def test_an_ordinary_verdict_may_still_rewrite_a_shortlisted_lead(tmp_path):
+    # The guard must be scoped to `unjudgeable` alone. Re-reading a JD and concluding
+    # `dismiss` on a shortlisted lead is a normal, correct re-judgement, and the existing
+    # never-regress rule permits it. A guard applied to every verdict would freeze the
+    # triage-owned states against each other.
+    v = Vault(str(tmp_path))
+    _note(v, "T.md", ['company: "Example Ltd"', "status: shortlist", "score: 88",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"shortlist"})[0]
+    verdict = {"verdict": "dismiss", "relevance_score": 30,
+               "fit_reasoning": "Scope is above the target shape on a full re-read."}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].status == "dismiss"

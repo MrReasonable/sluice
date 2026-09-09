@@ -687,7 +687,12 @@ _TRIAGE_FILTERED_WORDS = (
     ("dismiss", "{n} dismissed"),
     ("needs_review", "{n} need{s} review"),
     ("skipped", "{n} skipped"),
-    ("unjudgeable", "{n} with no JD fetched"),
+    # #300: names the OUTCOME rather than one cause of it. `unjudgeable` has two producers
+    # now -- the `jd_arrived` pre-gate, where nothing came back at all, and a judge verdict
+    # of `unjudgeable`, where a page came back and was not a posting (a bot-check, a
+    # consent wall, an error body). "no JD fetched" was true only of the first, and read as
+    # a scraper fault on leads whose fetch had in fact succeeded.
+    ("unjudgeable", "{n} with no usable job description"),
 )
 
 
