@@ -692,8 +692,33 @@ _TRIAGE_FILTERED_WORDS = (
     # of `unjudgeable`, where a page came back and was not a posting (a bot-check, a
     # consent wall, an error body). "no JD fetched" was true only of the first, and read as
     # a scraper fault on leads whose fetch had in fact succeeded.
-    ("unjudgeable", "{n} with no usable job description"),
+    ("unjudgeable", "{n} with no usable job description{by}"),
 )
+
+# Only the `unjudgeable` row above takes `{by}`. Every other template simply never
+# references the key, and `str.format` ignores what it is not asked for, so the loop stays
+# one expression rather than growing a branch per row.
+_TRIAGE_WORD_EXTRAS = ("unjudgeable",)
+
+
+def _unjudgeable_breakdown(report) -> str:
+    """" (3 not fetched, 4 not a posting)", naming only the producers that fired.
+
+    #300. The row is one OUTCOME with two causes that are repaired in different places: a
+    JD that never arrived is a scraper or network problem, a page that arrived and was not
+    a posting is bot-blocking. Summing them tells the reader to go and look at the machine,
+    which is the failure this whole formatter exists to remove.
+
+    A zero term is dropped rather than printed, for the same reason `_format_triage_digest`
+    drops a zero ROW: naming a producer that contributed nothing sends someone looking for
+    it. Degrades to "" when the field is absent or empty, so a report built before this
+    existed renders the bare outcome rather than raising.
+    """
+    by = getattr(report, "unjudgeable_by", None) or {}
+    parts = [f"{by.get(k, 0)} {label}"
+             for k, label in (("pre_gate", "not fetched"), ("judge", "not a posting"))
+             if by.get(k, 0)]
+    return f" ({', '.join(parts)})" if parts else ""
 
 
 def _lead_label(company: str, role: str) -> str:
@@ -795,7 +820,9 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
         # group's remainder, when it is the total across every group.
         lines.append(f"({to_look_at - named} more not named)")
 
-    filtered = [word.format(n=(n := counts.get(key, 0)), s="s" if n == 1 else "")
+    filtered = [word.format(n=(n := counts.get(key, 0)), s="s" if n == 1 else "",
+                            by=_unjudgeable_breakdown(report) if key in _TRIAGE_WORD_EXTRAS
+                            else "")
                 for key, word in _TRIAGE_FILTERED_WORDS if counts.get(key, 0)]
     if filtered:
         lines.append(", ".join(filtered) + ".")

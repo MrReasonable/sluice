@@ -94,6 +94,18 @@ class TriageReport:
     # leave it counted once.)
     resolved: dict = field(default_factory=lambda: {"tier0": 0, "tier1": 0, "tier2": 0, "tier3": 0})
     llm_calls: int = 0
+    # #300: WHICH producer made each `unjudgeable`. `pre_gate` is the `jd_arrived` check --
+    # the fetch returned nothing. `judge` is a verdict of `unjudgeable` -- the fetch
+    # returned a page and the model identified it as not a posting (a bot-check, a consent
+    # wall, an error body). They are the same OUTCOME and different PROBLEMS: the first
+    # points at the scraper or the network, the second at bot-blocking, and they are fixed
+    # in different places, so a digest that sums them sends its reader to the machine.
+    #
+    # A NEW field rather than two more `counts` rows, for the reason stated above
+    # `resolved`: counts rows are lead OUTCOMES that every consumer reads as a per-outcome
+    # number, and provenance is not one. `counts["unjudgeable"]` stays the single outcome
+    # total and these two explain it.
+    unjudgeable_by: dict = field(default_factory=lambda: {"pre_gate": 0, "judge": 0})
     # #223 §2.4: how many leads had `role_type` written from the POSTING, split by what
     # the observation replaced. `filled` had nothing; `confirmed` already agreed and only
     # gains the stronger provenance; `corrected` had the tool's own guess; `conflicted`
@@ -654,6 +666,12 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 # depending on `decision`), so the key has no third case to name.
                 key = "skipped" if outcome in ("skipped", "unchanged") else "unjudgeable"
                 report.counts[key] = report.counts.get(key, 0) + 1
+                # #300: counted off the same `key`, so the provenance split can never claim
+                # a lead the outcome row did not. A refused or dry-run write lands under
+                # `skipped` here exactly as it does above, and contributes to neither
+                # producer -- which is what keeps the two sub-counts summing to the row.
+                if key == "unjudgeable":
+                    report.unjudgeable_by["pre_gate"] += 1
                 continue
             _observe_role_type(note, d)
             # #109: get_or_build SNAPSHOTS these four off the lead at BUILD time, and the
@@ -799,6 +817,13 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             key = "skipped" if outcome in ("skipped", "unchanged") else clamp_verdict(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
+            # #300: the judge's own arm of the same split, symmetric with the pre-gate site
+            # above and counted off `key` for the identical reason. A `research` lead whose
+            # re-judgement returns `unjudgeable` is REFUSED by _VERDICT_REQUIRE and lands
+            # under `skipped`, so it is counted as neither producer -- correctly, since
+            # nothing about that lead changed.
+            if key == "unjudgeable":
+                report.unjudgeable_by["judge"] += 1
             # Recorded off `key`, so this list and the counts row can never disagree about
             # a lead -- including the clamp, which is the whole reason `key` exists rather
             # than the raw model string. A skipped or unchanged write yields `"skipped"`,
