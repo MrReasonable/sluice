@@ -39,6 +39,19 @@ gap: it can only ratchet names that ALREADY look synthetic, so a real employer w
 body prose still passes everything here. Nothing local can catch that; a human reading the diff
 is the only control, which is the same limit this whole file's docstring opens with.
 
+A COMPUTED identity is a second concrete instance, found in review on #299 and named here rather
+than left to be rediscovered. A test that needs one employer name in two Unicode composition
+forms cannot write either as a literal -- it binds
+`NFC = unicodedata.normalize("NFC", "Example <Word>")` and passes the CONSTANT to the helper. No
+positional collector matches a Name node, so the value is invisible to every ratchet in this
+file, in BOTH directions: it cannot be flagged as unreviewed, and it cannot be ADDED to the
+roster either, because `test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using`
+rejects an entry no collector finds. Widening a collector to evaluate constants is not the
+answer -- it would mean interpreting arbitrary expressions to decide whether a string is an
+identity, which is the classifier this file's opening argues against. The control is the same
+one: the `Example ` prefix convention makes such a value obviously synthetic to a human reading
+the diff, and a human is what the roster exists to summon rather than replace.
+
 Those collectors all read `tests/**/*.py`. The file has a SECOND half, at the bottom, that
 reads `tests/fixtures/*/raw.json` instead — the captured golden payloads, which no collector
 here ever walked, which is how real employer names and a real hunt geography shipped publicly

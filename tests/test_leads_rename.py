@@ -257,7 +257,9 @@ def test_two_stale_notes_racing_to_one_target_both_refuse(tmp_path):
     rep = v.reconcile_names(apply=True)
     assert rep["renames"] == []
     target = "Example Co - Example Role"
-    reason = "two notes in this sweep both resolve to this target"
+    # The COUNT is interpolated rather than the word "two": a group is every note whose
+    # re-derived target folds to one value and can hold more than two.
+    reason = "2 notes in this sweep resolve to this target"
     assert sorted(rep["collisions"]) == sorted([
         ("Unknown - Example Role", target, reason), (" - Example Role", target, reason)])
     assert os.path.isfile(a) and os.path.isfile(b)

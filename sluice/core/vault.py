@@ -22,6 +22,7 @@ import re
 import stat
 import tempfile
 import threading
+import unicodedata
 from collections.abc import Iterator
 from datetime import date
 
@@ -437,21 +438,74 @@ def _fold_note_name(name: str) -> str:
     `reconcile_names` that does not is measurably a newly-minted pair. Both were live on this
     branch before review.
 
-    CASE ONLY, deliberately, and this is the line not to blur. `_norm_location` folds case
-    AND applies NFKD AND drops combining marks AND collapses non-word runs, because it
-    compares two values for whether they describe the same PLACE. This compares two
-    FILENAMES for whether they are the same note, and every widening past case is a claim
-    that two differently-spelled names are one job -- which, applied to a name, silently
-    merges two real postings and is unrecoverable in the direction that matters. Unicode
-    normalization is a real and SEPARATE axis (a macOS filesystem may hand back NFD for a
-    name written NFC), left alone here rather than folded in on the way past: it needs its
-    own measurement against a real store, and #205 is about case.
+    CASE AND CANONICAL EQUIVALENCE, and no further -- that is the line not to blur.
+    `_norm_location` folds case AND applies NFKD AND drops combining marks AND collapses
+    non-word runs, because it compares two values for whether they describe the same PLACE.
+    This compares two FILENAMES for whether they are the same note, and every widening past
+    CANONICAL equivalence is a claim that two differently-SPELLED names are one job -- which,
+    applied to a name, silently merges two real postings and is unrecoverable in the
+    direction that matters. Canonical equivalence is not such a widening: it says the two
+    strings ARE the same text, which is why #299 folded it in and why compatibility
+    (NFKD/NFKC, which merges a superscript with its digit) stays out. Do not carry
+    `_norm_location`'s NFKD across on the strength of the shared word "normalize".
 
     `casefold`, not `lower`: `lower` is a per-character map that leaves the German sharp s
     alone, so a company written "STRASSE" and one written "Straße" would answer as two
     identities under `lower` and one under `casefold`. Matching `_norm_location`'s choice
-    also means the two folds cannot disagree on a value they both see."""
-    return name.casefold()
+    also means the two folds cannot disagree on a value they both see.
+
+    NORMALIZATION is folded too (#299), and the shape is UAX #15's CANONICAL CASELESS MATCH
+    (definition D145), `NFD(toCasefold(NFD(x)))` -- not the `NFC(casefold(x))` most reach
+    for. The two are not interchangeable: on some inputs the naive form is NARROWER, so it
+    would seat two notes for one employer -- the defect this fold exists to close, surviving
+    in a corner. Deliberately NO COUNT of such inputs here. A draft of this paragraph gave
+    one, and it was not reproducible: four readers sweeping "every assigned code point"
+    arrived at different numbers because the phrase does not say what each point is compared
+    AGAINST, and every one of those numbers was consistent with its own sweep. The witness
+    is executable instead --
+    `tests/test_vault_case_identity.py::test_the_fold_is_the_DEFINED_caseless_match_not_the_naive_composition`
+    pins one pair that the pre-#299 fold and the naive form each classify as two identities
+    and this one classifies as one, so the row reddens if either is restored. The load-bearing
+    half is normalizing to NFD BEFORE casefolding; the TRAILING NFD is a no-op on every
+    single code point (that much did reproduce, on two UCD versions) and is kept because the
+    definition specifies it and single code points say nothing about multi-character
+    sequences, where casefolding can expand a character into marks needing reordering.
+    `casefold` alone is a case mapping and normalizes nothing, so the composed and decomposed
+    spellings of one accented employer folded APART and each seated its own note -- measured
+    on Linux against shipped code as `created, created`, and a two-accent name seated FOUR.
+    The harm is the paragraph above, unchanged, plus the replication half: a
+    normalization-INSENSITIVE filesystem (macOS APFS, in both its case-sensitive and
+    case-insensitive variants -- measured) cannot hold the pair at all.
+
+    No compatibility NORMALIZATION -- that is the line, and it is NOT the same line as "no
+    compatibility equivalence", which is where a draft of this paragraph drew it and was
+    wrong. `casefold` is FULL Unicode case folding, and its own mappings already decompose the
+    fi/ff/ffi ligatures: measured, `_fold_note_name` calls U+FB01 + "le" and "file" one
+    identity, with no NFKD involved. So a ligature merging with its letters is on the
+    PERMITTED side, as a property of case folding this function cannot decline without
+    hand-rolling a fold. What must stay out is NFKD/NFKC, which would additionally merge a
+    superscript with its digit and a full-width letter with its ASCII form -- measured, both
+    of those are two identities today and must remain so, because merging them claims two
+    differently-SPELLED names are one job. `_norm_location` does reach for NFKD -- do not
+    carry that across: it compares token SETS for a human-gated report, not filenames for a
+    write decision.
+
+    A SECOND kind of consumer since #298, and the reason this function's roster is a lower
+    bound rather than "every path that resolves a lead by NAME":
+    `_folded_archive_names`/`_archive_name_candidates` fold to choose an archive FILENAME --
+    asking what a REPLICA would conflate, not what is one lead. The two questions agree today
+    and share this one fold deliberately, because a second copy is the #30 hazard. They can
+    diverge, and the pressures at the compatibility boundary are OPPOSITE: widening is cheap
+    for the filename question (it costs a numeric suffix, and on a stamp-failed archive a
+    re-created duplicate -- see `_reserve_and_move`) and forbidden for the identity one
+    (it merges two jobs). If a replica filesystem is ever found that conflates something
+    identity must not, split them then -- not before.
+
+    Stdlib only, deliberately: `unicodedata` ships the UCD and `casefold` is genuine Unicode
+    full case folding from `CaseFolding.txt`. PyICU and `precis-i18n` were considered and
+    rejected -- both are third-party, against this package's stdlib-only rule, and
+    `precis-i18n`'s `NFKC_Casefold` is the compatibility fold this paragraph just refused."""
+    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", name).casefold())
 
 
 def _holds_a_note(path: str) -> bool:
@@ -626,7 +680,7 @@ class Vault:
         # exact thing about this store?" -- so a second set would be a second thing to reset.
         # Neither is ever the bare name: `(slug, refs)` for the duplicate-slug sweep, because
         # a LATER read whose filter surfaces a different set of twins at that slug is a
-        # different fact and must still be said; and `("case", folded, slugs)` for #205's
+        # different fact and must still be said; and `("fold", folded, slugs)` for #205's
         # capitalisation sweep, tagged so the two cannot collide on a store where one slug
         # is also a fold key. That tag is why this comment no longer says "keyed on (slug,
         # refs)" full stop, which it did until the second sweep landed beside it.
@@ -756,8 +810,10 @@ class Vault:
         must not read as an absent one here, because absent is the branch that creates and
         that records a merged_away in seen.db. See there for the measured failure.
 
-        Matches a name up to CASE (#205), because a board renders one employer several ways
-        and the note name is built from the company string verbatim. Two probes, in this
+        Matches a name up to CASE and to CANONICAL EQUIVALENCE (#205, then #299), because a
+        board renders one employer several ways and the note name is built from the company
+        string verbatim -- and two boards may publish one accented name in different
+        composition forms. Two probes, in this
         order: the exact name, then -- only if that found nothing -- a folded listing. See
         the body for why the order is what makes the second affordable, and for the one
         state it leaves unreported.
@@ -1394,8 +1450,15 @@ class Vault:
                 # would write is triage-owned and reversible -- never a terminal. But the
                 # staleness clock running on the SURVIVOR is a consequence of refusing, not
                 # of the duplicate, so it is stated here rather than left to be re-derived.
+                # Through `_fold_group_report`, like every other message naming a group
+                # the fold calls one identity: these paths fold equal BY CONSTRUCTION, so two
+                # of them differing only in composition render alike and the refusal named one
+                # visible string twice. Observed on a seeded store while probing the #299
+                # migration path -- an operator told to reconcile two notes could not tell
+                # which two.
+                shown, _axis = _fold_group_report(found)
                 _log.warning("vault refused lead %r: %r resolves to %d notes (%s)",
-                             lead.dedup_key, name, len(found), ", ".join(sorted(found)))
+                             lead.dedup_key, name, len(found), ", ".join(shown))
                 return None, "refuse", False
             if not found:
                 # #81. Returns None, or one of the TWO outcome strings -- never a bool: the
@@ -1532,8 +1595,15 @@ class Vault:
                 if key in self._warned_dup_slugs:
                     continue
                 self._warned_dup_slugs.add(key)
+                # Same helper as every other multi-name message. DEFENSIVE here rather
+                # than observed: this group is keyed on an EXACT slug, so the basenames are
+                # identical and cannot render alike -- only two FOLDERS differing by
+                # composition alone can make two of these paths look the same. Routed through
+                # the one helper anyway, so a reader does not have to re-derive which messages
+                # are safe and which are not.
+                shown, _axis = _fold_group_report(refs)
                 _log.warning("vault: slug %r is claimed by %d notes (%s); consumers keyed on "
-                             "it will see only one", slug, len(refs), ", ".join(sorted(refs)))
+                             "it will see only one", slug, len(refs), ", ".join(shown))
         # #205, and a DIFFERENT fact from the one above with a different consequence and a
         # different remedy, which is why it is a second sweep and a second message rather
         # than a widening of the first. Above: several notes at ONE name, so a consumer
@@ -1592,18 +1662,34 @@ class Vault:
         for folded, slugs in by_fold.items():
             if len(slugs) < 2:
                 continue
-            key = ("case", folded, tuple(sorted(slugs)))
+            key = ("fold", folded, tuple(sorted(slugs)))
             if key in self._warned_dup_slugs:
                 continue
             self._warned_dup_slugs.add(key)
+            # RENDERED names, except any that renders the SAME as another in the group.
+            # Since #299 the fold also folds Unicode normalization, so a reported group can
+            # hold two names that are different byte sequences and identical glyphs -- and
+            # the message then read "2 note names differ only by capitalisation (X, X)",
+            # naming one visible string twice, which reads as a bug in sluice rather than a
+            # fact about the vault (measured on a seeded store).
+            #
+            # PER MEMBER, not per group, and the difference is not cosmetic: `ascii()` on a
+            # name in a non-Latin script yields nothing but `\\uXXXX` escapes, so escaping the
+            # whole group to disambiguate ONE pair inside it would make the other members
+            # unreadable to the person being asked to act on them. Escaping only what is
+            # actually ambiguous is the same argument this comment already makes against
+            # escaping unconditionally, applied one scope further down.
+            shown, _axis = _fold_group_report(slugs)
             _log.warning(
-                "vault: %d note names differ only by capitalisation (%s); they are one job "
-                "held as separate leads with separate status, and a case-insensitive "
-                "filesystem cannot sync the set. `job-sluice leads dedupe` clusters them; "
-                "`--merge` "
+                "vault: %d note names are one identity up to capitalisation and Unicode "
+                "normalization (%s); they are one job "
+                "held as separate leads with separate status, and a filesystem that folds "
+                "either cannot sync the set -- macOS folds normalization on APFS in every "
+                "configuration, and case too unless the volume was created case-sensitive. "
+                "`job-sluice leads dedupe` clusters them; `--merge` "
                 "completes only where their statuses agree and reports `conflict` "
                 "otherwise, so a disagreeing pair needs a human to pick the surviving "
-                "status first", len(slugs), ", ".join(sorted(slugs)))
+                "status first", len(slugs), ", ".join(shown))
         return out
 
     def update_fields(self, ref, fields: dict, *,
@@ -2899,9 +2985,10 @@ class Vault:
                              "structure the user deliberately built"))
                 continue
             if _fold_note_name(target) == _fold_note_name(n.slug):
-                # FOLDED (#205) to stay in step with layer 1 below, which reaches the vault
-                # through `_locate` and therefore matches up to case. Left exact, a note
-                # whose re-derived target differs from its own name ONLY in capitalisation
+                # FOLDED (#205, widened by #299) to stay in step with layer 1 below, which
+                # reaches the vault through `_locate` and therefore matches up to case AND
+                # canonical equivalence. Left exact, a note whose re-derived target differs
+                # from its own name only in capitalisation or composition form
                 # slips past this skip, reaches layer 1, and `_locate` hands back the note
                 # ITSELF -- reported as its own blocker, on every run, for ever. That is the
                 # phantom self-collision this branch already exists to avoid, arriving
@@ -2967,15 +3054,43 @@ class Vault:
         to_move = []
         for group in by_target.values():
             if len(group) > 1:
-                # The two shapes share a group but not a diagnosis, so the message
+                # THREE shapes share a group and none share a diagnosis, so the message
                 # distinguishes them. Identical targets are the original case and keep the
-                # original wording; targets that differ only in capitalisation are #205's,
-                # and saying "the same target" of two visibly different strings would send
-                # an operator looking for a match they can see is not there.
-                same = len({t for _n, t in group}) == 1
-                reason = ("two notes in this sweep both resolve to this target" if same else
-                          "two notes in this sweep resolve to names differing only in "
-                          "capitalisation, which are one identity")
+                # original wording; targets differing only in capitalisation are #205's, and
+                # saying "the same target" of two visibly different strings would send an
+                # operator looking for a match they can see is not there.
+                #
+                # The third is #299's and needs its own arm rather than falling into #205's.
+                # `same` is BYTE equality, so a canonically-equivalent pair (one target NFC,
+                # the other NFD) is not "same" and took the capitalisation arm -- which named
+                # the wrong axis AND printed two strings that render identically, so the
+                # operator was told two visibly identical names differ by capitalisation.
+                # That reads as a bug in sluice rather than a fact about the vault, which is
+                # the same defect `read_leads`' report carries a guard for; fixing it there
+                # and not here left the class open (found in review, one round later).
+                #
+                # The escape goes in the REASON, never in `target`: that field is data a
+                # caller may act on, and rewriting it to make a message legible would corrupt
+                # the thing the message is about.
+                targets = [t for _n, t in group]
+                shown, axis = _fold_group_report(targets)
+                # The COUNT is interpolated, not the word "two". A group is every note whose
+                # re-derived target folds to one value, and it can hold more -- this file's own
+                # three-member row builds one and asserts three collisions, so the hard-coded
+                # wording was already contradicted by a test in the same branch that added it.
+                n_notes = len(group)
+                if not axis:
+                    reason = f"{n_notes} notes in this sweep resolve to this target"
+                elif axis == "composition":
+                    # The axis is DERIVED, not decided here -- see `_fold_group_report`,
+                    # which explains why a group-wide predicate reached the wrong arm and
+                    # why this site must not re-derive it.
+                    reason = (f"{n_notes} notes in this sweep resolve to names that render "
+                              "alike but differ in Unicode composition, which are one "
+                              "identity: " + ", ".join(shown))
+                else:
+                    reason = (f"{n_notes} notes in this sweep resolve to names differing only "
+                              "in capitalisation, which are one identity")
                 for n, target in group:
                     summary["collisions"].append((n.slug, target, reason))
                 continue
@@ -3458,8 +3573,14 @@ class Vault:
             stem = base[:-3] if base.endswith(".md") else base
             try:
                 # suffix_on_collision=True: an archived loser's filename is not an identity the
-                # write path walks, so a numeric suffix costs nothing -- while failing to archive
-                # would leave the loser active and undo #81. See _reserve_and_move.
+                # write path walks -- for every archive whose name the stamp below RECORDED,
+                # which is what `_archived_match` decides on -- so a numeric suffix costs
+                # almost nothing, while failing to archive would leave the loser active and
+                # undo #81. The exception, and the reason "almost", is a stamp that FAILED:
+                # `_archived_match`'s legacy arm then matches by exact filename and a
+                # suffixed name is missed, giving a re-created duplicate. See
+                # _reserve_and_move, which carries the measurement and why that is still the
+                # direction to fail in.
                 dest = _reserve_and_move(ref, merged_dir, base, suffix_on_collision=True)
             except OSError as e:
                 # per-loser isolation: leave the loser active (it self-heals next run). The helper
@@ -3511,48 +3632,117 @@ def _write(path: str, text: str, *, exclusive: bool = False) -> None:
         raise
 
 
+def _fold_group_report(names) -> tuple:
+    """How to describe a group of names one fold calls one identity. Returns
+    `(shown, axis)` -- the names as a human should see them, and WHICH axis makes them one.
+
+    `axis` is `""` when the names are byte-identical, `"composition"` when two members that
+    DIFFER IN BYTES render alike, and `"capitalisation"` otherwise. "Two that render alike" is
+    the wrong predicate and was the shipped one: it counts a member against itself whenever an
+    exact duplicate is present, so `["X", "X", "Y"]` reported composition. Deriving it here rather than at each call
+    site is the point: `reconcile_names` decided it inline, on whether the WHOLE group
+    rendered alike, so a three-member group (two composition variants plus a case variant)
+    does not render alike as a group and was reported under the wrong axis -- while the
+    sibling report beside it was already right. One derivation, one answer, and a third
+    consumer cannot get it wrong a third way.
+
+    Since #299 the fold covers Unicode composition, so a group it reports can hold two names
+    that are different byte sequences and identical GLYPHS. Printed raw, the message names one
+    visible string twice and reads as a bug in sluice rather than a fact about the vault.
+
+    PER MEMBER, never per group: `ascii()` on a name in a non-Latin script yields nothing but
+    `\\uXXXX` escapes, so escaping a whole group to disambiguate one pair inside it would make
+    the other members unreadable to the person being asked to act on them.
+
+    ONE helper for every message that names such a group -- FOUR callers, not the two it
+    started with: `read_leads`' fold-collision sweep and its duplicate-slug sweep,
+    `reconcile_names`' collision arm, and `_resolve_candidates`' ambiguous refusal. Two of those
+    pass
+    filesystem PATHS rather than note names, which is deliberate: the property is about the
+    strings an operator READS, and an operator reads the whole path, so two paths in different
+    directories are genuinely distinguishable and must not be escaped.
+
+    Centralising is the point rather than tidiness. `read_leads`' sweep
+    and `reconcile_names`' collision arm are the same message about the same store shape; fixing
+    one and leaving the other is exactly what happened, twice, on this branch -- and the second
+    time the two had DIFFERENT bugs, because a per-group predicate reached the wrong arm on a
+    three-member group while the per-member one beside it was already right."""
+    shown = sorted(names)
+    rendered = [unicodedata.normalize("NFC", n) for n in shown]
+    # A member is ambiguous only when a member with DIFFERENT BYTES renders the same as it.
+    # Counting equal renderings alone conflates an EXACT DUPLICATE with a composition variant:
+    # `reconcile_names` can hand this a group holding two notes that resolve to the SAME target
+    # plus a third differing only by case, and every member of that group then came back
+    # `composition` -- an axis nothing in it differs on -- with the two duplicates escaped for
+    # nothing. Measured on `["X", "X", "Y"]`.
+    ambiguous = [any(other != n and other_r == r for other, other_r in zip(shown, rendered))
+                 for n, r in zip(shown, rendered)]
+    out = [ascii(n) if amb else n for n, amb in zip(shown, ambiguous)]
+    if len(set(shown)) == 1:
+        axis = ""
+    elif any(ambiguous):
+        # At least one PAIR renders alike -- per member, never per group.
+        axis = "composition"
+    else:
+        axis = "capitalisation"
+    return out, axis
+
+
 def _folded_archive_names(dest_dir: str) -> frozenset:
-    """Every name in `dest_dir`, folded -- what a case-insensitive replica would conflate.
+    """Every name in `dest_dir`, folded -- what a replica's filesystem would conflate.
+
+    "Folded" is `_fold_note_name`, which covers case AND canonical equivalence since #299.
+    Both halves of this pre-filter must use it: fold here differently from
+    `_archive_name_candidates` and the skip silently stops firing for exactly the pairs the
+    widening added. The one-fold roster sweep in tests/test_vault_case_identity.py pins it.
 
     FULL basenames, not stems: a stray `.syncthing.*.tmp` beside a note is just as unable to
-    coexist with its case-twin on the replica, and stripping `.md` would hide it from a check
+    coexist with its folded twin on the replica, and stripping `.md` would hide it from a check
     whose whole subject is what the directory can be replicated as.
 
-    FileNotFoundError alone is swallowed, and the narrowness is the point. A missing
-    directory is not a collision, and the `os.open` below fails on it anyway, so behaviour
-    there is unchanged. Every other OSError propagates: an UNREADABLE directory read as an
-    empty set is a guard that silently disarms itself on exactly the vault where it matters,
-    which is this repo's most-repeated failure shape. It does mean a dest_dir that is
-    writable but not readable now fails where it previously succeeded -- deliberate, and safe
-    at the one caller, since `merge_cluster` isolates a per-loser OSError, logs it by name and
-    leaves that loser ACTIVE to self-heal on the next run."""
+    NOTHING is caught here, deliberately, and the absence is the design rather than an
+    omission -- an earlier docstring described a `FileNotFoundError` guard this function has
+    never had, which is the bug class this repo hits most and which invites someone to
+    "restore" it as the broad `except OSError: return frozenset()` the next sentence forbids.
+    An UNREADABLE directory read as an empty set is a guard that silently disarms itself on
+    exactly the vault where it matters. A MISSING one cannot reach here at the only caller
+    (`merge_cluster` runs `os.makedirs` first) and would fail at the `os.open` below anyway.
+    So every OSError propagates, and that is safe: `merge_cluster` isolates a per-loser
+    OSError, logs it by name, and leaves that loser ACTIVE to self-heal on the next run. It
+    does mean a dest_dir that is writable but not readable now fails where it previously
+    succeeded -- deliberate, and the loud direction."""
     return frozenset(_fold_note_name(n) for n in os.listdir(dest_dir))
 
 
 def _archive_name_candidates(base: str, taken_folded) -> Iterator[str]:
     """Yield the basenames to ATTEMPT, in order: `base`, then `<stem>.1.md`, `<stem>.2.md`
-    ... skipping any a case-insensitive filesystem would conflate with a name already there.
+    ... skipping any that a replica's filesystem would conflate with a name already there --
+    which since #299 means case AND Unicode composition, since `_fold_note_name` covers both.
 
     Separated from the reservation below so the DECISION is testable where the defect cannot
-    be reproduced. Measured 2026-09-09: macOS APFS folds at least as widely as `casefold()`
-    on every pair that could be constructed (plain case, sharp-s/SS, final sigma, the
-    fi-ligature, the dotted capital I, combining marks), so on a developer's filesystem
+    be reproduced. Measured 2026-09-09 on APFS AS SHIPPED -- case-INSENSITIVE, the macOS
+    default, and the scope matters: a volume created case-sensitive does not fold case at all
+    (`tests/conftest.py::require_normalization_sensitive_fs` records that measurement, and an
+    earlier draft of this paragraph generalised past it). On the default volume it folds at
+    least as widely as `casefold()` on every pair that could be constructed (plain case,
+    sharp-s/SS, final sigma, the fi-ligature, the dotted capital I, combining marks), so on a
+    developer's filesystem
     `O_EXCL` already collides and the unfixed code already suffixes -- an end-to-end row
     there is green either way and certifies nothing. This function is what reddens on both.
 
     A PRE-FILTER, never the concurrency primitive: it only decides which name to attempt,
     and `O_EXCL` still arbitrates each attempt. It cannot be made race-free -- another
-    archiver may seat a case-variant between the listing and the open -- and does not need to
+    archiver may seat a folded twin between the listing and the open -- and does not need to
     be, because the exclusive create still refuses to overwrite. It closes the case where
     nothing was racing, which is how the reported vault reached the state.
 
     The skip applies at EVERY iteration rather than only the first. A check that ran once and
-    then fell back to bare `O_EXCL` would seat `<stem>.1.md` beside a case-variant of itself
+    then fell back to bare `O_EXCL` would seat `<stem>.1.md` beside a folded twin of itself
     -- the same unholdable pair, one suffix along.
 
     `taken_folded` is EMPTY for the `suffix_on_collision=False` caller, so the first name it
     is offered is always the one it asked for and reconcile's exact-match semantics are
-    untouched. Widening that caller to refuse a case-variant would turn a reconcile that
+    untouched. Widening that caller to refuse a folded twin would turn a reconcile that
     works today into a refusal: the filename is the identity there, and to every filesystem
     that can hold both, the two names are two identities."""
     stem = base[:-3] if base.endswith(".md") else base
@@ -3581,14 +3771,25 @@ def _reserve_and_move(src: str, dest_dir: str, base: str, *,
     COLLISION POLICY is the caller's, and the two are not interchangeable:
 
     - `suffix_on_collision=True` (merge_cluster) takes `<stem>.<n>.md`. An archived loser's
-      filename is not an identity the write path walks, so a suffix costs nothing there, while
-      failing to archive would leave the loser active and undo #81. It ALSO treats a name
-      differing only in CASE as taken (#298, `_archive_name_candidates`): `O_EXCL` fires on an
-      exact match only, so two spellings of one employer both seated here unsuffixed, and the
-      vault then held a directory a case-insensitive replica cannot hold -- a permanent
-      Syncthing folder error and an ABORTED scan, which stops that replica detecting local
-      changes at all until a human resolves the casing by hand. Over-suffixing is the safe
-      direction precisely because the filename is not an identity here.
+      filename is not an identity the write path walks, so a suffix costs ALMOST nothing
+      there (see below), while failing to archive would leave the loser active and undo #81.
+      It ALSO treats a name the destination already holds UP TO THE FOLD as taken (#298,
+      `_archive_name_candidates`; since #299 that fold covers Unicode normalization as well as
+      case): `O_EXCL` fires on an exact match only, so two spellings of one employer both
+      seated here unsuffixed, and the vault then held a directory a replica that folds either
+      -- macOS folds normalization on APFS always, and case unless the volume was created
+      case-sensitive -- cannot hold, giving a permanent Syncthing folder
+      error and an ABORTED scan, which stops that replica detecting local changes at all
+      until a human resolves it by hand.
+
+      "Not an identity" is true of every archive whose name `merge_cluster` successfully
+      STAMPED, which is what `_archived_match` decides on. It is not true of one whose stamp
+      FAILED (`_stamp_archived_from` swallows its error, deliberately): those fall to that
+      function's LEGACY arm, which matches by exact filename, and `<name>.1.md` is not matched
+      by candidate `<name>`. Measured -- collision plus stamp failure gives `created` where an
+      unsuffixed seat gives `merged_away`. So a suffix costs a re-created duplicate in that
+      narrow population, which is the direction to fail in (a visible duplicate a human can
+      merge again) and is why over-suffixing is still the safe choice here.
     - `suffix_on_collision=False` (leads reconcile) raises FileExistsError. A suffix changes the
       FILENAME, which is the slug, which is the IDENTITY: the renamed note matches no candidate
       `_resolve_path` walks, so the next scrape mints a fresh note and orphans the renamed one.
@@ -3609,7 +3810,6 @@ def _reserve_and_move(src: str, dest_dir: str, base: str, *,
     # candidate `base` unconditionally, so that caller's behaviour is unchanged by
     # construction rather than by a branch someone could later "simplify" away.
     taken = _folded_archive_names(dest_dir) if suffix_on_collision else frozenset()
-    dest = os.path.join(dest_dir, base)
     reserved = None
     reserved_id = None
     try:

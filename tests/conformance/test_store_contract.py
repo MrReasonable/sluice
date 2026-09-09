@@ -21,6 +21,7 @@ is a path, or that a slug came from a filename.
 """
 import inspect
 import os
+import unicodedata
 
 import pytest
 
@@ -641,7 +642,8 @@ def test_an_identity_equivalence_binds_the_archive_probe_too(store_name, tmp_pat
                                                              monkeypatch):
     """#205, and the obligation is CONDITIONAL because the equivalence itself is a MAY. A
     store may match its recorded identity up to an equivalence of its own -- the vault
-    matches note names up to CASE, because a board renders one employer several ways -- and
+    matches note names up to CASE (and, since #299, canonical equivalence -- bound by the
+    sibling row below), because a board renders one employer several ways -- and
     a store keyed on synthetic ids has no such notion and needs none. What is a MUST is that
     whichever equivalence a store adopts binds EVERY path that resolves a lead, the create
     walk and the archive probe alike.
@@ -696,6 +698,99 @@ def test_an_identity_equivalence_binds_the_archive_probe_too(store_name, tmp_pat
         "case-variant re-scrape resurrects a lead a human merged away")
     assert resurrected.outcome in _VOCAB
     assert len(store.read_leads()) == 1
+
+
+def test_a_normalization_equivalence_also_binds_the_archive_probe(store_name, tmp_path,
+                                                                  monkeypatch):
+    """#299, the same conditional obligation as the row above on a SECOND axis, and a
+    separate row rather than a parameter because a store may adopt either equivalence
+    without the other -- the vault held the case one for four releases before this one.
+
+    `casefold` normalizes nothing, so a store folding only case treats the composed and
+    decomposed spellings of one accented employer as two leads. That is the #205 harm
+    unchanged (two notes, two statuses, a dismissal under one spelling not stopping the
+    role returning as `new` under the other) plus a replication one: a filesystem that
+    folds normalization -- every macOS vault -- cannot hold the pair at all.
+
+    Same antecedent-probe shape as its sibling, for the same anti-vacuity reason: a
+    conditional whose antecedent never holds is satisfied trivially by every store. The
+    probe uses an EMPTY url so nothing but a NAME equivalence can make the second call
+    anything other than `created`.
+
+    The pair is built with `unicodedata.normalize` from one literal rather than written as
+    two, so it cannot degrade into a single value if a tool rewrites this file."""
+    nfc = unicodedata.normalize("NFC", "Example Caf\u00e9 Foundry")
+    nfd = unicodedata.normalize("NFD", "Example Caf\u00e9 Foundry")
+    assert nfc != nfd, "the probe pair collapsed; this row would certify nothing"
+
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(company=nfc, url="https://example.invalid/1")).outcome == "created"
+
+    variant = store.upsert(_lead(company=nfd, url=""))
+    folds_on_create = variant.outcome != "created"
+    if not folds_on_create:
+        assert len(store.read_leads()) == 2, (
+            f"{store_name} neither folded the composition variant nor created it as a "
+            "distinct lead")
+        return
+
+    assert len(store.read_leads()) == 1, (
+        f"{store_name} reported {variant.outcome!r} but left more than one lead")
+
+    assert store.upsert(_lead(company=nfc, url="https://example.invalid/2",
+                              location=LOCATIONS[1])).outcome == "created"
+    leads = store.read_leads()
+    survivor = next(n for n in leads if n.fm.get("url") == "https://example.invalid/1")
+    loser = next(n for n in leads if n.fm.get("url") == "https://example.invalid/2")
+    store.merge_cluster(survivor.ref, [loser.ref], alt_urls=["https://example.invalid/2"],
+                        first_seen="2026-07-05", last_seen="2026-07-20")
+    assert len(store.read_leads()) == 1, "nothing was merged: the property below is vacuous"
+
+    resurrected = store.upsert(_lead(company=nfd, url="https://example.invalid/2",
+                                     location=LOCATIONS[1]))
+    assert resurrected.outcome != "created", (
+        f"{store_name} folds normalization when creating but not when probing its archive, "
+        "so a composition-variant re-scrape resurrects a lead a human merged away")
+    assert resurrected.outcome in _VOCAB
+    assert len(store.read_leads()) == 1
+
+
+def test_an_identity_equivalence_has_a_CEILING_no_compatibility_normalization(
+        store_name, tmp_path, monkeypatch):
+    """The two rows above bind a store's equivalence from BELOW -- whatever it adopts must
+    reach the archive probe. Neither binds it from ABOVE, so a store applying NFKC caseless
+    matching satisfies both antecedents and passes both green while calling two differently
+    SPELLED employers one job. The contract states that ceiling as a MUST NOT; this is what
+    makes it executable rather than prose.
+
+    The ceiling is on the NORMALIZATION applied, not on the equivalence that results, and the
+    distinction is load-bearing rather than pedantic: `casefold` is FULL Unicode case folding
+    and merges the fi/ff/ffi ligatures by itself, so a row forbidding "compatibility
+    equivalence" would fail against the reference implementation. Measured on the vault: the
+    ligature pair IS merged, the two pairs below are NOT.
+
+    Unconditional, deliberately -- no antecedent probe. A store that folds nothing still must
+    not merge these, so there is no arm where the property does not apply, and a conditional
+    here would be the vacuity this suite guards against elsewhere."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.upsert(_lead(company="Example Widget 2",
+                              url="https://example.invalid/1")).outcome == "created"
+
+    # Compatibility-ONLY pairs: NFKC merges each, canonical caseless matching must not.
+    superscript = store.upsert(_lead(company="Example Widget \u00b2",
+                                     url="https://example.invalid/2"))
+    assert superscript.outcome == "created", (
+        f"{store_name} merged a superscript with its digit, so it is applying compatibility "
+        "normalization: two differently spelled employers became one lead")
+
+    fullwidth = store.upsert(_lead(company="Example Widget \uff12",
+                                   url="https://example.invalid/3"))
+    assert fullwidth.outcome == "created", (
+        f"{store_name} merged a full-width digit with its ASCII form, so it is applying "
+        "compatibility normalization")
+    assert len(store.read_leads()) == 3, (
+        f"{store_name} left {len(store.read_leads())} leads; three distinct spellings must "
+        "stay three")
 
 
 # ── #131 post-final-review: upsert reports the note it ACTUALLY wrote to ──────
