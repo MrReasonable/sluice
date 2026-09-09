@@ -27,6 +27,30 @@ def test_default_prompt_has_mechanics_but_no_opinion():
     assert "relevance_score" in p
 
 
+def test_the_prompt_offers_unjudgeable_for_a_page_that_is_not_a_job_description(tmp_path):
+    # #300. `clamp_verdict` accepting the word changes nothing on its own: the model only
+    # emits a verdict the schema offers it. Before this, the schema listed three values and
+    # the Inputs section told the model to "score conservatively" on a blocked JD, which
+    # lands at or above the dismiss threshold and routes to `research` -- the human queue.
+    #
+    # Asserted on the COMPOSED prompt (through build_system_prompt_from, the seam the
+    # engine uses) rather than on the scaffold constant, so a future refactor that stops
+    # threading the tail into the composed prompt fails here rather than silently shipping
+    # a judge that has never heard the word.
+    p = build_system_prompt_from(_criteria_from_vault(tmp_path))
+    assert "unjudgeable" in p
+    # It must be offered in the schema's verdict enum, not merely mentioned in prose.
+    schema_line = next(ln for ln in p.splitlines() if ln.strip().startswith('"verdict"'))
+    assert "unjudgeable" in schema_line
+    # A schema value the few-shot examples never demonstrate is one the model reliably
+    # ignores, so the worked example is part of the mechanism rather than decoration.
+    # Pinned on the example's SHAPE (an unjudgeable verdict scored 0) rather than on any
+    # wording, so rephrasing the scaffold does not fail this.
+    example = next(ln for ln in p.splitlines()
+                   if '"verdict":"unjudgeable"' in ln.replace(" ", ""))
+    assert '"relevance_score":0' in example.replace(" ", "")
+
+
 # The privacy invariant. The shipped prompt is public; a candidate's target roles,
 # anti-targets and culture preferences are not. They belong in the vault Judging
 # Profile, and this test fails the moment somebody bakes one back into the code.

@@ -44,7 +44,10 @@ def _build_prompt(batch, system_prompt):
                   "```json", json.dumps(slim(d), ensure_ascii=False), "```", ""]
     parts.append(
         f"Output ONLY a JSON array of exactly {len(batch)} verdict objects. "
-        'Each: {"lead_id":"...","verdict":"shortlist|research|dismiss",'
+        # #300: this tail restates the enum, so it has to carry `unjudgeable` too.
+        # It is the LAST thing the model reads before answering, and a tail that
+        # contradicts the schema above teaches the narrower vocabulary.
+        'Each: {"lead_id":"...","verdict":"shortlist|research|dismiss|unjudgeable",'
         '"relevance_score":N,"fit_reasoning":"...","concerns":[],'
         '"culture_flags":[],"recommended_next_action":"..."}'
     )

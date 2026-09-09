@@ -44,7 +44,12 @@ _DEFAULT_CRITERIA = DEFAULT_CRITERIA
 
 _SCAFFOLD_TAIL = """## Inputs
 
-Each dossier is JSON. The `jd.markdown` (or `jd`) field is your PRIMARY evidence; read it carefully every time. `glassdoor` (rating, review_count) is a culture sanity check. If the JD is blocked or sparse, say so in `concerns` and score conservatively. If the posting is a recruiter listing that hides the client, default to research with "ask recruiter for client name and culture context" unless the JD is rich enough to judge.
+Each dossier is JSON. The `jd.markdown` (or `jd`) field is your PRIMARY evidence; read it carefully every time. `glassdoor` (rating, review_count) is a culture sanity check. If the posting is a recruiter listing that hides the client, default to research with "ask recruiter for client name and culture context" unless the JD is rich enough to judge.
+
+Two different failures look alike here and must not be confused:
+
+- The JD field holds something that is NOT a job description at all: a bot-check or CAPTCHA interstitial, a cookie or consent wall, a sign-in page, a 404 or other error body, a search-results or listings index, or navigation chrome with no posting in it. There is nothing to judge, so do NOT score it. Return verdict `unjudgeable`, say in `concerns` what the page actually was, and put `relevance_score` at 0. This routes the lead back for a refetch rather than to a human, who can add nothing a retry will not.
+- The JD is a REAL posting that is merely thin, vague or missing detail you would like. That is a judgement you can still make: say what is missing in `concerns` and score conservatively.
 
 ## Scoring scale (0 to 100)
 
@@ -57,7 +62,7 @@ Each dossier is JSON. The `jd.markdown` (or `jd`) field is your PRIMARY evidence
 
 {
   "lead_id": "<dossier.lead_id>",
-  "verdict": "shortlist" | "research" | "dismiss",
+  "verdict": "shortlist" | "research" | "dismiss" | "unjudgeable",
   "relevance_score": <integer 0-100>,
   "fit_reasoning": "<2 to 4 plain sentences. Quote SPECIFIC phrases from the JD (in single quotes) that drove the score, and name the win-pattern or anti-pattern match. No em dashes, no AI-tell phrasing.>",
   "concerns": ["<short string>", ...],
@@ -82,6 +87,9 @@ Dismiss (profile anti-pattern in the culture language). JD: "Join our seed-stage
 Research (recruiter hides the client). JD: "Our client is a high-growth fintech scale-up. Outside IR35 contract, 700 per day. Remote-first UK."
 {"lead_id":"...","verdict":"research","relevance_score":67,"fit_reasoning":"Comp, contract basis and location are workable against the profile, but the recruiter hides the client and the JD carries no culture content, so the profile's culture criteria cannot be applied. 'High-growth scale-up' is genuinely ambiguous rather than disqualifying.","concerns":["client hidden by recruiter","no culture content to judge"],"culture_flags":["unknown: no culture content in JD"],"recommended_next_action":"ask recruiter: client name, team size, reporting line"}
 
+Unjudgeable (the fetched page is not a posting). JD: "Verify you are human. Enable JavaScript and cookies to continue. Troubleshooting: error 1020, Ray ID 8ab3f9. Performance and security by a CDN."
+{"lead_id":"...","verdict":"unjudgeable","relevance_score":0,"fit_reasoning":"The JD field holds a bot-check interstitial, not a job posting: 'Verify you are human', 'Enable JavaScript and cookies' and a CDN error reference are the whole body. There is no posting text to judge, so no score would mean anything.","concerns":["JD body is a bot-check page, not a job description"],"culture_flags":[],"recommended_next_action":"refetch"}
+
 ## Final reminders
 
 1. Read the JD body and form your own culture read.
@@ -89,7 +97,8 @@ Research (recruiter hides the client). JD: "Our client is a high-growth fintech 
 3. Be willing to dismiss; do not hedge into research.
 4. Never flag "X years engineering" or "Staff IC before management" as a concern if the profile above states the candidate already satisfies them.
 5. Apply the target and wrong-shape rules from the profile above exactly.
-6. Output one JSON array, one object per dossier, in input order. No prose, no code fences, no preamble, no em dashes."""
+6. Output one JSON array, one object per dossier, in input order. No prose, no code fences, no preamble, no em dashes.
+7. If the JD field is not a job posting at all, return `unjudgeable` rather than scoring it. A score on page chrome is a guess wearing a number, and it costs a human a review that only a refetch can resolve."""
 
 
 def _strip_frontmatter(text: str) -> str:

@@ -12,12 +12,21 @@ _log = get_logger("triage.apply")
 _DECISION_STATUS = {"reject": "dismiss", "needs_review": "needs_review", "keep": "new",
                     "unjudgeable": "unjudgeable"}
 
-# The judge's OWN vocabulary -- three verdicts, exactly what triage/prompt.py's
+# The judge's OWN vocabulary -- four verdicts, exactly what triage/prompt.py's
 # `_SCAFFOLD_TAIL` (its "Output schema" block) and triage/judge.py's `_build_prompt`
 # tail ask the model for. Named by SYMBOL, not by line number: a line number is
 # accurate only until someone inserts anything above it, and a citation that has
 # silently drifted is worse than none.
-_JUDGE_VERDICTS = frozenset({"shortlist", "research", "dismiss"})
+#
+# `unjudgeable` joined in #300. Before it, the schema offered no way to say "the page
+# I was given is not a job description", so the prompt told the model to score
+# conservatively instead -- and a conservative score on a page with no evidence lands
+# at or just above the dismiss threshold, which routes to `research`. `research` means
+# "a human should investigate this", so every bot-check and consent wall filed itself
+# as a human research task and was re-judged, unchanged, every night thereafter. The
+# model was diagnosing the failure correctly in `fit_reasoning` the whole time; it had
+# nowhere structured to put the diagnosis. This is that place.
+_JUDGE_VERDICTS = frozenset({"shortlist", "research", "dismiss", "unjudgeable"})
 
 
 def clamp_verdict(raw: str) -> str:
@@ -67,6 +76,34 @@ def _guarded(note) -> bool:
 # cache-key/identity-key mistake #109 already made once. Keyed on the DECISION rather
 # than passed by the caller so a future call site cannot forget it.
 _DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
+
+# The same never-overwrite-a-conclusion rule as `_DECISION_REQUIRE` above, for the VERDICT
+# path opened by #300. Keyed on the CLAMPED status for the same reason `_DECISION_REQUIRE`
+# is keyed on the decision: a call site cannot forget to pass it.
+#
+# The permitted set is WIDER than `_DECISION_REQUIRE["unjudgeable"]` by exactly one member,
+# `research`, and the difference is the whole point of #300 rather than an oversight:
+#
+#   - The classification arm fires when `jd_arrived` is False -- nothing was read, so the
+#     write records pure ABSENCE and may only land where no verdict exists (`new`).
+#   - This arm fires when the model DID read the fetched page and identified it as page
+#     chrome. That is a positive finding about the evidence, and `research` reached by a
+#     conservative score on that same unreadable page is not a human conclusion worth
+#     protecting -- it is the artifact this issue exists to clear.
+#
+# `shortlist`, `dismiss` and `needs_review` stay excluded. Each records a decision made on
+# evidence, and a transient block must not erase one: the measured #169 incident demoted a
+# SHORTLISTED lead carrying a composed CV pointer, which then pointed at nothing. Losing a
+# genuine `research` lead to a transient block is the one accepted cost here, and it is
+# self-healing -- `unjudgeable` is re-selected nightly, so the next successful fetch
+# re-judges it straight back.
+#
+# Its members coincide with `_status.DEFAULT_TRIAGE_STATUSES` TODAY and it is still written
+# out longhand, deliberately: that tuple is the SELECTION default (which leads a run READS)
+# and this is a WRITE guard. Deriving one from the other is the same identity/cache-key
+# conflation #109 made once already, and would silently widen this guard the next time the
+# selection set grows.
+_VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "research", "unjudgeable"})}
 
 
 def apply_classification(vault, note, decision, reason) -> str:
@@ -131,5 +168,6 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # identical pre-existing gap behind the (even longer) dossier-fetch-plus-judge
     # round trip.
     wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
-                                require_status=frozenset(_status.TRIAGE_OWNED))
+                                require_status=_VERDICT_REQUIRE.get(
+                                    status, frozenset(_status.TRIAGE_OWNED)))
     return "applied" if wrote else "unchanged"  # #118: symmetric with apply_classification above
