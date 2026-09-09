@@ -47,6 +47,30 @@ it is accurate. -->
 
 * **triage:** make the Telegram digest readable instead of a dict repr ([595009a](https://github.com/MrReasonable/sluice/commit/595009af32e7523a850990f93aa3fd7d0d96fd8c))
 
+`triage run`'s Telegram notification was `report.counts` interpolated into an f-string, so
+a phone received `{'keep': 55, 'shortlist': 0, ... 'dismiss': 29} (backend None)`. It now
+names the surfaced roles under a per-verdict heading, spells the non-zero counts out and
+omits the zero ones. **The stderr summary line is unchanged**, so anything parsing it (a
+cron wrapper, an agent building its own digest) is unaffected.
+
+### Silent failures this fixed on the way
+
+Both were reachable on the default `--status new,research` cron path and both reported
+`failures=0`, exit 0:
+
+* **A total judge outage read as a healthy `--no-llm` run.** `triage/judge.py` swallows
+  every backend error and parse failure and holds no reference to the report, so a revoked
+  key, an exhausted quota or both backend legs failing returned no verdicts with nothing
+  recorded. The engine now reconciles the verdicts it received against the dossiers it
+  sent and records the shortfall.
+* **A duplicate `lead_id` in one batch wrote a lead twice with conflicting verdicts** and
+  left another unjudged. A lead could pass through `shortlist` and come to rest at
+  `dismiss`, which no later run re-selects, while the run's counts claimed two leads. The
+  first verdict now wins and the duplicate is recorded.
+
+No config change, no vault migration. If you have been reading `failures=` to decide
+whether a run was healthy, expect it to become non-zero on runs that were always failing.
+
 ## [2.11.0](https://github.com/MrReasonable/sluice/compare/v2.10.0...v2.11.0) (2026-09-09)
 
 `job-sluice track auth` mints the Google credential `track run` reads, so obtaining one is a
