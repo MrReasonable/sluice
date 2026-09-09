@@ -516,6 +516,35 @@ def test_the_push_loses_no_non_zero_count(monkeypatch, tmp_path):
     assert "Judged 9 of the 11 that passed the pre-gate" in body
 
 
+def test_the_push_splits_unjudgeable_by_which_producer_made_it(monkeypatch, tmp_path):
+    # #300 review: one aggregate hides two different operational problems. A JD that never
+    # arrived points at the scraper or the network; a page that arrived and was not a
+    # posting points at bot-blocking. They are fixed in different places, so a digest that
+    # sums them tells the reader to go and look at the machine, which is the failure this
+    # whole formatter exists to stop. Distinct values, per this file's own convention, so a
+    # formatter that renders one number in the other's place cannot pass by coincidence.
+    body = _push(monkeypatch, tmp_path,
+                 counts={"keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
+                         "needs_review": 0, "skipped": 0, "unjudgeable": 7},
+                 unjudgeable_by={"pre_gate": 3, "judge": 4})
+
+    assert "7 with no usable job description" in body
+    assert "3 not fetched" in body
+    assert "4 not a posting" in body
+
+
+def test_the_push_names_only_the_unjudgeable_producer_that_fired(monkeypatch, tmp_path):
+    # A zero term is the noise the zero-row rule already removes one level up; naming a
+    # producer that contributed nothing invites the reader to go looking for it.
+    body = _push(monkeypatch, tmp_path,
+                 counts={"keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
+                         "needs_review": 0, "skipped": 0, "unjudgeable": 5},
+                 unjudgeable_by={"pre_gate": 0, "judge": 5})
+
+    assert "5 not a posting" in body
+    assert "not fetched" not in body
+
+
 def test_the_push_omits_the_rows_that_are_zero(monkeypatch, tmp_path):
     # The reason the dict was unreadable was mostly the zeroes: five of the seven rows
     # say nothing on a typical run.

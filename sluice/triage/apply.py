@@ -81,29 +81,23 @@ _DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # path opened by #300. Keyed on the CLAMPED status for the same reason `_DECISION_REQUIRE`
 # is keyed on the decision: a call site cannot forget to pass it.
 #
-# The permitted set is WIDER than `_DECISION_REQUIRE["unjudgeable"]` by exactly one member,
-# `research`, and the difference is the whole point of #300 rather than an oversight:
+# The permitted set is IDENTICAL to `_DECISION_REQUIRE["unjudgeable"]`, and the two are
+# still written out separately rather than aliased: they guard different call sites and a
+# future divergence should be a visible edit to one of them, not a silent widening of both.
 #
-#   - The classification arm fires when `jd_arrived` is False -- nothing was read, so the
-#     write records pure ABSENCE and may only land where no verdict exists (`new`).
-#   - This arm fires when the model DID read the fetched page and identified it as page
-#     chrome. That is a positive finding about the evidence, and `research` reached by a
-#     conservative score on that same unreadable page is not a human conclusion worth
-#     protecting -- it is the artifact this issue exists to clear.
+# An earlier draft of #300 also permitted `research`, reasoning that a `research` reached
+# by scoring an unreadable page is an artifact rather than a conclusion. That reasoning
+# does not survive contact with the field it depends on: `status` records WHERE a lead is,
+# never HOW it got there, so a conservative-score artifact is byte-identical to a research
+# task a human set by hand in Obsidian. Overwriting on that basis breaks never-clobber
+# against the very person whose queue it is. `new` and `unjudgeable` remain the only two
+# triage states that carry no decision at all, which is what makes them writable here.
 #
-# `shortlist`, `dismiss` and `needs_review` stay excluded. Each records a decision made on
-# evidence, and a transient block must not erase one: the measured #169 incident demoted a
-# SHORTLISTED lead carrying a composed CV pointer, which then pointed at nothing. Losing a
-# genuine `research` lead to a transient block is the one accepted cost here, and it is
-# self-healing -- `unjudgeable` is re-selected nightly, so the next successful fetch
-# re-judges it straight back.
-#
-# Its members coincide with `_status.DEFAULT_TRIAGE_STATUSES` TODAY and it is still written
-# out longhand, deliberately: that tuple is the SELECTION default (which leads a run READS)
-# and this is a WRITE guard. Deriving one from the other is the same identity/cache-key
-# conflation #109 made once already, and would silently widen this guard the next time the
-# selection set grows.
-_VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "research", "unjudgeable"})}
+# The cost is that leads already parked in `research` by the OLD behaviour stay parked.
+# That is correct rather than unfortunate: clearing them rewrites a human's queue in bulk,
+# so it belongs in a migration a human opts into (the one-shot gate pattern in
+# `triage/reverdict.py`), not in a nightly cron that does it to them silently.
+_VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 
 
 def apply_classification(vault, note, decision, reason) -> str:

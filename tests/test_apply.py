@@ -121,24 +121,40 @@ def test_the_judge_may_return_unjudgeable_and_it_survives_the_clamp():
     assert clamp_verdict("unjudgable") == "unjudgeable"
 
 
-def test_a_judge_returned_unjudgeable_clears_a_lead_parked_in_research(tmp_path):
-    # #300, the case the issue exists for: a lead sitting in `research` ONLY because a
-    # blocked page was scored conservatively. The judge can now name the failure, and the
-    # write must LAND -- `unjudgeable` is in DEFAULT_TRIAGE_STATUSES, so the lead is
-    # refetched next run instead of waiting on a human who can add nothing to it.
-    #
-    # This is the test that fails if the write guard below is copied from
-    # `_DECISION_REQUIRE["unjudgeable"]` ({"new", "unjudgeable"}) without thought: that
-    # set excludes `research`, every write would be refused, and the 189-lead clog this
-    # issue is about would sit exactly where it is while the suite went green.
+def test_a_judge_returned_unjudgeable_lands_on_a_new_lead(tmp_path):
+    # #300's forward path, and the one that matters going forward: a blocked page is now
+    # named as such on the FIRST judgement, while the lead is still `new`, so it never
+    # reaches `research` at all. `unjudgeable` is in DEFAULT_TRIAGE_STATUSES, so the lead
+    # is refetched next run instead of waiting on a human who can add nothing to it.
     v = Vault(str(tmp_path))
-    _note(v, "R.md", ['company: "Epsilon"', "status: research", "score: 60",
+    _note(v, "R.md", ['company: "Epsilon"', "status: new", "score: 0",
                       'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
-    note = v.read_leads({"research"})[0]
+    note = v.read_leads({"new"})[0]
     verdict = {"verdict": "unjudgeable", "relevance_score": 0,
                "fit_reasoning": "The JD body is a bot-check page, not a job description."}
     assert apply_verdict(v, note, verdict, {}) == "applied"
     assert v.read_leads()[0].status == "unjudgeable"
+
+
+def test_a_judge_returned_unjudgeable_must_not_overwrite_a_research_lead(tmp_path):
+    # An earlier draft of #300 permitted this, reasoning that a `research` reached by
+    # scoring an unreadable page is an artifact rather than a conclusion. The status field
+    # cannot support that reasoning: it records WHERE a lead is, never HOW it got there, so
+    # a conservative-score artifact and a research task a human set by hand in Obsidian are
+    # byte-identical here. Overwriting on that basis breaks the repo's never-clobber rule
+    # against exactly the person the queue belongs to.
+    #
+    # The consequence is deliberate and is NOT a silent one: leads already parked in
+    # `research` by the old behaviour stay there, and clearing them is a migration a human
+    # opts into, not something a nightly cron does to their queue behind them.
+    v = Vault(str(tmp_path))
+    _note(v, "R2.md", ['company: "Epsilon"', "status: research", "score: 60",
+                       'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
+    note = v.read_leads({"research"})[0]
+    verdict = {"verdict": "unjudgeable", "relevance_score": 0,
+               "fit_reasoning": "The JD body is a bot-check page, not a job description."}
+    assert apply_verdict(v, note, verdict, {}) == "unchanged"
+    assert v.read_leads()[0].status == "research"
 
 
 def test_a_judge_returned_unjudgeable_must_not_demote_a_shortlisted_lead(tmp_path):
