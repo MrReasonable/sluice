@@ -22,6 +22,7 @@ import re
 import stat
 import tempfile
 import threading
+from collections.abc import Iterator
 from datetime import date
 
 from sluice.core import status as _status
@@ -3510,6 +3511,58 @@ def _write(path: str, text: str, *, exclusive: bool = False) -> None:
         raise
 
 
+def _folded_archive_names(dest_dir: str) -> frozenset:
+    """Every name in `dest_dir`, folded -- what a case-insensitive replica would conflate.
+
+    FULL basenames, not stems: a stray `.syncthing.*.tmp` beside a note is just as unable to
+    coexist with its case-twin on the replica, and stripping `.md` would hide it from a check
+    whose whole subject is what the directory can be replicated as.
+
+    FileNotFoundError alone is swallowed, and the narrowness is the point. A missing
+    directory is not a collision, and the `os.open` below fails on it anyway, so behaviour
+    there is unchanged. Every other OSError propagates: an UNREADABLE directory read as an
+    empty set is a guard that silently disarms itself on exactly the vault where it matters,
+    which is this repo's most-repeated failure shape. It does mean a dest_dir that is
+    writable but not readable now fails where it previously succeeded -- deliberate, and safe
+    at the one caller, since `merge_cluster` isolates a per-loser OSError, logs it by name and
+    leaves that loser ACTIVE to self-heal on the next run."""
+    return frozenset(_fold_note_name(n) for n in os.listdir(dest_dir))
+
+
+def _archive_name_candidates(base: str, taken_folded) -> Iterator[str]:
+    """Yield the basenames to ATTEMPT, in order: `base`, then `<stem>.1.md`, `<stem>.2.md`
+    ... skipping any a case-insensitive filesystem would conflate with a name already there.
+
+    Separated from the reservation below so the DECISION is testable where the defect cannot
+    be reproduced. Measured 2026-09-09: macOS APFS folds at least as widely as `casefold()`
+    on every pair that could be constructed (plain case, sharp-s/SS, final sigma, the
+    fi-ligature, the dotted capital I, combining marks), so on a developer's filesystem
+    `O_EXCL` already collides and the unfixed code already suffixes -- an end-to-end row
+    there is green either way and certifies nothing. This function is what reddens on both.
+
+    A PRE-FILTER, never the concurrency primitive: it only decides which name to attempt,
+    and `O_EXCL` still arbitrates each attempt. It cannot be made race-free -- another
+    archiver may seat a case-variant between the listing and the open -- and does not need to
+    be, because the exclusive create still refuses to overwrite. It closes the case where
+    nothing was racing, which is how the reported vault reached the state.
+
+    The skip applies at EVERY iteration rather than only the first. A check that ran once and
+    then fell back to bare `O_EXCL` would seat `<stem>.1.md` beside a case-variant of itself
+    -- the same unholdable pair, one suffix along.
+
+    `taken_folded` is EMPTY for the `suffix_on_collision=False` caller, so the first name it
+    is offered is always the one it asked for and reconcile's exact-match semantics are
+    untouched. Widening that caller to refuse a case-variant would turn a reconcile that
+    works today into a refusal: the filename is the identity there, and to every filesystem
+    that can hold both, the two names are two identities."""
+    stem = base[:-3] if base.endswith(".md") else base
+    candidate, n = base, 1
+    while True:
+        if _fold_note_name(candidate) not in taken_folded:
+            yield candidate
+        candidate, n = f"{stem}.{n}.md", n + 1
+
+
 def _reserve_and_move(src: str, dest_dir: str, base: str, *,
                       suffix_on_collision: bool) -> str:
     """Atomically move the note at `src` into `dest_dir` under the name `base`. Returns the
@@ -3529,7 +3582,13 @@ def _reserve_and_move(src: str, dest_dir: str, base: str, *,
 
     - `suffix_on_collision=True` (merge_cluster) takes `<stem>.<n>.md`. An archived loser's
       filename is not an identity the write path walks, so a suffix costs nothing there, while
-      failing to archive would leave the loser active and undo #81.
+      failing to archive would leave the loser active and undo #81. It ALSO treats a name
+      differing only in CASE as taken (#298, `_archive_name_candidates`): `O_EXCL` fires on an
+      exact match only, so two spellings of one employer both seated here unsuffixed, and the
+      vault then held a directory a case-insensitive replica cannot hold -- a permanent
+      Syncthing folder error and an ABORTED scan, which stops that replica detecting local
+      changes at all until a human resolves the casing by hand. Over-suffixing is the safe
+      direction precisely because the filename is not an identity here.
     - `suffix_on_collision=False` (leads reconcile) raises FileExistsError. A suffix changes the
       FILENAME, which is the slug, which is the IDENTITY: the renamed note matches no candidate
       `_resolve_path` walks, so the next scrape mints a fresh note and orphans the renamed one.
@@ -3545,20 +3604,22 @@ def _reserve_and_move(src: str, dest_dir: str, base: str, *,
     The REFUSAL path reserved nothing, so it cleans up nothing -- unlinking there would delete the
     very note the refusal exists to protect.
     """
-    stem = base[:-3] if base.endswith(".md") else base
+    # The folded listing is taken ONLY for the suffixing caller: it is what decides to skip a
+    # name, and the refusing caller has nothing to skip to. An empty set also makes the first
+    # candidate `base` unconditionally, so that caller's behaviour is unchanged by
+    # construction rather than by a branch someone could later "simplify" away.
+    taken = _folded_archive_names(dest_dir) if suffix_on_collision else frozenset()
     dest = os.path.join(dest_dir, base)
-    n = 1
     reserved = None
     reserved_id = None
     try:
-        while True:
+        for candidate in _archive_name_candidates(base, taken):
+            dest = os.path.join(dest_dir, candidate)
             try:
                 fd = os.open(dest, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
             except FileExistsError:
                 if not suffix_on_collision:
                     raise            # nothing reserved -> nothing to clean up
-                dest = os.path.join(dest_dir, f"{stem}.{n}.md")
-                n += 1
                 continue
             # Ownership is recorded the INSTANT the open returns a handle, BEFORE anything that
             # can itself fail. `os.close` can raise, and a close that fails still leaves the

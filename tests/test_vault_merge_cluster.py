@@ -3,12 +3,13 @@ its state, archive losers reversibly. The survivor is seeded (not empty) — emp
 empty certifies nothing (#23 tst-001)."""
 import json
 import os
+import shutil
 
 import pytest
 
-from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
+from sluice.core.vault import Vault, _fm_dict, _fold_note_name, _split_frontmatter
 from sluice.core.protocols import MalformedNoteField, VaultConflict
-from tests.conftest import LOCATIONS, racing_read
+from tests.conftest import LOCATIONS, racing_read, require_case_sensitive_fs
 
 
 def _mk(tmp_path):
@@ -229,3 +230,32 @@ def test_per_loser_archive_failure_isolated_not_fatal(tmp_path, monkeypatch):
     # not left as an orphaned 0-byte file blocking a future archive attempt.
     merged_dir = os.path.join(v.leads_dir, "_merged")
     assert fail_basename not in os.listdir(merged_dir)
+
+
+def test_two_losers_differing_only_in_case_do_not_both_seat_in_merged(tmp_path):
+    """#298, through the real merge. `O_EXCL` fires only on an EXACT name match, so on a
+    case-sensitive filesystem both spellings seated unsuffixed and the vault then held a
+    `_merged/` a case-insensitive replica CANNOT hold -- a permanent Syncthing folder error
+    and an aborted scan, which stops that replica detecting local changes until a human
+    resolves the casing by hand.
+
+    The pair is seated by hand rather than through `upsert`, because since #205 the write
+    path FOLDS case and can no longer mint one: the second spelling resolves onto the first
+    and updates it. The state this row exercises is a store written before that fix -- which
+    `read_leads` reports and `leads dedupe` clusters -- so seating it directly is the only
+    way to reach the archive path as it is actually reached in the wild."""
+    require_case_sensitive_fs(tmp_path)
+    v = _mk(tmp_path)
+    survivor = _by_url(v, "https://ex.invalid/1").ref
+    loser = _by_url(v, "https://ex.invalid/2").ref
+    base = os.path.basename(loser)
+    twin = os.path.join(os.path.dirname(loser), base[:-len(".md")].upper() + ".md")
+    shutil.copyfile(loser, twin)
+
+    v.merge_cluster(survivor, [loser, twin], alt_urls=["https://ex.invalid/2"],
+                    first_seen="2026-07-05", last_seen="2026-07-20")
+
+    entries = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
+    assert len(entries) == 2, f"both losers must be archived: {entries}"
+    assert len({_fold_note_name(e) for e in entries}) == 2, (
+        f"_merged/ holds two names a case-insensitive replica cannot both hold: {entries}")

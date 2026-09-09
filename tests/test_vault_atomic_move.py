@@ -10,7 +10,8 @@ import os
 
 import pytest
 
-from sluice.core.vault import _reserve_and_move
+from sluice.core.vault import _archive_name_candidates, _fold_note_name, _reserve_and_move
+from tests.conftest import require_case_sensitive_fs
 
 
 def _note(path, text="---\ncompany: Example Ltd\n---\nbody\n"):
@@ -189,3 +190,104 @@ def test_a_reservation_whose_fstat_failed_is_still_removed(tmp_path, monkeypatch
         _reserve_and_move(src, dest_dir, "N.md", suffix_on_collision=False)
     monkeypatch.undo()
     assert os.listdir(dest_dir) == [], "the reservation leaked when fstat failed"
+
+
+# ── #298: a case-variant name is a collision on the replica, not on this filesystem ──────
+#
+# `O_CREAT|O_EXCL` fires only on an EXACT name match, so on a case-sensitive filesystem
+# `EXAMPLE CO - Role.md` and `Example Co - Role.md` both seat in `_merged/` unsuffixed. The
+# vault then holds a directory that CANNOT exist on a case-insensitive one: replicating it
+# to macOS gives a permanent Syncthing folder error and an ABORTED scan, so that replica
+# stops detecting local changes until a human resolves the casing by hand.
+#
+# WHY THESE ROWS TEST THE NAME CHOICE DIRECTLY rather than driving `_reserve_and_move`.
+# Measured 2026-09-09 on APFS: this filesystem's fold is at least as WIDE as `casefold()` on
+# every pair that could be constructed -- plain case, sharp-s/SS, Greek final sigma, the
+# fi-ligature, the dotted capital I, combining marks. So there is no input where `casefold`
+# says "same" and a developer's filesystem says "different", which means an end-to-end row
+# is satisfied by the UNFIXED code here: `O_EXCL` already collides, and the suffix already
+# appears. Testing the decision itself is what reddens on both filesystems. The integration
+# rows below carry the wiring, and can only run where the pair can be seated at all.
+
+
+def test_the_first_candidate_is_the_base_name_when_nothing_is_taken():
+    """The `suffix_on_collision=False` caller's whole behaviour: reconcile passes an empty
+    taken-set, so the name it attempts must be the one it asked for. A suffix there changes
+    the FILENAME, which is the slug, which is the IDENTITY."""
+    got = next(iter(_archive_name_candidates("Example Co - Role.md", frozenset())))
+    assert got == "Example Co - Role.md"
+
+
+def test_a_name_differing_only_in_case_is_treated_as_taken():
+    """The defect. `Example Co - Role.md` is already seated; the loser arriving as
+    `EXAMPLE CO - Role.md` must NOT be offered that name, because a case-insensitive
+    replica cannot hold both."""
+    taken = frozenset({_fold_note_name("Example Co - Role.md")})
+    got = next(iter(_archive_name_candidates("EXAMPLE CO - Role.md", taken)))
+    assert got == "EXAMPLE CO - Role.1.md"
+
+
+def test_an_exactly_equal_name_is_treated_as_taken():
+    """The pre-existing exact collision, now expressible through the same set -- so the
+    fold is a WIDENING of the old rule and never a replacement for it."""
+    taken = frozenset({_fold_note_name("Example Co - Role.md")})
+    got = next(iter(_archive_name_candidates("Example Co - Role.md", taken)))
+    assert got == "Example Co - Role.1.md"
+
+
+def test_it_walks_past_a_suffixed_name_that_also_collides_only_in_case():
+    """The skip must apply at EVERY iteration, not just the first. A fold check that runs
+    once and then falls back to bare `O_EXCL` seats `<stem>.1.md` beside a case-variant of
+    itself -- the same unholdable pair, one suffix along."""
+    taken = frozenset({
+        _fold_note_name("Example Co - Role.md"),
+        _fold_note_name("example co - role.1.md"),
+    })
+    got = next(iter(_archive_name_candidates("EXAMPLE CO - Role.md", taken)))
+    assert got == "EXAMPLE CO - Role.2.md"
+
+
+def test_the_candidates_are_offered_in_order_and_do_not_repeat():
+    """It is a walk, not a set: the caller retries when `O_EXCL` loses a race, so each
+    attempt must be a NEW name."""
+    seen = []
+    for i, name in enumerate(_archive_name_candidates("N.md", frozenset())):
+        seen.append(name)
+        if i == 3:
+            break
+    assert seen == ["N.md", "N.1.md", "N.2.md", "N.3.md"]
+
+
+def test_a_case_variant_in_the_destination_takes_the_next_suffix(tmp_path):
+    """The WIRING, and the only row that proves the decision above is consulted at all.
+    It can run only where the pair can be seated: on a case-insensitive filesystem `O_EXCL`
+    collides by itself, so the unfixed code returns the same suffixed name and the row
+    certifies nothing."""
+    require_case_sensitive_fs(tmp_path)
+    src = _note(str(tmp_path / "from" / "EXAMPLE CO - Role.md"), "LOSER")
+    dest_dir = str(tmp_path / "to")
+    _note(os.path.join(dest_dir, "Example Co - Role.md"), "ALREADY THERE")
+
+    got = _reserve_and_move(src, dest_dir, "EXAMPLE CO - Role.md", suffix_on_collision=True)
+
+    assert got == os.path.join(dest_dir, "EXAMPLE CO - Role.1.md")
+    assert open(got, encoding="utf-8").read() == "LOSER"
+    assert open(os.path.join(dest_dir, "Example Co - Role.md"),
+                encoding="utf-8").read() == "ALREADY THERE", "the case-variant was clobbered"
+
+
+def test_the_refusing_caller_is_untouched_by_a_case_variant(tmp_path):
+    """`suffix_on_collision=False` must keep its exact-match semantics: reconcile refuses on
+    a real collision and MOVES on anything else. Widening it to refuse a case-variant would
+    turn a reconcile that works today into a refusal, which is a behaviour change this fix
+    does not license -- the filename is the identity there, and the two names are two
+    identities to every filesystem that can hold both."""
+    require_case_sensitive_fs(tmp_path)
+    src = _note(str(tmp_path / "from" / "EXAMPLE CO - Role.md"), "MINE")
+    dest_dir = str(tmp_path / "to")
+    _note(os.path.join(dest_dir, "Example Co - Role.md"), "THEIRS")
+
+    got = _reserve_and_move(src, dest_dir, "EXAMPLE CO - Role.md", suffix_on_collision=False)
+
+    assert got == os.path.join(dest_dir, "EXAMPLE CO - Role.md")
+    assert open(got, encoding="utf-8").read() == "MINE"

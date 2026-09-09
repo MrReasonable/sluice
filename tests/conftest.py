@@ -185,6 +185,50 @@ UNREADABLE_DIR = pytest.mark.skipif(
     _cannot_unread_a_dir(), reason="chmod binds neither uid 0 nor Windows")
 
 
+def require_case_sensitive_fs(tmp_path):
+    """Skip unless the filesystem under `tmp_path` distinguishes case. PROBED, never
+    inferred from the platform: the subject is what the filesystem does with two names
+    differing only in case, so asking it directly is the only answer that cannot be wrong.
+    The probe writes into a dedicated subdirectory so it cannot collide with a vault the
+    caller has already built.
+
+    THE RULE FOR CALLERS, rather than a list of them, which would go stale: gate on needing
+    the filesystem to DISTINGUISH two names, never on merely mentioning a pair. A row that
+    needs the WRITE PATH to mint or resolve a same-directory pair belongs here, because
+    there the defect genuinely does not exist on a case-insensitive filesystem -- `_locate`'s
+    stat already resolves the variant, so the row would pass without exercising anything.
+
+    Getting that wrong in the other direction was the more damaging mistake. This gate was
+    originally applied to every row that mentioned a pair, on the belief that a
+    case-insensitive filesystem cannot hold one at all. It cannot hold one in a SINGLE
+    DIRECTORY; across two subfolders the pair exists everywhere, and since `_slug_for` is the
+    basename and both `read_leads` sweeps group on it, that is the same identity to sluice.
+    Over-gated, deleting the entire capitalisation sweep reddened nothing on macOS, and
+    regressing the folded probe to a bare `except OSError` -- the arm that creates and
+    records an irreversible `seen.db` row -- reddened nothing either. A gate that hides a
+    guard is worse than no guard, because it looks like coverage.
+
+    Module-level here rather than copied per file, for the same reason as `UNREADABLE_DIR`
+    beside it: two copies of a filesystem predicate kept in step by a comment is the shape
+    that drifts, and this one drifting toward "run it" makes a row pass vacuously."""
+    probe = tmp_path / "_case_probe"
+    probe.mkdir(exist_ok=True)
+    (probe / "CaseProbe").write_text("")
+    collides = (probe / "caseprobe").exists()
+    for p in probe.iterdir():
+        p.unlink()
+    probe.rmdir()
+    if collides:
+        pytest.skip(
+            "needs a case-sensitive filesystem: this row exercises the WRITE path minting "
+            "or resolving two names that differ only by case in ONE directory, and a "
+            "case-insensitive filesystem (macOS APFS by default) resolves them to one note "
+            "before sluice sees them -- so the defect does not exist to be caught. Rows "
+            "that only need the collided STATE are seated across subfolders and run here. "
+            "CI (ubuntu-latest) is case-sensitive and runs everything."
+        )
+
+
 def racing_read(monkeypatch, target_path, on_race, *, once=True):
     """Interpose sluice.core.vault._read to simulate a concurrent writer landing in the
     capture->commit window (#16), without threads. `on_race()` performs one out-of-band
