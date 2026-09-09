@@ -40,6 +40,14 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.12.1](https://github.com/MrReasonable/sluice/compare/v2.12.0...v2.12.1) (2026-09-09)
+
+
+### Bug Fixes
+
+* **triage:** honour never-clobber on research, split unjudgeable by producer ([60b5b8d](https://github.com/MrReasonable/sluice/commit/60b5b8dc87b9bcb13e529310afafa0bc83d8401f))
+* **triage:** let the judge say a page is not a job description ([daa9146](https://github.com/MrReasonable/sluice/commit/daa91464736e2755878bd23c480083bf49696d46))
+
 ## [2.12.0](https://github.com/MrReasonable/sluice/compare/v2.11.0...v2.12.0) (2026-09-09)
 
 
