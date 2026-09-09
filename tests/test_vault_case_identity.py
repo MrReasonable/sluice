@@ -29,7 +29,7 @@ from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
 from sluice.core.vault import Vault, _fold_note_name
-from tests.conftest import LOCATIONS, UNREADABLE_DIR
+from tests.conftest import LOCATIONS, UNREADABLE_DIR, require_case_sensitive_fs
 
 
 def _lead(company, **kw):
@@ -60,55 +60,12 @@ def _notes(vault):
     return sorted(out)
 
 
-def _require_case_sensitive_fs(tmp_path):
-    """Skip unless the filesystem under `tmp_path` distinguishes case. PROBED, never
-    inferred from the platform: this test's whole subject is what the filesystem does with
-    two names differing only in case, so asking it directly is the only answer that cannot
-    be wrong. The probe writes into a dedicated subdirectory so it cannot collide with a
-    vault the caller has already built.
-
-    Callers are only the rows that need the WRITE PATH to mint or resolve a same-directory
-    pair: the create rows, the exact-probe-wins row, and the ambiguous-refusal rows. There
-    the defect genuinely does not exist on a case-insensitive filesystem -- `_locate`'s stat
-    already resolves the variant -- so the row would pass without exercising anything.
-
-    Most rows in this file do NOT belong here, and getting that wrong was the more damaging
-    mistake. This gate was originally applied to every row that mentioned a pair, on the
-    belief that a case-insensitive filesystem cannot hold one at all. It cannot hold one in a
-    SINGLE DIRECTORY; across two subfolders the pair exists everywhere, and since `_slug_for`
-    is the basename and both `read_leads` sweeps group on it, that is the same identity to
-    sluice (see `_seat_pair`). Over-gated, deleting the entire capitalisation sweep reddened
-    nothing on macOS, and regressing the folded probe to a bare `except OSError` -- the arm
-    that creates and records an irreversible `seen.db` row -- reddened nothing either. A gate
-    that hides a guard is worse than no guard, because it looks like coverage.
-
-    So: gate on needing the filesystem to DISTINGUISH two names, never on merely mentioning
-    a pair. The archive rows, the report rows, the reconcile rows, the fold-sharing and
-    equivalence-class checks all run everywhere, and are what a developer on a Mac gets."""
-    probe = tmp_path / "_case_probe"
-    probe.mkdir(exist_ok=True)
-    (probe / "CaseProbe").write_text("")
-    collides = (probe / "caseprobe").exists()
-    for p in probe.iterdir():
-        p.unlink()
-    probe.rmdir()
-    if collides:
-        pytest.skip(
-            "needs a case-sensitive filesystem: this row exercises the WRITE path minting "
-            "or resolving two names that differ only by case in ONE directory, and a "
-            "case-insensitive filesystem (macOS APFS by default) resolves them to one note "
-            "before sluice sees them -- so the defect does not exist to be caught. Rows "
-            "that only need the collided STATE are seated across subfolders and run here. "
-            "CI (ubuntu-latest) is case-sensitive and runs everything."
-        )
-
-
 def test_a_re_scrape_under_different_company_casing_updates_rather_than_duplicates(tmp_path):
     """The defect, through the real write path: one role, two boards, one employer spelled
     two ways. `upsert` must reconcile them onto ONE note -- a second note is a second
     identity, and the two then hold divergent status, so a dismissal recorded under one
     spelling does not stop the role returning as `new` under the other."""
-    _require_case_sensitive_fs(tmp_path)
+    require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
 
     first = v.upsert(_lead("Example Co"))
@@ -126,7 +83,7 @@ def test_lowercase_and_mixed_case_company_are_one_identity(tmp_path):
     every candidate fix: an acronym-safe title-caser converges this pair and leaves the
     all-caps pair apart (measured, 2026-09-03), so a fix that only passes this one has not
     closed #205."""
-    _require_case_sensitive_fs(tmp_path)
+    require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
 
     v.upsert(_lead("Example Co", title="Widget Analyst & XY", search="Widget Analyst & XY"))
@@ -144,7 +101,7 @@ def test_a_note_already_seated_at_a_variant_casing_is_found_not_duplicated(tmp_p
     the name it derives but leaves resolution case-sensitive, the very first re-scrape of an
     existing note derives a name the walk cannot find and CREATES the duplicate the fix was
     written to prevent -- so the store is worse, not better, and only after upgrading."""
-    _require_case_sensitive_fs(tmp_path)
+    require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
 
     # Seat the note the way a pre-fix store holds it: board-verbatim, shouty.
@@ -345,7 +302,7 @@ def test_an_exact_name_wins_over_a_case_variant_on_disk(tmp_path):
     spellings on disk,
     a lookup for one of them returns THAT one alone -- never the pair, which would refuse, and
     never the other, which would write to the wrong twin."""
-    _require_case_sensitive_fs(tmp_path)
+    require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     exact = _seat(v, "Example Co - Engineering Manager", company="Example Co",
                   status="shortlist", score=1)
@@ -389,10 +346,16 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
                 out.append(tok.string)
         return "\n".join(out)
 
+    # The roster is every site that FOLDS a note name, which is wider than the four that
+    # resolve a lead by one: `_archive_name_candidates` (#298) folds to decide which
+    # filename to ATTEMPT, never which lead a name is, and it belongs here anyway because
+    # the three checks below bind any folding site alike -- an inline `.casefold()` there is
+    # the same second copy, and `re.IGNORECASE` there is the same narrower equivalence.
     for fn in (vault_module.Vault._locate,
                vault_module.Vault._archived_match,
                vault_module.Vault.read_leads,
-               vault_module.Vault.reconcile_names):
+               vault_module.Vault.reconcile_names,
+               vault_module._archive_name_candidates):
         code = _code_only(fn)
         assert "_fold_note_name" in code, (
             f"{fn.__qualname__} must fold through _fold_note_name, not its own casefold()")
@@ -421,7 +384,7 @@ def test_which_casings_of_an_existing_pair_reach_the_ambiguous_refusal(tmp_path,
     casing matching neither falls through to the folded probe, sees both, and refuses. A
     board that keeps sending the spelling that created the note therefore never reaches that
     line, which is why the standing report on such pairs lives in `read_leads` instead."""
-    _require_case_sensitive_fs(tmp_path)
+    require_case_sensitive_fs(tmp_path)
     v = Vault(str(tmp_path / "vault"))
     _seat(v, "Example Co - Engineering Manager", company="Example Co",
           status="shortlist", score=1)
