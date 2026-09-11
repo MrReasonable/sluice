@@ -5,6 +5,7 @@ user's own configured lists and hands anything ambiguous to the LLM, because
 false-negatives are what the audit catches. It ships with no lists of its own, so an
 unconfigured gate abstains rather than applying somebody else's idea of a good role.
 """
+import math
 import re
 from typing import NamedTuple
 
@@ -438,6 +439,14 @@ def _salary_amounts(s: str) -> list[tuple[int, str | None]]:
         try:
             value = _group_aware_float(raw)
         except ValueError:  # pragma: no cover - regex only yields parseable numbers
+            return None
+        # `_AMOUNT`'s bare-digits arm is unbounded, so a run past ~308 digits overflows
+        # `float()` to `inf` and BOTH conversions below raise `OverflowError` -- which
+        # nothing up the stack catches, so one advert's text would end the whole triage
+        # run, taking every lead after it in the batch. Abstaining is not merely the safe
+        # answer here, it is the correct one: this gate's standing rule is that no opinion
+        # never rejects, and a number nobody can read is exactly no opinion.
+        if not math.isfinite(value):
             return None
         # round(), not int(): int() truncates a float product toward zero, and 2.01 is not
         # exactly representable, so int(2.01 * 1000) is 2009. A rate sitting on a floor

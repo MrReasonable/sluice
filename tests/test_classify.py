@@ -1214,3 +1214,26 @@ def test_digit_grouping_is_read_from_placement_not_from_a_locale(text, expected)
     assert got.advertised == expected, (
         f"{text!r} parsed as {got.advertised}, expected {expected}")
 
+
+def test_an_unreadably_large_figure_abstains_instead_of_crashing_the_run():
+    """A digit run past float's range must abstain, not raise.
+
+    `_AMOUNT`'s bare-digits arm is unbounded, so roughly 309 digits overflow `float()` to
+    `inf`, and `int(inf)` / `round(inf * 1000)` raise `OverflowError`. Nothing up the call
+    stack catches it, so one advert's text would end the whole triage run -- every lead
+    after it in the batch included.
+
+    Abstaining is the right answer rather than merely the safe one: this gate's standing
+    rule is that no opinion never rejects, and a number nobody can read is exactly no
+    opinion.
+
+    PRE-EXISTING, not a #311 regression -- `main` raises the identical `OverflowError`.
+    Fixed here because #311 rewrites this very function, and found by review on its PR.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    assert _salary_ceiling("£" + "9" * 400) is None
+    # The `k` multiplier takes the other conversion branch (`round(value * 1000)`), so it
+    # needs its own row -- guarding only `int()` would leave this one raising.
+    assert _salary_ceiling("£" + "9" * 400 + "k") is None
+
