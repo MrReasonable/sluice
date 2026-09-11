@@ -7,12 +7,21 @@ four others) read as complete. Caught by CodeRabbit's WEB pass, not by anything 
 
 These are RATCHETS, not classifiers. Nothing running locally can tell whether a name belongs
 to a real firm — that needs a human or a web lookup. So `_REVIEWED_FIXTURE_IDENTITIES` is a
-list somebody has LOOKED AT, and the test fails when a fixture introduces a value that is not
-on it. The point is to force that judgement to happen once, when the name is added, instead
-of never.
+list somebody has LOOKED AT, and the test fails when a fixture introduces a value that is on
+neither it nor `_SPARE_FIXTURE_IDENTITIES` — a pool of pre-reviewed names, derived from a
+bounded no-referent vocabulary, that the failure messages hand out (#303, and see that pool's
+own comment for why it is derived rather than shape-checked). The point is to force that
+judgement to happen once, when the name is added, instead of never; the pool exists so that an
+author who needs a name rather than THAT name does not have to trip the judgement at all.
 
-Deliberately NOT a "must match `Example <Word>`" rule. That is not the convention this repo
-actually has: `Acme` (17 uses), `A`/`B`/`C`, `Beta`/`Gamma`/`Delta`, `Human Typed Co` and the
+Deliberately NOT a "must match `Example <Word>`" rule — and #303 proposed exactly that, with
+the fixtures migrated first so the objection below would no longer apply. Owner's ruling,
+2026-09-11: no. The shape fires on the prefix and never on the second token, so `Example `
+pasted in front of a real firm's name passes for ever, and the admitted set stops being
+enumerable. The pool relieves the friction #303 correctly identified without giving that up.
+
+A shape rule is also not the convention this repo actually has: `Acme` (17 uses),
+`A`/`B`/`C`, `Beta`/`Gamma`/`Delta`, `Human Typed Co` and the
 deliberately-malformed `Foo\\Bar Ltd` injection fixtures are all legitimate and all fail such
 a rule. A guard that fires on ~40 good fixtures gets suppressed, and a suppressed guard
 guards nothing.
@@ -258,6 +267,88 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",
 })
+
+
+# A POOL of pre-reviewed identities, so "I need a new name" has a cheap answer that is not
+# "recycle one that already means something else".
+#
+# The roster above is a ratchet and it WORKS: an author who hits it and reuses an existing name
+# has produced its success case -- no unreviewed value entered the tree. What it had no answer
+# for is the author who needs a DISTINCT identity, because the one route the failure message
+# named was a human ruling or a web lookup, neither available at the moment of the failure --
+# so a reuse was the only move actually reachable from the message. #303 read the resulting
+# recycling as evidence the ROSTER was the wrong design and proposed replacing it with an
+# `Example <Word>` SHAPE rule. Owner's ruling, 2026-09-11: no, and the measurement is why. A
+# shape rule fires on the prefix and never on the second token, so `Example ` pasted in front
+# of a real firm's name passes for ever; and it stops the admitted set being ENUMERABLE, which
+# is the property that makes a human ruling possible at all. Deliberately no count of the
+# roster here: this feature's whole purpose is to move names into it, so any number written in
+# this comment rots on the first graduation.
+#
+# "`Example <Word>` cannot name a real firm by construction" is an assertion, not a
+# construction -- so the pool is DERIVED from `_METASYNTACTIC`, a bounded vocabulary of
+# placeholder tokens (the `foo`/`bar` lineage the roster already carries `Foo` from, catalogued
+# by the Jargon File and RFC 3092), rather than shape-checked into existence.
+#
+# Be exact about how much that buys, because the obvious comparison overstates it.
+# `_RESERVED_TLDS` further down this file is a real construction: RFC 2606 RESERVES those TLDs,
+# so that check is decidable with no human at all, and this file says as much where it uses
+# them. Nothing reserves `qux`, and nothing stops a firm being named tomorrow after any token
+# here. What the pool takes from that guard is its SHAPE -- a bounded, enumerable, named
+# vocabulary -- not its guarantee. Epistemically the vocabulary is a hand-list with the same
+# standing as the roster; what differs is that a human ruling over an ENUMERABLE vocabulary is
+# possible and a ruling over every `Example <Word>` is not. That difference is sufficient on
+# its own, and it is the only one claimed.
+#
+# THE RESIDUAL, stated rather than dressed up: a human editing `_METASYNTACTIC` to add a real
+# firm's name defeats this exactly as a human adding one to the roster does. No local check can
+# establish that a word names nothing -- this whole file's opening premise.
+#
+# TOPPING IT UP, as a criterion a later author can apply rather than a description of one
+# batch: add a token to `_METASYNTACTIC` only if it is a placeholder word whose entire purpose
+# is to have no referent. Not a plausible-sounding invention, and not a real word borrowed for
+# its sound -- those are the two shapes a real employer name hides in. Greek letters would
+# qualify and are deliberately NOT used: this file already spends them as sample SKILL values
+# (`Example Sigma` and its siblings, in the AST-collector coverage tests below), and those uses
+# are invisible to `_free_spares` because `_test_sources` excludes this file -- so a Greek pool
+# would advertise names that are already taken.
+#
+# Topping up is COMPULSORY at depletion, not a nicety: `test_the_spare_pool_is_well_formed`
+# asserts the pool is non-empty, and graduation removes a token from `_METASYNTACTIC` (leaving
+# it would trip the disjointness assertion), so the build goes red when the last spare is
+# spent. That is deliberate -- it is the one moment the judgement above has to be made -- but
+# it means making it on a red build unless somebody tops up early. Do it early.
+#
+# Taking one is a two-line change: use it in the fixture, then MOVE it into the roster above.
+# `test_no_spare_identity_is_already_in_use` enforces that move. Without it the pool would
+# deplete silently and the failure messages would go on advertising names already taken, which
+# is the same friction arriving through a different door.
+_METASYNTACTIC = (
+    # The Jargon File's standard placeholders, plus one MIT/Stanford extension (`Ztesch`).
+    #
+    # The exclusions are the interesting part -- two rounds of them, on two different grounds,
+    # both recorded so a later author topping up applies the same filter rather than
+    # re-deriving it. Deliberately no count anywhere in this comment: graduation MOVES tokens
+    # out of this tuple, so any number written here is wrong after the first one goes. An
+    # earlier draft stated two, and the paragraph above banning counts sat between them.
+    #
+    # `Thud`, `Wibble`, `Wobble`: same lineage, but ordinary English words, which the criterion
+    # above excludes outright. Not a judgement call -- `wobble` already occurs in this repo as
+    # prose, which is local proof it has a referent. Same class as `Spam`/`Fred`/`Waldo`.
+    #
+    # `Xyzzy`, `Plugh`, `Bazola`: no dictionary referent, so the criterion does not exclude
+    # them, and they are dropped on the second ground instead. `Xyzzy` and `Plugh` are famous,
+    # distinctive and highly brandable -- which is what a company picks -- and `-ola` is a
+    # productive commercial suffix that makes `Bazola` read as a plausible invention. None of
+    # that can be settled locally, and shipping a token carrying a question nobody has answered
+    # is the thing this whole file exists to stop. Owner's ruling, 2026-09-11: drop all three.
+    #
+    # Deliberately a working pool rather than a generous one, and the shallowness is visible
+    # rather than silent: the non-empty assertion makes a top-up compulsory at depletion, so
+    # the pool announces its own exhaustion instead of running out quietly.
+    "Qux", "Quux", "Corge", "Grault", "Garply", "Ztesch",
+)
+_SPARE_FIXTURE_IDENTITIES = frozenset(f"Example {word}" for word in _METASYNTACTIC)
 
 
 def _test_sources():
@@ -970,14 +1061,153 @@ def test_the_collector_split_this_file_documents_is_the_split_it_has():
         "explaining the split is now wrong")
 
 
+def _unreviewed_identities(found, roster, pool):
+    """What a roster gate refuses: everything on neither the roster nor the pool.
+
+    PURE, and the pool arm is why. The branch's headline behaviour is that a pool name is
+    ADMITTED without a fresh human ruling -- and that arm cannot be exercised by real data at
+    any of the three gates, because `test_no_spare_identity_is_already_in_use` guarantees no
+    pool member is ever in use. Measured before this was extracted: deleting
+    `_SPARE_FIXTURE_IDENTITIES` from the accepted set at ALL THREE gates left the module green,
+    so the feature this whole change exists to add was asserted nowhere.
+    """
+    return sorted(set(found) - set(roster) - set(pool))
+
+
+def _misshapen(pool):
+    """Pool members that are not exactly `Example <Word>`.
+
+    Extracted so the SHAPE is pinned rather than resting on a comment. `_SPARE_SHAPE` carries
+    no anchors and is applied with `fullmatch`, which is a pair: measured, reverting both
+    halves together to an anchored pattern with `.match` reddens nothing, and so does weakening
+    `fullmatch` to `search` while leaving the pattern unanchored -- and that second one now
+    admits `Example Qux Real Corp` outright. `test_the_pool_shape_rejects_more_than_a_bare_name`
+    pins all of it on synthetic rows.
+    """
+    return sorted(v for v in pool if not _SPARE_SHAPE.fullmatch(v))
+
+
+def _in_use_identities():
+    """Every position a lead identity can occupy, as ONE union.
+
+    THREE collectors feed the roster, not two, and the third is the one that was missed: the
+    positional sweep over `tests/**/*.py`, the CV-body sweep, and README's sample lead note.
+    Measured before this existed: a spare spent in README's note graduated from nothing --
+    README.md is outside both of the other collectors -- so every message went on advertising
+    it as free, and an author who then followed that advice and moved it to the roster reddened
+    the stale-entry sweep instead. That is the harm the pool comment names, reached without a
+    bad actor and without anyone editing the vocabulary.
+
+    One function rather than the union spelled at each call site, because it was spelled at
+    four sites and three of them agreed with each other while all four were wrong the same way.
+    """
+    return (_all_fixture_identities()
+            | _cv_fixture_identities()
+            | set(_readme_note_values("company")))
+
+
+def _free_spares(pool, in_use):
+    """Pool members no fixture has adopted yet -- what every roster message hands out.
+
+    PURE, and taking both sides as arguments, because the three call sites all pass the same
+    real sets and a guard over real sets cannot fail in a green tree: the assert message that
+    renders this is only evaluated when the assertion FAILS. Measured before it was extracted:
+    deleting the `in_use` subtraction entirely left the whole module green, while the thing the
+    pool comment calls the harm -- a message advertising a name already taken -- is exactly what
+    that subtraction prevents. `test_a_free_spare_is_one_no_fixture_has_adopted` pins it on
+    synthetic sets instead, where the states can actually be constructed.
+    """
+    return sorted(set(pool) - set(in_use))
+
+
+def _pool_offer(free):
+    """The CHEAPEST-FIX paragraph, shared by every gate keyed on the roster.
+
+    One function rather than three copies because there are three such gates -- the positional
+    collectors, the CV-body sweep and README's sample note -- and #303's evidence is precisely
+    that the MESSAGE decides what an author does. A gate that omits this paragraph sends its
+    author to the dead end the other two no longer have, which is how the relief reached one of
+    three in this change's first cut.
+    """
+    if free:
+        body = "\n  ".join(free)
+    else:
+        # NOT "the pool is empty". A literally empty pool renders this branch too, but it is
+        # ALSO reported separately by `test_the_spare_pool_is_well_formed`'s non-empty
+        # assertion; the state this wording is written for -- and the one nothing else names --
+        # is a pool whose every member has been adopted without being graduated.
+        body = ("(no spare is free -- graduate the ones already in use into the roster, or top "
+                "the pool up; do not skip to the route below)")
+    return ("CHEAPEST FIX -- most fixtures need AN identity, not THAT one. Take a free "
+            "pre-reviewed name from _SPARE_FIXTURE_IDENTITIES and MOVE it into "
+            "_REVIEWED_FIXTURE_IDENTITIES:\n  " + body)
+
+
+def _lookup_route(what):
+    """The route for a fixture that needs one SPECIFIC name. Deliberately after the offer."""
+    return ("ONLY if the fixture needs that SPECIFIC name: confirm it names no real firm "
+            "— a local check CANNOT establish this, it needs a human or a web lookup — then "
+            f"add it to _REVIEWED_FIXTURE_IDENTITIES. {what} Note that `Example ` is a "
+            "convention for readers, not a guarantee: it does nothing to establish that the "
+            "word after it names no real firm.")
+
+
+# ONE builder per gate, all three reachable from a test. Two of the three used to be
+# assembled inline at the assert, which meant the order guard below could only check the one
+# that was extracted -- and it was written to check all three, so it certified two gates it
+# could not see. Measured then: deleting `_pool_offer` from either inline message, or swapping
+# it behind `_lookup_route`, left the whole module green.
+def _unreviewed_identity_message(unreviewed, free):
+    """The positional-collector gate's whole deliverable."""
+    return ("test fixtures introduce lead-identity values that nobody has reviewed:\n  "
+            + "\n  ".join(unreviewed)
+            + "\n\nThis repo is PUBLIC and these fixtures ship in it.\n\n"
+            + _pool_offer(free)
+            + "\n\n" + _lookup_route("Prefer `Example <Word>`."))
+
+
+def _cv_identity_message(unreviewed, free):
+    """The CV-body gate's. Its `what` says where the name will be READ, which is the thing
+    that makes this position worse than a frontmatter key: it renders as the employer on a
+    CV."""
+    return (f"these CV-fixture identities are on neither _REVIEWED_FIXTURE_IDENTITIES nor "
+            f"the spare pool: {unreviewed}.\n\n"
+            + _pool_offer(free)
+            + "\n\n" + _lookup_route("This position is CV BODY PROSE, so the name is read "
+                                      "by a human as the employer on a CV."))
+
+
+def _readme_identity_message(unreviewed, free):
+    """README's sample-note gate's. README is `pyproject.toml`'s `readme`, so this position
+    ships to PyPI as the package description."""
+    return (f"README's sample lead note names {unreviewed}, which no human has reviewed. "
+            f"Nothing here can tell a real employer from an invented one, and README ships to "
+            f"PyPI as the package description.\n\n"
+            + _pool_offer(free)
+            + "\n\n" + _lookup_route("This one is the most public position in the repo."))
+
+
 def test_no_unreviewed_employer_name_in_test_fixtures():
-    unreviewed = sorted(_all_fixture_identities() - _REVIEWED_FIXTURE_IDENTITIES)
-    assert not unreviewed, (
-        "test fixtures introduce lead-identity values that nobody has reviewed:\n  "
-        + "\n  ".join(unreviewed)
-        + "\n\nThis repo is PUBLIC and these fixtures ship in it. Confirm each names no real "
-          "firm — a local check CANNOT establish this, it needs a human or a web lookup — then "
-          "add it to _REVIEWED_FIXTURE_IDENTITIES. Prefer `Example <Word>`.")
+    """The ratchet itself. The MESSAGE is half of it, which is the part #303 measured.
+
+    An author who trips this needs a name. Until 2026-09-11 the message named ONE route -- get
+    a human ruling or a web lookup, neither of which is available at the moment the test goes
+    red -- so the only move actually reachable from it was to reuse a name already on the
+    roster. #303 read the resulting recycling as evidence the ROSTER was the wrong design. The
+    recycling is real; the diagnosis was not. A reused name introduces no unreviewed value,
+    which is this ratchet succeeding, and the real cost lands on the author who needed a
+    DISTINCT identity and had nowhere to get one. So the message now leads with the pool and
+    names the free entries, and the lookup route sits after it, for the fixture that genuinely
+    needs one specific name.
+    """
+    unreviewed = _unreviewed_identities(_all_fixture_identities(),
+                                        _REVIEWED_FIXTURE_IDENTITIES,
+                                        _SPARE_FIXTURE_IDENTITIES)
+    # `free` is computed INSIDE the message argument, which Python evaluates only when the
+    # assertion fails. Measured: eagerly, the three gates together spent 763ms per run
+    # re-deriving a list no green run ever prints.
+    assert not unreviewed, _unreviewed_identity_message(
+        unreviewed, _free_spares(_SPARE_FIXTURE_IDENTITIES, _in_use_identities()))
 
 
 def test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using():
@@ -988,16 +1218,413 @@ def test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using():
     from the fixtures for a NEUTRALITY reason stays written down here — the same "the
     remediation records the value" trap the deletion was meant to close.
     """
-    # Both sweeps, because both feed the roster: the four positional collectors AND the
-    # narrow CV-body one at the bottom of this file. Checking only the first would report
-    # every CV-fixture identity as stale the moment it was reviewed -- the reverse check
-    # marking a name unused while a fixture is actively using it.
-    in_use = _all_fixture_identities() | _cv_fixture_identities()
+    # EVERY position a roster name can occupy, via the one union -- not the positional and
+    # CV sweeps alone. "Stale" means no fixture uses it, so a sweep narrower than the set of
+    # places a fixture can use it reports a live name as dead.
+    #
+    # README is the one that was missing, and leaving it out DEADLOCKED the workflow the
+    # spare pool advertises. Measured, both reachable states for a spare spent in README's
+    # sample note: leave it in the pool and `test_no_spare_identity_is_already_in_use` reds,
+    # telling you to move it to the roster; move it and this test reds, telling you to delete
+    # it again. No state was green. It only became reachable when graduation started reading
+    # README, so the two must read the same union or they send an author in a circle.
+    in_use = _in_use_identities()
     stale = sorted(_REVIEWED_FIXTURE_IDENTITIES - in_use)
     assert not stale, (
         "these values are on the reviewed roster but no fixture uses them any more:\n  "
         + "\n  ".join(stale)
         + "\n\nDelete them from _REVIEWED_FIXTURE_IDENTITIES.")
+
+
+# A single capitalised word after the prefix. Tighter than anything the roster is held to --
+# the roster carries `Example MeridianRemote`, `EXAMPLE CO` and the injection fixtures, all
+# legitimate -- because this set is MINTED rather than inherited, so it can be held to the
+# shape the roster cannot be. That asymmetry is the point: a shape rule is the wrong gate for
+# values arriving from fixtures and the right one for values this file hands out.
+_SPARE_SHAPE = re.compile(r"Example [A-Z][a-z]+")  # applied with fullmatch
+
+
+def test_the_spare_pool_is_well_formed():
+    """Non-empty, disjoint from the roster, and shaped.
+
+    DISJOINTNESS is the load-bearing one, and not for the reason it looks like. The pool is a
+    SEPARATE frozenset precisely so that
+    `test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using` needs no
+    exemption for it: an unused spare is stale BY THAT TEST'S DEFINITION, so folding the pool
+    into `_REVIEWED_FIXTURE_IDENTITIES` would force a carve-out there -- and a carve-out in a
+    negative guard is how this repo has repeatedly taught a guard to look away. Keeping the
+    two sets disjoint means that guard's scope is untouched rather than narrowed, and this
+    assertion is what keeps it that way.
+
+    Measured both ways, because "the stale sweep would catch an overlap anyway" is the obvious
+    reason to think this assertion is redundant, and it is only half true. With the spare
+    UNUSED the stale sweep does fire on it -- that is the carve-out this arrangement exists to
+    avoid having to write. With the spare IN USE the stale sweep is blind, since the value is
+    no longer stale.
+
+    Be precise about what that leaves, because an earlier wording here overreached and two
+    reviewers read it as false. Measured, all four states, overlap planted as a pool name added
+    to the roster:
+
+      unused, this assertion kept    -> this one AND the stale sweep
+      unused, this assertion deleted -> the stale sweep alone (so it is not silent)
+      in use, this assertion kept    -> this one AND the graduation test
+      in use, this assertion deleted -> the graduation test alone
+
+    So the honest claim is narrower than "the only thing that sees it": in the UNUSED state the
+    stale sweep reports the overlap too. In the IN-USE state it does not, and the graduation
+    test that still reddens there fires on the in-use-ness -- it would fire identically with no
+    overlap present -- so nothing is left reporting the overlap itself. That state is why this
+    assertion earns its place, not the unused one.
+
+    NON-EMPTY is the scope check: an empty pool satisfies every other assertion here
+    vacuously, and it is also the state in which the whole feature is inert -- the failure
+    message has nothing to offer and the author is back to the two routes that produced #303.
+    """
+    assert _SPARE_FIXTURE_IDENTITIES, (
+        "_SPARE_FIXTURE_IDENTITIES is empty, so the cheap route out of "
+        "test_no_unreviewed_employer_name_in_test_fixtures does not exist and that test's "
+        "message has nothing to name. Top the pool up -- see its comment for what qualifies.")
+    both = sorted(_SPARE_FIXTURE_IDENTITIES & _REVIEWED_FIXTURE_IDENTITIES)
+    assert not both, (
+        "these values are in BOTH _SPARE_FIXTURE_IDENTITIES and "
+        "_REVIEWED_FIXTURE_IDENTITIES:\n  " + "\n  ".join(both)
+        + "\n\nThe two sets must stay disjoint. A spare in the roster is reported stale by "
+          "test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using, and "
+          "exempting it there would narrow that sweep. Pick one set: in use -> roster, "
+          "unused -> pool.")
+    misshapen = _misshapen(_SPARE_FIXTURE_IDENTITIES)
+    assert not misshapen, (
+        "these spare identities are not `Example <Word>`:\n  " + "\n  ".join(misshapen)
+        + "\n\nThe pool is minted, not inherited, so it is held to the shape. A name that "
+          "needs to be some other shape is a roster entry, reviewed on its own merits.")
+    # The shape is the WEAKER half and is checked second on purpose. `Example <RealFirm>`
+    # satisfies it -- that is the whole reason #303's shape rule was rejected -- so the
+    # property actually relied on is that the pool is DERIVED from `_METASYNTACTIC`. Without
+    # this row the pool would be gated by exactly the rule this file argues is insufficient.
+    assert _SPARE_FIXTURE_IDENTITIES == {f"Example {w}" for w in _METASYNTACTIC}, (
+        "the spare pool is no longer exactly the `Example <token>` construction over "
+        "_METASYNTACTIC. A name added any other way is admitted to the gate on its SHAPE "
+        "alone, which is the rule #303 proposed and the owner rejected on 2026-09-11.")
+
+
+def test_no_spare_identity_is_already_in_use():
+    """Graduation. A spare a fixture adopted has to MOVE to the roster.
+
+    Without this the pool depletes silently: the adopted name still passes the membership gate
+    (the gate accepts roster or pool), so nothing fires, and the gate's own failure message
+    goes on advertising it as free. The next author takes it, gets a name that already means
+    something else in another test, and lands exactly where #303 came in.
+
+    It also keeps `_REVIEWED_FIXTURE_IDENTITIES` an honest record of what the fixtures
+    actually use, which is the property the stale-entry test above is written against.
+    """
+    taken = sorted(_SPARE_FIXTURE_IDENTITIES & _in_use_identities())
+    assert not taken, (
+        "these identities are still listed as spare but a fixture now uses them:\n  "
+        + "\n  ".join(taken)
+        + "\n\nMove each one from _SPARE_FIXTURE_IDENTITIES into "
+          "_REVIEWED_FIXTURE_IDENTITIES. They are already reviewed, so this is a move and not "
+          "a new judgement -- but leaving them in the pool makes it advertise names that are "
+          "taken.")
+
+
+def test_a_free_spare_is_one_no_fixture_has_adopted():
+    """`_free_spares` on SYNTHETIC sets, because on the real ones it cannot fail.
+
+    The gates only render their message when they go red, and in a green tree they never do --
+    so every claim the pool comment makes about the message ("advertising names already taken"
+    being the harm) was unfalsifiable until this row existed. Measured before it: deleting the
+    in-use subtraction outright left the whole module green.
+    """
+    pool = {"Example Aaa", "Example Bbb", "Example Ccc"}
+    assert _free_spares(pool, set()) == ["Example Aaa", "Example Bbb", "Example Ccc"]
+    # The one that matters: an adopted name is NOT offered to the next author.
+    assert _free_spares(pool, {"Example Bbb"}) == ["Example Aaa", "Example Ccc"]
+    assert _free_spares(pool, pool) == []
+    # An in-use value that was never in the pool changes nothing.
+    assert _free_spares(pool, {"Acme"}) == ["Example Aaa", "Example Bbb", "Example Ccc"]
+
+
+# Hand-written, because this is the thing being ASSERTED and a set derived from the code under
+# test cannot notice a gate that stopped offering the pool -- it would simply sweep fewer. The
+# PROBE below is derived; this roster is the specification.
+_MESSAGE_BUILDERS = {
+    "_unreviewed_identity_message": "Prefer `Example <Word>`.",
+    "_cv_identity_message": "CV BODY PROSE",
+    "_readme_identity_message": "most public position in the repo",
+}
+
+
+def _functions_calling(name):
+    """Every module-level function in THIS file whose body calls `name`, by AST.
+
+    Derived, so a fourth gate is DISCOVERED here rather than depending on anyone remembering
+    it exists. The caller's equality against `_MESSAGE_BUILDERS` then makes listing it a
+    deliberate act -- discovery and acceptance are different jobs, and an earlier version of
+    this docstring claimed the sweep meant a new gate needed no listing, which is the opposite
+    of what the assertion does.
+
+    SCOPE, since it bounds both halves: module-level `def` only. A builder written as a
+    method, as an `async def`, or reached through an alias is invisible to this sweep -- it
+    would neither be discovered nor demanded. That is acceptable only while every builder is
+    a plain module-level function, which the equality assertion is what keeps true.
+    """
+    import ast
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    out = {}
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        calls = [c for c in ast.walk(node)
+                 if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)]
+        if any(c.func.id == name for c in calls):
+            out[node.name] = calls
+    return out
+
+
+def test_every_roster_message_offers_a_free_spare_before_the_lookup_route():
+    """ORDER is the claim, not mere presence, and it is checked for EVERY gate.
+
+    #303's evidence is that the message decides what an author does, and the route a reader
+    reaches first is the route they take -- so a message naming the pool somewhere below the
+    lookup paragraph would satisfy a containment check while changing nothing.
+
+    The earlier version of this test built two of its three rows by concatenating `_pool_offer`
+    and `_lookup_route` itself, so it tested its own string-building and certified two gates it
+    never touched. Measured then, all four surviving: delete `_pool_offer` from the CV gate;
+    the same in README's; swap either one's order. Three reviewers found it independently. It
+    now sweeps the AST, so a gate cannot be covered by accident or missed by accident.
+    """
+    builders = _functions_calling("_lookup_route")
+    # SCOPE first: a sweep that discovers nothing passes every assertion over it, and for a
+    # guard like this finding nothing IS the success case.
+    assert set(builders) == set(_MESSAGE_BUILDERS), (
+        f"the functions building a roster failure message are {sorted(builders)}, but this "
+        f"test's specification names {sorted(_MESSAGE_BUILDERS)}. A new gate must be added "
+        "here deliberately -- deriving this set from the code would let a gate that stopped "
+        "calling _lookup_route disappear from the sweep instead of failing it.")
+    for fn, calls in sorted(builders.items()):
+        offers = [c for c in calls if c.func.id == "_pool_offer"]
+        lookups = [c for c in calls if c.func.id == "_lookup_route"]
+        assert offers, f"{fn} builds a roster failure message without offering the pool"
+        first_offer = min((c.lineno, c.col_offset) for c in offers)
+        first_lookup = min((c.lineno, c.col_offset) for c in lookups)
+        assert first_offer < first_lookup, (
+            f"{fn} calls _lookup_route before _pool_offer, so the author reaches the expensive "
+            "route first -- the behaviour #303 measured and this branch exists to change.")
+
+
+def test_each_gate_names_its_own_position_in_the_lookup_route():
+    """`_lookup_route`'s `what` is the only thing distinguishing the three messages.
+
+    Measured before this row: deleting the `{what}` interpolation from the returned string left
+    the module green, so a CV-body identity and a README identity could both be reported with
+    no indication of which position they sit in -- and those positions are the whole reason one
+    is worse than the other.
+    """
+    free = ["Example Aaa"]
+    rendered = {
+        "_unreviewed_identity_message": _unreviewed_identity_message(["UNREVIEWED-VALUE-1"], free),
+        "_cv_identity_message": _cv_identity_message(["UNREVIEWED-VALUE-1"], free),
+        "_readme_identity_message": _readme_identity_message(["UNREVIEWED-VALUE-1"], free),
+    }
+    assert set(rendered) == set(_MESSAGE_BUILDERS), "a builder is missing from this sweep"
+    for fn, msg in sorted(rendered.items()):
+        marker = _MESSAGE_BUILDERS[fn]
+        assert marker in msg, (
+            f"{fn}'s message does not say which position it is reporting on -- expected to "
+            f"find {marker!r}. The `what` argument is what tells the author whether this name "
+            "renders on a CV, in README's PyPI description, or in a test fixture.")
+        # and the offer still precedes the route in the RENDERED text, not just the AST
+        assert msg.index("Example Aaa") < msg.index("web lookup"), (
+            f"{fn}: the lookup route renders before the free spare")
+
+
+# Hand-written for the same reason `_MESSAGE_BUILDERS` is: this is the claim. Deriving it from
+# `_in_use_identities`' own body would make the test re-partition under any edit to that body,
+# so dropping a collector would shrink the question instead of failing it.
+_ROSTER_GATE_COLLECTORS = (
+    "_all_fixture_identities",   # the positional sweep over tests/**/*.py
+    "_cv_fixture_identities",    # CV body prose
+    "_readme_note_values",       # README's sample lead note -- the one that was missed
+)
+
+
+def test_the_in_use_union_reads_every_collector_that_feeds_a_roster_gate():
+    """A spare is "free" only if NO gate's position holds it, so the union must cover them all.
+
+    Measured, and this is why the check is structural rather than behavioural: dropping
+    `_readme_note_values` from `_in_use_identities` reddens NOTHING on the real data, because no
+    spare currently sits in README and every value that does is also named somewhere under
+    `tests/`. So a subset assertion over the real sets is satisfied by the other two collectors
+    and certifies nothing -- the same vacuity that let the omission ship in the first place.
+
+    The behavioural half is kept below it anyway, for the direction structure cannot check: that
+    each collector's values actually arrive in the union rather than merely being called.
+    """
+    import ast
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    fn = next((n for n in tree.body
+               if isinstance(n, ast.FunctionDef) and n.name == "_in_use_identities"), None)
+    assert fn is not None, "_in_use_identities is gone -- the union has moved or been inlined"
+    # Narrowed to THIS module's own functions, so a builtin (`set`) is not mistaken for a
+    # collector. Derived, unlike the roster above: the probe may widen freely, the claim may not.
+    own = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
+    called = {c.func.id for c in ast.walk(fn)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)} & own
+    assert called == set(_ROSTER_GATE_COLLECTORS), (
+        f"_in_use_identities reads {sorted(called)}, but the roster gates are fed by "
+        f"{sorted(_ROSTER_GATE_COLLECTORS)}. A collector missing here means a spare spent in "
+        "that position never graduates and is advertised as free for ever -- which is exactly "
+        "what happened to README before this roster existed.")
+
+    # SCOPE, standalone: each collector must actually find something. This no longer guards a
+    # subset check -- there was one here and it was removed as inert (the sentinel test below
+    # replaced it) -- so the reason stated here was stale within the same change that made it
+    # so. It earns its place on its own: a collector silently matching nothing is the failure
+    # this file's own docstring opens with, and nothing else in this module would report it.
+    for collector, values in (("_all_fixture_identities", _all_fixture_identities()),
+                              ("_cv_fixture_identities", _cv_fixture_identities()),
+                              ("_readme_note_values", set(_readme_note_values("company")))):
+        assert values, f"{collector} found nothing -- the sweep is broken, not the tree clean"
+
+
+# Hand-written, like `_MESSAGE_BUILDERS` and `_ROSTER_GATE_COLLECTORS`: the CLAIM, not a
+# derivation. These are the tests that decide whether an identity is still IN USE, and they
+# have to agree, because an author is sent from one to the other.
+_IN_USE_READERS = (
+    "test_the_reviewed_roster_carries_no_identity_the_fixtures_stopped_using",
+    "test_no_spare_identity_is_already_in_use",
+)
+
+
+def test_every_in_use_decision_reads_the_one_union():
+    """The two in-use decisions must read the SAME positions, or they deadlock.
+
+    Measured, and this is why a behavioural check cannot cover it: narrowing the stale sweep
+    back to `_all_fixture_identities() | _cv_fixture_identities()` reddens NOTHING on the real
+    data, because no roster entry currently lives only in README. It is still a live defect --
+    for a spare spent in README's sample note there was then no green state at all. Leave it in
+    the pool and `test_no_spare_identity_is_already_in_use` reds telling you to move it to the
+    roster; move it and the stale sweep reds telling you to delete it. Round 3 found that after
+    two rounds had already looked at this file.
+
+    So the check is structural, in two halves. The named readers must call the union; and the
+    narrow combination must appear nowhere outside `_in_use_identities`, which is the half that
+    catches a reader quietly rebuilding its own. Both halves are load-bearing and each is the
+    sole catcher of some mutant: only the positive half catches a rebuild through temporaries
+    (`a = _all(); b = _cv(); in_use = a | b`), and only the negative half catches an UNNAMED
+    function building the narrow union inline.
+
+    ACCEPTED RESIDUAL, stated rather than closed: a reader can call `_in_use_identities` and
+    then narrow the result -- `in_use = _in_use_identities() & (a | b)` where `a`/`b` are
+    collector results held in temporaries -- satisfying the positive half and exposing no
+    collector-pair `BinOp` for the negative one. That reintroduces the deadlock. It is left
+    because every shape anyone would plausibly write is caught (the straight revert, a rebuild
+    through temporaries, `|=`, `set().union`, a helper one level down), and widening to catch a
+    deliberate narrowing means interpreting arbitrary set arithmetic -- the classifier this
+    file's opening argues against, for a mutation nobody reaches by accident.
+    """
+    import ast
+    tree = ast.parse(Path(__file__).read_text(encoding="utf-8"))
+    funcs = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+
+    for name in _IN_USE_READERS:
+        fn = funcs.get(name)
+        assert fn is not None, f"{name} is gone -- this roster names a test that no longer exists"
+        called = {c.func.id for c in ast.walk(fn)
+                  if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+        assert "_in_use_identities" in called, (
+            f"{name} decides whether an identity is in use without reading "
+            "_in_use_identities, so it can disagree with the other decision and send an "
+            "author in a circle between them.")
+
+    # The negative half: only `_in_use_identities` may combine collectors itself.
+    for name, fn in sorted(funcs.items()):
+        if name == "_in_use_identities":
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.BitOr):
+                continue
+            sides = [node.left, node.right]
+            if all(isinstance(x, ast.Call) and isinstance(x.func, ast.Name)
+                   and x.func.id in _ROSTER_GATE_COLLECTORS for x in sides):
+                raise AssertionError(
+                    f"{name} builds its own union of collectors instead of calling "
+                    "_in_use_identities. That is how the README position went missing from one "
+                    "decision and not the other.")
+
+
+def test_the_in_use_union_returns_what_each_collector_actually_yields(monkeypatch):
+    """SENTINELS, because a subset check over the real sets is satisfied by the wrong collector.
+
+    An earlier version of this asserted `values <= _in_use_identities()` for each collector on
+    the REAL data and claimed that proved each one's values arrive in the union. It proved
+    nothing: README's companies are also named under `tests/`, so the positional sweep alone
+    satisfies README's row. Three mutants survived it whole-module green -- calling
+    `_readme_note_values` without unioning the result, asking it for `"location"` instead of
+    `"company"`, and deleting the behavioural block outright.
+
+    A sentinel per collector is what distinguishes them: each value can only have arrived from
+    the one collector that produced it, so a dropped term or a wrong argument shows up as a
+    missing or unexpected member rather than being covered by a sibling.
+    """
+    import sys
+    mod = sys.modules[__name__]
+    monkeypatch.setattr(mod, "_all_fixture_identities", lambda: {"SENTINEL-POSITIONAL"})
+    monkeypatch.setattr(mod, "_cv_fixture_identities", lambda: {"SENTINEL-CV"})
+    monkeypatch.setattr(mod, "_readme_note_values", lambda key: [f"SENTINEL-README-{key}"])
+    assert _in_use_identities() == {
+        "SENTINEL-POSITIONAL", "SENTINEL-CV", "SENTINEL-README-company"}, (
+        "_in_use_identities did not return exactly one sentinel per collector -- a collector "
+        "is being called but not unioned, called with the wrong argument, or not called.")
+
+
+def test_a_pool_name_is_admitted_without_a_fresh_ruling():
+    """The branch's headline behaviour, which real data cannot exercise.
+
+    `test_no_spare_identity_is_already_in_use` guarantees no pool member is ever in use, so the
+    acceptance arm is unreachable from the real sets at all three gates. Measured before this
+    row: deleting `_SPARE_FIXTURE_IDENTITIES` from the accepted set at every one of the three
+    left the module green.
+    """
+    roster, pool = {"Acme"}, {"Example Qux"}
+    assert _unreviewed_identities({"Acme"}, roster, pool) == []
+    assert _unreviewed_identities({"Example Qux"}, roster, pool) == [], (
+        "a pool name was refused -- the pool is not being accepted, which is the whole feature")
+    assert _unreviewed_identities({"UNREVIEWED-VALUE-1"}, roster, pool) == [
+        "UNREVIEWED-VALUE-1"], (
+        "an unrostered, non-pool value was admitted -- the ratchet is off")
+
+
+def test_the_pool_shape_rejects_more_than_a_bare_name():
+    """`_SPARE_SHAPE` carries no anchors and is applied with `fullmatch`; that is a PAIR.
+
+    Measured before this row, both halves unpinned: reverting to an anchored pattern with
+    `.match` reddened nothing, and weakening `fullmatch` to `search` reddened nothing either --
+    and the second admits a real firm's name appended to a pool token outright.
+    """
+    assert _misshapen({"Example Qux"}) == []
+    # `$` matches before a trailing newline, which is why `.match` on an anchored pattern is
+    # not equivalent to `fullmatch` here.
+    assert _misshapen({"Example Qux\n"}) == ["Example Qux\n"]
+    assert _misshapen({"Example Qux Real Corp"}) == ["Example Qux Real Corp"]
+    assert _misshapen({"Real Corp Example Qux"}) == ["Real Corp Example Qux"]
+
+
+def test_the_offer_does_not_claim_an_empty_pool_when_the_pool_is_full():
+    """The reachable exhausted state is "all adopted", not "empty".
+
+    A literally empty pool is caught first, by `test_the_spare_pool_is_well_formed`. So the
+    fallback branch renders only when every spare has been adopted without being graduated,
+    and an earlier wording ("the pool is empty") described the one state it cannot be
+    reporting -- sending the author to top up a pool that is full.
+    """
+    exhausted = _pool_offer([])
+    assert "no spare is free" in exhausted
+    assert "graduate" in exhausted
+    assert "the pool is empty" not in exhausted
 
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is a roster somebody has LOOKED AT -- that only works for a
@@ -1947,11 +2574,11 @@ def test_cv_fixture_identities_are_on_the_reviewed_roster():
     to look. That is exactly what the roster exists to prevent, just at a position the
     four positional collectors do not reach.
     """
-    unreviewed = sorted(_cv_fixture_identities()
-                        - _REVIEWED_FIXTURE_IDENTITIES - _CV_IDENTITY_EXEMPT)
-    assert unreviewed == [], (
-        "these CV-fixture identities are not on _REVIEWED_FIXTURE_IDENTITIES: "
-        f"{unreviewed}. Confirm each names no real firm, then add it to the roster.")
+    unreviewed = _unreviewed_identities(_cv_fixture_identities(),
+                                        _REVIEWED_FIXTURE_IDENTITIES | _CV_IDENTITY_EXEMPT,
+                                        _SPARE_FIXTURE_IDENTITIES)
+    assert unreviewed == [], _cv_identity_message(
+        unreviewed, _free_spares(_SPARE_FIXTURE_IDENTITIES, _in_use_identities()))
 
 
 # ── Skill values (#168) ──────────────────────────────────────────────────────────────
@@ -2839,11 +3466,11 @@ def test_readmes_illustrative_lead_note_uses_reviewed_identities():
         f"the whole-block url sweep missed {sorted(per_half_urls - set(fields['url']))}, which "
         f"the per-half sweeps found -- it is meant to cover at least everything they do")
 
-    unreviewed = sorted({c for c in fields["company"] if c not in _REVIEWED_FIXTURE_IDENTITIES})
-    assert not unreviewed, (
-        f"README's sample lead note names {unreviewed}, which no human has reviewed. Nothing "
-        f"here can tell a real employer from an invented one, and README ships to PyPI -- so "
-        f"a person must rule on it and add it to _REVIEWED_FIXTURE_IDENTITIES.")
+    unreviewed = _unreviewed_identities(set(fields["company"]),
+                                        _REVIEWED_FIXTURE_IDENTITIES,
+                                        _SPARE_FIXTURE_IDENTITIES)
+    assert not unreviewed, _readme_identity_message(
+        unreviewed, _free_spares(_SPARE_FIXTURE_IDENTITIES, _in_use_identities()))
 
     unreviewed_places = sorted(
         {p for p in fields["location"] if p not in _README_REVIEWED_LOCATIONS})

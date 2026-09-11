@@ -64,9 +64,19 @@ reviews:
         their siblings). These are allowed in test prose — docstrings
         describing a real incident in a named adapter — and as source
         identifiers. They are NOT allowed as a lead, employer or candidate
-        fixture identity; use `Example <Word>` there, which
-        `tests/test_fixture_name_neutrality.py` enforces over the identity
-        positions. The exception permits these names, it does not prefer them:
+        fixture identity; use `Example <Word>` there. Be precise about what
+        enforces that, because it is not the shape:
+        `tests/test_fixture_name_neutrality.py` gates those positions on a
+        ROSTER of values a human has ruled on (`_REVIEWED_FIXTURE_IDENTITIES`,
+        plus the pre-reviewed `_SPARE_FIXTURE_IDENTITIES` pool it hands out
+        from), and only PREFERS `Example <Word>` in its failure message. The
+        prefix is a convention for readers and establishes nothing about the
+        word after it. The roster forces a human ruling on any new value
+        whatever its shape, but no local check can tell whether that ruling
+        was right -- so a real employer name wearing the prefix and rostered
+        in the same diff passes everything here, and is worth flagging on
+        sight.
+        The exception permits these names, it does not prefer them:
         a test that does not care which adapter it is talking about should
         still use a synthetic id. Every other real company name stays flagged.
 
