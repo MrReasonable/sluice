@@ -747,3 +747,94 @@ def test_a_yaml_set_under_the_three_root_keys_never_echoes_its_members(tmp_path)
             load_config(path)
         assert secret not in str(e.value), f"{key} echoed a set member: {e.value}"
         assert key in str(e.value), f"{key}'s refusal did not name the key: {e.value}"
+
+
+def test_every_root_config_field_is_actually_read_from_the_yaml():
+    """A `Config` field `load_config` never names is DEAD: settable in the dataclass,
+    documented, and silently ignored in the file a user actually edits.
+
+    `CLAUDE.md` states the trap -- "only `load_config` names its fields explicitly; the
+    four sub-app loaders are `hasattr`-filtered `setattr` loops, so a new ROOT field is
+    dead until `load_config` names it" -- and #305 walked straight into it anyway: the
+    `rates` seam key reached the dataclass, `sluice.yaml.example` and
+    `docs/CONFIGURATION.md`, while `rates:` in YAML did nothing and an unknown name never
+    raised. Every unit test passed, because they set the attribute programmatically.
+
+    Swept from the dataclass and the loader's own AST rather than from a hand-written
+    roster, so the NEXT field is covered without anyone remembering to add a row.
+    """
+    import ast
+    import inspect
+
+    from sluice.core.config import Config, load_config
+
+    tree = ast.parse(inspect.getsource(load_config))
+    read = {n.args[0].value for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == "get" and n.args
+            and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)}
+    fields = set(Config.__dataclass_fields__)
+
+    # ANTI-VACUITY: a walk that resolved nothing would report every field as read, or none
+    # of them, and either way the assertion below would be meaningless.
+    assert len(fields) > 10, "the dataclass sweep found implausibly few fields"
+    assert read & fields, "the loader AST sweep matched no field name at all"
+
+    dead = sorted(fields - read)
+    assert not dead, (
+        f"these root Config fields are never read from the YAML: {dead}. A field the "
+        "loader does not name is dead -- setting it in a config file does nothing and "
+        "says nothing. Name it in `load_config`'s explicit Config(...) construction.")
+
+
+def test_a_seam_name_set_in_yaml_actually_reaches_the_app(tmp_path):
+    """The whole chain: YAML -> load_config -> Sluice -> the seam raising for a bad name.
+
+    Every root seam key is swept, so this cannot pass for `store` while `rates` is dead --
+    which is the state #305 shipped in until this test. Driven all the way to resolution
+    rather than stopping at the `Config` attribute: an earlier version was NAMED for this
+    chain and only asserted the first link of it, which is the shape of over-claim that let
+    the dead key through in the first place.
+    """
+    import inspect
+
+    from sluice.core.app import _SEAMS, Sluice
+    from sluice.core.config import Config, load_config
+    from sluice.core.plugins import UnknownAdapter
+
+    # DERIVED from the two contracts this test is about, never hand-listed: a seam is in
+    # scope here when it is a ROOT `Config` field AND `Sluice` exposes a zero-argument
+    # accessor for it. Spelling the three names out let a new root seam be added with this
+    # test still passing and its docstring still claiming full coverage -- which is the
+    # same shape as the dead `rates` key this test exists to catch.
+    #
+    # The seams it excludes are excluded for a reason, asserted below rather than assumed:
+    # `renderer` is selected from the cv sub-app's config and `backend` takes a role plus
+    # resolved construction parameters, so neither is reachable as `Sluice().<seam>()`.
+    in_scope = sorted(
+        seam for seam in _SEAMS
+        if seam in Config.__dataclass_fields__
+        and callable(getattr(Sluice, seam, None))
+        and not [prm for name, prm in
+                 inspect.signature(getattr(Sluice, seam)).parameters.items()
+                 if name != "self" and prm.default is inspect.Parameter.empty])
+    assert in_scope, "the derivation matched no seam at all; the sweep would be vacuous"
+    assert set(_SEAMS) - set(in_scope) == {"renderer", "backend"}, (
+        "a seam moved in or out of root-config scope; confirm the derivation above still "
+        f"describes why, then update this assertion. in scope: {in_scope}")
+
+    seams = {key: f"no-such-{key}" for key in in_scope}
+    for key, bogus in seams.items():
+        cfg_path = tmp_path / f"{key}.yaml"
+        cfg_path.write_text(f"{key}: {bogus}\n", encoding="utf-8")
+        loaded = load_config(str(cfg_path))
+        assert getattr(loaded, key) == bogus, (
+            f"`{key}:` in YAML did not reach Config.{key} -- the key is dead")
+
+        # ...and the name reaches the seam, which refuses it by NAME rather than falling
+        # through to a default. A quiet wrong default here picks an implementation the user
+        # did not ask for.
+        with pytest.raises(UnknownAdapter) as raised:
+            getattr(Sluice(loaded), key)()
+        assert bogus in str(raised.value), (
+            f"the raise does not name the value the user actually set ({bogus!r})")

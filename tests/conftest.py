@@ -20,9 +20,29 @@ PATH_ENV_VARS = (
     "SEEN_DB",
     "SLUICE_CONFIG",
     "SLUICE_DISABLED",
+    "SLUICE_FX_CACHE",
     "SLUICE_HEALTH",
     "TRIAGE_AUDIT",
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_fx_cache():
+    """Clear `core/fx`'s in-process rate memo around every test (#305).
+
+    `fx._load` reads the cache file ONCE per process and remembers the result -- right for
+    a triage run, which must not re-read a table per lead, and a trap for a suite, where
+    the first test to touch the module fixes the answer for every test after it. Without
+    this, whether a test sees its own cache file depends on what ran before it, so a real
+    failure could pass and a passing test could fail on `-p no:randomly` ordering alone.
+
+    Cleared on the way IN as well as out: a module imported and read during collection
+    would otherwise seed the memo before the first test ever runs.
+    """
+    from sluice.core import fx
+    fx._cache = None
+    yield
+    fx._cache = None
 
 
 @pytest.fixture(autouse=True)

@@ -1,7 +1,7 @@
 """The adapter registry: one name-keyed lookup per seam.
 
-`docs/ARCHITECTURE.md` names four adapter seams (backend, store, renderer, fetch).
-All four are now registry-backed: store/renderer/fetch gained a registry when this
+`docs/ARCHITECTURE.md` names the adapter seams; `core/app.py`'s `_SEAMS` is the roster
+of record. All of them are registry-backed: store/renderer/fetch gained a registry when this
 module landed, and the backend seam joined them (`sluice/backends/`) once provider
 construction moved off `make_backend`'s inline ladder. A second implementation of any
 seam is now a drop-in plugin, not an edit to `cli.py`. This generalises the pattern
@@ -10,8 +10,8 @@ package auto-imports its siblings, and one broken plugin is logged and skipped r
 than sinking the registry.
 
 Selection is a dict lookup keyed by the name in config, NOT a broadcast to every
-registered implementation. There is exactly one live store, one live fetcher, one live
-renderer, and which one it is must be answerable by reading config -- not by reasoning
+registered implementation. Each registered NAME maps to exactly one factory, and which
+name is selected must be answerable by reading config -- not by reasoning
 about import order. An unknown name raises and lists the valid names, matching
 `make_backend`'s guard: a quiet wrong default is the bug class this codebase most
 consistently engineers out, and for the store seam specifically a wrong default means

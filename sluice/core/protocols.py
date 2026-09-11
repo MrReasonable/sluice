@@ -1043,6 +1043,42 @@ class Fetcher(Protocol):
     def close_tab(self, tab: str) -> None: ...
 
 
+class RateSource(Protocol):
+    """Where exchange rates come from. Today: `frankfurter`.
+
+    ONE method, and the whole contract is in what it must RETURN: a mapping of ISO 4217
+    code to GBP per one unit of that currency -- already normalised, whatever the provider
+    quoted against. The base a service answers in, and the direction it expresses a rate,
+    are properties OF THAT SERVICE, so converting them is the implementation's job and not
+    the caller's. A provider that returned its own units-per-base and expected `core/fx.py`
+    to invert would put a per-provider fact in shared code, which is precisely how a second
+    provider silently gets every rate reciprocal-of-the-wrong-thing.
+
+    FAILURE MODE -- `None`, never an exception. This is unlike the Store and Renderer
+    seams, which raise, and the difference is deliberate: rates are an OPTIMISATION over
+    the table pinned in `core/fx.py`, so a provider that cannot answer must leave the
+    caller exactly as it was rather than take a triage run down. An offline machine, a DNS
+    failure, a changed response shape, a service answering in an unexpected base -- all of
+    them are `None`. An empty dict is NOT the same thing and must not be returned for a
+    failure: it would overwrite a good cache with nothing.
+
+    ONE LIMIT a second implementer has to know, because it is not visible from this
+    signature: a code you return that `core/fx.py`'s PINNED table does not carry will be
+    cached and valued by `fx.rate()`, but `triage/classify.py` will not read it as MONEY.
+    The parser's alphabet is derived from the pinned table at import, deliberately, so the
+    same advert cannot parse differently on two machines depending on what each has
+    cached. Returning a currency outside that table is therefore harmless but inert; the
+    way to make a new currency readable is to re-pin the table in a release.
+
+    A provider must also VALIDATE before it normalises. `fetch` returning a plausible table
+    built from a response it did not check is worse than returning `None`, because the
+    result is persisted and then used to compute pay-floor REJECTS -- a lead binned on a
+    bad feed is one the user never sees. Reject the response instead.
+    """
+
+    def fetch(self, timeout: int) -> dict | None: ...
+
+
 class Renderer(Protocol):
     """Turn composed CV text into a PDF, and return the path written.
 

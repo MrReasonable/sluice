@@ -499,6 +499,34 @@ whichever neighbour it was written next to:
    working pattern, wrong for anyone on a four-day week, and a preference
    wearing the clothes of a parsing fact.
 
+   CURRENCY conversion, unlike that one, IS done (#305), and the difference is
+   what each constant asserts. A rate says what a number is worth, which is a
+   fact with a publisher; hours-per-day says how somebody works, which is a
+   preference. `_salary_ceiling` returns a `Ceiling(gbp, advertised, currency)`
+   and `core/fx.py` supplies the rate — cache first when the cache is NEWER than
+   the release, else a table pinned in the release, so an offline install still
+   converts. Three properties are load-bearing and each has a defect behind it.
+   The ceiling is chosen on the CONVERTED value, because across a mixed-currency
+   advert the biggest number and the biggest amount of money are different rows
+   and picking by number picks the bottom of the band. One figure that cannot be
+   valued abstains for the WHOLE advert, since the ceiling is the largest of a
+   set and a set with an unknown member has no known largest. And the pinned
+   table is the publisher's list transcribed whole, with `classify`'s money
+   alphabet DERIVED from it (`fx.known_currencies()`) rather than hand-listed
+   beside it: a currency missing from the table is not merely unconverted, it is
+   not recognised as money at all, so the floor never fires for that market —
+   which is the #305 defect itself, aimed at whichever markets a hand-picked
+   list omitted. A bare `kr` resolves to DKK, the strongest of the four
+   currencies spelled that way, so an unmarked krona figure is over-valued and
+   clears a floor it may not deserve to; the reverse pick made every wrong guess
+   a reject, which is the direction this gate never fails in.
+
+   The grouping conventions this reads are comma and space (plain,
+   non-breaking, narrow no-break) — not DOT. `60.000 €` parses as sixty and
+   abstains, so no floor applies to an advert in that convention; the gap
+   predates #305 and #311 closes it structurally, by deciding grouping from
+   placement rather than from an assumed locale.
+
    The enrich pass writes an `observed` role_type back from the fetched JD,
    `require_status`-guarded like its two sibling writes, best-effort and
    unreported (`update_fields` cannot distinguish a refusal from a no-op, and
@@ -1815,7 +1843,10 @@ merge is built to uphold all three, not to carve out an exception to them.
 
 ## Adapter-selector seams
 
-Four points in the config are the seams for pluggable adapters.
+Several config keys are the seams for pluggable adapters. Deliberately NO COUNT here:
+this section has already been rewritten twice by seams arriving after it was written, and
+`core/app.py`'s `_SEAMS` is the roster of record -- a tuple a guard test pins, which a
+sentence cannot be.
 
 - **backend**: `sluice/backends/`, selected by provider name through the adapter
   registry (`make_backend` is now a thin shim over `plugins.get("backend", name)`).
@@ -1951,6 +1982,23 @@ Four points in the config are the seams for pluggable adapters.
   turned a one-`evaluate` check-to-read window into a multi-second one and a
   client-rendered page is the kind most likely to navigate late. A refusal there
   propagates rather than degrading.
+
+- **rates**: `sluice/rates/`, selected by `rates` (default `frankfurter`). Where
+  `core/fx.py` gets exchange rates for the pay-floor conversion (#305). The
+  provider owns its endpoint, its response shape, and the direction it inverts:
+  it returns GBP per unit, already normalised, whatever base the service quotes
+  against. `core/fx.py` owns the cache, the pinned fallback and the precedence
+  between them, and knows nothing about any payload. That split exists because
+  the alternative put one service's facts -- that frankfurter answers
+  `{base, rates}` in units-per-base -- in the file every future provider would
+  share, which is how a second provider silently gets every rate
+  reciprocal-of-the-wrong-thing. FAILURE MODE is `None`, never an exception,
+  unlike Store and Renderer: rates are an optimisation over the pinned table, so
+  a provider that cannot answer must leave the caller as it was rather than take
+  a triage run down. `Sluice.rates()` resolves it and construction makes no
+  request; `Sluice.triage` passes the resolved source to `triage.engine.run`
+  ONLY when `triage.refresh_fx_rates` is set, so the engine is offline by
+  construction rather than by reading a flag.
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
   A source may optionally implement `company_from_url(url) -> str | None`
   (#109), the same optional-member shape as `Store.preflight`/
@@ -2248,7 +2296,7 @@ key these seams read.
 
 ## Injected collaborators — the other kind of seam
 
-The four above are *adapter* seams: a config key selects an implementation by
+The seams above are *adapter* seams: a config key selects an implementation by
 name from a registry. A second, smaller set of injection points looks similar
 and is deliberately not the same thing. They carry no config key and no registry
 entry, and are passed in by the caller:

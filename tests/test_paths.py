@@ -468,7 +468,11 @@ def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
     # a `_LEGACY` row would name a path that has never existed, which is a migration
     # check that can only ever be inert. If it goes missing the notice is simply shown
     # again, which costs one skipped run; see sluice/triage/reverdict.py.
-    exempt = {"config.yaml", "role_type_reverdict_ack.json"}
+    # #305's rate cache is a third of the same kind: it shipped in no prior release, so no
+    # user can have an older copy left behind and a `_LEGACY` row would name a path that
+    # has never existed. Losing it costs nothing at all -- `core/fx.py` falls back to its
+    # pinned table, which is the same behaviour a first run has.
+    exempt = {"config.yaml", "role_type_reverdict_ack.json", "fx-rates.json"}
     missing = called - set(paths._LEGACY) - exempt
     assert not missing, (
         "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "

@@ -561,3 +561,105 @@ def test_the_real_profile_and_clock_reach_the_packet(tmp_path, monkeypatch):
     pkt = results[0].packet
     assert pkt["town"] == "Example Town"
     assert pkt["age"] == 36
+
+
+# ── the rates seam (#305) ───────────────────────────────────────────────────────────────
+
+def test_the_rates_seam_resolves_by_name_and_raises_for_an_unknown_one():
+    """By-name selection with a loud failure, like every other adapter seam."""
+    assert hasattr(Sluice(Config()).rates(), "fetch"), "the default must satisfy the seam"
+
+    bad = Config()
+    bad.rates = "no-such-service"
+    with pytest.raises(plugins.UnknownAdapter) as e:
+        Sluice(bad).rates()
+    # A quiet wrong default is the bug class this codebase engineers out: the raise names
+    # the valid choices rather than falling through to one.
+    assert "frankfurter" in str(e.value)
+
+
+def test_resolving_the_rates_seam_makes_no_request(monkeypatch):
+    # Construction must stay offline, the way resolving the store or the renderer does --
+    # `_resolve` caches the built adapter for the process's whole lifetime, which is only
+    # correct while no factory has a construction-time side effect.
+    import sluice.rates.frankfurter as mod
+
+    def _explode(req, timeout=None):
+        raise AssertionError("resolving the rates seam must not reach the network")
+    monkeypatch.setattr(mod.urllib.request, "urlopen", _explode)
+    assert Sluice(Config()).rates() is not None
+
+
+def test_triage_hands_the_engine_a_rate_source_only_when_config_asks(monkeypatch, tmp_path):
+    """The DECISION lives at the application boundary, not in the engine.
+
+    `Sluice.triage` passes a source when `refresh_fx_rates` is set and `None` otherwise, so
+    the engine is offline by CONSTRUCTION -- the same shape as `backend`, which this method
+    sets to None under `--no-llm`. Reading the flag inside `run()` instead made the engine
+    reach for a module global; passing the CAPABILITY unconditionally put the fetch on the
+    production path, so every e2e test reached the internet.
+    """
+    from sluice.triage.config import TriageConfig
+
+    seen = []
+
+    def _fake_run(store, tcfg, backend, cache, audit, **kw):
+        seen.append(kw.get("rate_source"))
+        return object()
+
+    monkeypatch.setattr("sluice.triage.engine.run", _fake_run)
+
+    def _with(flag):
+        tcfg = TriageConfig()
+        tcfg.refresh_fx_rates = flag
+        monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda *a, **k: tcfg)
+
+    app = Sluice(Config(), store=_FakeStore())
+    _with(False)
+    app.triage(no_llm=True)
+    assert seen[-1] is None, "off by default: the engine is given no means to fetch"
+
+    _with(True)
+    app.triage(no_llm=True)
+    assert seen[-1] is not None, "opted in: the engine is given a source"
+    assert hasattr(seen[-1], "fetch")
+
+
+def test_every_seam_in_the_roster_can_actually_import_its_plugins():
+    """`_SEAMS` and `_import_plugins` must agree, both ways.
+
+    Adding a seam to the roster and forgetting its import arm raises "unknown seam
+    '<the-one-you-just-added>'" from the importer -- a message that names your new seam as
+    invalid while `_SEAMS` lists it. Swept rather than spot-checked, so the NEXT seam is
+    covered without anyone remembering to add a row.
+    """
+    from sluice.core.app import _SEAMS, _import_plugins
+
+    assert len(_SEAMS) >= 5, "the sweep must enumerate a real roster, not an empty one"
+    for seam in _SEAMS:
+        _import_plugins(seam)                       # must not raise
+        assert plugins.available(seam), f"{seam} imported but registered nothing"
+
+
+def test_an_unknown_seam_names_every_real_seam_at_both_raise_sites():
+    """Two different places raise `UnknownAdapter` for a seam, and BOTH must name the roster.
+
+    An earlier version of this test only exercised `Sluice.__init__`'s override validation,
+    which derives its list from `_SEAMS` already -- so it passed while `_import_plugins`
+    still hand-listed four names, and a fifth seam would have been reported as invalid by
+    the very function whose job is importing it. Asserting the property at the site you
+    mutated is the whole point; a sibling raise passing says nothing about it.
+    """
+    from sluice.core.app import _SEAMS, _import_plugins
+
+    # Site 1: the plugin importer.
+    with pytest.raises(plugins.UnknownAdapter) as importer:
+        _import_plugins("definitely-not-a-seam")
+    missing = [seam for seam in _SEAMS if seam not in str(importer.value)]
+    assert not missing, f"_import_plugins's raise omits real seams: {missing}"
+
+    # Site 2: the constructor's override validation.
+    with pytest.raises(plugins.UnknownAdapter) as ctor:
+        Sluice(Config(), definitely_not_a_seam=object())
+    missing = [seam for seam in _SEAMS if seam not in str(ctor.value)]
+    assert not missing, f"the seam-override raise omits real seams: {missing}"

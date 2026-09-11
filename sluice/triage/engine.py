@@ -33,6 +33,7 @@ from sluice.core.leads import (
     index_by_slug,
     is_placeholder_company,
 )
+from sluice.core import fx
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.core.roletype import DECLARED, OBSERVED, normalise_role_type
@@ -60,6 +61,14 @@ _LLM_BREAKER_THRESHOLD = 3
 # would restart exactly the unbounded growth this bounds. `AuditLog.read_recent` treats an
 # undated entry as in-range, so a hand-edited log stays covered.
 _CONFLICT_LOOKBACK_DAYS = 3650
+
+# #305: how stale the cached exchange-rate table may get before a run refetches it. Seven
+# days is chosen against what the rates are USED for, not against how fast they move: the
+# pay floor asks "is the advertised ceiling under the user's number", and a week of drift
+# (well under 1% for the majors) cannot move that answer except for a salary already
+# sitting on the boundary. Lower would fetch for no gain; much higher and a genuine
+# realignment could sit unnoticed.
+_FX_MAX_AGE_DAYS = 7
 
 
 @dataclass
@@ -134,7 +143,8 @@ class TriageReport:
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
         statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False, no_llm=False,
-        get_source=None, resolve_backend=None, reverdict_scope=""):
+        get_source=None, resolve_backend=None, rate_source=None,
+        reverdict_scope=""):
     """`reverdict_scope` identifies WHICH lead store #223's one-shot notice is about, so
     acknowledging on one vault cannot silence it for another.
 
@@ -153,6 +163,44 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     """
     report = TriageReport()
     today = date.today().isoformat()
+
+    # #305: refresh exchange rates ONCE, here, and never while judging a lead. The pay
+    # floors are denominated in one currency and adverts are not, so `classify` converts
+    # before comparing -- but a fetch on the per-lead path would put a network round trip
+    # (and a possible hang) inside a loop that runs thousands of times unattended.
+    #
+    # INJECTED, like every other collaborator that can reach the network. `rate_source` is
+    # a `RateSource` (`core/protocols.py`) or None, and None is the default, so this
+    # function is offline unless a caller hands it the means not to be -- the same shape
+    # as `backend`, which `Sluice.triage` sets to None under `--no-llm`. `Sluice.triage`
+    # makes that decision from `cfg.refresh_fx_rates`; the engine never reads it.
+    #
+    # ...only when the table is old enough to be worth a request. Rates move a few percent
+    # a year, far below the precision a pay floor needs, so a daily run refetching daily
+    # would be pure noise. `age_days() is None` means there is no cache at all and the
+    # pinned table is in use, which is exactly when a first fetch is most useful.
+    #
+    # ...and NOT on a dry run, which must leave no trace: a refresh makes a real request
+    # and writes `fx-rates.json`. This repo has been bitten by a dry run creating state
+    # before -- `sqlite3.connect` creating a 0-byte seen.db disarmed the relocation
+    # refusal for every later real run -- so a preview that writes is a bug even when what
+    # it writes is benign. `age_days()` is a pure READ and creates nothing.
+    #
+    # The cost is stated rather than hidden: a dry run may preview verdicts computed from
+    # a staler table than the real run would use. That is acceptable HERE for the reason
+    # the whole feature rests on -- rates drift a few percent a year -- so the two agree on
+    # every verdict not already sitting on the boundary. It would NOT be acceptable for a
+    # preview whose answer the fetch could change, which is why `cv --dry-run` resolves its
+    # renderer and runs `precheck` rather than skipping them.
+    #
+    # The result is deliberately ignored: `fx.refresh` returns False rather than raising on
+    # any failure, and an offline run must proceed on the pinned rates exactly as it did
+    # before this existed. Rates are an optimisation, never a precondition.
+    if rate_source is not None and not dry_run:
+        _age = fx.age_days()
+        if _age is None or _age > _FX_MAX_AGE_DAYS:
+            fx.refresh(rate_source)
+
     notes = vault.read_leads(set(statuses))
     if limit:
         notes = notes[:limit]

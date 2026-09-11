@@ -1029,8 +1029,9 @@ turning the one documented machine-readable channel unparseable on a single scra
   `.coderabbit.yaml` now skips release PRs — so a PAT would deadlock them. An App authors the
   PR, leaving a human free to approve.
 - Tests assert on behaviour, not merely that code runs. Fixtures stay synthetic.
-- The four adapter seams (backend, store, renderer, fetcher — the config keys, and the
-  `_STORE_SEAM`/`_FETCHER_SEAM`/`_RENDERER_SEAM` constants in `core/app.py`) are each a name-keyed
+- The adapter seams (backend, store, renderer, fetcher, rates — the config keys, and the
+  `_SEAMS` roster in `core/app.py`, which is what a guard test pins -- state no COUNT of
+  them here, that sentence has gone stale once already) are each a name-keyed
   registry resolved via `plugins.get`. The backend seam has four self-registering provider
   implementations (`anthropic`/`openai`/`claude-max`/`deepseek` in `sluice/backends/` — the names a
   config `primary_backend`/`fallback_backend` selects; `claude-max`/`deepseek` ALSO survive as

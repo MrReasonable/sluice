@@ -193,6 +193,13 @@ def _probe_triage_audit_key(cfg_path):
     return load_triage_config(cfg_path).audit_jsonl
 
 
+def _probe_fx_cache(_):
+    # #305. The rate cache is a plain state file behind one env door and no config key,
+    # so the probe is the resolver itself rather than a store object.
+    from sluice.core.fx import _cache_path
+    return _cache_path()
+
+
 _FAMILIES = [
     ("config.yaml/env", "config.yaml", "SLUICE_CONFIG", None, None, _probe_config_file),
     ("sluice_disabled.json/env", "sluice_disabled.json", "SLUICE_DISABLED", None, None,
@@ -209,6 +216,8 @@ _FAMILIES = [
      _probe_triage_audit_env),
     ("triage-audit.jsonl/key", "triage-audit.jsonl", None, "triage", "audit_jsonl",
      _probe_triage_audit_key),
+    ("fx-rates.json/env", "fx-rates.json", "SLUICE_FX_CACHE", None, None,
+     _probe_fx_cache),
 ]
 _FAMILY_IDS = [f[0] for f in _FAMILIES]
 
