@@ -117,19 +117,69 @@ _CURRENCY_MARKERS = {
 # sterling advert; "£120,000\n2 roles" parsed as nothing at all, because `\s` matched the
 # newline and `float()` then raised on a string no amount of separator-stripping could
 # repair. Requiring whole three-digit groups is what makes "45,000" stop at "45,000".
-# WHICH CONVENTIONS THIS READS, stated because the gap is silent. Grouping by comma, by
-# plain space, and by non-breaking or narrow no-break space is read. Grouping by DOT is
-# NOT -- roughly half of Europe and Latin America write "60.000" for sixty thousand, and
-# this grammar reads that as sixty, which falls under the credibility floor and abstains.
-# So the pay floor never fires for an advert in that convention. That is INHERITED rather
-# than introduced here (`main` reads "€ 60.000" as 60 too), and #311 closes it by deciding
-# grouping from PLACEMENT instead of from an assumed locale -- which deletes the rule
-# below rather than adding a fourth alternative to it.
+# WHICH CONVENTIONS THIS READS (#311): all of them, because it assumes none. Grouping by
+# comma, by dot, and by plain/non-breaking/narrow no-break space are all read, and whether
+# a `.` or `,` is grouping or a decimal mark is decided by PLACEMENT, in
+# `_group_aware_float` below, rather than by a locale nobody knows.
+#
+# This replaced an en-GB-shaped grammar under which "60.000" read as sixty -- below the
+# credibility floor, so the pay floor silently never fired for German, Spanish, Italian,
+# Dutch, Portuguese, Brazilian, Turkish, Indonesian, Danish or Czech adverts. A per-locale
+# table was the wrong shape for the same reason a locale guess is: you never know an
+# advert's locale, but you can always see where its separators sit.
 _SEP = r"[ \u00a0\u202f]"
+def _group_aware_float(raw: str) -> float:
+    """Read a number without knowing its locale (#311).
+
+    `60.000` is sixty thousand in half of Europe and Latin America, and sixty in en-GB.
+    The parser used to assume en-GB, so every advert in the other convention parsed as a
+    two-digit number, fell below the credibility floor, and abstained -- the pay floor
+    silently never fired on those markets.
+
+    Placement settles it without a locale table, in four rules, and the ONLY ambiguous
+    shape is the last one:
+
+    - a space (plain, non-breaking, narrow no-break) is always grouping; no locale writes
+      a decimal mark as a space, so these are stripped first and never reconsidered
+    - both `.` and `,` present -> the LAST one is the decimal mark, the other groups
+    - one kind, repeated -> grouping (`1.100.000`); a decimal mark occurs at most once
+    - one separator with exactly three digits after it -> grouping
+
+    That last rule is the judgement call, and it reads `60.000` as sixty thousand. It is
+    right because no salary is quoted to three decimal places, while "sixty thousand" is
+    an utterly ordinary thing for an advert to say. It costs nothing elsewhere: `1.50`
+    has two digits after the separator and still reads as one-fifty, `60.5` as sixty and
+    a half.
+
+    Raises ValueError on anything `float()` will not take, which the caller treats as "no
+    opinion" -- `_AMOUNT` should never hand this such a string, so that path is defensive.
+    """
+    s = raw.strip()
+    for space in (" ", " ", " "):
+        s = s.replace(space, "")
+
+    dot, comma = s.rfind("."), s.rfind(",")
+    if dot >= 0 and comma >= 0:
+        decimal, group = (".", ",") if dot > comma else (",", ".")
+        s = s.replace(group, "").replace(decimal, ".")
+    elif dot >= 0 or comma >= 0:
+        sep = "." if dot >= 0 else ","
+        if s.count(sep) > 1 or len(s) - max(dot, comma) - 1 == 3:
+            s = s.replace(sep, "")          # grouping
+        else:
+            s = s.replace(sep, ".")         # decimal mark
+    return float(s)
+
+
+_GROUPING = rf"(?:{_SEP}|[.,])"
 _AMOUNT = (
-    r"\d{1,3}(?:,\d{3})+(?:\.\d+)?"                # 30,000   1,100,000
-    rf"|\d{{1,3}}(?:{_SEP}\d{{3}})+(?:\.\d+)?"     # 900 000  1 100 000
-    r"|\d+(?:\.\d+)?"                              # 60   60.5   30000
+    # Whole three-digit groups, with at most a decimal tail after them. The groups stay
+    # EXACTLY three digits and the tail is the only place a shorter run is allowed --
+    # that is the guard described above, and widening it is what let an amount swallow
+    # the number that followed it.
+    rf"\d{{1,3}}(?:{_GROUPING}\d{{3}})+(?:[.,]\d+)?"  # 30,000  60.000  900 000  1.100.000,50
+    r"|\d+[.,]\d+"                                    # 60.5  60,5  1.50
+    r"|\d+"                                           # 60  30000
 )
 
 # ONE marker alternation, used in BOTH positions. Spelling the two branches separately is
@@ -386,15 +436,7 @@ def _salary_amounts(s: str) -> list[tuple[int, str | None]]:
         return []
     def _to_int(raw: str, k: str) -> int | None:
         try:
-            # #305: a SPACE is a thousands separator on Nordic and Central European
-            # boards ("900 000 kr") exactly as a comma is on UK ones, and real scraped
-            # markup can carry a non-breaking or narrow no-break space in that position
-            # instead. Written as escapes, not as the characters themselves: the literal
-            # bytes are invisible in an editor and in review, and `_SEP` -- the half of
-            # this pair that decides what the regex ACCEPTS -- has to agree with them.
-            value = float(raw.replace(",", "")
-                             .replace(" ", "").replace("\u00a0", "")
-                             .replace("\u202f", "").strip())
+            value = _group_aware_float(raw)
         except ValueError:  # pragma: no cover - regex only yields parseable numbers
             return None
         # round(), not int(): int() truncates a float product toward zero, and 2.01 is not

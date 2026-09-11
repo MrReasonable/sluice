@@ -1160,3 +1160,57 @@ def test_the_month_vocabulary_is_english_only(titles):
         "/month", "/mo", "per month", "monthly", "a month", "per calendar month",
         "pcm", "p/m", "per mth", "/mth"}
 
+
+# #311: digit grouping read from PLACEMENT, not from an assumed en-GB locale.
+#
+# Rows are (text, expected pounds-equivalent-of-the-printed-figure). They assert the
+# ADVERTISED number, never the converted one, so these stay true whatever the rate table
+# says -- conversion is #305's job and has its own tests.
+_GROUPING_CASES = [
+    # en-GB: comma groups, dot is the decimal mark.
+    ("£30,000", 30000),
+    ("£1,100,000", 1100000),
+    ("£1.50", 1),                  # one-fifty: a dot with two digits after is a decimal
+    ("£30,000.50", 30000),
+    # Continental: dot groups, comma is the decimal mark. Every one of these read as a
+    # two-digit number before #311, fell below `_MIN_CREDIBLE_SALARY`, and so abstained --
+    # the pay floor silently never fired for these markets.
+    ("€60.000", 60000),
+    ("€1.100.000", 1100000),
+    # Spaced, because an ALPHABETIC marker jammed against digits carries no money context
+    # here and never did -- `PLN45.000` reads as nothing on `main` too. That is marker
+    # adjacency, a separate axis from grouping, so this row uses the spelling #311 itself
+    # quotes rather than inventing one that would smuggle in a second change.
+    ("45.000 zł", 45000),
+    ("€1.500", 1500),              # fifteen hundred, not one-point-five
+    ("€60,5k", 60500),             # comma decimal, then the k multiplier
+    # Space grouping, which no locale uses as a decimal mark.
+    ("SEK 900 000", 900000),
+    ("SEK 1 100 000", 1100000),
+    # Both separators present: the LAST one is the decimal mark, whichever it is.
+    ("€1.100.000,50", 1100000),
+    ("£1,100,000.50", 1100000),
+]
+
+
+@pytest.mark.parametrize(("text", "expected"), _GROUPING_CASES)
+def test_digit_grouping_is_read_from_placement_not_from_a_locale(text, expected):
+    """#311: `60.000` is sixty thousand, and `1.50` is still one-fifty.
+
+    You never know an advert's locale, and roughly half of Europe and Latin America
+    inverts the en-GB convention. Placement settles it without one: a space is always
+    grouping, the last of two different separators is the decimal mark, a repeated
+    separator groups, and a lone separator followed by exactly three digits groups --
+    because no salary is written to three decimal places.
+
+    Fails against the en-GB parser this replaces, which read every continental row as a
+    two-digit number, put it under `_MIN_CREDIBLE_SALARY`, and abstained -- so the pay
+    floor never fired on those adverts at all.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    got = _salary_ceiling(text)
+    assert got is not None, f"{text!r} carried no money context at all"
+    assert got.advertised == expected, (
+        f"{text!r} parsed as {got.advertised}, expected {expected}")
+
