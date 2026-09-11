@@ -53,6 +53,50 @@ it is accurate. -->
 * **triage:** abstain on a figure too large for float, rather than crashing ([e9d785f](https://github.com/MrReasonable/sluice/commit/e9d785f995c677a4e5e6e61e3d73bac0c75c3b8b))
 * **triage:** read digit grouping from placement, not an assumed locale ([c96518d](https://github.com/MrReasonable/sluice/commit/c96518d806369a614f1fa8d95c0c01151fce3946))
 
+### What this means for an existing config
+
+**Your pay floors now judge differently, and nothing in your config changed.** Every floor
+is a sterling number; an advert quotes whatever its market uses, and until now the two were
+compared as bare numbers. A `€105,000` role cleared a `100000` floor on the strength of the
+larger number and is now judged at roughly £90k. So a floor you set once will start
+rejecting foreign-currency leads it used to let through — around 15% tighter against euro
+adverts and 35% against dollar ones, which is the size of the error being removed rather
+than a new strictness.
+
+**Adverts that carried no money context at all are now read, which is the bigger change.**
+Two gaps closed together here. Money was recognised only by `£`/`$`/`€` or a `k` suffix, so
+`SEK 900 000`, `900 000 kr` and `zl 250 000` were not money at all; and digit grouping was
+read the en-GB way — comma groups, dot is a decimal point — so `60.000 €` parsed as sixty,
+`1.100.000 €` as one hundred, `45.000 zł` as forty-five. Each fell under the credibility
+floor. Since this gate never rejects on what it cannot see, **every one of those postings
+passed the pay floor whatever it paid**: Nordic and Polish adverts, and the dot-grouping
+convention used across Germany, Spain, Italy, the Netherlands, Portugal, Brazil, Turkey,
+Indonesia, Denmark and the Czech Republic. A pay floor applies to them for the first time.
+Grouping is now decided from separator placement rather than an assumed locale, so `1.50`
+still reads as one-fifty and `1.500` as fifteen hundred.
+
+**Nothing moves on upgrade, and nothing you have acted on is revisited.** A lead that has
+entered the application lifecycle — `applied`, `phone_screen`, anything past them — is
+skipped by the apply layer as it always was, so human state is never clobbered. The change
+lands on the next run, over the leads triage still selects: `new`, and `research`. Note the
+second of those is re-judged by design, so a foreign-currency lead parked at `research` can
+come back with a different verdict than the one it was left with.
+
+**No network and no new configuration are required.** Conversion works from a rate table
+pinned in the release, so an install that has never made an outbound request does not start
+on upgrade. `triage.refresh_fx_rates` (default `false`) is the opt-in that lets a run fetch
+a fresher table — once, at the start of a run, and only when the cached table is missing or
+over a week old, never while judging a lead. The new root `rates` key (default
+`frankfurter`) selects which service answers when it does; the cache it writes is
+`<XDG_STATE_HOME>/sluice/fx-rates.json`, overridable with `SLUICE_FX_CACHE`.
+
+**What still abstains, deliberately.** A currency the rate table cannot value, an advert
+quoted monthly, a non-GBP advert that states no pay basis at all, and a figure too large to
+represent are all abstained on rather than rejected — an unconfigured or unanswerable check
+never bins a lead. The last of those used to be a crash rather than an abstention: a digit
+run past roughly 309 digits overflowed and ended the whole triage run, taking every lead
+after it in the batch.
+
 ## [2.12.2](https://github.com/MrReasonable/sluice/compare/v2.12.1...v2.12.2) (2026-09-09)
 
 
