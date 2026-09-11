@@ -40,6 +40,19 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.13.0](https://github.com/MrReasonable/sluice/compare/v2.12.2...v2.13.0) (2026-09-11)
+
+
+### Features
+
+* **triage:** convert foreign salaries before they meet the pay floor ([da7f4f8](https://github.com/MrReasonable/sluice/commit/da7f4f813aed7e03e7061458817aed2f4781bad1))
+
+
+### Bug Fixes
+
+* **triage:** abstain on a figure too large for float, rather than crashing ([e9d785f](https://github.com/MrReasonable/sluice/commit/e9d785f995c677a4e5e6e61e3d73bac0c75c3b8b))
+* **triage:** read digit grouping from placement, not an assumed locale ([c96518d](https://github.com/MrReasonable/sluice/commit/c96518d806369a614f1fa8d95c0c01151fce3946))
+
 ## [2.12.2](https://github.com/MrReasonable/sluice/compare/v2.12.1...v2.12.2) (2026-09-09)
 
 
