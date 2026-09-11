@@ -37,6 +37,7 @@
 # itself there and becomes selectable here, with no change to core.)
 store: vault        # the lead/experience store
 fetcher: camofox    # the browser the ingest sources drive
+rates: frankfurter  # where the pay-floor conversion gets exchange rates (#305)
 # Where the STORE keeps your baseline CV, relative to the store root. Lives here rather
 # than under `cv:` because only the store can honour it.
 baseline_rel: My CV/CV.md
@@ -157,6 +158,17 @@ triage:
   # above. Requires company_resolve_fetch: true; set alone, the loader RAISES rather than
   # leaving a knob that could never fire.
   # company_resolve_llm: true   # <- uncomment to opt in (needs company_resolve_fetch too)
+  # Off by default (#305): whether a triage run may fetch live exchange rates once at its
+  # start, from api.frankfurter.dev (keyless, ECB reference rates). The pay floors below
+  # are denominated in GBP and adverts are not, so a EUR or SEK figure is converted before
+  # it meets a floor. That conversion works from a rate table pinned in the release, so a
+  # run that never fetches is still correct, only slightly stale -- rates drift a few
+  # percent a year, far below the precision a pay floor needs. Opt-in like the two knobs
+  # above, and for the same reason: an install that never made outbound requests should
+  # not start on upgrade. Fetches at most once per run, and only when there is no cached
+  # table yet or the one there is has gone more than a week stale; never while judging an
+  # individual lead.
+  # refresh_fx_rates: true   # <- uncomment to opt in
   # One floor per pay BASIS (#223). The gate reads the basis off the advert's own words
   # (`/day`, `per hour`, `per annum`, ...) and judges each against ITS OWN floor only, so
   # a day floor never reaches an hourly lead. An advert naming two bases abstains, and an

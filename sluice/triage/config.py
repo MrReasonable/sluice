@@ -95,6 +95,18 @@ class TriageConfig:
     # STRICTLY narrower than company_resolve_fetch; see load_triage_config's
     # cross-field check below.
     company_resolve_llm: bool = False
+    # Off by default (#305): whether a triage run may FETCH live exchange rates once at
+    # its start. The pay floors are denominated in one currency and adverts are not, so
+    # `classify` converts before comparing -- but the conversion works from a pinned rate
+    # table that ships with the release, and a run that never fetches is correct, merely
+    # slightly stale.
+    #
+    # A SIBLING of company_resolve_fetch, and off for the same reason: it spends a real
+    # network round trip, and an install that never opted into outbound traffic must not
+    # start making it on upgrade. Rates drift a few percent a year, far below the
+    # precision a pay floor needs, so leaving this off costs a user almost nothing --
+    # which is exactly why the default can afford to be the safe one.
+    refresh_fx_rates: bool = False
 
 
 def load_triage_config(path: str | None = None) -> TriageConfig:

@@ -242,9 +242,10 @@ _STORE_SEAM = "store"
 _FETCHER_SEAM = "fetcher"
 _RENDERER_SEAM = "renderer"
 _BACKEND_SEAM = "backend"
+_RATES_SEAM = "rates"
 # Every seam a constructor override may name. Used to reject a misspelled key at
 # construction instead of dropping it silently (see Sluice.__init__).
-_SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM)
+_SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM, _RATES_SEAM)
 
 # How often the settle loop below re-reads the body, in milliseconds. A constant rather than a
 # second config key: the BUDGET is the operator-meaningful number ("how long am I willing to wait
@@ -570,8 +571,10 @@ class Sluice:
         # resolver would put an off switch for the SSRF guard under a YAML key.
         self._resolve_host = resolve_host
         # Cached per seam for the process's WHOLE lifetime (see _resolve) -- correct only
-        # because every adapter factory _resolve can currently reach (vault, camofox) has
-        # no construction-time side effects. A one-shot CLI invocation never exercised
+        # because no adapter factory _resolve can reach has construction-time side
+        # effects. Deliberately NOT a list of which ones: the parenthetical that used to
+        # sit here named two factories and was already missing a third when a fourth
+        # arrived. A one-shot CLI invocation never exercised
         # that fact; a long-lived caller (`mcp serve`, sluice/mcpserver.py) depends on it.
         # A future adapter factory with a construction-time side effect must either stay
         # free of one or revisit this cache.
@@ -598,6 +601,15 @@ class Sluice:
         """The configured Fetcher. Constructed on first use, so an offline command that
         never fetches never opens a browser."""
         return self._resolve(_FETCHER_SEAM, getattr(self.config, "fetcher", "camofox"),
+                             self.config)
+
+    def rates(self):
+        """The configured RateSource. Constructed on first use, and CONSTRUCTION MAKES NO
+        REQUEST -- a provider's factory only builds the object, so resolving this seam is
+        as offline as resolving any other. `triage/engine.py` is the one caller, and it
+        only ever receives this when `triage.refresh_fx_rates` says a run may spend a
+        network round trip."""
+        return self._resolve(_RATES_SEAM, getattr(self.config, "rates", "frankfurter"),
                              self.config)
 
     def renderer(self, cvcfg):
@@ -1469,10 +1481,24 @@ class Sluice:
         cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days,
                                    self.config.min_jd_chars)
         store = self.store()
+        # The DECISION whether this process may spend a network round trip on rates is
+        # made HERE, at the application boundary, and the engine receives a source or
+        # nothing (#305). Two shapes were tried and both were wrong: reading the config
+        # inside `run()` made the engine reach for a module global, which is the one
+        # collaborator it did not take injected; passing the CAPABILITY unconditionally
+        # and letting `run()` decide put the fetch on the production path, so every e2e
+        # test reached the internet. Passing the decision keeps the default offline by
+        # CONSTRUCTION -- a caller that drives `run()` directly, as the whole suite does,
+        # gets `None` and cannot fetch however its config is set.
+        #
+        # `self.rates()` only builds the provider object; no request is made until the
+        # engine calls `fetch`, and it only does that when the cached table is stale.
+        rate_source = self.rates() if tcfg.refresh_fx_rates else None
         return _triage_run(store, tcfg, backend, cache, audit,
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm, get_source=sources.get,
                            resolve_backend=resolve_backend,
+                           rate_source=rate_source,
                            reverdict_scope=self._reverdict_scope(store))
 
     def _reverdict_scope(self, store) -> str:
@@ -2807,7 +2833,13 @@ def _import_plugins(seam: str) -> None:
         import sluice.renderers  # noqa: F401
     elif seam == _BACKEND_SEAM:
         import sluice.backends  # noqa: F401
+    elif seam == _RATES_SEAM:
+        import sluice.rates  # noqa: F401
     else:
-        raise plugins.UnknownAdapter(
-            "seam", seam,
-            [_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM])
+        # `_SEAMS`, not a hand-copied list. The literal four names stood here while
+        # `_SEAMS` had five, so adding a seam and forgetting this line raised "unknown
+        # seam 'rates'" FROM THE IMPORTER -- a message that names the thing you just
+        # added as invalid, while `_SEAMS` says otherwise. Deriving it means the two
+        # cannot disagree; the arms above still have to be written, and the test below
+        # is what makes forgetting one loud.
+        raise plugins.UnknownAdapter("seam", seam, _SEAMS)

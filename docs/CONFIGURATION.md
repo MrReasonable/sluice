@@ -31,6 +31,7 @@ sweep keyed on list defaults.
 |---|---|---|---|
 | `store` | `"vault"` | — | which store implementation; an unknown name raises at construction, listing the valid ones |
 | `fetcher` | `"camofox"` | — | which browser-automation implementation |
+| `rates` | `"frankfurter"` | — | which service answers for exchange rates, used by the pay-floor conversion. An unknown name raises at construction and lists the valid ones. Selecting it does not by itself make a run fetch — `triage.refresh_fx_rates` decides that |
 | `baseline_rel` | `"My CV/CV.md"` | — | your baseline CV's path, relative to the store root |
 | `vault_dir` | `""` | `VAULT_DIR` | `./vault`, relative to the cwd — the one path sluice deliberately does **not** relocate to XDG, since it's your Obsidian directory, not sluice's state |
 | `dossier_dir` | `""` | `DOSSIER_DIR` | `<XDG_CACHE_HOME>/sluice/dossiers` — shared cache for triage's and cv's job-ad fetches |
@@ -57,9 +58,10 @@ sweep keyed on list defaults.
 | `reject_locations` | `[]` | |
 | `reject_companies` | `[]` | |
 | `contract_floor_gbp_hour` | `0` | `0` = no floor; applied only to a lead advertised per hour |
-| `contract_floor_gbp_day` | `0` | `0` = no floor; compares numbers, not currencies |
+| `contract_floor_gbp_day` | `0` | `0` = no floor; applied only to a lead advertised per day |
 | `contract_floor_gbp_week` | `0` | `0` = no floor; applied only to a lead advertised per week |
-| `perm_floor_gbp` | `0` | `0` = no floor; also the fallback for an advert stating no basis |
+| `perm_floor_gbp` | `0` | `0` = no floor; also the fallback for an advert that states no basis **and** quotes in GBP — see the note below |
+| `refresh_fx_rates` | `false` | opt-in: lets a run fetch live exchange rates **once**, at its start, and only when the cached table is missing or over a week old — never while judging a lead. Off by default so an install that never made outbound requests does not start on upgrade; the conversion below works from a table pinned in the release either way |
 | `batch_size` | `5` | leads per judge call |
 | `ttl_days` | `7` | **dossier cache** TTL — unrelated to the root `lead_ttl_days` |
 | `audit_jsonl` | `""` | resolves to `<XDG_STATE_HOME>/sluice/triage-audit.jsonl`; env override `TRIAGE_AUDIT` |
@@ -81,6 +83,31 @@ that ever open a browser tab or spend a backend call.
 |---|---|---|
 | `company_resolve_fetch` | `false` | opt-in: lets a blank/placeholder-company `needs_review` lead trigger a real (no-LLM) page visit to try to identify the employer from the page itself, feeding tiers 2 AND (if also enabled) 3 below; off by default so an unconfigured install never opens a browser tab it wasn't asked to. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
 | `company_resolve_llm` | `false` | opt-in: tier 3 of the same resolution, an LLM read of the page data tier 2 already fetched (no second visit) when tiers 0, 1, and 2 abstain. Always runs on the **fallback** role's cheap model (`fallback_backend`/`cheap_model`) regardless of `--backend`, since it is bulk extraction rather than judgement. **Requires `company_resolve_fetch: true`** — set alone the loader raises, because tier 3 reads what tier 2 fetches and could never fire. Off under `--no-llm`. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
+
+**The pay floors are denominated in GBP, and an advert is not.** Every floor above is a
+sterling number; a posting quotes whatever its market uses. Since #305 the gate converts the
+advertised ceiling to GBP before comparing, so a `€105,000` role is judged at roughly £90k
+rather than sailing over a £100,000 floor on the strength of the larger number. Conversion
+uses a rate table pinned in the release, so it works with no network and no configuration;
+`refresh_fx_rates` only decides whether a run may fetch a fresher one. A currency the table
+cannot value abstains rather than rejecting — as everything in this gate does, an
+unconfigured or unanswerable check never bins a lead.
+
+**Two kinds of advert no floor applies to.** An advert quoted **monthly** (`per month`,
+`pcm`, …) is recognised and then abstained on, because there is no monthly floor to judge
+it against — judging a month's pay against an annual floor is a twelvefold error, always
+toward reject. And an advert quoting a **non-GBP** figure with no pay basis stated at all
+abstains too: the marker that would say "per month" is a phrase in that market's language,
+a phrase list is unbounded, and every gap in one is a wrong reject — so the currency stands
+in for the confidence the list cannot give. A non-GBP advert that *does* state a basis in
+English is judged normally.
+
+One limit worth knowing, because it is silent: the parser reads digit grouping by comma
+and by space (including non-breaking spaces), but **not by dot**. An advert written
+`60.000 €` — the convention across much of Europe and Latin America — parses as sixty,
+falls below the credibility floor, and abstains, so no pay floor applies to it. That
+predates the conversion work; [#311](https://github.com/MrReasonable/sluice/issues/311)
+closes it.
 
 ## `cv:`
 
@@ -203,6 +230,7 @@ compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them,
 | `SLUICE_DISABLED` | the `ingest enable`/`disable` overlay | `<XDG_STATE_HOME>/sluice/sluice_disabled.json` |
 | `TRIAGE_AUDIT` | `triage.audit_jsonl` | `<XDG_STATE_HOME>/sluice/triage-audit.jsonl` |
 | `DOSSIER_DIR` | `dossier_dir` | `<XDG_CACHE_HOME>/sluice/dossiers` |
+| `SLUICE_FX_CACHE` | the exchange-rate cache `refresh_fx_rates` writes | `<XDG_STATE_HOME>/sluice/fx-rates.json` |
 | `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME` | the roots every relocatable path above resolves under | `~/.config` / `~/.local/state` / `~/.cache`. A **relative** value is ignored with a warning, per the XDG spec |
 | `SLUICE_LOG_LEVEL` | logger level | `INFO` |
 | `SLUICE_TELEGRAM_TOKEN` / `SLUICE_TELEGRAM_CHAT` | `notify.telegram.{token,chat_id}` | notifications disabled unless both are present |

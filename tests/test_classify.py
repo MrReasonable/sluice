@@ -229,9 +229,9 @@ def test_k_notation_does_not_lose_a_pound_to_float_truncation(titles):
     # rather than on the advertised pay. (CodeRabbit flagged this; its example, 1.15, does
     # NOT truncate on CPython -- 2.01 does. 18 such cases exist between £0.01k and £20k.)
     from sluice.triage.classify import _salary_ceiling
-    assert _salary_ceiling("£2.01k") == 2010
-    assert _salary_ceiling("£4.02k") == 4020
-    assert _salary_ceiling("£1.5k/day") == 1500
+    assert _salary_ceiling("£2.01k") == (2010, 2010, "GBP")
+    assert _salary_ceiling("£4.02k") == (4020, 4020, "GBP")
+    assert _salary_ceiling("£1.5k/day") == (1500, 1500, "GBP")
 
     # ...and the boundary behaviour that motivates it: a 2010/day contract must not be
     # rejected by a 2010 floor. (_cfg already fixes the floors, so set it directly.)
@@ -255,9 +255,11 @@ def test_a_bare_number_is_not_a_salary(titles):
 
 def test_money_context_is_a_symbol_or_a_k_suffix(titles):
     from sluice.triage.classify import _salary_ceiling
-    assert _salary_ceiling("£60,000") == 60000
-    assert _salary_ceiling("$120,000") == 120000
-    assert _salary_ceiling("60k") == 60000          # the suffix IS the context
+    assert _salary_ceiling("£60,000") == (60000, 60000, "GBP")
+    assert _salary_ceiling("$120,000").advertised == 120000
+    assert _salary_ceiling("$120,000").currency == "USD"
+    # the suffix IS the context; no currency named, so no conversion is applied
+    assert _salary_ceiling("60k") == (60000, 60000, None)
     assert _salary_ceiling("60000") is None         # bare digits are not money
 
 
@@ -267,12 +269,12 @@ def test_a_single_symbol_range_reads_its_upper_bound(titles):
     # paying up to £40k -- fails-closed, the expensive direction. A bare number IS money when it
     # is the tail of a range whose head was money.
     from sluice.triage.classify import _salary_ceiling
-    assert _salary_ceiling("£30,000-40,000") == 40000
-    assert _salary_ceiling("£60k-80k") == 80000
-    assert _salary_ceiling("£60k to £80k") == 80000
+    assert _salary_ceiling("£30,000-40,000") == (40000, 40000, "GBP")
+    assert _salary_ceiling("£60k-80k") == (80000, 80000, "GBP")
+    assert _salary_ceiling("£60k to £80k") == (80000, 80000, "GBP")
 
     # ...but a stray number that is NOT a range tail is still not money.
-    assert _salary_ceiling("£500/day, ref 60000") == 500
+    assert _salary_ceiling("£500/day, ref 60000") == (500, 500, "GBP")
 
     cfg = _cfg(titles)
     cfg.perm_floor_gbp = 35_000
@@ -590,3 +592,571 @@ def test_the_new_floors_ship_neutral_so_an_unconfigured_gate_abstains():
     neutral = TriageConfig()
     assert neutral.contract_floor_gbp_hour == 0
     assert neutral.contract_floor_gbp_week == 0
+
+
+def test_a_krona_salary_is_money(titles):
+    # #305 defect 1. _MONEY_RE recognised money only by [£$€] or a k suffix, so a Nordic
+    # posting -- "SEK 900 000", "900 000 kr" -- parsed as NO money at all. By this module's
+    # own rule ("no opinion never rejects") every such posting then sailed past the pay
+    # floor whatever it paid. The bug is that the parser cannot SEE the money; abstaining
+    # on what it cannot see is correct and stays.
+    from sluice.triage.classify import _salary_ceiling
+    assert _salary_ceiling("SEK 900,000")[1:] == (900000, "SEK")
+    # A bare "kr" resolves to DKK, the STRONGEST of the four currencies spelled that
+    # way, so a wrong guess over-values and abstains rather than manufacturing a
+    # reject -- see the reasoning beside _CURRENCY_MARKERS.
+    assert _salary_ceiling("900,000 kr")[1:] == (900000, "DKK")
+    assert _salary_ceiling("NOK 1,100,000")[1:] == (1100000, "NOK")
+    assert _salary_ceiling("zł 250,000")[1:] == (250000, "PLN")
+
+
+def test_the_ceiling_reports_the_currency_it_parsed(titles):
+    # The existing symbols keep working and now say which currency they were, because a
+    # bare number cannot be compared to a floor denominated in something else (#305
+    # defect 2). A bare k figure has no currency of its own and reports None, so the
+    # caller can apply today's behaviour rather than guess.
+    from sluice.triage.classify import _salary_ceiling
+    assert _salary_ceiling("£60,000")[1:] == (60000, "GBP")
+    assert _salary_ceiling("€105,000")[1:] == (105000, "EUR")
+    assert _salary_ceiling("$120,000")[1:] == (120000, "USD")
+    assert _salary_ceiling("60k")[1:] == (60000, None)
+    assert _salary_ceiling("60000") is None
+
+
+def test_a_foreign_salary_is_converted_before_it_meets_the_floor(titles):
+    # #305 defect 2. There was no conversion anywhere, so a floor of 100000 GBP kept a
+    # EUR 105,000 role (about GBP 90k) and would have kept any krona figure at all. The
+    # floor is denominated in GBP; the advert is not.
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 100000
+    # ~GBP 77k at any plausible rate: under the floor, so reject.
+    assert classify(L(titles, salary="€90,000 per annum"), cfg)[0] == "reject"
+    # ~GBP 69k: under the floor in every direction.
+    assert classify(L(titles, salary="SEK 900,000 per annum"), cfg)[0] == "reject"
+    # ~GBP 129k: over the floor, so it must survive.
+    assert classify(L(titles, salary="€150,000 per annum"), cfg)[0] != "reject"
+
+
+def test_an_unconvertible_currency_abstains_rather_than_rejects(titles, monkeypatch):
+    # The module's standing rule, extended to money it cannot value: no opinion never
+    # rejects. A currency with no rate must not manufacture a reject, because a wrong
+    # reject bins a lead the user never sees.
+    #
+    # The condition is CONSTRUCTED, and it has to be. An earlier cut of this test picked a
+    # currency it believed had no rate and asserted the abstain -- but that currency did
+    # not parse as MONEY either, so `_salary_ceiling` returned None one step earlier and
+    # the test passed without the abstain branch ever running. Deleting the branch left
+    # the whole suite green. The parser's alphabet is now derived from the rate table
+    # (`fx.known_currencies()`), so no literal string can be in one and out of the other:
+    # the only honest way to reach this branch is to take a rate away at runtime, which is
+    # also the real-world shape -- a table that has dropped a code the parser still reads.
+    from sluice.core import fx
+    from sluice.triage.classify import _pay_reject, _salary_ceiling
+
+    monkeypatch.setattr(fx, "_PINNED", {c: r for c, r in fx._PINNED.items() if c != "SEK"})
+    monkeypatch.setattr(fx, "_cache", None)
+    assert fx.rate("SEK") is None, "the fixture must actually remove the rate"
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 100000
+    # Parses as money, names its currency, and cannot be valued -- so no opinion.
+    assert _salary_ceiling("SEK 900,000 per annum") is None
+    assert _pay_reject("SEK 900,000 per annum", "annual", cfg) is None
+    assert classify(L(titles, salary="SEK 900,000 per annum"), cfg)[0] != "reject"
+
+
+def test_one_unvaluable_figure_abstains_for_the_whole_advert(titles, monkeypatch):
+    # The ceiling is the largest of a SET, so a set with an unknown member has no known
+    # largest. Skipping the unknown row and taking the max of what is left would compare
+    # the floor against a figure that was never the top -- a reject earned by the parser
+    # losing a number, which is the direction this module never fails in.
+    from sluice.core import fx
+    from sluice.triage.classify import _salary_ceiling
+
+    monkeypatch.setattr(fx, "_PINNED", {c: r for c, r in fx._PINNED.items() if c != "SEK"})
+    monkeypatch.setattr(fx, "_cache", None)
+
+    # Sterling alone would be the ceiling and would reject against a 100,000 floor; the
+    # unvaluable krona figure beside it may well be the real top, so the whole advert
+    # abstains rather than being judged on the half that happens to convert.
+    assert _salary_ceiling("£60,000 UK / SEK 900,000 SE") is None
+    assert _salary_ceiling("£60,000 UK") is not None
+
+
+def test_an_unmarked_k_figure_keeps_todays_behaviour(titles):
+    # A bare "90k" names no currency. Treating it as the floor's own currency is exactly
+    # what happened before #305, and changing that silently would move existing verdicts
+    # on every UK lead in the vault.
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 100000
+    assert classify(L(titles, salary="90k per annum"), cfg)[0] == "reject"
+    assert classify(L(titles, salary="120k per annum"), cfg)[0] != "reject"
+
+
+def test_an_amount_never_swallows_the_number_beside_it(titles):
+    """The space thousands separator must not turn two numbers into one.
+
+    Regression for the widening that introduced it: writing the amount as one permissive
+    class, `\\d[\\d,\\s ]*`, let it run across whitespace into whatever came next -- and it
+    broke the pay floor in BOTH directions at once. "£45,000 25 days holiday" became
+    4,500,025 and cleared a floor it should have failed, while "£120,000\\n2 roles" became
+    nothing at all, because `\\s` also matched the newline and `float()` then raised on a
+    string no separator-stripping could repair. Either way the floor silently stopped
+    applying to ordinary sterling adverts, which is the defect this whole module exists to
+    prevent.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    # Whole three-digit groups only, so an adjacent number cannot join the amount...
+    assert _salary_ceiling("£45,000 25 days holiday")[1:] == (45000, "GBP")
+    assert _salary_ceiling("£38,000 37 hours")[1:] == (38000, "GBP")
+    assert _salary_ceiling("£50,000 37.5 hours per week")[1:] == (50000, "GBP")
+    assert _salary_ceiling("$120,000 25 days holiday")[1:] == (120000, "USD")
+    assert _salary_ceiling("SEK 900 000 12 month contract")[1:] == (900000, "SEK")
+    # ...and a newline is not a thousands separator, so the amount before it survives.
+    assert _salary_ceiling("£120,000\n2 roles")[1:] == (120000, "GBP")
+    assert _salary_ceiling("£45,000\n25 days holiday")[1:] == (45000, "GBP")
+
+    # NOT covered here, and pre-existing rather than introduced by the separator work:
+    # "$120,000 401k" reads 401,000 as a bare k-suffixed amount and takes it as the
+    # ceiling. `main`'s regex does the same -- the k suffix is its own money context, and
+    # nothing distinguishes a US retirement plan from a salary written the same way. It
+    # fails permissive (an inflated ceiling clears the floor), which is why it is left
+    # alone here rather than fixed in a change about separators.
+    #
+    # ...while the separators that ARE real still group: plain, non-breaking and narrow
+    # no-break spaces all appear in scraped Nordic postings.
+    assert _salary_ceiling("SEK 900 000")[1:] == (900000, "SEK")
+    assert _salary_ceiling("SEK 900\u00a0000")[1:] == (900000, "SEK")
+    assert _salary_ceiling("SEK 900\u202f000")[1:] == (900000, "SEK")
+    assert _salary_ceiling("NOK 1 100 000")[1:] == (1100000, "NOK")
+
+
+def test_a_space_separated_range_reads_its_upper_bound(titles):
+    """`_MONEY_RE` and `_RANGE_TAIL_RE` must accept the same number grammar.
+
+    When only the first was widened for the space separator, "€90 000 - 110 000" matched a
+    tail of "- 110" and the ceiling stayed at the BOTTOM of the band -- so the advert was
+    rejected against a floor its real top cleared. That is precisely the fails-closed harm
+    `_RANGE_TAIL_RE` exists to prevent, reintroduced by widening one half of the pair.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    assert _salary_ceiling("€90 000 - 110 000")[1:] == (110000, "EUR")
+    assert _salary_ceiling("SEK 900 000 - 1 100 000")[1:] == (1100000, "SEK")
+    # ...and the comma spelling of the same advert has always worked; both must agree.
+    assert _salary_ceiling("€90,000 - 110,000")[1:] == (110000, "EUR")
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 80000
+    assert classify(L(titles, salary="€90 000 - 110 000 per annum"), cfg)[0] != "reject"
+
+
+def test_the_ceiling_is_the_most_MONEY_not_the_biggest_number(titles):
+    """Across currencies the largest number and the largest amount are different rows.
+
+    `max` on the printed figure picked the SEK row here -- the smallest of the three in
+    sterling -- and rejected against a floor the advert's real top cleared. The ceiling has
+    to be chosen after conversion, or "fail open" is only true within one currency.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    advert = "$180,000 US / £120,000 UK / SEK 1,400,000 SE"
+    top = _salary_ceiling(advert)
+    assert (top.advertised, top.currency) == (180000, "USD"), (
+        "the dollar row is worth the most; SEK 1,400,000 is merely the biggest number")
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 120000
+    assert classify(L(titles, salary=advert + " per annum"), cfg)[0] != "reject"
+
+
+def test_the_parsers_alphabet_is_exactly_what_fx_can_value(titles):
+    """Neither list may grow a member the other lacks.
+
+    A code the parser reads but `fx` cannot value parses as money and then abstains, so the
+    floor quietly stops applying to that market; a code `fx` can value but the parser does
+    not read is not seen as money at all, which is #305 itself. The first shipped cut kept
+    a hand-written nine-currency alphabet beside a hand-written nine-rate table, so both
+    failures were one edit away and whole markets -- CAD, AUD, CZK -- were invisible.
+    """
+    from sluice.core import fx
+    from sluice.triage.classify import _CURRENCY_MARKERS, _salary_ceiling
+
+    # The ISO half is exactly the self-mapping entries: a code names itself, while every
+    # vernacular spelling names some OTHER string ("lei" -> "RON"). Derived that way rather
+    # than by shape -- an earlier cut used "three letters and alphabetic", which silently
+    # swept in the Romanian spelling once the vernacular half was completed.
+    iso = {marker for marker, code in _CURRENCY_MARKERS.items() if marker == code}
+    assert iso == set(fx.known_currencies()), (
+        "the parser's ISO alphabet and fx's rate table have drifted apart")
+
+    # ...and every vernacular spelling must name a currency that table can actually value,
+    # or it parses as money and then abstains -- the floor silently stopping for a market
+    # whose notation the parser claims to read.
+    unvaluable = {marker: code for marker, code in _CURRENCY_MARKERS.items()
+                  if code not in fx.known_currencies()}
+    assert not unvaluable, f"markers naming a currency fx cannot value: {unvaluable}"
+
+    # ...and the codes an earlier cut omitted really do parse now.
+    for advert, expected in [("CAD 150,000", "CAD"), ("AUD 200,000", "AUD"),
+                             ("CZK 2,000,000", "CZK")]:
+        assert _salary_ceiling(advert).currency == expected
+
+
+def test_every_currency_marker_parses_on_both_sides_of_the_amount(titles):
+    """Neither branch of `_MONEY_RE` may recognise a marker the other does not.
+
+    A marker accepted in only one position means an advert written the other way round
+    carries no money context, so the pay floor silently stops applying to it -- #305 defect
+    1, in whichever spelling the omitted branch happened to miss. Five of the markers were
+    asymmetric when this was written: `zl` and the three symbols parsed only BEFORE the
+    amount, `kr` only after. The euro was the expensive one: plenty of notations put the
+    symbol AFTER the amount, as in "45 000 €", so a whole spelling of the commonest foreign
+    currency in this table carried no money context at all.
+
+    Swept over `_CURRENCY_MARKERS` rather than over a hand-written list of examples, so a
+    marker added later is covered without anyone remembering to add a row here.
+    """
+    from sluice.triage.classify import _CURRENCY_MARKERS, _salary_ceiling
+
+    assert len(_CURRENCY_MARKERS) > 30, (
+        "the sweep must actually enumerate the vocabulary; a shrunken marker table would "
+        "make this test pass by checking almost nothing")
+
+    # SYMMETRY per spelling, never "this exact string parses". The ISO codes are matched
+    # uppercase on purpose -- a lowercase "usd" or "try" in prose is a word far more often
+    # than a currency -- so sweeping the dict keys verbatim would assert the CASE POLICY
+    # instead of the property under test, and fail on every lowercase ISO key.
+    asymmetric, unreachable = [], []
+    for marker, code in sorted(_CURRENCY_MARKERS.items()):
+        reachable = False
+        for spelling in sorted({marker, marker.upper()}):
+            before = _salary_ceiling(f"{spelling} 250 000")
+            after = _salary_ceiling(f"250 000 {spelling}")
+            ok_before = before is not None and before.currency == code
+            ok_after = after is not None and after.currency == code
+            if ok_before != ok_after:
+                asymmetric.append(
+                    f"{spelling!r} -> {code}: before={ok_before} after={ok_after}")
+            reachable = reachable or ok_before
+        # ...and ANTI-VACUITY: a marker that parses in neither position satisfies symmetry
+        # trivially, so it has to be caught separately or the sweep passes on a dead table.
+        if not reachable:
+            unreachable.append(f"{marker!r} -> {code}")
+    assert not asymmetric, "asymmetric markers: " + "; ".join(asymmetric)
+    assert not unreachable, "markers that parse in NO position: " + "; ".join(unreachable)
+
+
+def test_the_spellings_boards_actually_write_are_money(titles):
+    # The concrete cases behind the sweep above, named so a failure says which market broke.
+    from sluice.triage.classify import _salary_ceiling
+
+    for advert, expected in [
+            ("250 000 zl", "PLN"),      # the ASCII spelling, when markup loses diacritics
+            ("250 000 zł", "PLN"),
+            ("45 000 €", "EUR"),        # notation that puts the symbol after the amount
+            ("120,000 $", "USD"),
+            ("kr 450 000", "DKK"),      # the same marker, before the amount
+            ("450 000 kr", "DKK"),
+    ]:
+        parsed = _salary_ceiling(advert)
+        assert parsed is not None, f"{advert!r} was not recognised as money at all"
+        assert parsed.currency == expected, f"{advert!r} -> {parsed.currency}, want {expected}"
+
+
+def test_a_foreign_reject_message_shows_the_converted_figure_and_the_advertised_one(titles):
+    """The message compares GBP to GBP, and says where the GBP came from.
+
+    SURVIVING MUTANT before this test: the `(from N CUR)` disclosure was asserted nowhere,
+    so it could be deleted, or `shown` swapped for the ADVERTISED figure -- which prints
+    "Salary below floor: 900000 < 100000", a number visibly larger than the floor it is
+    said to be below. Every existing message assertion was sterling-only, where the two
+    figures are equal and the bug is invisible.
+    """
+    from sluice.triage.classify import _pay_reject
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 100000
+    verdict, reason = _pay_reject("SEK 900,000 per annum", "annual", cfg)
+    assert verdict == "reject"
+    converted = str(fx_gbp("SEK", 900000))
+    assert reason.startswith(f"Salary below floor: {converted} "), (
+        f"the message must lead with the CONVERTED figure, got {reason!r}")
+    assert reason.endswith("< 100000"), (
+        f"the floor comparison must be the last thing said, got {reason!r}")
+    assert "(from 900000 SEK)" in reason, (
+        f"the message must disclose the advert's own figure and currency, got {reason!r}")
+    # The advertised figure must never be the one compared to the floor: 900000 beside
+    # "below floor: ... < 100000" reads as a straight comparison and is visibly absurd.
+    assert not reason.startswith("Salary below floor: 900000"), (
+        "the message is quoting the advertised figure against a GBP floor")
+
+    # ...and a sterling lead keeps the plain form, with no redundant conversion noise.
+    plain = _pay_reject("£60,000 per annum", "annual", cfg)[1]
+    assert plain == "Salary below floor: 60000 < 100000"
+
+
+def fx_gbp(currency, amount):
+    from sluice.core import fx
+    return fx.to_gbp(amount, currency)
+
+
+def test_the_money_pattern_is_case_sensitive_for_iso_codes(titles):
+    """Compiling `_MONEY_RE` with `re.I` must not be a silent option.
+
+    SURVIVING MUTANT before this test: adding `re.I` reddened nothing across the whole
+    suite, and it makes ordinary English words into currencies -- `try 250 000` becomes
+    Turkish lira, `php 8` becomes Philippine pesos. The sweep beside this one deliberately
+    declines to assert the case policy, so nothing else covered it.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    for prose in ("try 250 000 users", "php 8 or later", "usd 90 000"):
+        assert _salary_ceiling(prose) is None, (
+            f"{prose!r} parsed as money -- the ISO alternation has become case-insensitive")
+
+    # ...while the upper-case spellings those words shadow still work.
+    assert _salary_ceiling("TRY 250 000").currency == "TRY"
+    assert _salary_ceiling("USD 90 000").currency == "USD"
+
+
+def test_a_number_before_a_salary_does_not_steal_its_currency_marker(titles):
+    """The post-amount branch matches its marker by LOOKAHEAD, so it cannot consume it.
+
+    Consuming it let any number to the left of a salary swallow that salary's only money
+    context. Measured against `main` before the fix, at a 50000 floor:
+
+      "Ref 12345 <sym>60,000"  -- main kept; head REJECTED on 12345
+      "Grade 7 <sym>50,000"    -- ceiling 7, so the floor stopped applying at all
+      "Band 6 <sym>35,392 to 42,618" -- main rejected on 42,618; head abstained
+
+    Reference numbers, posting years, grades and bands all sit in front of a salary in real
+    adverts, so this failed in both directions on ordinary sterling postings. Leaving the
+    marker in place lets the pre-branch read it too, and `max` then picks the real ceiling.
+    """
+    from sluice.triage.classify import _pay_reject, _salary_amounts, _salary_ceiling
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 50000
+
+    # Both readings are emitted, and the ceiling is the real salary rather than the stray.
+    assert _salary_ceiling("Ref 12345 £60,000 per annum").advertised == 60000
+    assert (12345, "GBP") in _salary_amounts("Ref 12345 £60,000 per annum")
+    assert _pay_reject("Ref 12345 £60,000 per annum", "annual", cfg) is None
+    assert _pay_reject("Posted 2026 £60,000 per annum", "annual", cfg) is None
+
+    # ...and the mirror direction: a small stray must not switch the floor off.
+    assert _salary_ceiling("Grade 7 £50,000").advertised == 50000
+    assert _pay_reject("Band 6 £35,392 to 42,618", "annual", cfg) == (
+        "reject", "Salary below floor: 42618 < 50000")
+
+    # The marker-after-amount case this branch exists for still works.
+    assert _salary_ceiling("900 000 kr").advertised == 900000
+    assert _salary_ceiling("45 000 €").currency == "EUR"
+
+
+def test_a_monthly_advert_abstains_rather_than_being_judged_as_annual(titles):
+    """A month's pay must never be compared to an annual floor.
+
+    `_BASES` has no monthly row, so before this an advert saying "per month" reached no
+    basis, fell through to the ANNUAL branch, and was judged as if the figure were a
+    year's pay -- a twelvefold error, always in the reject direction.
+
+    Harmless while the parser could not see the money, and #305 is exactly what made it
+    reachable: teaching the parser krona and zloty walked ordinary monthly postings in
+    those markets into the reject window. Sterling had the same hole and it closes here too.
+    """
+    from sluice.triage.classify import _pay_basis, _pay_reject
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 60000
+
+    for advert in ("55 000 SEK per month", "25 000 zl per month", "50 000 kr/month",
+                   "£5,000 per month", "£5,000 pcm", "45 000 kr monthly"):
+        assert _pay_basis(advert, None, None) == "month", (
+            f"{advert!r} was not recognised as monthly")
+        assert _pay_reject(advert, _pay_basis(advert, None, None), cfg) is None, (
+            f"{advert!r} produced a verdict; a monthly advert has no floor to be judged "
+            "against and must abstain")
+
+    # ...and the annual cases either side of it are untouched.
+    assert _pay_basis("£60,000 per annum", None, None) == "annual"
+    assert _pay_reject("£30,000 per annum", "annual", cfg) == (
+        "reject", "Salary below floor: 30000 < 60000")
+    assert _pay_reject("900 000 SEK per year", "annual", cfg) is None
+
+
+def test_every_vernacular_spelling_resolves_to_the_currency_it_names(titles):
+    """Swept over the whole vernacular map, not a chosen handful.
+
+    The map was two market families -- the two this feature was built for -- while thirteen
+    currencies in the same rate table were unreadable in their own notation. That is the
+    argument `fx._PINNED` makes against a hand-picked table, applied one file too late. A
+    sweep is what stops it regressing to a handful again; spot-checking four spellings did
+    not notice when the other twenty were absent.
+    """
+    from sluice.triage.classify import _VERNACULAR_MARKERS, _salary_ceiling
+
+    # An EXACT roster, hand-written here and compared against the module's. A count floor
+    # is not a completeness check: witnessed, deleting two markers took the map from 27 to
+    # 25, stayed above the floor, left the suite green, and silently stopped two markets
+    # being money -- the #305 defect itself. An equality forces any change to be deliberate.
+    expected = {
+        "CA$": "CAD", "A$": "AUD", "S$": "SGD", "HK$": "HKD", "NZ$": "NZD",
+        "US$": "USD", "R$": "BRL", "Mex$": "MXN",
+        "£": "GBP", "$": "USD", "€": "EUR", "¥": "CNY",
+        "₹": "INR", "₩": "KRW", "₺": "TRY", "₪": "ILS", "₱": "PHP", "฿": "THB",
+        "kr": "DKK", "zł": "PLN", "zl": "PLN", "Kč": "CZK", "Ft": "HUF",
+        "Rp": "IDR", "RM": "MYR", "lei": "RON", "Lei": "RON",
+    }
+    assert _VERNACULAR_MARKERS == expected, (
+        "the vernacular map changed; update this roster deliberately, and check the new "
+        "state against the completeness reasoning beside _VERNACULAR_MARKERS")
+
+    for marker, code in sorted(_VERNACULAR_MARKERS.items()):
+        for advert in (f"{marker} 250 000", f"250 000 {marker}"):
+            parsed = _salary_ceiling(advert)
+            assert parsed is not None, f"{advert!r} was not recognised as money at all"
+            assert parsed.currency == code, (
+                f"{advert!r} -> {parsed.currency}, want {code}")
+
+
+def test_an_ambiguous_symbol_resolves_to_the_strongest_currency_it_could_mean(titles):
+    """The rule, asserted against `fx`'s own table rather than trusted from a comment.
+
+    Several symbols name more than one currency and no regex settles which, so the choice
+    is which way to be WRONG. Resolving to the strongest means an unmarked figure is
+    OVER-valued, and an over-valued advert clears a floor it may not deserve to -- the
+    permissive direction. The reverse pick makes every wrong guess a reject, which is the
+    harm this module exists to prevent.
+    """
+    from sluice.core import fx
+    from sluice.triage.classify import _VERNACULAR_MARKERS
+
+    families = {
+        "kr": ("DKK", "SEK", "NOK", "ISK"),
+        "$": ("USD", "CAD", "AUD", "SGD", "HKD", "NZD", "MXN"),
+        "¥": ("CNY", "JPY"),
+    }
+    for symbol, candidates in families.items():
+        chosen = _VERNACULAR_MARKERS[symbol]
+        strongest = max(candidates, key=lambda c: fx.rate(c))
+        assert chosen == strongest, (
+            f"{symbol!r} resolves to {chosen}, but {strongest} is the strongest of "
+            f"{candidates} -- resolving to a weaker one makes every wrong guess a REJECT")
+
+
+def test_a_marker_must_stand_apart_from_the_text_around_it(titles):
+    """`_marker_pattern`'s boundaries are the whole reason that function exists.
+
+    SURVIVING MUTANTS before this test: deleting the LEADING `\\b` made "BONUSGBP 60,000"
+    and "ACAD 150,000" money; deleting the TRAILING one made "SEK250,000" and "kr450,000"
+    money. The suite stayed green both ways, because every existing sweep puts a space
+    between the marker and the amount and so never exercises either edge.
+
+    A boundary is derived per marker from its own first and last character, since `\\b`
+    beside a SYMBOL asserts the opposite of what is meant. Both halves are pinned here.
+    """
+    from sluice.triage.classify import _salary_ceiling
+
+    # A marker buried at the end of a longer word is not a marker.
+    for prose in ("BONUSGBP 60,000", "ACAD 150,000", "Bakr 450,000", "MYZL 250,000"):
+        assert _salary_ceiling(prose) is None, f"{prose!r} parsed as money"
+
+    # ...nor is one running straight into the amount with no separation.
+    for prose in ("SEK250,000", "kr450,000", "GBP60,000"):
+        assert _salary_ceiling(prose) is None, f"{prose!r} parsed as money"
+
+    # ...while a SYMBOL legitimately abuts its amount, which is why the boundary is derived
+    # per marker rather than applied to every arm.
+    assert _salary_ceiling("£60,000").advertised == 60000
+    assert _salary_ceiling("€105,000").advertised == 105000
+    assert _salary_ceiling("SEK 250,000").advertised == 250000
+
+
+def test_a_range_whose_currency_follows_the_head_still_reads_its_top(titles):
+    """The tail lookup must resume AFTER a lookahead-matched marker.
+
+    The post branch matches its marker by lookahead, so the match ENDS on the marker and a
+    tail lookup starting at `m.end()` sees "USD - 150,000" -- no leading dash, no match, and
+    the band's upper bound silently lost. Measured before the fix, at a 100000 floor:
+    "120,000 USD - 150,000" REJECTED on its head at GBP 88,463 while the real top cleared.
+
+    That is the "ceiling stayed at the BOTTOM of the band" harm `_RANGE_TAIL_RE` exists to
+    prevent, reintroduced by the fix for marker-stealing -- and invisible to the existing
+    range tests, every one of which marks the HEAD.
+    """
+    from sluice.triage.classify import _pay_reject, _salary_ceiling
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 100000
+
+    assert _salary_ceiling("120,000 USD - 150,000").advertised == 150000
+    assert _salary_ceiling("900 000 SEK to 1 100 000").advertised == 1100000
+    assert _salary_ceiling("45 000 kr - 55 000").advertised == 55000
+    assert _pay_reject("120,000 USD - 150,000 per annum", "annual", cfg) is None, (
+        "the top of the band clears the floor; rejecting means the tail was lost")
+
+    # ...and the pre-marked spellings, which never had the bug, are byte-identical.
+    assert _salary_ceiling("£30,000-40,000") == (40000, 40000, "GBP")
+    assert _salary_ceiling("€90 000 - 110 000").advertised == 110000
+    assert _salary_ceiling("£500/day, ref 60000") == (500, 500, "GBP")
+
+
+def test_an_unmarked_foreign_figure_abstains_instead_of_being_read_as_annual(titles):
+    """The basis default is gated on the currency the parser already resolved.
+
+    An unmarked STERLING figure is overwhelmingly an annual salary, and defaulting it to
+    annual is the pre-#223 behaviour every existing vault was judged under. That reasoning
+    does not carry to an advert this parser may simply have failed to read: monthly quoting
+    is ordinary in many markets, the marker saying so is a phrase in that market's language,
+    and a phrase list is unbounded. #305 shipped ten non-English spellings, half of them
+    transliterations no board writes, and every gap was a twelvefold WRONG REJECT.
+
+    So a non-sterling figure with no recognised basis abstains. The currency stands in for
+    the confidence the phrase list cannot provide.
+    """
+    from sluice.triage.classify import _unmarked_basis
+
+    cfg = _cfg(titles)
+    cfg.perm_floor_gbp = 60000
+
+    # Foreign, basis unreadable -> no opinion, whatever language the advert is in.
+    for advert in ("45 000 kr per m\u00e5nad", "12 000 z\u0142/miesi\u0105c",
+                   "7 000 EUR al mese", "15 000 CZK m\u011bs\u00ed\u010dn\u011b",
+                   "45 000 kr", "SEK 45 000"):
+        assert _unmarked_basis(advert) is None, f"{advert!r} should abstain"
+        assert classify(L(titles, salary=advert), cfg)[0] != "reject"
+
+    # Sterling, unmarked -> annual, exactly as before.
+    for advert in ("\u00a330,000", "90k", "\u00a345,000"):
+        assert _unmarked_basis(advert) == "annual", f"{advert!r} must keep today's default"
+    assert classify(L(titles, salary="\u00a330,000"), cfg)[0] == "reject"
+
+    # Foreign WITH a readable basis is still judged -- the feature still works.
+    assert classify(L(titles, salary="SEK 400 000 per year"), cfg)[0] == "reject"
+    assert classify(L(titles, salary="SEK 45 000 per month"), cfg)[0] != "reject"
+
+
+def test_the_month_vocabulary_is_english_only(titles):
+    """Deliberate, and the currency gate is what makes it safe.
+
+    An earlier cut hand-listed ten non-English spellings. Half were ASCII transliterations
+    no board writes, so the real spellings fell through and were rejected at a twelfth of
+    their worth; and the SET was a claim about which markets matter -- same currency and
+    figure, the French spelling kept and the Italian one rejected. Deleting all ten left the
+    suite green, because every monthly test was in English.
+
+    What replaces it is `_unmarked_basis`: a foreign-language advert is covered by its
+    CURRENCY, not by guessing its vocabulary. This pins the decision so the list cannot
+    quietly regrow.
+    """
+    from sluice.triage.classify import _MONTH_MARKERS
+
+    non_ascii = [m for m in _MONTH_MARKERS if not m.isascii()]
+    assert not non_ascii, f"non-English month markers have returned: {non_ascii}"
+    assert set(_MONTH_MARKERS) == {
+        "/month", "/mo", "per month", "monthly", "a month", "per calendar month",
+        "pcm", "p/m", "per mth", "/mth"}
+

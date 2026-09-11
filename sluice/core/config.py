@@ -45,6 +45,10 @@ class Config:
     # user's leads somewhere they did not ask for.
     store: str = "vault"
     fetcher: str = "camofox"
+    # Which service answers for exchange rates (#305). A seam key like the two
+    # above, and named here for the same reason: which implementation is live must
+    # be answerable by reading config, not by reasoning about import order.
+    rates: str = "frankfurter"
     # Where the store keeps the baseline CV. A STORE location, so it lives here: once the
     # store is resolved from the root Config, a `cv.baseline_rel` could not reach the store
     # that has to honour it. It used to work only because cv/engine.py passed it down by
@@ -749,6 +753,7 @@ def load_config(path: str | None = None) -> Config:
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
+                  rates=str(data.get("rates") or "frankfurter"),
                   # #176: `_str_list`, not `list(...)`. The bare `list()` here was the
                   # SEVEREST instance of the bug this helper was written for and the
                   # one the issue did not name -- these two run at INGEST, before

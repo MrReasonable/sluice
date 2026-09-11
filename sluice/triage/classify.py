@@ -6,7 +6,9 @@ false-negatives are what the audit catches. It ships with no lists of its own, s
 unconfigured gate abstains rather than applying somebody else's idea of a good role.
 """
 import re
+from typing import NamedTuple
 
+from sluice.core import fx
 from sluice.core.leads import is_placeholder_company
 from sluice.core.roletype import (
     CONTRACT,
@@ -35,17 +37,178 @@ _PERCENT_RE = re.compile(r"\d+(?:\.\d+)?\s*%")
 # So a number only counts as money when it carries MONEY CONTEXT: a currency symbol, or a
 # k suffix (which is itself unambiguous). Anything else is ignored, and a string with no
 # money in it yields no opinion -- and no opinion never rejects.
+# What a currency marker MEANS, as ISO 4217. #305: the parser used to recognise money only
+# by a few symbols or a k suffix, so a Nordic or Polish posting -- "SEK 900 000",
+# "900 000 kr" -- carried no money context and parsed as nothing. Combined with this
+# module's "no opinion never rejects" rule, that meant every posting in those markets
+# passed the pay floor whatever it paid. Abstaining on what cannot be seen is right; not
+# seeing it was the bug.
+#
+# TWO HALVES, and both are complete on purpose. The ISO half is DERIVED from
+# `fx.known_currencies()` and never hand-listed -- see that function for why a second list
+# is a defect in both directions. The VERNACULAR half below covers every currency in that
+# table that is commonly written some other way, and completing it was a review finding
+# rather than the original design: the first cut carried exactly two families, `kr` and
+# the zloty, which were the two this feature happened to be built for. That is the same
+# defect `fx._PINNED`'s own comment argues against one file away -- a hand-picked set is a
+# claim about which markets matter, and an omitted spelling is not merely unconverted, it
+# is not seen as MONEY, so the floor never fires for that market. Applying the argument to
+# the table and not to the alphabet left most of the table unreadable in its own notation.
+# Deliberately no COUNT: the number depends on what you consider a distinctive form, it was
+# written here as "thirteen" and computed to something else, and the comment three lines
+# below bans exactly this construct.
+#
+# WHAT "COMPLETE" MEANS HERE, stated precisely because an earlier cut over-claimed it.
+# The map covers the currencies in `fx._PINNED` that have a distinctive written form, and
+# `tests/test_classify.py` pins the exact roster so a deletion cannot pass silently. It is
+# NOT "every currency that is ever written some other way": a few are deliberately ISO-only
+# because their common mark is a bare capital letter or is shared with a currency already
+# spoken for -- the rand's bare "R" is the clearest, left out because a lone capital letter
+# beside a number matches far too much ordinary advert text. Those currencies are still
+# money via their ISO code.
+#
+# AMBIGUOUS SYMBOLS RESOLVE TO THE STRONGEST CANDIDATE, as one rule rather than a series
+# of special cases. Several symbols name more than one currency and no regex settles
+# which, so the only choice available is which way to be WRONG. Reading the strongest
+# means an unmarked figure is OVER-valued, and an over-valued advert clears a floor it may
+# not deserve to -- the permissive direction this module takes everywhere, because a lead
+# the user sees and discards costs a glance while a lead binned by a guess is never seen.
+# `kr` is Danish rather than Swedish, Norwegian or Icelandic on those grounds; a bare `$`
+# is US rather than Canadian, Australian, Singaporean, Hong Kong, New Zealand or Mexican;
+# `¥` is Chinese rather than Japanese. `tests/test_classify.py` asserts that rule against
+# `fx`'s own table rather than trusting this comment.
+#
+# An explicit ISO code always wins, and a DISAMBIGUATED symbol beats its bare form, so
+# "CA$ 150,000" is Canadian and never read as US dollars.
+_VERNACULAR_MARKERS = {
+    # Disambiguated dollar forms, longest-first at match time (see `_marker_pattern`).
+    "CA$": "CAD", "A$": "AUD", "S$": "SGD", "HK$": "HKD", "NZ$": "NZD",
+    "US$": "USD", "R$": "BRL", "Mex$": "MXN",
+    # Bare symbols, ambiguous ones resolved by the rule above.
+    "£": "GBP", "$": "USD", "€": "EUR", "¥": "CNY",
+    "₹": "INR", "₩": "KRW", "₺": "TRY", "₪": "ILS", "₱": "PHP", "฿": "THB",
+    # Written-word forms. Matched case-sensitively, like the ISO codes and for the same
+    # reason: a lowercase "try" or "lei" in prose is a word far more often than a currency.
+    "kr": "DKK", "zł": "PLN", "zl": "PLN", "Kč": "CZK", "Ft": "HUF",
+    "Rp": "IDR", "RM": "MYR", "lei": "RON", "Lei": "RON",
+}
+# Keyed on the EXACT spelling the pattern matches, never a case-folded one. The alternation
+# is BUILT from these keys and the matched text is read back through them, so one map with
+# one casing is the only shape where the two cannot disagree. An earlier cut lower-cased the
+# ISO keys and then derived the pattern from them, which quietly made every ISO code
+# lowercase-only -- "SEK 900 000" stopped being money -- while the case-sensitive vernacular
+# spellings became unresolvable in the other direction.
+_CURRENCY_MARKERS = {
+    **_VERNACULAR_MARKERS,
+    # The ISO codes name themselves, upper-case. Last, so no vernacular spelling shadows one.
+    **{code: code for code in fx.known_currencies()},
+}
+
+# What an AMOUNT looks like. Three spellings, and they are mutually exclusive rather than
+# one permissive class: a comma-grouped number, a space-grouped one (Nordic and Central
+# European boards write "900 000", and a non-breaking or narrow no-break space is a valid
+# thousands separator that scraped markup can carry), or a plain run of digits.
+#
+# THE GROUPS ARE EXACTLY THREE DIGITS AND THE TWO STYLES NEVER MIX. That is the guard, not
+# a tidiness point. An earlier cut wrote the amount as `\d[\d,\s ]*`, one class covering
+# every separator, which let an amount swallow whatever number came after it -- and it
+# failed in both directions at once. "£45,000 25 days holiday" parsed as 4,500,025 and
+# cleared a floor it should have failed, silently switching the floor off for an ordinary
+# sterling advert; "£120,000\n2 roles" parsed as nothing at all, because `\s` matched the
+# newline and `float()` then raised on a string no amount of separator-stripping could
+# repair. Requiring whole three-digit groups is what makes "45,000" stop at "45,000".
+# WHICH CONVENTIONS THIS READS, stated because the gap is silent. Grouping by comma, by
+# plain space, and by non-breaking or narrow no-break space is read. Grouping by DOT is
+# NOT -- roughly half of Europe and Latin America write "60.000" for sixty thousand, and
+# this grammar reads that as sixty, which falls under the credibility floor and abstains.
+# So the pay floor never fires for an advert in that convention. That is INHERITED rather
+# than introduced here (`main` reads "€ 60.000" as 60 too), and #311 closes it by deciding
+# grouping from PLACEMENT instead of from an assumed locale -- which deletes the rule
+# below rather than adding a fourth alternative to it.
+_SEP = r"[ \u00a0\u202f]"
+_AMOUNT = (
+    r"\d{1,3}(?:,\d{3})+(?:\.\d+)?"                # 30,000   1,100,000
+    rf"|\d{{1,3}}(?:{_SEP}\d{{3}})+(?:\.\d+)?"     # 900 000  1 100 000
+    r"|\d+(?:\.\d+)?"                              # 60   60.5   30000
+)
+
+# ONE marker alternation, used in BOTH positions. Spelling the two branches separately is
+# what let them drift: the pre-amount branch accepted the ASCII zloty and the post-amount
+# one did not, so an advert written the other way round carried no money context and the
+# pay floor stopped applying to it. Deriving one alternation from `_CURRENCY_MARKERS`
+# makes that asymmetry unspellable rather than merely tested for.
+#
+# The ISO codes are matched UPPERCASE and unflagged on purpose: a lowercase "usd" or "try"
+# in running prose is a word far more often than a currency, and `try` is an ordinary
+# English verb. Compiling this pattern with `re.I` would make every one of them a
+# currency; `tests/test_classify.py` pins the case policy so that widening cannot happen
+# silently. The alternation is built from `_CURRENCY_MARKERS`' own keys, so matched text
+# reproduces a key verbatim and resolves by direct lookup -- no case folding happens, and
+# an earlier version of this comment said it did.
+#
+# ORDER IS LONGEST-FIRST as a belt-and-braces measure, NOT because anything currently
+# depends on it. Python's alternation takes the first arm that matches rather than the
+# longest, so a bare "$" ahead of "CA$" would be the classic hazard -- but `_marker_pattern`
+# already disambiguates that pair by boundary (`\bCA\$` cannot match where `\$` does), and
+# measured, no marker in the table is a prefix of another, so reversing this sort changes
+# zero parses. It is kept because a future marker COULD be a prefix of another and the sort
+# costs nothing; it is described honestly because an earlier version of this comment
+# asserted the ordering was load-bearing, which was not true of any marker present.
+def _marker_pattern(marker: str) -> str:
+    r"""One alternation arm for `marker`, bounded only where a boundary means anything.
+
+    `\b` asserts a word/non-word transition, so putting one beside a symbol asserts the
+    OPPOSITE of what is meant -- `\b\$` demands a word character immediately before the
+    dollar sign. The boundary is therefore derived from the marker's own first and last
+    characters rather than from a hand-kept list of which markers are "words".
+    """
+    pat = re.escape(marker)
+    if marker[0].isalnum():
+        pat = r"\b" + pat
+    if marker[-1].isalnum():
+        pat = pat + r"\b"
+    return pat
+
+
+_MARKER_ALT = "|".join(
+    _marker_pattern(m) for m in sorted(_CURRENCY_MARKERS, key=len, reverse=True))
+
 _MONEY_RE = re.compile(
-    r"[£$€]\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b"   # £60k, £30,000, $120,000
-    r"|(\d[\d,]*(?:\.\d+)?)\s*([kK])\b"           # 60k -- the suffix IS the context
+    # a marker BEFORE the amount: £60k, $120,000, SEK 900 000, zł 250 000, kr 450 000
+    rf"(?P<pre>{_MARKER_ALT})\s*(?P<pre_amt>{_AMOUNT})\s*(?P<pre_k>[kK])?\b"
+    # ...or AFTER it, which is how much of Europe writes it: 900 000 kr, 45 000 EUR.
+    # A LOOKAHEAD, so the marker is matched but NOT consumed. Consuming it let a number to
+    # the LEFT of a salary steal that salary's only money context: "Ref 12345 GBP-symbol
+    # 60,000" bound 12345 to sterling, ate the symbol, and left the real figure invisible
+    # -- so the advert was REJECTED on 12345, while "Grade 7 <sym>50,000" read a ceiling of
+    # 7 and switched the floor off entirely. Both directions, from one greedy consume.
+    # Leaving the marker in place lets the pre-branch match it too, so both readings are
+    # emitted and `_salary_ceiling`'s `max` picks the LARGER -- which is the real salary
+    # whenever the stray is smaller, and is not otherwise: "Job ID 4523891 $150,000" yields
+    # a ceiling of 4,523,891. That direction over-values, so it clears a floor rather than
+    # manufacturing a reject, which is the side this module errs on. An earlier version of
+    # this comment claimed `max` picks the real one, full stop, which is false.
+    #
+    # The obvious alternative, refusing a post-marker followed by a digit `(?!\s*\d)`, is
+    # WRONG and was measured: it turns "900 000 kr 12 month contract" into 12 kr, because
+    # the genuine binding is refused and only the spurious one survives.
+    rf"|(?P<post_amt>{_AMOUNT})\s*(?P<post_k>[kK])?\s*(?=(?P<post>{_MARKER_ALT}))"
+    # ...or a bare k suffix, which is its own context and carries no currency
+    rf"|(?P<k_amt>{_AMOUNT})\s*(?P<k>[kK])\b"
 )
 
 # Boards routinely write a range with ONE symbol: "£30,000-40,000". The upper bound then
 # carries no money context of its own, so _MONEY_RE alone reads the ceiling as 30,000 and a
 # £35k floor REJECTS a role paying up to £40k -- fails-closed, the expensive direction. A
 # bare number is money when it is the tail of a range whose head was money.
+# Shares `_AMOUNT` with `_MONEY_RE` rather than spelling a second number grammar. When it
+# did not, the two drifted the moment one was widened: `_MONEY_RE` learned the space
+# separator and this did not, so "€90 000 - 110 000" matched a tail of "- 110", the
+# ceiling stayed at the BOTTOM of the band, and the advert was rejected against a floor its
+# real top cleared -- the precise failure the comment above says this expression exists to
+# prevent, reintroduced by widening only half of it.
 _RANGE_TAIL_RE = re.compile(
-    r"\s*(?:-|–|—|to)\s*(\d[\d,]*(?:\.\d+)?)\s*([kK])?\b", re.I)
+    rf"\s*(?:-|–|—|to)\s*(?P<amt>{_AMOUNT})\s*(?P<k>[kK])?\b", re.I)
 
 # Below these, a parse is not a real offer -- it is a mis-parse. Abstain rather than
 # reject: a wrong reject bins a lead the user never sees, the expensive direction.
@@ -79,12 +242,36 @@ _MIN_CREDIBLE_SALARY = 1000
 _HOUR_MARKERS = ("/hour", "/hr", "per hour", "hourly", "an hour", "a hour", "p/h", "ph")
 _DAY_MARKERS = ("/day", "per day", "day rate", "a day", "daily", "per diem", "p/d", "pd")
 _WEEK_MARKERS = ("/week", "/wk", "per week", "weekly", "a week", "p/w", "pw")
-# `a year` carries the `a <unit>` spelling the other three rows all have, and its absence
-# was not symmetry for its own sake: it is the exact spelling of the only real annual
-# salary in the golden fixtures (`tests/fixtures/indeed/raw.json`, "£60,000 - £70,000 a
-# year"). Without it that string reached NO basis, so it fell to the annual branch by
-# default -- right by accident -- and flipped to the DAY branch under a trusted
-# `role_type: contract`, which is the dependency §2.3 exists to remove.
+# MONTHLY is recognised but has NO row in `_BASES`, and that asymmetry is the fix rather
+# than an oversight. `_pay_basis` returning a name `_BASES` does not hold makes
+# `_pay_reject` abstain, which is what a monthly advert needs: there is no monthly floor to
+# judge it against, and the alternative -- what happened before this -- was falling through
+# to the ANNUAL branch and judging a month's pay as a year's, a twelvefold error always in
+# the reject direction.
+#
+# ENGLISH ONLY, and that is deliberate after an earlier cut shipped ten non-English
+# spellings. They were the wrong answer twice over. Half were ASCII transliterations no
+# board writes, so the real spellings fell through and were rejected at a twelfth of their
+# worth -- the accented Polish, Swedish and Norwegian forms all failed while the
+# transliterations I had invented passed. And the SET was a claim about which markets
+# matter: same currency and figure, the French spelling kept and the Italian one rejected.
+# A phrase list in languages the author does not read is unbounded, unverifiable, and every
+# gap in it is a wrong reject.
+#
+# What makes English-only safe is `_unmarked_basis`: an advert whose figure is not in the
+# floors' currency and whose basis this list does not recognise ABSTAINS rather than
+# defaulting to annual. So a Polish-language advert quoting zloty is covered by the
+# currency, and an English-language advert quoting krona -- the common shape for
+# international roles -- is covered by these markers. The residual is narrow and stated: a
+# non-English advert quoting STERLING monthly still defaults to annual, because neither
+# guard fires on it.
+#
+# Giving month a real `_BASES` row with its own floor is the other option, and it is a
+# FEATURE: a new config key, a credibility floor and a default of 0. Abstaining is what the
+# module already does for a basis it cannot judge, so it is what this fix does.
+_MONTH_MARKERS = ("/month", "/mo", "per month", "monthly", "a month", "per calendar month",
+                  "pcm", "p/m", "per mth", "/mth")
+
 _ANNUAL_MARKERS = ("per annum", "p.a.", "pa", "/year", "per year", "a year", "annually")
 
 # basis -> (its markers, its credibility floor, the config key holding its floor, the
@@ -102,10 +289,25 @@ _BASES = {
 }
 _BASIS_RE = {name: tuple(boundaried(m) for m in markers)
              for name, (markers, _f, _k, _n) in _BASES.items()}
+# ...plus the basis with no floor. Kept in the SAME lookup `_pay_basis` sweeps, so a
+# monthly advert is NAMED and therefore cannot fall through to the annual default, and
+# kept OUT of `_BASES`, so naming it makes `_pay_reject` abstain.
+_BASIS_RE["month"] = tuple(boundaried(m) for m in _MONTH_MARKERS)
 
 
 def _pay_basis(salary: str, role_type: str, source: str) -> str | None:
-    """A key of `_BASES`, `"ambiguous"`, or None for "the lead does not say" (#223 §2.3).
+    """A key of `_BASIS_RE`, `"ambiguous"`, or None for "the lead does not say" (#223 §2.3).
+
+    `_BASIS_RE` is a SUPERSET of `_BASES`: it also holds `"month"`, which has no floor and
+    therefore makes `_pay_reject` abstain. Naming `_BASIS_RE` rather than `_BASES` here is
+    the point -- saying "a key of `_BASES`" while returning `"month"` is what hid the
+    abstention widening below from review.
+
+    One consequence, stated because nothing else states it: a month word ANYWHERE in the
+    salary field counts as a named basis, so "60,000 per annum, paid monthly" names two and
+    abstains where it was previously judged as annual. That is the existing `ambiguous`
+    rule doing what it always did, in the permissive direction, but it does mean the floor
+    stops applying to an annual advert that merely mentions a month.
 
     The order is the whole design. The SALARY's own markers are read first, so the
     posting's own words beat everything; only an UNMARKED salary consults `role_type`, and
@@ -146,7 +348,35 @@ def _pay_basis(salary: str, role_type: str, source: str) -> str | None:
     return None
 
 
-def _salary_amounts(s: str) -> list[int]:
+def _unmarked_basis(salary: str) -> str | None:
+    """What an advert that names NO pay basis should be judged as.
+
+    `"annual"` for a figure in the floors' own currency -- byte-for-byte the pre-#223
+    behaviour, and the verdict every sterling lead in an existing vault was judged under.
+
+    `None` for a figure in any OTHER currency, which `_pay_reject` turns into an
+    abstention. That asymmetry is the point, and it is measured rather than cautious. The
+    default exists because an unmarked sterling figure is overwhelmingly an annual salary;
+    that reasoning does not carry to an advert this parser may simply have failed to read.
+    Monthly quoting is ordinary in many markets, the marker that says so is a phrase in
+    that market's language, and a phrase list is unbounded -- #305 shipped ten non-English
+    spellings, half of them transliterations no board writes, and every gap in such a list
+    is a twelvefold WRONG REJECT: "45 000 kr per manad" abstained while "45 000 kr per
+    manad" with its real diacritics was binned at a twelfth of its worth.
+
+    So the currency, which the parser HAS resolved, stands in for the confidence the basis
+    list cannot provide. The cost is stated rather than hidden: a foreign advert quoting a
+    bare amount with no basis at all is no longer judged, so the floor reaches fewer
+    foreign leads than it otherwise would. That is the direction this module fails in --
+    a lead the user sees and discards costs a glance, one binned unseen costs the job.
+    """
+    ceiling = _salary_ceiling(salary)
+    if ceiling is None or ceiling.currency in (None, "GBP"):
+        return "annual"
+    return None
+
+
+def _salary_amounts(s: str) -> list[tuple[int, str | None]]:
     """Every money amount in `s`, with k-notation expanded ("60k" -> 60000).
 
     Percentages are stripped first, so "£50,000 + 10% bonus" does not contribute a
@@ -156,7 +386,15 @@ def _salary_amounts(s: str) -> list[int]:
         return []
     def _to_int(raw: str, k: str) -> int | None:
         try:
-            value = float(raw.replace(",", ""))
+            # #305: a SPACE is a thousands separator on Nordic and Central European
+            # boards ("900 000 kr") exactly as a comma is on UK ones, and real scraped
+            # markup can carry a non-breaking or narrow no-break space in that position
+            # instead. Written as escapes, not as the characters themselves: the literal
+            # bytes are invisible in an editor and in review, and `_SEP` -- the half of
+            # this pair that decides what the regex ACCEPTS -- has to agree with them.
+            value = float(raw.replace(",", "")
+                             .replace(" ", "").replace("\u00a0", "")
+                             .replace("\u202f", "").strip())
         except ValueError:  # pragma: no cover - regex only yields parseable numbers
             return None
         # round(), not int(): int() truncates a float product toward zero, and 2.01 is not
@@ -164,32 +402,85 @@ def _salary_amounts(s: str) -> list[int]:
         # would flip keep->reject on representation error, not on the pay.
         return round(value * 1000) if k else int(value)
 
-    out: list[int] = []
+    out: list[tuple[int, str | None]] = []
     text = _PERCENT_RE.sub(" ", s)
     for m in _MONEY_RE.finditer(text):
-        cur_raw, cur_k, k_raw, k_suffix = m.groups()
-        v = _to_int(cur_raw or k_raw, cur_k or k_suffix)
+        g = m.groupdict()
+        marker = g["pre"] or g["post"]
+        # #305: the currency the marker names, or None for a bare k figure. None is not
+        # "assume sterling" -- it is "the posting did not say", and the caller decides what
+        # that means, exactly as it already decides what an unmarked pay BASIS means.
+        currency = _CURRENCY_MARKERS.get(marker) if marker else None
+        raw = g["pre_amt"] or g["post_amt"] or g["k_amt"]
+        k = g["pre_k"] or g["post_k"] or g["k"]
+        v = _to_int(raw, k)
         if v is not None:
-            out.append(v)
-        # ...and the tail of a single-symbol range ("£30,000-40,000") is money too.
-        tail = _RANGE_TAIL_RE.match(text, m.end())
+            out.append((v, currency))
+        # ...and the tail of a single-symbol range ("£30,000-40,000") is money too, in the
+        # SAME currency as the head: a range names its currency once.
+        #
+        # Resume AFTER the post marker, not at the end of the match. The post branch matches
+        # its marker by lookahead, so `m.end()` sits ON the marker and the tail pattern --
+        # which expects a dash next -- could never match. "120,000 USD - 150,000" therefore
+        # lost its upper bound entirely and was REJECTED on 120,000 while the real top
+        # cleared the floor: the exact "ceiling stayed at the BOTTOM of the band" harm
+        # `_RANGE_TAIL_RE` exists to prevent, reintroduced by the fix for marker-stealing.
+        # The pre-marked spelling was unaffected, which is why the range tests did not see
+        # it -- every one of them marks the head.
+        tail = _RANGE_TAIL_RE.match(text, m.end("post") if g["post"] else m.end())
         if tail:
-            tv = _to_int(tail.group(1), tail.group(2))
+            tv = _to_int(tail.group("amt"), tail.group("k"))
             if tv is not None:
-                out.append(tv)
+                out.append((tv, currency))
     return out
 
 
-def _salary_ceiling(s: str) -> int | None:
-    """The TOP of the advertised pay, or None when nothing parses.
+class Ceiling(NamedTuple):
+    """What `_salary_ceiling` found: the same figure twice, in two currencies.
+
+    `gbp` is what the floor is compared against; `advertised` and `currency` are what the
+    advert actually said, which is what a reject message has to quote -- naming a converted
+    number beside a GBP floor would read as a straight comparison and hide the conversion
+    entirely. Named rather than a bare triple because two of the three fields are integers
+    that are equal on every sterling lead, so a positional mix-up would be invisible in
+    exactly the cases the suite is fullest of.
+    """
+    gbp: int
+    advertised: int
+    currency: str | None
+
+
+def _salary_ceiling(s: str) -> "Ceiling | None":
+    """The TOP of the advertised pay, or None for no opinion.
 
     The top, not the bottom, because a floor check must fail OPEN. Rejecting an
     "£80,000-£120,000" lead against a £90k floor on the strength of its lower bound
     would bin a job the user wants; only when even the best case is under the floor is
     the reject safe. `None` means "no opinion" and never rejects.
+
+    #305: "top" is decided on the CONVERTED value and never on the printed number, and the
+    distinction is not academic -- across a mixed-currency advert the biggest number and
+    the biggest amount of money are different rows. "$180,000 US / SEK 1,400,000 SE" has
+    its ceiling in dollars (£132,696) while the krona figure is the larger NUMBER
+    (£107,800), so choosing by number chose the bottom of the band and rejected against a
+    floor the advert cleared. Both figures are returned because the reject message has to
+    quote the advert's own, and the caller must not have to convert a second time.
     """
     amounts = _salary_amounts(s)
-    return max(amounts) if amounts else None
+    if not amounts:
+        return None
+    # The floors are denominated in GBP and the advert is not. Convert HERE, once, so the
+    # comparison below and the `max` above it are both in one currency.
+    valued = [(fx.to_gbp(amount, currency), amount, currency)
+              for amount, currency in amounts]
+    # ONE unvaluable figure abstains for the whole advert rather than being skipped. The
+    # ceiling is the largest of a set, and a set with an unknown member has no known
+    # largest: dropping the unknown would quietly compare against whatever remained and
+    # could reject on a figure that was never the top. Abstaining is the direction this
+    # module fails in everywhere else.
+    if any(gbp is None for gbp, _advertised, _currency in valued):
+        return None
+    return Ceiling(*max(valued, key=lambda row: row[0]))
 
 
 # #128: a WORD-BOUNDARY match, not `pat in text`. Plain substring containment treats
@@ -268,13 +559,29 @@ def _pay_reject(salary: str, basis: str, cfg) -> tuple[str, str] | None:
     `annual` here is how `£2,000 per week` came to be judged as a sub-90,000 salary; the
     caller defaults an UNMARKED salary deliberately and visibly, and nothing else should.
     """
-    amount = _salary_ceiling(salary)
-    if amount is None or basis not in _BASES:
+    parsed = _salary_ceiling(salary)
+    if parsed is None or basis not in _BASES:
         return None
+    # #305: already in the floors' currency. `_salary_ceiling` converts, because it has to
+    # convert anyway to know WHICH figure is the ceiling, and it owns the one abstention
+    # for a currency nothing can value -- an unknown currency is exactly the "no opinion"
+    # this module already returns for a bare number or an unknown basis, and for the same
+    # reason: a wrong reject bins a lead unseen. Converting again here would leave that
+    # guard sitting on a branch nothing could reach, which is what it did on the first cut
+    # of #305 -- the test named for it never got past `_salary_ceiling`.
+    #
+    # A `None` currency (a bare "90k") converts to itself, preserving the verdict every
+    # existing sterling lead in a vault was judged under.
+    amount, advertised, currency = parsed
     _markers, credible, key, noun = _BASES[basis]
     floor = getattr(cfg, key, 0)
     if amount >= credible and amount < floor:
-        return "reject", f"{noun} below floor: {amount} < {floor}"
+        # The message reports the CONVERTED figure, because the floor it is being compared
+        # against is denominated in the floor's currency. Naming the advertised number
+        # beside a GBP floor would read as a straight comparison and hide the conversion.
+        shown = (f"{amount}" if currency in (None, "GBP")
+                 else f"{amount} (from {advertised} {currency})")
+        return "reject", f"{noun} below floor: {shown} < {floor}"
     return None
 
 
@@ -294,8 +601,12 @@ def reverdict_notice(lead: dict, cfg) -> str | None:
     """
     salary = lead.get("salary") or ""
     was = _legacy_pay_basis(lead)
-    now = _pay_basis(salary, normalise_role_type(lead.get("role_type")),
-                     lead.get("role_type_source") or "") or "annual"
+    # The SAME default `classify` applies, not a second copy of it: the notice compares
+    # what the gate would decide, so a divergence here would report a change that never
+    # happens (or miss one that does).
+    _now = _pay_basis(salary, normalise_role_type(lead.get("role_type")),
+                      lead.get("role_type_source") or "")
+    now = _now if _now else _unmarked_basis(salary)
     if was == now:
         return None
     before, after = _pay_reject(salary, was, cfg), _pay_reject(salary, now, cfg)
@@ -361,8 +672,10 @@ def classify(lead: dict, cfg) -> tuple[str, str]:
     # Pay floors. `None` from `_pay_basis` means the lead states no basis, and falls
     # through to the annual branch -- byte-for-byte the pre-#223 behaviour for a bare
     # unmarked amount.
-    pay = _pay_reject(
-        salary, _pay_basis(salary, role_type, role_type_source) or "annual", cfg)
+    # `_unmarked_basis`, not a bare `or "annual"`: an advert naming no basis defaults to
+    # annual only when its figure is in the floors' own currency. See that function.
+    basis = _pay_basis(salary, role_type, role_type_source)
+    pay = _pay_reject(salary, basis if basis else _unmarked_basis(salary), cfg)
     if pay:
         return pay
 

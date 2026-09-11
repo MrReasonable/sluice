@@ -2587,3 +2587,105 @@ def test_a_duplicate_verdict_is_refused_and_the_unjudged_lead_is_reported(tmp_pa
         assert statuses[company] == verdict, (
             f"the digest would name {company} as {verdict} while the vault holds "
             f"{statuses[company]}")
+
+
+class _RateSource:
+    """A RateSource that records whether it was asked, and never touches the network."""
+
+    def __init__(self):
+        self.calls = []
+
+    def fetch(self, timeout):
+        self.calls.append(timeout)
+        return {"EUR": 0.5}
+
+
+def test_a_dry_run_never_refreshes_exchange_rates(monkeypatch, tmp_path):
+    """A dry run must leave no trace, and a refresh makes a request AND writes a file.
+
+    This repo has been bitten by a dry run creating state before: `sqlite3.connect` making
+    a 0-byte seen.db disarmed the relocation refusal for every later real run. A preview
+    that writes is a bug even when what it writes is benign.
+    """
+    from sluice.core import fx
+    monkeypatch.setattr(fx, "age_days", lambda: 400.0)      # stale enough to tempt it
+
+    src = _RateSource()
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", "Banker"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    run(v, TriageConfig(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+        no_llm=True, rate_source=src, dry_run=True)      # handed one, and still must not
+
+    assert src.calls == [], "a dry run must not fetch rates or write the cache"
+
+
+def test_a_run_refreshes_stale_exchange_rates_once_and_never_per_lead(monkeypatch, tmp_path):
+    """#305: rates are fetched ONCE at the start of a run, not while judging a lead.
+
+    The per-lead path must never touch the network -- triage runs unattended over
+    thousands of leads, and a fetch inside the judging loop is a hang waiting to happen.
+    """
+    from sluice.core import fx
+    monkeypatch.setattr(fx, "age_days", lambda: 400.0)      # cache is ancient
+    monkeypatch.setattr(fx, "refresh", lambda source, *a, **k: source.fetch(1) and True)
+
+    src = _RateSource()
+    v = Vault(str(tmp_path / "vault"))
+    # TWO leads, and the second one is what gives this test its name. With a single lead
+    # seated, one call is satisfied by a refresh in the per-lead loop exactly as by one
+    # before it -- so the assertion could not tell once-per-RUN from once-per-LEAD, and
+    # moving the fetch inside `for note in notes:` left the whole suite green.
+    _note(v, "acme.md", _fields("Acme", "Banker"))
+    _note(v, "beta.md", _fields("Beta", "Banker"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    run(v, TriageConfig(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+        no_llm=True, rate_source=src)
+
+    assert len(src.calls) == 1, (
+        f"expected exactly one refresh for a two-lead run, got {len(src.calls)} -- more "
+        "than one means the fetch is on the per-lead path")
+
+
+def test_a_run_with_fresh_rates_does_not_fetch(monkeypatch, tmp_path):
+    """A recently cached table is good enough. Rates move a few percent a year, far below
+    the precision a pay floor needs, so a daily run must not fetch on every invocation."""
+    from sluice.core import fx
+    monkeypatch.setattr(fx, "age_days", lambda: 0.5)        # fetched twelve hours ago
+
+    src = _RateSource()
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", "Banker"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    run(v, TriageConfig(), _Backend(), _cache(tmp_path), audit, statuses=("new",),
+        no_llm=True, rate_source=src)
+
+    assert src.calls == [], "a fresh cache must not trigger a network fetch"
+
+
+def test_a_run_given_no_rate_source_cannot_fetch_however_config_is_set(monkeypatch, tmp_path):
+    """The engine is offline BY CONSTRUCTION, not by reading a flag.
+
+    `rate_source` defaults to None, so a caller that drives `run()` directly -- which is
+    what the whole suite does -- cannot reach the network whatever its config says. The
+    decision lives in `Sluice.triage`, at the application boundary, beside the one that
+    sets `backend` to None under `--no-llm`.
+
+    Two earlier shapes were wrong and both are pinned here by contrast: reading
+    `cfg.refresh_fx_rates` inside `run()` made the engine reach for a module global, and
+    passing the CAPABILITY unconditionally put the fetch on the production path so every
+    e2e test reached the internet.
+    """
+    from sluice.core import fx
+    monkeypatch.setattr(fx, "age_days", lambda: 400.0)
+    called = []
+    monkeypatch.setattr(fx, "refresh", lambda *a, **k: called.append(1) or True)
+
+    cfg = TriageConfig()
+    cfg.refresh_fx_rates = True                             # opted in, and still offline
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _fields("Acme", "Banker"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",), no_llm=True)
+
+    assert called == [], "run() must not fetch unless a caller hands it a source"
