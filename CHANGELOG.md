@@ -40,6 +40,40 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.14.0](https://github.com/MrReasonable/sluice/compare/v2.13.0...v2.14.0) (2026-09-12)
+
+
+### Features
+
+* **triage:** fetch dossiers over a bounded pool ([4a02a15](https://github.com/MrReasonable/sluice/commit/4a02a153d8a210fea8df1d2be17353291a073795))
+
+#### What this changes for an existing install
+
+**Nothing, until you opt in.** `triage.dossier_concurrency` defaults to `1`, which is the
+fetch rate 2.13.0 had — one page in flight. At that value no thread pool is built at all.
+
+Raise it and triage fetches that many dossiers at once. It is opt-in rather than on by
+default because this drives an anti-fingerprint browser and there is no per-host cap: several
+leads from one board would point that many concurrent tabs at a single site, which is the
+behaviour that gets a session flagged. Leads sharing a url are already collapsed to one fetch,
+but distinct postings on one host are not, so the safe ceiling is a judgement about your lead
+mix rather than a number sluice can pick. Accepted range `1`–`16`; `0`, negatives and `true`
+are rejected at load (a YAML boolean would otherwise mean `1`, silently sequential).
+
+**One behaviour change that is NOT opt-in, and no setting restores the old shape.** Every
+dossier fetch for a run now happens *before* the first lead is applied, where fetching and
+applying used to interleave per lead. A run you interrupt part-way has therefore paid for more
+page loads while having written fewer vault statuses than 2.13.0 would have by the same point.
+Nothing is lost — the fetched dossiers are cached, and the next run reuses them — but an
+interrupted run makes less visible progress in the vault than it used to.
+
+Two smaller notes. A posting whose job description never arrived used to be fetched once per
+lead when two leads shared its url; it is now fetched once, at any concurrency including the
+default. And the dossier warning lines now name the lead's url alongside the host, so
+interleaved warnings can be attributed — reduced to scheme, host and path, with the query
+string, fragment, userinfo and port dropped, since a job link routinely carries tracking
+parameters and search terms.
+
 ## [2.13.0](https://github.com/MrReasonable/sluice/compare/v2.12.2...v2.13.0) (2026-09-11)
 
 
