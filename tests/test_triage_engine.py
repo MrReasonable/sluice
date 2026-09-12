@@ -1,6 +1,8 @@
 import json
 import os
 import re
+import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -8,7 +10,7 @@ import pytest
 from sluice.core import status as _status
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
-from sluice.triage.config import TriageConfig
+from sluice.triage.config import TriageConfig, DOSSIER_CONCURRENCY_MAX
 from sluice.core.dossier import DossierCache
 from sluice.triage import reverdict
 from sluice.triage.audit import AuditLog
@@ -2689,3 +2691,468 @@ def test_a_run_given_no_rate_source_cannot_fetch_however_config_is_set(monkeypat
     run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",), no_llm=True)
 
     assert called == [], "run() must not fetch unless a caller hands it a source"
+
+
+def test_dossier_fetches_run_concurrently_when_dossier_concurrency_is_set(tmp_path, titles):
+    """#309: the fetch phase is latency-bound (page load + `dossier_settle_ms`), so it
+    runs over a bounded pool rather than one lead at a time.
+
+    Fails against the sequential `for note in keeps: dossier_cache.get_or_build(...)`
+    loop this replaces: with one lead in flight at a time the peak occupancy is exactly
+    1, whatever `dossier_concurrency` says.
+
+    Each note needs its OWN url. `_fields` defaults them all to one, and
+    `DossierCache.cache_key` hashes the url -- four notes sharing it would be one cache
+    entry and so one fetch, leaving the peak at 1 however the loop ran.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(4):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    # A barrier, not a sleep: it asserts all four were in flight AT ONCE rather than that
+    # they happened to overlap for a moment, and a sequential implementation fails it in
+    # bounded time instead of passing or failing on machine speed.
+    gate = threading.Barrier(4, timeout=5)
+    state = {"never_all_in_flight": False}
+
+    def fetcher(lead):
+        try:
+            gate.wait()
+        except threading.BrokenBarrierError:
+            # Fewer than four ever arrived together, so the barrier timed out.
+            state["never_all_in_flight"] = True
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 4
+    run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+        statuses=("new",))
+
+    assert not state["never_all_in_flight"], (
+        "the four fetches were never in flight together: the fetch phase is sequential")
+
+
+def test_dossier_concurrency_is_clamped_at_the_consumer_not_only_the_loader(
+        tmp_path, titles):
+    """#309: `DOSSIER_CONCURRENCY_MAX` binds a `TriageConfig` built DIRECTLY.
+
+    `load_triage_config` raises for an out-of-range value, but ~150 tests and any library
+    caller construct `TriageConfig()` by hand and never reach the loader -- so a ceiling
+    enforced only there is enforced only for people who were already going to be fine.
+    `lead_layout` sets the precedent: validated at both ends.
+
+    Sized so the clamp is OBSERVABLE. With 20 groups and a requested 100, an unclamped
+    `min(concurrency, len(groups))` gives 20 workers; clamped it gives 16. The peak
+    therefore separates the two, which `peak <= 16` alone would not if the phase never
+    ran concurrently at all -- hence the lower bound below.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(20):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    lock = threading.Lock()
+    state = {"in_flight": 0, "peak": 0}
+
+    def fetcher(lead):
+        with lock:
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+        time.sleep(0.05)
+        with lock:
+            state["in_flight"] -= 1
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 100          # never through the loader, so never validated
+    run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+        statuses=("new",))
+
+    assert state["peak"] <= DOSSIER_CONCURRENCY_MAX, (
+        f"peak in-flight was {state['peak']}, above the {DOSSIER_CONCURRENCY_MAX} ceiling: "
+        "the clamp is loader-only and a hand-built config bypasses it")
+    assert state["peak"] > 1, (
+        "the fetch phase never ran concurrently, so the ceiling assertion above is vacuous")
+
+
+def test_dossier_concurrency_is_a_ceiling_not_a_target(tmp_path, titles):
+    """#309: never more than `dossier_concurrency` fetches in flight, whatever the lead
+    count.
+
+    This is the politeness half of the setting, not a performance one. The fetches drive
+    an anti-fingerprint browser and there is no per-host cap yet, so an unbounded pool
+    would burst a tab per lead at whatever board the night happened to be heavy on --
+    exactly the pattern that gets a session flagged.
+
+    Asserts the peak is EXACTLY the ceiling. `peak == 2` already implies the pairs
+    rendezvoused, so `never_paired` is belt-and-braces rather than the second half an
+    earlier docstring here claimed -- that argument described a `peak <= 2` form this
+    code does not use, and is removed rather than left reading as a checked mechanism.
+    What the test genuinely needed was the sleep in the fetcher below; without it the
+    barrier masked the ceiling's removal.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(8):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    # Sized to the ceiling: with 2 workers the 8 fetches pair off into 4 rendezvous. One
+    # worker never fills it (timeout -> broken); three or more would push `peak` past 2.
+    gate = threading.Barrier(2, timeout=5)
+    lock = threading.Lock()
+    state = {"in_flight": 0, "peak": 0, "never_paired": False}
+
+    def fetcher(lead):
+        with lock:
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+        try:
+            gate.wait()
+        except threading.BrokenBarrierError:
+            state["never_paired"] = True
+        # HOLD the window open past the rendezvous. Without this the barrier itself is
+        # what bounds the observed peak: a released worker decrements immediately, so a
+        # third or later worker lands after the window closed and `peak` reports the
+        # BARRIER's arity rather than the pool's. Measured -- deleting the ceiling
+        # (`workers = len(groups)`, 8 workers for 8 leads) passed 12 of 15 runs without
+        # this sleep and 0 of 12 with it.
+        time.sleep(0.05)
+        with lock:
+            state["in_flight"] -= 1
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 2
+    run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+        statuses=("new",))
+
+    assert not state["never_paired"], (
+        "fetches never paired up: the phase ran sequentially, so the ceiling below "
+        "would pass vacuously")
+    assert state["peak"] == 2, (
+        f"peak in-flight was {state['peak']} against a ceiling of 2")
+
+
+def test_two_leads_at_one_url_are_fetched_once_under_concurrency(tmp_path, titles):
+    """#309: leads sharing a url share a dossier cache entry, and must still cost ONE
+    fetch when the phase runs concurrently.
+
+    `cache_key` hashes the url deliberately, so that a re-scrape or a cross-post -- two
+    notes, one posting -- resolves to one entry (#109). Sequentially the second lead hits
+    `_fresh` and costs nothing. Naively parallelised, both miss, both fetch, and both
+    truncate-and-rewrite the SAME path: the saving is lost, a second tab opens at the
+    same host (the burst `dossier_concurrency` exists to prevent), and the interleaved
+    `json.dump`s can leave the entry unparseable.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    # Distinct filenames -> distinct slugs, so `index_by_slug` does NOT flag these as
+    # twins and both reach the fetch. Same url -> same cache key. That pairing is the
+    # whole point of the test.
+    for i in range(2):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(),
+                                      url="https://x/one-posting"))
+
+    lock = threading.Lock()
+    calls = []
+
+    def fetcher(lead):
+        with lock:
+            calls.append(lead.get("url"))
+        time.sleep(0.05)
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 4
+    run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+        statuses=("new",))
+
+    assert len(calls) == 1, (
+        f"one posting was fetched {len(calls)} times: the shared cache entry was raced")
+    # Every entry on disk must still parse. A torn write heals via `_fresh` refetching,
+    # but it lands in `census`'s `unreadable` bucket, which `doctor` calls a broken install.
+    for entry in (tmp_path / "dos").glob("*.json"):
+        json.loads(entry.read_text(encoding="utf-8"))
+
+
+def test_a_pool_that_refuses_work_degrades_the_remaining_leads_to_failures(
+        tmp_path, titles, monkeypatch):
+    """#309: a pool that will not accept more work must not abort the run.
+
+    `pool.submit` raises RuntimeError on thread exhaustion or a shutdown racing us. By
+    the time `_prefetch_dossiers` runs, the classify pass has ALREADY written to the
+    vault -- so letting it escape discards every dossier fetched so far and returns no
+    report at all, leaving an unattended run half-applied and silent on the only channel
+    a human reads. The arm degrades the REST to per-lead failures instead.
+
+    Untested until now: deleting the whole try/except and submitting bare left the full
+    suite green, because nothing else makes `submit` raise.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(4):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    real_pool = eng.ThreadPoolExecutor
+
+    class _RefusingPool:
+        """Accepts the first submit, then refuses -- so the run has BOTH a fetched lead
+        and rejected ones, and the report must show exactly one of each kind."""
+
+        def __init__(self, *a, **kw):
+            self._inner = real_pool(*a, **kw)
+            self._seen = 0
+
+        def submit(self, fn, *a, **kw):
+            self._seen += 1
+            if self._seen > 1:
+                raise RuntimeError("cannot schedule new futures after shutdown")
+            return self._inner.submit(fn, *a, **kw)
+
+        def shutdown(self, **kw):
+            self._inner.shutdown(**kw)
+
+    monkeypatch.setattr(eng, "ThreadPoolExecutor", _RefusingPool)
+
+    def fetcher(lead):
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 4
+    report = run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+                 statuses=("new",))
+
+    # The run COMPLETED -- that is the claim. A raise here would mean no report at all.
+    assert report is not None
+    assert len(report.failures) == 3, (
+        f"expected the 3 unscheduled leads reported, got {report.failures}")
+    for f in report.failures:
+        assert "cannot schedule new futures" in f, (
+            f"the refusal's own message was lost: {f}")
+    # And the one lead that WAS scheduled still reached the judge, so the arm degrades
+    # the rest rather than binning everything.
+    assert report.sent_to_judge == 1, (
+        f"the scheduled lead was lost too: sent_to_judge={report.sent_to_judge}")
+
+
+def _concurrency_run(tmp_path, accept, concurrency, name):
+    """One triage run over four identical leads, the third of which fails to fetch.
+
+    Completion order is deliberately INVERTED against lead order (lead 3 returns first,
+    lead 0 last) so that a report built from completion order rather than lead order
+    cannot accidentally match a sequential run's.
+    """
+    v = Vault(str(tmp_path / f"vault-{name}"))
+    for i in range(4):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    def fetcher(lead):
+        idx = int((lead.get("url") or "/0").rsplit("/", 1)[-1])
+        time.sleep(0.02 * (3 - idx))
+        # TWO failures, with DISTINCT messages, at leads 0 and 2. One failure gave the
+        # order claim nothing to be wrong about -- a single-element list is in order
+        # however it was built, so `report.failures.append` -> `.insert(0, ...)` survived
+        # the whole suite. Completion order is inverted against lead order by the sleep
+        # above, so lead 2 finishes before lead 0: any report built from completion order
+        # lands them reversed.
+        if idx in (0, 2):
+            raise RuntimeError(f"no route to host {idx}")
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / f"dos-{name}"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = concurrency
+    report = run(v, cfg, _Backend(), cache,
+                 AuditLog(str(tmp_path / f"audit-{name}.jsonl")), statuses=("new",))
+    # `note.ref` is a path, so it carries the per-run vault dir. Strip it: what must match
+    # across the two runs is the failure LINE, not where the fixture happened to live.
+    failures = [f.replace(str(v.dir), "") for f in report.failures]
+    return report, failures
+
+
+def test_the_default_config_starts_no_threads(tmp_path, titles, monkeypatch):
+    """#309: at the shipped default the fetch path must be free of thread machinery.
+
+    `_prefetch_dossiers` short-circuits to a plain loop at `concurrency <= 1`, and the
+    claim that this keeps the default path thread-free is otherwise only prose. Pinned
+    with a sentinel rather than an assertion about behaviour because that IS the claim:
+    a one-worker pool would produce identical results and still be a pool.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(4):
+        _note(v, f"co{i}.md", _fields(f"Co{i}", accept[0].title(), url=f"https://x/{i}"))
+
+    def _boom(*_a, **_k):
+        raise AssertionError("the default path built a thread pool")
+
+    monkeypatch.setattr(eng, "ThreadPoolExecutor", _boom)
+
+    cfg = TriageConfig()                      # dossier_concurrency left at its default
+    cfg.accept_titles = list(accept)
+    report = run(v, cfg, _Backend(), _cache(tmp_path),
+                 AuditLog(str(tmp_path / "audit.jsonl")), statuses=("new",))
+
+    # Non-vacuous: the run must actually have reached the fetch phase, or a pool would
+    # not have been built for reasons having nothing to do with the short-circuit.
+    assert report.sent_to_judge == 4
+
+
+def test_an_ambiguous_twin_is_never_fetched_under_concurrency(tmp_path, titles):
+    """#309: the twin rule survives the fetch being hoisted into a pool.
+
+    "A twin must not even be FETCHED" is enforced in two places now -- the `targets`
+    filter inside `_prefetch_dossiers` and the caller's own `continue` -- and nothing
+    asserted the fetch half. Two kept notes at ONE slug are refused on `index_by_slug`'s
+    shared verdict because a verdict could not be routed back to either.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    # One filename in two directories -> one slug on two notes, which a single directory
+    # cannot express. The recursive scan (#1) is what makes this reachable.
+    _note(v, "twin.md", _fields("TwinCo", accept[0].title(), url="https://x/twin-a"),
+          subdir="a")
+    _note(v, "twin.md", _fields("TwinCo", accept[0].title(), url="https://x/twin-b"),
+          subdir="b")
+    _note(v, "solo.md", _fields("SoloCo", accept[0].title(), url="https://x/solo"))
+
+    lock = threading.Lock()
+    fetched = []
+
+    def fetcher(lead):
+        with lock:
+            fetched.append(lead.get("url"))
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 4
+    report = run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+                 statuses=("new",))
+
+    assert fetched == ["https://x/solo"], (
+        f"a twin was fetched for a verdict that could not be routed back: {fetched}")
+    assert any("twin" in f.lower() or "slug" in f.lower() for f in report.failures), (
+        f"the refused twins were skipped without being reported: {report.failures}")
+
+
+def test_an_interrupt_during_the_fetch_phase_abandons_the_queued_tail(tmp_path, titles):
+    """#309: an interrupt must stop the run, not merely stop reporting on it.
+
+    Every future is submitted before the first result is collected, and a plain
+    `with ThreadPoolExecutor(...)` exits via `shutdown(wait=True)` with
+    `cancel_futures=False` -- so the workers drain the WHOLE queue on the way out. On a
+    nightly run of a hundred uncached leads that turns Ctrl-C into a silent multi-minute
+    hang that still fetches every remaining page. Pre-#309 an interrupt stopped at the
+    current lead.
+
+    KeyboardInterrupt is the real shape (it is what an operator sends) and it is a
+    BaseException, so `_one`'s `except Exception` does not swallow it: the Future carries
+    it and `fut.result()` re-raises it here, on the collection thread. What this asserts
+    is what happens NEXT -- the queued tail must be abandoned rather than drained.
+    """
+    accept, _reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    for i in range(20):
+        _note(v, f"co{i:02d}.md", _fields(f"Co{i:02d}", accept[0].title(),
+                                          url=f"https://x/{i:02d}"))
+
+    lock = threading.Lock()
+    started = []
+
+    def fetcher(lead):
+        with lock:
+            started.append(lead.get("url"))
+        if (lead.get("url") or "").endswith("/00"):
+            raise KeyboardInterrupt("operator pressed ctrl-c")
+        time.sleep(0.05)
+        return {"jd": {"markdown": "j"}, "glassdoor": {}}
+
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7, fetcher=fetcher,
+                         clock=lambda: datetime(2026, 7, 7))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    cfg.dossier_concurrency = 2
+    with pytest.raises(KeyboardInterrupt):
+        run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
+            statuses=("new",))
+
+    # Generous bound: with 2 workers only a couple can be in flight when the interrupt
+    # lands, and threads already running cannot be killed. What must NOT happen is all 20
+    # being fetched, which is what draining the queue looks like.
+    assert len(started) < 20, (
+        f"the interrupt still fetched all {len(started)} leads: the queued tail was "
+        "drained instead of abandoned")
+
+
+def test_a_failed_dossier_fetch_is_reported_against_its_own_lead_under_concurrency(
+        tmp_path, titles):
+    """#309: one lead's fetch raising must skip that lead and nothing else.
+
+    This is what the catch-and-carry in `_prefetch_dossiers` exists for, and it was the
+    change's central untested claim: raising out of a worker would abort the collection
+    loop and take every other lead's dossier with it.
+    """
+    accept, _reject = titles
+    report, failures = _concurrency_run(tmp_path, accept, 4, "conc")
+
+    assert len(failures) == 2, f"expected exactly two failed leads, got {failures}"
+    assert "co0.md" in failures[0] and "co2.md" in failures[1], (
+        f"failures are not in LEAD order: {failures}")
+    assert "no route to host 0" in failures[0] and "no route to host 2" in failures[1], (
+        f"a fetch's own message was lost or misattributed: {failures}")
+    # The other two still went to the judge -- the batch survived the bad leads.
+    assert report.sent_to_judge == 2, (
+        f"two bad fetches cost {4 - report.sent_to_judge} leads, not 2")
+
+
+def test_a_concurrent_run_reports_exactly_what_a_sequential_one_does(tmp_path, titles):
+    """#309: the fetch/apply split's whole safety claim, asserted rather than argued.
+
+    Every `report` mutation stays in the sequential apply loop walking `keeps` in order,
+    so concurrency must not reach the report at all -- not the failure text, not its
+    position, and not the insertion order of `counts`, which `cli.py` prints as a dict
+    verbatim and is therefore user-visible output.
+    """
+    accept, _reject = titles
+    seq_report, seq_failures = _concurrency_run(tmp_path, accept, 1, "seq")
+    con_report, con_failures = _concurrency_run(tmp_path, accept, 4, "con")
+
+    # ABSOLUTE first, then the comparison. Comparing the two runs alone cannot see a
+    # SYMMETRIC reordering -- both runs execute the same code, so a report built from
+    # completion order reverses BOTH and the equality still holds. Measured: with only
+    # the comparison, `report.failures.append` -> `.insert(0, ...)` survived the suite.
+    # Lead 2's fetch completes before lead 0's (the runner inverts completion order), so
+    # lead order here is a fact about the apply loop, not about scheduling luck.
+    assert [f.split(":")[0].rsplit("/", 1)[-1] for f in con_failures] == ["co0.md", "co2.md"], (
+        f"the concurrent run reported failures out of LEAD order: {con_failures}")
+
+    assert seq_failures == con_failures, "failure lines differ in text or order"
+    assert list(seq_report.counts.items()) == list(con_report.counts.items()), (
+        "counts differ in value or insertion order")
+    assert seq_report.surfaced == con_report.surfaced, "the digest would name a different set"
+    assert seq_report.sent_to_judge == con_report.sent_to_judge
+    assert list(seq_report.unjudgeable_by.items()) == list(con_report.unjudgeable_by.items())
+    # Non-vacuous: the comparison must be over a run that actually failed something and
+    # actually judged something, or two empty reports would satisfy every line above.
+    assert len(seq_failures) == 2 and seq_report.sent_to_judge == 2

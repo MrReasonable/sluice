@@ -64,6 +64,7 @@ sweep keyed on list defaults.
 | `refresh_fx_rates` | `false` | opt-in: lets a run fetch live exchange rates **once**, at its start, and only when the cached table is missing or over a week old — never while judging a lead. Off by default so an install that never made outbound requests does not start on upgrade; the conversion below works from a table pinned in the release either way |
 | `batch_size` | `5` | leads per judge call |
 | `ttl_days` | `7` | **dossier cache** TTL — unrelated to the root `lead_ttl_days` |
+| `dossier_concurrency` | `1` | how many dossier fetches run at once, `1`–`16`. `1` is one page in flight, the shipped rate. Raising it points that many concurrent tabs at job boards **from one browser profile**, and there is no per-host cap, so pick it for your lead mix. Rejects `0`, negatives, and `true` (a YAML boolean would mean `1` — sequential — silently) |
 | `audit_jsonl` | `""` | resolves to `<XDG_STATE_HOME>/sluice/triage-audit.jsonl`; env override `TRIAGE_AUDIT` |
 | `rejected_note` | `"Job Applications/Rejected Leads Audit.md"` | rolling digest note in the vault |
 | `primary_backend` / `fallback_backend` | `"claude-max"` / `"deepseek"` | which provider fills each role — see `--backend` in `docs/USAGE.md` |

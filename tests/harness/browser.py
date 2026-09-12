@@ -12,6 +12,8 @@ Keying on the URL (not on the extractor JS string) is what lets a shipped
 source's real `extractor_js` flow through this fake untouched: whatever script
 the source runs, this returns that URL's canned rows.
 """
+import threading
+
 from sluice.core import plugins
 
 FETCHER_SEAM = "fetcher"
@@ -29,11 +31,31 @@ class ScriptedBrowserClient:
         self._tabs: dict[str, str] = {}
         self._seq = 0
         self.closed: list = []
+        # #309 made the Fetcher seam concurrent (triage fetches dossiers over a pool), so
+        # this fake now stands in for something callers may drive from several threads.
+        # `self._seq += 1` is read-modify-write and is NOT atomic, so two threads could be
+        # handed the SAME tab id -- and each would then read back the other's url through
+        # `self._tabs`, which is the one thing a browser fake must never do: the tests
+        # that would break are the ones asserting a tab landed where it was sent.
+        #
+        # LATENT, and deliberately guarded anyway. Nothing drives this fake concurrently
+        # today (the #309 tests inject a plain closure), and the race is not currently
+        # REPRODUCIBLE either: a guard written for it passed 5 runs out of 5 against the
+        # unsynchronised version, even with sys.setswitchinterval at 1e-6, because CPython
+        # does not preempt inside a bump this short. So there is deliberately NO test --
+        # one that cannot fail against the defect it names asserts nothing.
+        #
+        # The lock stays because that atomicity is an accident of today's interpreter, not
+        # a language guarantee: nothing in the data model promises it, and a free-threaded
+        # build removes it outright. Correctness by construction, on a fake where a lock
+        # costs nothing.
+        self._lock = threading.Lock()
 
     def create_tab(self, url):
-        self._seq += 1
-        tid = f"tab-{self._seq}"
-        self._tabs[tid] = url
+        with self._lock:
+            self._seq += 1
+            tid = f"tab-{self._seq}"
+            self._tabs[tid] = url
         return tid
 
     def evaluate(self, tid, js):

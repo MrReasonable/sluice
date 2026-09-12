@@ -23,6 +23,8 @@ pass sets to the store-issued `note.slug` -- NOT the cache's storage key, which 
 a url hash two leads at one page deliberately share. Two kept leads at one slug are
 refused outright and reported, on `index_by_slug`'s shared verdict; see there.
 """
+from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -42,6 +44,7 @@ from sluice.triage import resolve, reverdict
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
+from sluice.triage.config import DOSSIER_CONCURRENCY_MAX
 from sluice.triage.judge import judge
 from sluice.triage.prompt import build_system_prompt_from
 
@@ -151,6 +154,155 @@ class TriageReport:
     # notification channel, and return before the summary and the failures line saying
     # so. Found by a reviewer and independently while reading the CLI back.
     reverdict_deferred: bool = False
+
+
+class _FetchFailed:
+    """A fetch that raised, reduced to the text the caller prints.
+
+    Named rather than carrying the exception itself, for two reasons. The live exception
+    keeps `__traceback__` alive, and those frames hold `app.py`'s `fetch` locals -- the
+    whole settled page body -- for as long as the result dict lives, which is now the
+    entire prefetch AND apply phase rather than one `except` block. And an exception in
+    the success channel makes the producer/consumer widths drift apart (`except
+    Exception` here, `isinstance(..., BaseException)` there) while the discriminator is
+    invisible in the signature.
+
+    `str(exc)`, not a formatted variant: the caller's line is `dossier {ref}: {message}`
+    and a sequential run produced exactly `str(exc)` there. Changing it would change
+    operator-visible output.
+    """
+
+    __slots__ = ("message",)
+
+    def __init__(self, exc):
+        self.message = str(exc)
+
+
+def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
+    """#309: build every kept lead's dossier, up to `concurrency` fetches in flight.
+
+    Returns ``{index into keeps: dossier | _FetchFailed}``. Keyed by index because the
+    caller looks results up by its own `enumerate(keeps)` position -- that, and nothing
+    about slug uniqueness, is why an index is the key.
+
+    INVARIANT, and it is load-bearing: the `n.slug not in ambiguous` filter here and the
+    caller's `continue` on the same condition must agree. They are two spellings of one
+    rule ("a twin must not even be FETCHED"), and if they ever drift, `prefetched[i]`
+    raises KeyError mid-run -- after the classify pass has already written to the vault.
+
+    Exceptions are CAUGHT and returned as `_FetchFailed`, not raised. Raising would abort
+    the collection loop on the first bad lead and take the whole prefetch with it,
+    replacing the per-lead isolation the sequential loop had with an all-or-nothing run.
+    (Order is not the reason: results are collected in target order either way.) What
+    this preserves is that failures reach `report.failures` in `keeps` order with the
+    wording a sequential run produced -- every `report` mutation still happens on one
+    thread, in the caller's loop.
+
+    ONE FETCH PER CACHE KEY, not per lead. `cache_key` hashes the url so that two leads
+    at one posting -- a re-scrape, a cross-post -- share one entry (#109). Grouping is
+    what keeps that true here: without it both miss, both fetch, and both
+    truncate-and-rewrite the same path concurrently.
+
+    It is a strict improvement on the sequential path rather than a restoration of it,
+    which is worth stating because the obvious wording overclaims. Sequentially the
+    second lead costs nothing only when the FIRST fetch produced a usable JD: `_fresh`
+    ends in `jd_arrived(cached)` and `get_or_build` persists nothing when the JD never
+    arrived, so a JD-less posting was fetched once PER LEAD. Grouping collapses that to
+    one fetch at every concurrency, the default included.
+
+    `concurrency <= 1` takes a plain loop rather than a one-worker pool: it is the
+    default, and it keeps that path free of thread machinery entirely, so the sequential
+    behaviour cannot drift as the pool changes. `len(by_key) <= 1` joins it because a
+    single unit of work has nothing to overlap with.
+    """
+    targets = [(i, n) for i, n in enumerate(keeps) if n.slug not in ambiguous]
+    by_key = {}
+    for i, note in targets:
+        by_key.setdefault(dossier_cache.cache_key(note.fm), []).append((i, note))
+
+    results = {}
+
+    def _one(note):
+        try:
+            return dossier_cache.get_or_build(note.fm)
+        except Exception as e:   # noqa: BLE001 -- reduced to _FetchFailed, see its docstring
+            return _FetchFailed(e)
+
+    def _fan(group, got):
+        """Give every lead sharing this key its own copy of the result.
+
+        Copied, not aliased -- and this is DEFENCE IN DEPTH, stated as such because an
+        earlier version of this docstring claimed it was load-bearing and that claim was
+        false. Measured: the apply loop REBINDS (`d = {**d, ...}`) rather than assigning
+        into the dossier, `slim()` copies again, and no path in `sluice/triage/` or
+        `core/dossier.py` writes into one -- so removing the copy leaves the suite green
+        today. What it buys is that a sequential run gets independent objects for free
+        (the second lead re-reads the cache file) and this keeps that true, so a future
+        in-place edit cannot silently make one lead's dossier depend on another's having
+        been applied first. Nothing pins it; it is cheap insurance, not a checked
+        mechanism, and it should not be cited as one.
+        """
+        for n, (i, _note) in enumerate(group):
+            results[i] = got if (n == 0 or isinstance(got, _FetchFailed)) else deepcopy(got)
+
+    if concurrency <= 1 or len(by_key) <= 1:
+        for group in by_key.values():
+            _fan(group, _one(group[0][1]))
+        return results
+
+    groups = list(by_key.values())
+    # Clamped at the CONSUMER as well as the loader, on `lead_layout`'s precedent: the
+    # loader raises for an out-of-range value, but ~150 tests and any library caller build
+    # a `TriageConfig()` directly and never reach it. Clamped rather than raised because
+    # this runs AFTER the classify pass has written to the vault -- refusing here would
+    # abandon a half-applied run over a number we can simply bound.
+    if concurrency > DOSSIER_CONCURRENCY_MAX:
+        _log.warning("triage: dossier_concurrency %d exceeds the %d ceiling; using %d",
+                     concurrency, DOSSIER_CONCURRENCY_MAX, DOSSIER_CONCURRENCY_MAX)
+        concurrency = DOSSIER_CONCURRENCY_MAX
+    workers = min(concurrency, len(groups))
+    # Announced, because this phase is otherwise a silent barrier: nothing is applied
+    # until every fetch returns, and the per-lead fetch warnings that used to arrive in
+    # lead order are now interleaved across workers. On a slow run this line is the only
+    # thing telling an operator what the process is waiting on.
+    #
+    # No timeout on `fut.result()` deliberately. There is no honest number here: Camofox
+    # bounds its own calls (`_TIMEOUT`), a different Fetcher may legitimately be slower,
+    # and a wrong guess would kill real work mid-fetch. Bounding a call is the Fetcher's
+    # job, not this loop's.
+    _log.info("triage: fetching %d dossier(s), %d at a time", len(groups), workers)
+
+    # An explicit executor, NOT `with`: `__exit__` is `shutdown(wait=True)` with
+    # `cancel_futures=False`, and every future is submitted before the first result is
+    # collected -- so an interrupt at `fut.result()` joins the workers while they drain
+    # the whole remaining queue. Ctrl-C on a hundred-lead run would hang for minutes and
+    # still fetch every page, where pre-#309 it stopped at the current lead.
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        pending = []
+        for n, group in enumerate(groups):
+            try:
+                pending.append((group, pool.submit(_one, group[0][1])))
+            except RuntimeError as exc:
+                # The pool refused more work -- thread exhaustion, or a shutdown racing
+                # us. Degrade the REST to per-lead failures instead of letting this
+                # escape: by now the classify pass has already written to the vault, and
+                # an exception out of here discards every dossier already fetched and
+                # returns no report at all, so an unattended run would leave a
+                # half-applied vault and say nothing on the only channel a human reads.
+                _log.error("triage: could not schedule %d remaining dossier fetch(es): %s",
+                           len(groups) - n, exc)
+                for rest in groups[n:]:
+                    _fan(rest, _FetchFailed(exc))
+                break
+        for group, fut in pending:
+            _fan(group, fut.result())
+    finally:
+        # cancel_futures drops whatever has not STARTED; threads already running cannot
+        # be killed, so the wait is bounded by the fetches in flight rather than by every
+        # lead left in the queue. A no-op on the normal path, where all futures are done.
+        pool.shutdown(wait=True, cancel_futures=True)
+    return results
 
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
@@ -658,18 +810,39 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         for msg in ambiguous_slug_warnings("triage: kept lead", ambiguous):
             _log.warning("%s", msg)
             report.failures.append(msg)
-        for note in keeps:
+        # #309: the FETCH is hoisted out of the loop below and run over a bounded pool;
+        # everything after it stays exactly where it was, one lead at a time. That split
+        # is the whole safety argument, so what the body below does is the evidence for
+        # it: it writes to the vault through BOTH `apply_classification` and
+        # `_observe_role_type` (which calls `update_fields`), mutates `report.counts` and
+        # `report.unjudgeable_by`, and appends to `report.failures`. Concurrent, those
+        # would race the vault and make the counts depend on completion order.
+        #
+        # `get_or_build` is the other half: network-bound, and touching one cache file
+        # PER URL -- not per lead. Two leads at one posting share that file by design
+        # (#109), which is why `_prefetch_dossiers` fetches once per cache key rather
+        # than once per lead.
+        #
+        # NOTE the hoist itself is unconditional: at any concurrency, every fetch now
+        # happens before the first apply, where the two used to interleave per lead.
+        prefetched = _prefetch_dossiers(
+            keeps, ambiguous, dossier_cache, cfg.dossier_concurrency)
+        for i, note in enumerate(keeps):
             if note.slug in ambiguous:
                 # BEFORE get_or_build, on the same reasoning apply/select.py and cv/engine.py
                 # give for placing it before their own eligibility checks: what is wrong is
                 # the IDENTITY, which no later check inspects -- and a twin must not even be
                 # FETCHED for a judgment that could not be routed back to it.
                 continue
-            try:
-                d = dossier_cache.get_or_build(note.fm)
-            except Exception as e:
-                report.failures.append(f"dossier {note.ref}: {e}")
+            fetched = prefetched[i]
+            # The fetch's failure is CARRIED rather than raised in the worker, so it
+            # surfaces here in the original lead order and with the same message a
+            # sequential run produced. Failure isolation is unchanged: one lead's bad
+            # fetch skips that lead, never the batch.
+            if isinstance(fetched, _FetchFailed):
+                report.failures.append(f"dossier {note.ref}: {fetched.message}")
                 continue
+            d = fetched
             # The JD never arrived (#169). Spending a judge call here buys a verdict on
             # page chrome -- and because "unjudgeable" used to collapse into `research`,
             # the nightly run over `_status.DEFAULT_TRIAGE_STATUSES` re-selected the lead

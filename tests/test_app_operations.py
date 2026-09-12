@@ -69,6 +69,69 @@ def test_dossier_cache_fetches_jd_via_the_fetcher_seam(tmp_path, titles, monkeyp
     assert d["jd"]["markdown"] == "JD BODY"
 
 
+def test_the_fetcher_seam_is_constructed_once_under_concurrent_resolution(monkeypatch):
+    """#309: `_resolve` memoizes a seam PROCESS-WIDE, and that memo is check-then-act.
+
+    Triage's pooled fetch and `mcp serve` both reach a shared `Sluice` from several
+    threads, so the bare `if seam not in self._cache` would let every thread miss and
+    every thread construct. `_cache_lock` double-checks it; this asserts the count.
+
+    Driven through the real seam -- a factory REGISTERED under a throwaway name, resolved
+    by `app.fetcher()` -- rather than by patching `app.fetcher` itself. An earlier version
+    of this test patched the method, which bypasses `_resolve` entirely: it exercised a
+    per-call lock in the dossier closure that the process-wide memo had already made
+    redundant, so it could only fail in a shape production does not have.
+
+    `Event().wait` rather than `time.sleep`: the window has to stay open long enough for
+    every thread to get past the check, and sibling tests neuter `time.sleep`.
+    """
+    import threading
+
+    from sluice.core import plugins
+
+    builds = []
+    counter = threading.Lock()
+
+    def slow_factory(_cfg):
+        with counter:
+            builds.append(1)
+        threading.Event().wait(0.05)
+        return _FakeTab()
+
+    name = "fake-counting-fetcher"
+    # COPY the seam's mapping first. `plugins.register` mutates the process-wide
+    # `_REGISTRY`, and this module is outside the autouse isolation fixture that covers
+    # the functional and e2e tiers -- so without this the fake outlives the test and a
+    # later `Sluice.available("fetcher")` reports it, making registry contents depend on
+    # test ORDER. monkeypatch restores the original mapping at teardown.
+    # `.get`, not `[...]`: the seam is populated lazily by `_import_plugins`, so the key
+    # may not exist yet when this test runs first -- indexing raised KeyError. monkeypatch
+    # restores the original mapping at teardown, deleting the key again if it was absent.
+    monkeypatch.setitem(plugins._REGISTRY, "fetcher",
+                        dict(plugins._REGISTRY.get("fetcher", {})))
+    plugins.register("fetcher", name, slow_factory)
+    cfg = Config()
+    cfg.fetcher = name
+    app = Sluice(cfg, resolve_host=lambda h: [FIXTURE_ADDR])
+
+    resolved = []
+    def go():
+        resolved.append(app.fetcher())
+
+    threads = [threading.Thread(target=go) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(builds) == 1, (
+        f"the Fetcher was constructed {len(builds)} times under 4 concurrent resolutions; "
+        "_resolve's memo is racing")
+    # Non-vacuous in the other direction: all four threads must have got the SAME object,
+    # or a count of 1 could coexist with three threads seeing nothing.
+    assert len(resolved) == 4 and len(set(map(id, resolved))) == 1, (
+        "the four threads did not all observe one shared client")
+
 def test_dossier_cache_opens_no_browser_without_a_url(tmp_path, titles):
     class _Boom:
         def create_tab(self, url): raise AssertionError("must not be called")

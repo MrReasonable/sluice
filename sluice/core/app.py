@@ -30,6 +30,7 @@ an LLM backend just by existing. `sluice triage run --no-llm` still touches no b
 """
 import json
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import date
@@ -255,7 +256,7 @@ _SEAMS = (_STORE_SEAM, _FETCHER_SEAM, _RENDERER_SEAM, _BACKEND_SEAM, _RATES_SEAM
 _SETTLE_INTERVAL_MS = 250
 
 
-def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host=""):
+def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host="", url=""):
     """Poll `document.body.innerText` until it stops changing, or the budget runs out.
 
     Returns the LONGEST read seen, not the last, and that is a correctness rule rather than a
@@ -300,6 +301,10 @@ def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host=""):
     without a judgement about posting length -- which `min_jd_chars` deliberately does not ship
     -- so the fact is recorded instead of guessed at.
     """
+    # Lazy, matching `dossier_cache`'s own import of it: app.py keeps core imports
+    # out of module scope so an offline command never drags them in.
+    from sluice.core import urlguard
+
     try:
         got = c.evaluate(tid, "document.body.innerText")
     except Exception:
@@ -357,8 +362,9 @@ def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host=""):
             # 0 and refused at 5000.
             if not best.strip():
                 return nxt
-            _log.warning("dossier body probe failed mid-settle host=%s, keeping the longest "
-                         "read of %d chars", host or "?", len(best.strip()))
+            _log.warning("dossier body probe failed mid-settle host=%s url=%s, keeping the "
+                         "longest read of %d chars", host or "?", urlguard.for_log(url),
+                         len(best.strip()))
             return best
         if len(nxt.strip()) > len(best.strip()):
             best = nxt
@@ -370,8 +376,9 @@ def _settle_body(c, tid, budget_ms, sleep=None, guard=None, host=""):
         # Distinguishable in the log from "this board publishes nothing", which is the whole
         # point: a truncated mid-render JD and a genuinely short posting are identical in the
         # returned value and only this line separates them.
-        _log.warning("dossier body never settled within %dms host=%s, using the longest of "
-                     "%d chars", int(budget_ms), host or "?", len(best.strip()))
+        _log.warning("dossier body never settled within %dms host=%s url=%s, using the "
+                     "longest of %d chars", int(budget_ms), host or "?", urlguard.for_log(url),
+                     len(best.strip()))
     return best
 
 
@@ -571,26 +578,45 @@ class Sluice:
         # resolver would put an off switch for the SSRF guard under a YAML key.
         self._resolve_host = resolve_host
         # Cached per seam for the process's WHOLE lifetime (see _resolve) -- correct only
-        # because no adapter factory _resolve can reach has construction-time side
-        # effects. Deliberately NOT a list of which ones: the parenthetical that used to
-        # sit here named two factories and was already missing a third when a fourth
-        # arrived. A one-shot CLI invocation never exercised
-        # that fact; a long-lived caller (`mcp serve`, sluice/mcpserver.py) depends on it.
+        # because no adapter factory _resolve can reach has a construction-time side effect
+        # that REPEATS BADLY. Narrowed from a flat "no side effects" by #309, which found
+        # one: `Camofox.__init__` emits the CAMOFOX_SESSION-without-CAMOFOX_USER warning
+        # and `get_logger` does not dedup, so each construction reprints it. Harmless under
+        # reuse -- which is why the memo is still correct -- but the flat claim was false,
+        # and the next factory's side effect may not be harmless. Deliberately NOT a list
+        # of which factories are reachable: the parenthetical that used to sit here named
+        # two and was already missing a third when a fourth arrived. A one-shot CLI
+        # invocation never exercised that fact; a long-lived caller (`mcp serve`,
+        # sluice/mcpserver.py) depends on it.
         # A future adapter factory with a construction-time side effect must either stay
         # free of one or revisit this cache.
         self._cache: dict = {}
+        # Guards the memo above, not its contents: construction is what must happen once.
+        self._cache_lock = threading.Lock()
 
     # ── adapter resolution ───────────────────────────────────────────────────
     def _resolve(self, seam: str, name: str, cfg):
         if seam in self._overrides:
             return self._overrides[seam]
         if seam not in self._cache:
-            # Import the plugin package so its members self-register. Done here rather
-            # than at module scope so that merely importing `core.app` stays free of
-            # browser/vault/backend imports.
-            _import_plugins(seam)
-            factory = plugins.get(seam, name)   # raises UnknownAdapter, listing valid names
-            self._cache[seam] = factory(cfg)
+            # Double-checked under the seam lock (#309). This memo is the PROCESS-WIDE
+            # one, and it is the real check-then-act: the dossier fetch closure guards
+            # its own per-call client, but that only covers one caller of one seam, so
+            # every other concurrent seam user would have to rediscover the same fix.
+            # Guarding here covers all of them at the point the invariant lives.
+            #
+            # Reachable concurrently today: `mcp serve` builds ONE shared Sluice and
+            # dispatches tools on distinct worker threads (see sluice/mcpserver.py), and
+            # triage's pooled dossier fetch is the second such caller.
+            with self._cache_lock:
+                if seam not in self._cache:
+                    # Import the plugin package so its members self-register. Done here
+                    # rather than at module scope so that merely importing `core.app`
+                    # stays free of browser/vault/backend imports.
+                    _import_plugins(seam)
+                    # raises UnknownAdapter, listing valid names
+                    factory = plugins.get(seam, name)
+                    self._cache[seam] = factory(cfg)
         return self._cache[seam]
 
     def store(self):
@@ -741,6 +767,25 @@ class Sluice:
         # `or` the module default: self._resolve_host is None unless a test injects one.
         resolve = self._resolve_host or urlguard._resolve
         cam = {}
+        # #309: triage may now call `fetch` from several threads at once, and the lazy
+        # init below is check-then-act -- several threads miss the cache and each
+        # constructs its own client.
+        #
+        # Deliberately NOT claiming a leaked browser here: `Camofox()` reads env and
+        # stores a base_url, opening no connection and no browser (`_api` builds a
+        # urllib request per call), so the losing objects would be garbage rather than
+        # leaked processes.
+        #
+        # NO per-call lock here, deliberately. An earlier cut of #309 guarded this memo
+        # with its own `cam_lock`, arguing that concurrent fetches would otherwise build
+        # N clients and print N copies of Camofox's misconfiguration warning. That race
+        # is gone: `_resolve` memoizes the Fetcher PROCESS-WIDE under `_cache_lock`, so
+        # `self.fetcher()` hands every thread the same already-built object and the
+        # assignment below is idempotent whoever wins. Keeping the lock would have left
+        # fourteen lines describing an impossible race, pinned by a test that patched
+        # `app.fetcher` and so could only fail in a shape production does not have.
+        # `test_the_fetcher_seam_is_constructed_once_under_concurrent_resolution` pins the
+        # real guarantee at the place that actually provides it.
 
         def _refuse(reason, host=""):
             """Log and RAISE. Never returns.
@@ -775,6 +820,10 @@ class Sluice:
                 pre = urlguard.check_url(url, allow_hosts=allow, resolve=resolve)
                 if not pre.allowed:
                     _refuse(pre.reason, pre.host)
+                # `cam` is a per-call convenience only -- it saves re-entering
+                # `_resolve` for each lead. Racing threads assign the SAME object (the
+                # process-wide memo already built it), so this needs no lock: the write
+                # is idempotent, not a construction.
                 if "client" not in cam:
                     cam["client"] = self.fetcher()
                 c = cam["client"]
@@ -859,7 +908,8 @@ class Sluice:
                     # one extra evaluate and one interval -- not the whole budget, which would
                     # be added to every dossier fetch in a run.
                     md = _settle_body(c, tid, self.config.dossier_settle_ms,
-                                      self._sleep, guard=_check_landed, host=pre.host)
+                                      self._sleep, guard=_check_landed, host=pre.host,
+                                      url=url)
                     if not isinstance(md, str):
                         # Same reasoning as no-tab: a non-string body used to become a
                         # cached empty JD indistinguishable from a real empty one.
@@ -910,8 +960,8 @@ class Sluice:
                             # an operator's problem. Worded to avoid "failed" and
                             # "refused" -- _refuse owns that pair, and two tests read
                             # the log for exactly that contrast.
-                            _log.warning("dossier probe errored (%s) host=%s, degrading to blank",
-                                         label, pre.host or "?")
+                            _log.warning("dossier probe errored (%s) host=%s url=%s, degrading to "
+                                         "blank", label, pre.host or "?", urlguard.for_log(url))
                             return ""
                         got = res.get("result") if isinstance(res, dict) else None
                         return got if isinstance(got, str) else ""
@@ -946,7 +996,8 @@ class Sluice:
                 # indistinguishable in the cache from one the page rendered, so a wrong
                 # substitution leaves no trace for an operator to find.
                 _log.info("dossier JD taken from JSON-LD (%d chars) over the rendered body "
-                          "(%d chars) host=%s", len(ld_jd), len(md or ""), pre.host or "?")
+                          "(%d chars) host=%s url=%s", len(ld_jd), len(md or ""),
+                          pre.host or "?", urlguard.for_log(url))
                 md = ld_jd
             return {"jd": {"markdown": md or ""}, "glassdoor": {},
                     "page_title": page_title, "structured_data": structured_data}

@@ -557,3 +557,40 @@ def test_a_scalar_allowlist_raises_at_load(tmp_path):
     p.write_text('dossier_allow_hosts: myboard\n')
     with pytest.raises(ValueError):
         load_config(str(p))
+
+
+def test_for_log_drops_everything_a_url_can_smuggle_into_a_log_line():
+    """#309 logs the lead's url beside the host, so what reaches a log file matters.
+
+    `check_url` validates the scheme and the host and says nothing about the rest, so an
+    ACCEPTED url keeps its query and fragment -- and a job link routinely carries tracking
+    parameters, the operator's own search terms, and sometimes a session token. Those would
+    land in a log that is not obviously sensitive and gets pasted into issues.
+
+    Each row names the thing being dropped, so a regression says which one came back.
+    """
+    from sluice.core.urlguard import for_log
+
+    assert for_log("https://x.invalid/jobs/123?utm=a&q=my+search") == "https://x.invalid/jobs/123", (
+        "the query string survived")
+    assert for_log("https://x.invalid/jobs/123#section") == "https://x.invalid/jobs/123", (
+        "the fragment survived")
+    assert for_log("https://user:pw@x.invalid/jobs/9") == "https://x.invalid/jobs/9", (
+        "userinfo survived -- that is credential-shaped")
+    assert for_log("https://x.invalid:8443/jobs/9") == "https://x.invalid/jobs/9", (
+        "the port survived")
+    # The PATH is kept deliberately: it identifies the posting, which is the whole reason
+    # the url is logged at all.
+    assert for_log("https://x.invalid/jobs/123") == "https://x.invalid/jobs/123"
+
+
+def test_for_log_never_raises_on_a_url_the_caller_is_already_complaining_about():
+    """It is called from failure paths, so raising would replace a warning with a traceback.
+
+    `urlsplit` raises ValueError on some malformed authorities -- and a malformed url is
+    exactly what the caller may be reporting.
+    """
+    from sluice.core.urlguard import for_log
+
+    for bad in ("", None, "not a url", "http://[oops", "://x", "\x00"):
+        assert for_log(bad) in ("?", "not a url"), f"for_log({bad!r}) misbehaved"

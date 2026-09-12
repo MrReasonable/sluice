@@ -309,6 +309,40 @@ def _host(url: str) -> str:
 _ALLOWED_SCHEMES = ("http", "https")
 
 
+def for_log(url: str) -> str:
+    """`url` reduced to scheme, host and path -- what is safe to put in a log line.
+
+    #309 started logging the lead's url beside the host, because the fetch phase now
+    runs concurrently and per-lead warnings interleave: the host alone no longer says
+    WHICH lead a warning belongs to. The raw url is the wrong thing to log, though.
+    `check_url` validates the scheme and the host and says nothing about the rest, so an
+    accepted url keeps its query and fragment -- and a job link routinely carries
+    tracking parameters, the operator's own search terms, and sometimes a session token
+    in a `?`-parameter. Those would land in a log file that is not obviously sensitive
+    and gets pasted into issues.
+
+    Path is KEPT: it is the part that identifies the posting, which is the whole reason
+    the url is being logged, and it is not where secrets are conventionally carried.
+
+    Falls back to `"?"` rather than raising. This is called from logging paths that are
+    already reporting a failure, and a helper that raises there would replace a warning
+    with a traceback -- `urlsplit` raises ValueError on some malformed authorities, and
+    a malformed url is exactly what the caller may be complaining about.
+    """
+    if not url:
+        return "?"
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return "?"
+    if not parts.scheme and not parts.netloc:
+        return "?"
+    # `netloc`, not `hostname`: userinfo and port are dropped by taking hostname, and
+    # userinfo is credential-shaped, so hostname is what we want.
+    host = parts.hostname or ""
+    return f"{parts.scheme}://{host}{parts.path}" if host else "?"
+
+
 def _resolve(host: str) -> list[str]:
     """Production resolver: every address `host` answers with.
 
