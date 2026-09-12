@@ -981,7 +981,12 @@ Two modules and a composition root make the seams real:
   lists the valid ones; it never falls through to a default. For the store seam
   that matters most, because a quiet wrong default means writing the user's
   leads somewhere they did not ask for.
-- `core/protocols.py`: `Store`, `Fetcher`, `Renderer`. Interface only. `LeadNote`
+- `core/protocols.py`: `Store`, `Fetcher`, `Renderer`. Interfaces, plus the
+  obligations no signature can carry -- `Fetcher` gained an unconditional
+  THREAD-SAFETY one at #309 (every method safe on one shared instance, distinct
+  tab ids, independent tab handles), because triage may fetch dossiers over a
+  pool and the fetch closure shares a single Fetcher across those workers.
+  `LeadNote`
   carries an opaque `ref` (a path for the vault, a row id for some other store)
   and a `slug` the store issues -- identity used to be re-derived from the
   markdown filename in four separate modules, and that is what pinned the store
@@ -1968,7 +1973,10 @@ sentence cannot be.
   what `cv/compose.py`'s prompt requested of every renderer alike, not a layout
   requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
-  Implementations: `camofox` (the headless-browser HTTP server). The dossier
+  Implementations: `camofox` (the headless-browser HTTP server). ONE instance is
+  shared across triage's fetch workers when `triage.dossier_concurrency > 1`
+  (#309), which is why `core/protocols.py` states a thread-safety obligation on
+  this seam; the shipped default is 1, at which no pool is built at all. The dossier
   fetch closure built from it (`Sluice.dossier_cache`) POLLS
   `document.body.innerText` for the JD -- `waitUntil='domcontentloaded'` fires
   before a client-rendered posting has painted, so a single read returned an

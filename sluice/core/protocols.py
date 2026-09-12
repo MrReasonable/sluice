@@ -1039,6 +1039,31 @@ class Fetcher(Protocol):
     uses it to decide whether a response body may be read, so an implementation that
     reports a url the tab did not actually land on defeats an SSRF guard. Report the
     tab's real current url, or return a non-string so the caller fails closed.
+
+    CONCURRENCY (#309) -- every method must be safe to call from several threads at
+    once, on ONE shared instance. Triage MAY fetch dossiers over a pool: the fetch closure
+    builds a single Fetcher and shares it across those workers, so a second tab is opened
+    while the first is still being read. The obligation is unconditional even though the
+    shipped default is not -- `dossier_concurrency` defaults to 1, at which
+    `_prefetch_dossiers` builds no pool at all, so a Fetcher that quietly assumed one
+    caller would pass every default install and fail the first operator who raises the
+    knob. Two specific obligations, because both have already been got wrong once here:
+
+    - `create_tab` must hand every caller a DISTINCT tab id, and any per-instance
+      bookkeeping behind it must be synchronized. A read-modify-write counter is not
+      atomic; two threads taking the same id then read each other's page.
+    - a tab id must be an INDEPENDENT handle. Nothing an implementation does for one tab
+      may disturb another -- no "current tab" held on the instance, and no shared cursor
+      that `evaluate`/`scroll` resolve against.
+
+    Camofox's CLIENT satisfies this by holding only immutable config and building a fresh
+    request per call (`sluice/core/camofox.py`) -- which is the whole of what this repo
+    can vouch for. The two obligations above are then discharged by the browser SERVER,
+    which this repo does not bundle, so they are stated as requirements on an
+    implementation rather than as something verified here. An implementation that keeps a
+    live session or a connection pool must add its own locking. This is a real obligation, not a note: it
+    is the seam that makes `dossier_concurrency > 1` safe, and nothing in the signatures
+    can enforce it.
     """
 
     def create_tab(self, url: str) -> str | None: ...
