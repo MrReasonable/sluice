@@ -36,6 +36,10 @@ class SourceConfig:
     searches: list = field(default_factory=list)
 
 
+# #309: the ceiling on `dossier_concurrency`. See that field, and the loader's raise.
+DOSSIER_CONCURRENCY_MAX = 16
+
+
 @dataclass
 class Config:
     sources: dict = field(default_factory=dict)  # id -> SourceConfig
@@ -141,6 +145,34 @@ class Config:
     # `0` turns it off and restores the pre-#228 single read exactly, which is the value to set
     # to prove the settle is what changed a result.
     dossier_settle_ms: int = 5000
+
+    # #309, moved to root in the release after it landed in `triage:`. How many dossier
+    # fetches may be in flight at once.
+    #
+    # ROOT, not `triage:`. Be exact about the criterion, because the obvious phrasing --
+    # "`dossier_cache` is called from both sub-apps, so what governs it must be shared" --
+    # proves too much: `ttl_days` is the SECOND argument of that same call and is
+    # deliberately per-sub-app. What separates them is whether the OTHER consumer can
+    # observe the setting. A TTL cannot: it is a read-time freshness test, prunes nothing,
+    # so triage accepting a week-old entry does not change what cv sees. `dossier_dir` and
+    # `min_jd_chars` can -- where entries live, and which ones get written at all. So can
+    # this one: it is how hard the shared browser profile is driven. This knob is a politeness limit on
+    # a shared external resource: one browser profile, pointed at job boards with no
+    # per-host cap.
+    #
+    # Per sub-app, the number stops meaning anything a reader can act on. `triage: 4` and
+    # a future `cv: 4` are not "eight" -- nothing here runs the two phases together, so
+    # that is not the arithmetic; what they are is two different answers to one question
+    # about one profile, with no place to state the answer once. A root key is not a
+    # global cap either (two processes at 4 are still 8), and does not pretend to be: it
+    # makes the setting say what it means, which is how hard THIS install drives its
+    # browser. `triage.ttl_days` is the counter-precedent and stays where it is, because a
+    # freshness preference genuinely IS per sub-app.
+    #
+    # Defaults to 1 -- one fetch in flight, the pre-#309 rate -- and at 1 no pool is built
+    # at all. Opt-in rather than opt-out because the safe ceiling is a judgement about a
+    # given lead mix, which nothing here can pick.
+    dossier_concurrency: int = 1
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -583,9 +615,12 @@ def refuse_retired_locations(data: dict) -> None:
 def _safe_scalar_repr(value) -> str:
     """`repr(value)` for a genuine SCALAR typo, `type(value).__name__` for a CONTAINER.
 
-    Backs the three `lead_ttl_days`/`lead_layout`/`min_jd_chars` raises below. Each is
-    documented as never-echo EXEMPT on the ground that "a TTL, a layout name and a
-    character count are not personal" -- true of the value the field is SUPPOSED to hold,
+    Backs every scalar raise below -- deliberately unenumerated, because the list here said
+    "the three `lead_ttl_days`/`lead_layout`/`min_jd_chars`" while `dossier_settle_ms`
+    already used it, and #309's `dossier_concurrency` made it wronger. The membership test
+    is mechanical: grep `_safe_scalar_repr(` in this file. Each such field is never-echo
+    EXEMPT on the ground that "a TTL, a layout name, a character count and a worker count
+    are not personal" -- true of the value the field is SUPPOSED to hold,
     and false of the value the raise actually sees when a config file is misindented one
     level: a YAML block that was meant to sit under a SIBLING key (`target_locations`,
     `reject_companies`, ...) then becomes THIS key's value, a list or dict carrying that
@@ -738,6 +773,31 @@ def load_config(path: str | None = None) -> Config:
             f"dossier_settle_ms must be a non-negative integer (0 = off), got "
             f"{_safe_scalar_repr(raw_settle)}")
 
+    # #309. Same bool-before-int shape and the same reason as the two above:
+    # `dossier_concurrency: true` is the natural spelling of "yes, fetch in parallel", and
+    # bool SUBCLASSES int, so without the bool arm first it loads as 1 -- sequential -- and
+    # the knob the operator just switched ON is off, silently.
+    #
+    # The ceiling is the other half. A field whose stated purpose is not bursting a board
+    # with tabs needs a number above which it refuses, or the guard against excess has no
+    # limit of its own. 16 is deliberately generous: the fetches contend on one browser
+    # process, so gain flattens well below it and a value this high is already a mistake --
+    # the point is to catch the typo that meant 4.
+    # `.get(...)` + default, matching every sibling root field -- NOT a membership test.
+    # A membership test was tried (a bare `dossier_concurrency:` would then raise rather
+    # than default) and reverted: `test_a_valueless_key_never_becomes_None` sweeps EVERY
+    # field of EVERY loader writing each key valueless and requires the load to succeed,
+    # because a half-edited or commented-out value is an ordinary thing to leave in a
+    # config file. A valueless key means UNSET here, deliberately and repo-wide.
+    raw_conc = data.get("dossier_concurrency")
+    raw_conc = 1 if raw_conc is None else raw_conc
+    if (isinstance(raw_conc, bool) or not isinstance(raw_conc, int)
+            or not 1 <= raw_conc <= DOSSIER_CONCURRENCY_MAX):
+        raise ValueError(
+            f"dossier_concurrency must be an integer from 1 to {DOSSIER_CONCURRENCY_MAX}, "
+            f"got {_safe_scalar_repr(raw_conc)}. There is no 0 or false: 1 is one fetch in "
+            "flight, which is sequential.")
+
     # NB this loader names every field EXPLICITLY -- no splat, no loop, unlike the four
     # sub-app loaders' hasattr+setattr loops. A dataclass field added without a line
     # here is therefore dead: it loads as its default whatever the YAML says, silently.
@@ -772,4 +832,5 @@ def load_config(path: str | None = None) -> Config:
                   lead_layout=raw_layout or "",
                   min_jd_chars=raw_floor,
                   dossier_settle_ms=raw_settle,
+                  dossier_concurrency=raw_conc,
                   dossier_allow_hosts=allow)

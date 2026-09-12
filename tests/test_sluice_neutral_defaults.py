@@ -431,6 +431,18 @@ def test_lead_ttl_days_rejects_negative_and_non_int(tmp_path, monkeypatch, value
 # legitimate non-zero default -- so this knob, like lead_ttl_days, must carry its
 # own named test rather than be folded into a widened sweep.
 
+# dossier_concurrency needs the same both-ends pair (#309). The loader hardcodes its own
+# fallback, so a test that only exercises `load_config` leaves the DATACLASS default free to
+# drift: mutating `dossier_concurrency: int = 1` to 8 left the whole suite green.
+def test_dossier_concurrency_dataclass_default_is_sequential():
+    assert Config().dossier_concurrency == 1
+
+
+def test_dossier_concurrency_loader_default_is_sequential(monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).dossier_concurrency == 1
+
+
 def test_min_jd_chars_dataclass_default_is_off():
     assert Config().min_jd_chars == 0
 

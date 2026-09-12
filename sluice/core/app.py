@@ -1546,6 +1546,7 @@ class Sluice:
         # engine calls `fetch`, and it only does that when the cached table is stale.
         rate_source = self.rates() if tcfg.refresh_fx_rates else None
         return _triage_run(store, tcfg, backend, cache, audit,
+                           dossier_concurrency=self.config.dossier_concurrency,
                            statuses=tuple(statuses), limit=limit,
                            dry_run=dry_run, no_llm=no_llm, get_source=sources.get,
                            resolve_backend=resolve_backend,

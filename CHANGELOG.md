@@ -49,6 +49,11 @@ it is accurate. -->
 
 #### What this changes for an existing install
 
+> **Superseded:** this key moved to the ROOT of the config in the next release — set
+> `dossier_concurrency` at the top level, not under `triage:`. A 2.14.0 config carrying
+> the old spelling fails to load with a message naming the move. The rest of this
+> section still describes the behaviour accurately.
+
 **Nothing, until you opt in.** `triage.dossier_concurrency` defaults to `1`, which is the
 fetch rate 2.13.0 had — one page in flight. At that value no thread pool is built at all.
 
