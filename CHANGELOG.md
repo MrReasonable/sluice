@@ -40,6 +40,37 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.14.1](https://github.com/MrReasonable/sluice/compare/v2.14.0...v2.14.1) (2026-09-12)
+
+
+### Refactoring
+
+* **config:** move dossier_concurrency from `triage:` to the root ([3c11703](https://github.com/MrReasonable/sluice/commit/3c1170348f1d665674f4014d7c849f43e7fe02b2))
+
+#### Action needed if you set `dossier_concurrency` in 2.14.0
+
+**Move the key out of the `triage:` block to the top level of the same file.** The value is
+unchanged:
+
+```yaml
+# before (2.14.0)          # now
+triage:                    dossier_concurrency: 4
+  dossier_concurrency: 4
+```
+
+A config still carrying the old spelling **will not load** — it fails with a message naming
+the move, rather than silently falling back to sequential fetching. If you never set the key,
+nothing changes: it defaults to `1`, one fetch in flight, and no pool is built.
+
+It moved because it bounds how hard one shared browser profile is driven, and both triage and
+cv fetch through that profile. A per-sub-app spelling would have to be answered twice, for one
+browser, the moment cv fetches in parallel.
+
+**On the version.** Refusing a key that 2.14.0 accepted is not normally a patch-level change,
+and this release is an exception rather than a precedent: 2.14.0 published the same day, so the
+key existed for hours. A retirement with users in the field gets a deprecation cycle instead —
+the old spelling accepted with a warning, removed at a major.
+
 ## [2.14.0](https://github.com/MrReasonable/sluice/compare/v2.13.0...v2.14.0) (2026-09-12)
 
 
