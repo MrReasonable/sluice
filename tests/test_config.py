@@ -3,7 +3,7 @@ import textwrap
 
 import pytest
 
-from sluice.core.config import load_config
+from sluice.core.config import DOSSIER_CONCURRENCY_MAX, load_config
 
 
 def test_defaults_when_no_file(monkeypatch):
@@ -200,3 +200,80 @@ def test_the_migration_guard_no_longer_misreads_a_prose_cv_block(tmp_path):
         load_cv_config(str(p))
     assert "has moved to the vault" not in str(exc.value), (
         "a prose `cv:` block must not be diagnosed as a legacy cv.name key")
+
+
+# ── dossier_concurrency (#309, moved here from `triage:` the release after it landed) ──
+#
+# These moved with the key. It governs one shared browser profile that BOTH sub-apps fetch
+# through, so it is a root setting: a politeness limit configured per consumer does not
+# limit anything. `tests/test_triage_config.py` keeps the refusal for the old spelling.
+
+def test_dossier_concurrency_defaults_to_one(monkeypatch):
+    # 1 is the shipped fetch rate: one page in flight. Opt-in, because raising it points
+    # more concurrent tabs at job boards from one browser profile.
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_config(None).dossier_concurrency == 1
+
+
+def test_dossier_concurrency_round_trips_from_yaml(tmp_path):
+    """THE WIRING TEST. A knob parsed and never forwarded is this project's worst defect
+    class, and it is invisible from either end alone: the dataclass default is right and
+    the YAML is right, while the value never arrives."""
+    p = tmp_path / "sluice.yaml"
+    p.write_text("dossier_concurrency: 4\n")
+    assert load_config(str(p)).dossier_concurrency == 4
+
+
+def test_dossier_concurrency_rejects_a_yaml_boolean(tmp_path):
+    """`true` is the natural spelling of "yes, fetch in parallel", and bool SUBCLASSES
+    int -- so unguarded it loads as 1 and runs SEQUENTIALLY. The knob the operator
+    switched on would be off, with nothing going red. Same shape as #228's
+    `dossier_settle_ms: yes`."""
+    p = tmp_path / "sluice.yaml"
+    p.write_text("dossier_concurrency: true\n")
+    with pytest.raises(ValueError, match="dossier_concurrency"):
+        load_config(str(p))
+
+
+def test_dossier_concurrency_rejects_a_quoted_integer(tmp_path):
+    """Unguarded this setattrs the STRING "4", which survives construction and then
+    raises a bare TypeError from the comparison inside the engine -- mid-run, after the
+    classify pass has already written verdicts, and naming neither the key nor the file.
+    cli.main converts only ValueError, so it surfaces as a raw traceback."""
+    p = tmp_path / "sluice.yaml"
+    p.write_text('dossier_concurrency: "4"\n')
+    with pytest.raises(ValueError, match="dossier_concurrency"):
+        load_config(str(p))
+
+
+def test_dossier_concurrency_rejects_zero_and_negatives(tmp_path):
+    """There is no "off": 0 would be a second spelling of 1. Unguarded, both 0 and -4
+    degrade to sequential silently -- the same do-nothing-quietly failure as the boolean."""
+    for raw in ("0", "-4"):
+        p = tmp_path / f"sluice{raw}.yaml"
+        p.write_text(f"dossier_concurrency: {raw}\n")
+        with pytest.raises(ValueError, match="dossier_concurrency"):
+            load_config(str(p))
+
+
+def test_dossier_concurrency_has_a_ceiling(tmp_path):
+    """The field exists to stop a board being burst with tabs, so a number must exist
+    above which that is refused -- otherwise the knob guarding against excess has no
+    limit of its own.
+
+    The VALUE is hand-written here and only the probe derives from it. Deriving both
+    makes the test move with the constant: narrowed 16 -> 4 it would re-partition and
+    stay green, which is this repo's "a sweep keyed on the constant it checks cannot see
+    a change" shape. 16 is also stated in `sluice.yaml.example` and docs/CONFIGURATION.md,
+    so a silent narrowing would leave all three disagreeing with nothing to catch it.
+    """
+    assert DOSSIER_CONCURRENCY_MAX == 16, (
+        "the ceiling changed; update sluice.yaml.example and docs/CONFIGURATION.md with it")
+    p = tmp_path / "sluice.yaml"
+    # The ceiling itself must be ACCEPTED -- a refusal at the boundary would make the
+    # documented maximum unusable, and only the value above it is meant to raise.
+    p.write_text(f"dossier_concurrency: {DOSSIER_CONCURRENCY_MAX}\n")
+    assert load_config(str(p)).dossier_concurrency == DOSSIER_CONCURRENCY_MAX
+    p.write_text(f"dossier_concurrency: {DOSSIER_CONCURRENCY_MAX + 1}\n")
+    with pytest.raises(ValueError, match="dossier_concurrency"):
+        load_config(str(p))

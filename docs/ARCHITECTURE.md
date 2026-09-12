@@ -1974,7 +1974,7 @@ sentence cannot be.
   requirement any one renderer owns.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server). ONE instance is
-  shared across triage's fetch workers when `triage.dossier_concurrency > 1`
+  shared across triage's fetch workers when `dossier_concurrency > 1`
   (#309), which is why `core/protocols.py` states a thread-safety obligation on
   this seam; the shipped default is 1, at which no pool is built at all. The dossier
   fetch closure built from it (`Sluice.dossier_cache`) POLLS

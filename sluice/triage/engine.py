@@ -44,7 +44,7 @@ from sluice.triage import resolve, reverdict
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
-from sluice.triage.config import DOSSIER_CONCURRENCY_MAX
+from sluice.core.config import DOSSIER_CONCURRENCY_MAX
 from sluice.triage.judge import judge
 from sluice.triage.prompt import build_system_prompt_from
 
@@ -251,10 +251,12 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
         return results
 
     groups = list(by_key.values())
-    # Clamped at the CONSUMER as well as the loader, on `lead_layout`'s precedent: the
-    # loader raises for an out-of-range value, but ~150 tests and any library caller build
-    # a `TriageConfig()` directly and never reach it. Clamped rather than raised because
-    # this runs AFTER the classify pass has written to the vault -- refusing here would
+    # Clamped at the CONSUMER as well as the loader, on `lead_layout`'s precedent. The
+    # exposure is no longer a hand-built `TriageConfig` -- that dataclass stopped declaring
+    # the field when #309's key moved to the root config -- it is that `run()` takes the
+    # number as a PARAMETER, so any caller can hand it one the loader never saw. Clamped
+    # rather than raised because this runs AFTER the classify pass has written to the
+    # vault -- refusing here would
     # abandon a half-applied run over a number we can simply bound.
     if concurrency > DOSSIER_CONCURRENCY_MAX:
         _log.warning("triage: dossier_concurrency %d exceeds the %d ceiling; using %d",
@@ -308,7 +310,7 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
 def run(vault, cfg, backend, dossier_cache, audit, *,
         statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False, no_llm=False,
         get_source=None, resolve_backend=None, rate_source=None,
-        reverdict_scope=""):
+        reverdict_scope="", dossier_concurrency=1):
     """`reverdict_scope` identifies WHICH lead store #223's one-shot notice is about, so
     acknowledging on one vault cannot silence it for another.
 
@@ -824,9 +826,36 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # than once per lead.
         #
         # NOTE the hoist itself is unconditional: at any concurrency, every fetch now
-        # happens before the first apply, where the two used to interleave per lead.
+        # happens before the first apply, where the two used to interleave per lead. That
+        # has TWO costs on the default path, and both are stated rather than implied.
+        #
+        # An interrupt mid-fetch now leaves NO verdicts applied, where the interleaved loop
+        # had applied every lead fetched so far. No work is lost -- the dossiers are cached
+        # and the next run applies them -- but a killed run shows less progress in the
+        # vault than it used to.
+        #
+        # And `prefetched` holds every kept lead's dossier across the apply phase. State
+        # that delta carefully, because the obvious framing ("O(1) -> O(n)") is WRONG: the
+        # pre-#309 loop already appended each judged lead's dossier to `dossiers` and held
+        # the lot until `judge()`, so the peak was O(n) before this change too. What is
+        # genuinely new is narrower -- the retained set now also includes leads that never
+        # reach the judge batch (the ones that `continue` before the append), and the peak
+        # arrives EARLIER, at the end of the fetch phase rather than at the judge call.
+        #
+        # That is why the inline-fetch alternative for `concurrency <= 1` was not taken. It
+        # would not remove an O(n) peak, because the judge batch creates one anyway; it
+        # would only shave the non-judged leads off it, at the price of a second code path
+        # through the apply loop for the value most installs run. The coupling this file
+        # already documents -- a producer-side filter that must agree with the caller's
+        # `continue`, on pain of a KeyError AFTER vault writes -- is the shape a second
+        # path invites more of.
+        #
+        # INJECTED, not read off `cfg`: this is a ROOT key (it governs one shared browser
+        # profile that both sub-apps fetch through), and root keys are resolved at the
+        # composition root and handed down -- the same shape `min_jd_chars` takes into
+        # `dossier_cache`. Defaulting to 1 keeps every direct `run(...)` caller sequential.
         prefetched = _prefetch_dossiers(
-            keeps, ambiguous, dossier_cache, cfg.dossier_concurrency)
+            keeps, ambiguous, dossier_cache, dossier_concurrency)
         for i, note in enumerate(keeps):
             if note.slug in ambiguous:
                 # BEFORE get_or_build, on the same reasoning apply/select.py and cv/engine.py

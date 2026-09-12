@@ -399,6 +399,44 @@ def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
     assert used == [str(tmp_path / "from-env")] * 2
 
 
+def test_the_root_dossier_concurrency_reaches_the_triage_engine(tmp_path, monkeypatch):
+    """#309: the root key is FORWARDED, not merely parsed.
+
+    This hop is new. Before the key moved to root it rode on the `TriageConfig` object and
+    the engine read it off `cfg`, so there was nothing to lose; now `Sluice.triage` has to
+    pass it and a deleted kwarg would leave every install sequential while the key still
+    parses, and still round-trips through `load_config`.
+    That is the parsed-and-never-forwarded class -- the same shape as a `--backend` that is
+    accepted and ignored -- and the loader tests cannot see it, because they stop at Config.
+
+    Measured before this row existed: deleting the kwarg from `Sluice.triage` left the
+    whole suite at exit 0.
+
+    Captures the value the ENGINE is handed, which is the only thing that decides how many
+    fetches run at once; `_dossier_dirs_used`'s capture of `dossier_cache` is the same idea
+    one seam over.
+    """
+    import sluice.triage.engine as eng
+
+    seen = []
+
+    def _capture(vault, cfg, backend, cache, audit, **kw):
+        seen.append(kw.get("dossier_concurrency"))
+        raise SystemExit  # nothing past the hop is under test
+
+    app = _app(tmp_path, monkeypatch, dossier_concurrency=5)
+    monkeypatch.setattr(eng, "run", _capture)
+    monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: _NullCache())
+    try:
+        app.triage(no_llm=True)
+    except SystemExit:
+        pass
+
+    assert seen == [5], (
+        f"Sluice.triage handed the engine {seen}, not [5] -- the root key is parsed but "
+        "not forwarded, so every install would run sequentially whatever the config says")
+
+
 def test_the_root_min_jd_chars_reaches_both_sub_apps(tmp_path, monkeypatch):
     # A per-sub-app floor would make the SHARED cache directory persist or refuse the
     # same entry depending on which sub-app touched it last -- the "shared only by

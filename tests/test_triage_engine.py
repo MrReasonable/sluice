@@ -10,7 +10,8 @@ import pytest
 from sluice.core import status as _status
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
-from sluice.triage.config import TriageConfig, DOSSIER_CONCURRENCY_MAX
+from sluice.core.config import DOSSIER_CONCURRENCY_MAX
+from sluice.triage.config import TriageConfig
 from sluice.core.dossier import DossierCache
 from sluice.triage import reverdict
 from sluice.triage.audit import AuditLog
@@ -2728,9 +2729,8 @@ def test_dossier_fetches_run_concurrently_when_dossier_concurrency_is_set(tmp_pa
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 4
     run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-        statuses=("new",))
+        statuses=("new",), dossier_concurrency=4)
 
     assert not state["never_all_in_flight"], (
         "the four fetches were never in flight together: the fetch phase is sequential")
@@ -2738,11 +2738,11 @@ def test_dossier_fetches_run_concurrently_when_dossier_concurrency_is_set(tmp_pa
 
 def test_dossier_concurrency_is_clamped_at_the_consumer_not_only_the_loader(
         tmp_path, titles):
-    """#309: `DOSSIER_CONCURRENCY_MAX` binds a `TriageConfig` built DIRECTLY.
+    """#309: `DOSSIER_CONCURRENCY_MAX` binds a value handed straight to `run()`.
 
-    `load_triage_config` raises for an out-of-range value, but ~150 tests and any library
-    caller construct `TriageConfig()` by hand and never reach the loader -- so a ceiling
-    enforced only there is enforced only for people who were already going to be fine.
+    `load_config` raises for an out-of-range value, but `run()` takes the number as a
+    parameter and any caller can pass one the loader never saw -- so a ceiling enforced
+    only at the loader is enforced only for people who were already going to be fine.
     `lead_layout` sets the precedent: validated at both ends.
 
     Sized so the clamp is OBSERVABLE. With 20 groups and a requested 100, an unclamped
@@ -2771,9 +2771,8 @@ def test_dossier_concurrency_is_clamped_at_the_consumer_not_only_the_loader(
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 100          # never through the loader, so never validated
     run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-        statuses=("new",))
+        statuses=("new",), dossier_concurrency=100)
 
     assert state["peak"] <= DOSSIER_CONCURRENCY_MAX, (
         f"peak in-flight was {state['peak']}, above the {DOSSIER_CONCURRENCY_MAX} ceiling: "
@@ -2832,9 +2831,8 @@ def test_dossier_concurrency_is_a_ceiling_not_a_target(tmp_path, titles):
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 2
     run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-        statuses=("new",))
+        statuses=("new",), dossier_concurrency=2)
 
     assert not state["never_paired"], (
         "fetches never paired up: the phase ran sequentially, so the ceiling below "
@@ -2846,6 +2844,14 @@ def test_dossier_concurrency_is_a_ceiling_not_a_target(tmp_path, titles):
 def test_two_leads_at_one_url_are_fetched_once_under_concurrency(tmp_path, titles):
     """#309: leads sharing a url share a dossier cache entry, and must still cost ONE
     fetch when the phase runs concurrently.
+
+    NOTE the name says "under concurrency" and the value is set, but no pool is built here
+    and this row does not prove one: two leads at one url is ONE cache key, so
+    `_prefetch_dossiers` short-circuits on `len(by_key) <= 1` before any
+    `ThreadPoolExecutor` exists. Confirmed with a positive control -- poisoning
+    `ThreadPoolExecutor` to raise leaves this row green while the ceiling row fails. What
+    it pins is the GROUPING, which runs ahead of the pool and therefore holds at every
+    concurrency; that is the property, not a concurrency behaviour.
 
     `cache_key` hashes the url deliberately, so that a re-scrape or a cross-post -- two
     notes, one posting -- resolves to one entry (#109). Sequentially the second lead hits
@@ -2876,9 +2882,8 @@ def test_two_leads_at_one_url_are_fetched_once_under_concurrency(tmp_path, title
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 4
     run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-        statuses=("new",))
+        statuses=("new",), dossier_concurrency=4)
 
     assert len(calls) == 1, (
         f"one posting was fetched {len(calls)} times: the shared cache entry was raced")
@@ -2934,9 +2939,8 @@ def test_a_pool_that_refuses_work_degrades_the_remaining_leads_to_failures(
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 4
     report = run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-                 statuses=("new",))
+                 statuses=("new",), dossier_concurrency=4)
 
     # The run COMPLETED -- that is the claim. A raise here would mean no report at all.
     assert report is not None
@@ -2979,9 +2983,9 @@ def _concurrency_run(tmp_path, accept, concurrency, name):
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = concurrency
     report = run(v, cfg, _Backend(), cache,
-                 AuditLog(str(tmp_path / f"audit-{name}.jsonl")), statuses=("new",))
+                 AuditLog(str(tmp_path / f"audit-{name}.jsonl")), statuses=("new",),
+                 dossier_concurrency=concurrency)
     # `note.ref` is a path, so it carries the per-run vault dir. Strip it: what must match
     # across the two runs is the failure LINE, not where the fixture happened to live.
     failures = [f.replace(str(v.dir), "") for f in report.failures]
@@ -3006,7 +3010,7 @@ def test_the_default_config_starts_no_threads(tmp_path, titles, monkeypatch):
 
     monkeypatch.setattr(eng, "ThreadPoolExecutor", _boom)
 
-    cfg = TriageConfig()                      # dossier_concurrency left at its default
+    cfg = TriageConfig()                      # run() gets no kwarg, so concurrency is 1
     cfg.accept_titles = list(accept)
     report = run(v, cfg, _Backend(), _cache(tmp_path),
                  AuditLog(str(tmp_path / "audit.jsonl")), statuses=("new",))
@@ -3023,6 +3027,11 @@ def test_an_ambiguous_twin_is_never_fetched_under_concurrency(tmp_path, titles):
     filter inside `_prefetch_dossiers` and the caller's own `continue` -- and nothing
     asserted the fetch half. Two kept notes at ONE slug are refused on `index_by_slug`'s
     shared verdict because a verdict could not be routed back to either.
+
+    NOTE the name says "under concurrency" and the value is set, but this row does NOT
+    prove the pool: one kept lead means one cache key, and `_prefetch_dossiers`
+    short-circuits on `len(by_key) <= 1` before any pool is built. It is a filter test --
+    the twin must not be FETCHED -- and it holds at every concurrency for that reason.
     """
     accept, _reject = titles
     v = Vault(str(tmp_path / "vault"))
@@ -3046,9 +3055,8 @@ def test_an_ambiguous_twin_is_never_fetched_under_concurrency(tmp_path, titles):
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 4
     report = run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-                 statuses=("new",))
+                 statuses=("new",), dossier_concurrency=4)
 
     assert fetched == ["https://x/solo"], (
         f"a twin was fetched for a verdict that could not be routed back: {fetched}")
@@ -3092,16 +3100,21 @@ def test_an_interrupt_during_the_fetch_phase_abandons_the_queued_tail(tmp_path, 
                          clock=lambda: datetime(2026, 7, 7))
     cfg = TriageConfig()
     cfg.accept_titles = list(accept)
-    cfg.dossier_concurrency = 2
     with pytest.raises(KeyboardInterrupt):
         run(v, cfg, _Backend(), cache, AuditLog(str(tmp_path / "audit.jsonl")),
-            statuses=("new",))
+            statuses=("new",), dossier_concurrency=2)
 
     # Generous bound: with 2 workers only a couple can be in flight when the interrupt
     # lands, and threads already running cannot be killed. What must NOT happen is all 20
     # being fetched, which is what draining the queue looks like.
-    assert len(started) < 20, (
-        f"the interrupt still fetched all {len(started)} leads: the queued tail was "
+    # BOTH bounds. The upper one alone is satisfied by the SEQUENTIAL branch, which fetches
+    # exactly one lead -- so losing the `dossier_concurrency` kwarg made this row pass while
+    # the `cancel_futures` mutant it exists for survived the whole suite. That has now
+    # happened twice. The lower bound makes it structural: below 2 there was no pool, so
+    # there was no queued tail to abandon and the test is not testing its own subject.
+    # Measured separation: 1 fetch at concurrency 1, 3 at concurrency 2 (5 runs of 5).
+    assert 1 < len(started) < 20, (
+        f"the interrupt fetched {len(started)} leads: at 1 no pool ran (nothing to abandon), "
         "drained instead of abandoned")
 
 

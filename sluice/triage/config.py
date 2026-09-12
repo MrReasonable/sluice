@@ -28,14 +28,6 @@ _TARGET_LOC: list = []
 _REJECT_LOC: list = []
 _REJECT_CO: list = []
 
-# #309: the ceiling on `dossier_concurrency`. A field whose stated purpose is not
-# bursting a job board with tabs needs a number above which it refuses -- otherwise the
-# guard against excess has no limit of its own. 16 is deliberately generous: measured
-# gain flattens well below it (the fetches contend on one browser process and one event
-# loop), so a value this high is already a mistake, and the point is to catch the typo
-# that meant 4, not to price the last increment.
-DOSSIER_CONCURRENCY_MAX = 16
-
 
 @dataclass
 class TriageConfig:
@@ -67,27 +59,6 @@ class TriageConfig:
     perm_floor_gbp: int = 0
     batch_size: int = 5
     ttl_days: int = 7
-    # #309: how many dossier fetches may be in flight at once. The fetch phase is
-    # latency-bound -- a page load plus UP TO `dossier_settle_ms` (a root config key, not
-    # a triage one) of settle -- so a run's wall clock scales with uncached leads until
-    # this is raised. "Up to": `_settle_body` returns as soon as two consecutive reads
-    # agree, so a page that renders server-side pays one interval, not the budget. Only
-    # a slow client-rendered posting pays the whole thing, which is also the case with
-    # the most to gain here.
-    #
-    # Defaults to 1: one fetch in flight, the pre-#309 fetch RATE. It is NOT pre-#309
-    # behaviour in full, and no setting restores that -- #309 hoists the whole fetch
-    # phase ahead of the apply phase unconditionally, where the two used to interleave
-    # per lead. An interrupted run therefore has paid for every page load while having
-    # written fewer vault statuses than the old code would have by the same point.
-    #
-    # Opt-in rather than opt-out because this drives an anti-fingerprint browser:
-    # several leads from one board in a night would otherwise burst concurrent tabs at a
-    # single site, which is the behaviour that gets a session flagged. Leads sharing a
-    # url are already collapsed to one fetch by cache key, but distinct postings on one
-    # host are not: there is no per-host cap yet, so the safe ceiling is a judgement
-    # about YOUR lead mix, not a number this can pick.
-    dossier_concurrency: int = 1
     # NB no `dossier_dir` here: it was a DEAD key (declared, read by nothing) and is
     # retired outright by #80 in favour of one root `dossier_dir`. load_triage_config
     # RAISES on it rather than letting `hasattr` drop it in silence.
@@ -148,34 +119,34 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
         with open(path, encoding="utf-8") as f:
             data = sub_app_block("triage", (yaml.safe_load(f) or {}).get("triage"))
         refuse_retired_dossier_dir("triage", data)
-        # #309. The overlay loop below guards bools and containers, both keyed on the
-        # DEFAULT's type -- so an int-defaulted field passes through unchecked, and this
-        # one has three bad values a person actually writes:
+        # #309 shipped this under `triage:` and the next release moved it to the ROOT
+        # config, so refuse the old spelling rather than let it be dropped in silence.
         #
-        #   `true`  -- the natural spelling of "yes, fetch in parallel". PyYAML gives a
-        #              real bool, bool SUBCLASSES int, and `True <= 1` is True, so the
-        #              run goes SEQUENTIAL: the knob the operator switched on is off,
-        #              silently. Checked FIRST, before isinstance(int), for that reason.
-        #              Same trap #228 documents for `dossier_settle_ms: yes`.
-        #   `"4"`   -- setattr'd as a string, survives construction, then raises a bare
-        #              TypeError from the engine's comparison mid-run, after the classify
-        #              pass has written to the vault, naming neither key nor file. main()
-        #              converts only ValueError, so that reaches the user as a traceback.
-        #   `0`/`-2` -- degrade to sequential silently. There is no "off" here: 0 would
-        #              be a second spelling of 1.
+        # Silence is the real hazard, and it is this loader's own shape that creates it:
+        # the overlay loop below filters with `hasattr`, so a key the dataclass no longer
+        # declares is discarded without a word. An operator who had set `triage:
+        # dossier_concurrency: 6` would get 1 -- sequential -- with their file unchanged
+        # and nothing said, which is the quiet wrong default this codebase most
+        # consistently engineers out. Exactly the reasoning `refuse_retired_dossier_dir`
+        # gives for the same move at #80 -- for the SHAPE of the response, which is where
+        # that precedent reaches and no further. It does not license the RELEASE this ships
+        # in: #80's refusal landed in v1.0.0, a major, and the only other retirement here
+        # (`locations`, #8) was a DEAD key that broke nobody. Refusing a live key in a patch
+        # is a deliberate exception, taken on the owner's ruling that the 2.14.0 population
+        # is known -- the key existed under `triage:` for hours -- and not a general rule.
+        # A future retirement with real users in the field owes them a deprecation cycle.
         #
-        # `data.get(...) is not None` rather than membership, matching cv.compose_timeout:
-        # the overlay loop skips None, so a valueless key must stay acceptable.
-        if data.get("dossier_concurrency") is not None:
-            raw = data["dossier_concurrency"]
-            if (isinstance(raw, bool) or not isinstance(raw, int)
-                    or not 1 <= raw <= DOSSIER_CONCURRENCY_MAX):
-                raise ValueError(
-                    f"triage.dossier_concurrency must be an integer from 1 to "
-                    f"{DOSSIER_CONCURRENCY_MAX}, got {raw!r}. There is no 0 or false: 1 "
-                    f"is one fetch in flight, which is the sequential default. Note "
-                    f"`true` is a YAML boolean and bool subclasses int, so it would mean "
-                    f"1 -- sequential, the exact behaviour this knob exists to change.")
+        # It moved because the knob limits how hard ONE shared browser profile is driven,
+        # and `dossier_cache` is called from both sub-apps: a politeness limit configured
+        # per consumer does not limit anything. See `core/config.py`'s field comment.
+        if "dossier_concurrency" in data:
+            raise ValueError(
+                "triage.dossier_concurrency moved to the ROOT config in the release after "
+                "it was introduced -- it governs one shared browser profile that both "
+                "triage and cv fetch through, so it cannot be a per-sub-app setting. "
+                "Move it out of the `triage:` block to the top level of the same file, "
+                "unchanged:\n\n    dossier_concurrency: <n>\n")
+
         for k, v in data.items():
             if not hasattr(cfg, k) or v is None:
                 continue
