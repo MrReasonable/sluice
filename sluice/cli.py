@@ -2373,6 +2373,17 @@ def cmd_usage(args, config) -> int:
             f"usage --days must be 0 or more, not {args.days}; 0 reports today only")
 
     log = Sluice(config).usage_log()
+    if log is None:
+        # OPT-IN (#308): no log is configured, so there is nothing to report and nothing was
+        # ever written. Distinct from an EMPTY log, which says calls were recorded and none fall
+        # in the window -- conflating the two would answer "you spent nothing" to someone who has
+        # not turned recording on. Exit 0: nothing is broken, and this is a true answer to the
+        # question asked.
+        print("usage: no token-usage log is configured, so nothing has been recorded.\n"
+              "Turn it on by naming a file: set `usage_jsonl:` at the top level of your config, "
+              "or export SLUICE_USAGE=/path/to/usage.jsonl.\n"
+              "Recording starts with the next run that makes an LLM call.")
+        return 0
     try:
         summary = summarize(log.read_recent(args.days))
     except OSError as exc:

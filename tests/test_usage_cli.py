@@ -348,3 +348,34 @@ def test_the_none_at_all_sentence_only_describes_a_wholly_silent_call():
 
     silent = _fmt([_row(input_tokens=None, output_tokens=None, cache_read_tokens=None)])
     assert "reported none at all" in silent
+
+
+def test_no_configured_log_is_reported_distinctly_from_an_empty_one(tmp_path, monkeypatch,
+                                                                   capsys):
+    """OPT-IN (#308): with nothing configured there is no log, and saying "No calls recorded"
+    would answer "you spent nothing" to someone who never turned recording on.
+
+    This is the DEFAULT state of a fresh install, and before it was handled the command died with
+    `AttributeError: 'NoneType' object has no attribute 'read_recent'` — while the whole suite
+    stayed green, because every other test here names a log. Exit 0: nothing is broken."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert main(["usage"]) == 0
+    out = capsys.readouterr().out
+    assert "no token-usage log is configured" in out
+    # It must say HOW to turn it on -- both doors -- or the answer is a dead end.
+    assert "usage_jsonl" in out and "SLUICE_USAGE" in out
+    # And it must NOT claim an empty window, which is a different fact.
+    assert "No calls recorded" not in out
+
+
+def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
+    """The property the opt-in exists for, asserted on the filesystem: a command that reaches the
+    metering path writes nothing when no log is named."""
+    import os
+
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    main(["usage"])
+    assert not os.path.exists(os.path.join(str(state), "sluice", "sluice_usage.jsonl"))
