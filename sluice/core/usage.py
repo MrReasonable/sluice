@@ -15,12 +15,19 @@ log must not -- so the shared part would be the read half alone.
 
     THE WIRING, in one place so it does not have to be reconstructed from call sites:
 
-    The log is OPT-IN, so `Sluice._usage_log` answers None unless `SLUICE_USAGE` or the
-    `usage_jsonl` key NAMES a file -- there is no XDG fallback, because the per-lead rows carry
-    the lead's slug and so name the employers a user is applying to. **None is therefore the
-    shipped state**, and `meter` returning its backend unchanged is what keeps this wrapper off
-    every LLM call of an install that never asked for accounting. Do not "simplify" that branch
-    away. When a log IS configured, `meter(...)` wraps a backend with it AT THE POINT A STAGE IS
+    Recording is OFF by default, so `Sluice._usage_log` answers None unless `record_usage` is
+    true or `SLUICE_USAGE` names a path -- because the per-lead rows carry the lead's slug and so
+    name the employers a user is applying to. **None is therefore the shipped state**, and `meter`
+    returning its backend unchanged is what keeps this wrapper off every LLM call of an install
+    that never asked for accounting. Do not "simplify" that branch away.
+
+    The SWITCH and the LOCATION are separate keys (`record_usage`, `usage_jsonl`), and an empty
+    location means the standard XDG state file exactly like every other relocatable path here.
+    They were one key first -- "naming a file is how you turn it on" -- which made this the only
+    relocatable path in the repo with no XDG default; see `core/app.py::_usage_log` for why that
+    reads tidier than it is. Nothing in THIS module sees the difference: it takes a log or a None.
+
+    When a log IS configured, `meter(...)` wraps a backend with it AT THE POINT A STAGE IS
     HANDED ONE. Almost all of those sites are in
     `core/app.py`, because almost every backend there serves exactly one stage and the stage
     is therefore known where the backend is constructed. `cv/engine.py` is the exception: it
@@ -273,9 +280,9 @@ class MeteredBackend:
 def meter(log, backend, stage: str, *, lead=None):
     """Wrap `backend` so each call's usage is recorded under `stage`.
 
-    Returns `backend` UNCHANGED when `log` is None, which is the SHIPPED state: the log is
-    opt-in, so an install that has not named a file gets None from `Sluice._usage_log` and every
-    stage here is a no-op wrap. It also covers a caller that simply has no log to give -- a
+    Returns `backend` UNCHANGED when `log` is None, which is the SHIPPED state: recording is off
+    by default, so an install that has not set `record_usage` gets None from `Sluice._usage_log`
+    and every stage here is a no-op wrap. It also covers a caller that simply has no log to give -- a
     sub-app function called directly, which is how most of this repo's tests reach `run_one`,
     `run_batch` and `judge`; those pass `usage=None` and must not be made to construct a
     telemetry sink to run.
@@ -414,8 +421,14 @@ def _add(t: Totals, row: dict) -> Totals:
 
     Each count is tallied INDEPENDENTLY -- both its sum and how many rows reported it -- because
     a provider may report some and not others, and the report must not generalise one column's
-    silence to the rest. `unmeasured` is the row that reported NONE of them, which is the only
-    row the footnote is entitled to speak for.
+    silence to the rest. `unmeasured` is the row that reported NONE of them.
+
+    It is NOT what the floor footnote is keyed on -- `Totals.incomplete` is, and this docstring
+    said otherwise after the commit that made the change. A row reporting an input count and no
+    output count makes the totals a floor while being anything but silent, so `unmeasured` alone
+    left such a group printing a bare total with no caveat (measured). The footnote still reports
+    the `unmeasured` subset separately, because "we cannot see what we spent" and "we can see
+    part of it" are different things to tell an operator.
     """
     got = {k: _count(row, k) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}
     # The BILL is input + output, and `incomplete` is "the bill is not complete". What splits

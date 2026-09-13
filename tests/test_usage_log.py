@@ -20,6 +20,9 @@ import pytest
 from sluice.core.backends import BackendError, Completion, Usage
 from sluice.core.usage import MeteredBackend, Totals, UsageLog, meter, summarize
 
+# ONE alphabet for both ends of the pipe -- see its definition for why it is not duplicated here.
+from tests.test_backends_usage import COUNT_ALPHABET, NOT_A_COUNT
+
 
 def _at(*, days_ago=0):
     return lambda: datetime(2026, 9, 13, 12, 0, tzinfo=timezone.utc) - timedelta(days=days_ago)
@@ -89,6 +92,29 @@ def test_a_stage_with_no_lead_omits_the_key_rather_than_writing_null(tmp_path):
     meter(UsageLog(p), _Fake(usage=_u(input_tokens=5)), "triage-judge").complete("p")
     row, = _rows(p)
     assert "lead" not in row
+
+
+def test_a_completion_with_no_usage_writes_no_row_and_still_returns_its_text(tmp_path):
+    """`Completion.usage` is `Usage | None`, and the None arm is the one nothing exercised.
+
+    Every shipped provider returns at least an identity `Usage` (pinned by the conformance
+    suite), so the guard could be deleted and nothing would redden: `_record(None)` raises an
+    AttributeError that `_record` itself catches and warns about, which is not a test failure.
+    The arm is still reachable -- the seam's declared return type permits it, and an out-of-tree
+    backend or a test double is the caller that produces it -- and an EMPTY row is worse than no
+    row, because it would count as a call in the report while naming no provider or model.
+
+    Both halves: no row, and the text still comes back. A wrapper that treated a missing usage
+    block as an error would break a backend that is working perfectly."""
+    p = str(tmp_path / "u.jsonl")
+    b = meter(UsageLog(p), _Fake(usage=None), "cv-compose")
+    assert b.complete("p").text == "text"
+    assert not os.path.exists(p), (
+        "a call that reported no usage wrote a row anyway -- an empty row counts as a call in "
+        "the report while identifying nothing")
+    # And the log still works afterwards: the skip is per call, not a latched off-switch.
+    meter(UsageLog(p), _Fake(usage=_u(input_tokens=5)), "cv-compose").complete("p")
+    assert len(_rows(p)) == 1
 
 
 def test_unserved_usage_from_the_completion_is_recorded_as_its_own_row(tmp_path):
@@ -196,6 +222,32 @@ def test_read_recent_keeps_the_window_skips_junk_and_includes_an_undated_row(tmp
     assert stages == ["fresh", "undated"]
 
 
+def test_read_recent_windows_on_the_exact_day_boundary(tmp_path):
+    """WHERE the window ends, not merely that it ends somewhere.
+
+    The sibling row above straddles nothing -- its rows are 0 and 40 days old against `days=30`,
+    so mutating the comparison to `>= days` (or `> days + 1`) leaves it green while `--days 7`
+    silently means a different span. A user comparing two weeks of spend gets an answer off by a
+    day with nothing said.
+
+    The boundary is inclusive of the `days`-th day: `--days 30` covers the 30 whole days before
+    today AND today, which is 31 dates. That is a choice rather than an accident -- `--days 0`
+    then means today, which `cmd_usage`'s own guard documents as legal -- so it is asserted here
+    rather than left to be re-derived from the subtraction."""
+    p = tmp_path / "u.jsonl"
+    now = _at()
+    rows = [(0, "today"), (29, "inside"), (30, "on-the-edge"), (31, "past-the-edge")]
+    p.write_text("".join(
+        json.dumps({"ts": (now() - timedelta(days=d)).isoformat(), "stage": s}) + "\n"
+        for d, s in rows), encoding="utf-8")
+    assert [r["stage"] for r in UsageLog(str(p)).read_recent(30, clock=now)] \
+        == ["today", "inside", "on-the-edge"]
+    # And the window MOVES with the argument, so the three above are not passing on a constant.
+    assert [r["stage"] for r in UsageLog(str(p)).read_recent(29, clock=now)] \
+        == ["today", "inside"]
+    assert [r["stage"] for r in UsageLog(str(p)).read_recent(0, clock=now)] == ["today"]
+
+
 def test_read_recent_on_a_missing_file_is_empty_and_creates_nothing(tmp_path):
     """A read must not bring the file into existence. This repo has been bitten by exactly
     that: a store that created a 0-byte file on read disarmed a relocation notice for every
@@ -295,7 +347,30 @@ def test_a_missing_served_key_means_served():
     assert summarize([_row()]).unserved_calls == 0
 
 
-@pytest.mark.parametrize("junk", ["120", True, False, 12.5, None, {}, [1]])
+@pytest.mark.parametrize("value,expected", COUNT_ALPHABET,
+                         ids=[f"{type(v).__name__}:{v!r}" for v, _ in COUNT_ALPHABET])
+def test_the_two_count_vetters_agree_on_what_a_count_is(value, expected):
+    """`core/backends.py::_int_or_none` vets a count arriving from a provider's JSON;
+    `core/usage.py::_count` vets one arriving back off disk. Both production docstrings say the
+    two must not disagree about what a count is, and nothing checked it.
+
+    That claim is exactly the shape this repo has been bitten by: a prose assertion with no row
+    that can falsify it. Widening one side -- letting `_int_or_none` take a float, say -- edits
+    that side's own parametrize list along with it, and its sibling's list, being a separate hand
+    copy, stays green while a 12.5 flows into a total reported as a token count. One alphabet
+    driven through both is the only version of this that can fail.
+
+    Both directions: the junk values pin that neither side trusts a non-int, and the good values
+    pin that neither side has been NARROWED (a `_count` rejecting a measured 0 would report a
+    flat-rate call and a zero-cache call identically)."""
+    from sluice.core.backends import _int_or_none
+    from sluice.core.usage import _count
+
+    assert _int_or_none(value) == expected
+    assert _count({"input_tokens": value}, "input_tokens") == expected
+
+
+@pytest.mark.parametrize("junk", NOT_A_COUNT)
 def test_a_non_integer_count_is_treated_as_unreported_rather_than_crashing(junk):
     """Rows come back off disk, where a hand edit can put anything in a field.
 
@@ -303,7 +378,8 @@ def test_a_non_integer_count_is_treated_as_unreported_rather_than_crashing(junk)
     total as 1 and a `false` as 0, silently. `12.5` is here because token counts are whole and
     one float would turn every total that touches it into a float. The admissible set is
     deliberately the same as `core/backends.py::_int_or_none`'s -- the two vet a count at
-    opposite ends of the same pipe and must not disagree about what one is.
+    opposite ends of the same pipe and must not disagree about what one is, which
+    `test_the_two_count_vetters_agree_on_what_a_count_is` below is what actually pins.
 
     `unmeasured` stays 0 here because the row's OTHER counts are fine: it is the row that
     reported nothing at all, which this one is not. Its input COVERAGE is what drops to 0."""

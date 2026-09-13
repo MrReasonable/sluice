@@ -179,9 +179,18 @@ def _probe_usage_env(_):
 
 
 def _probe_usage_key(cfg_path):
+    """`usage_jsonl` is the LOCATION half of a two-key feature (#308), so the SWITCH has to be on
+    for there to be a path to expand at all.
+
+    Forced here rather than written into the planted YAML because this table's rows plant exactly
+    one key each -- the `~` expansion is what is under test, and a second key in the file would
+    make the row's shape differ from every sibling's for a reason unrelated to tildes.
+    `SLUICE_USAGE` needs no equivalent: naming a path there switches recording on by itself."""
+    from dataclasses import replace
+
     from sluice.core.app import Sluice
     from sluice.core.config import load_config
-    return Sluice(load_config(cfg_path))._usage_log().path
+    return Sluice(replace(load_config(cfg_path), record_usage=True))._usage_log().path
 
 
 def _probe_track_seen_db(cfg_path):

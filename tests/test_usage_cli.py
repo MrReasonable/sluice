@@ -134,11 +134,17 @@ def test_an_empty_window_says_so_and_prints_no_table_of_zeros():
     assert "by stage" not in out and "hit%" not in out
 
 
-def test_digit_grouping_does_not_depend_on_the_locale(monkeypatch):
-    """#311 established that reading digit grouping from an assumed locale is a bug here.
-    This report is greppable output, so its shape must not move with the environment."""
-    monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
-    monkeypatch.setenv("LANG", "de_DE.UTF-8")
+def test_digit_grouping_is_the_locale_independent_comma():
+    """#311 established that reading digit grouping from an assumed locale is a bug here. This
+    report is greppable output, so its shape must not move with the environment.
+
+    What that means in practice is the FORMAT CODE, and the assertion is the whole guard: `,`
+    groups with a comma by specification and never consults the locale, while `n` would. Setting
+    `LC_ALL`/`LANG` was the first shape and was INERT -- Python's `,` presentation type ignores
+    them, and nothing in `cli.py` calls `locale.setlocale`, so neither variable can move this
+    output in either direction. Two monkeypatch calls that cannot fail read as coverage of a
+    property nothing here checks; the literal below is what actually pins it, and it reddens the
+    moment the format code changes to `n` or the grouping is dropped."""
     assert "1,234,567" in _fmt([_row(input_tokens=1234567)])
 
 
@@ -352,17 +358,25 @@ def test_the_none_at_all_sentence_only_describes_a_wholly_silent_call():
 
 def test_no_configured_log_is_reported_distinctly_from_an_empty_one(tmp_path, monkeypatch,
                                                                    capsys):
-    """OPT-IN (#308): with nothing configured there is no log, and saying "No calls recorded"
-    would answer "you spent nothing" to someone who never turned recording on.
+    """OFF BY DEFAULT (#308): with `record_usage` unset there is no log, and saying "No calls
+    recorded" would answer "you spent nothing" to someone who never turned recording on.
 
     This is the DEFAULT state of a fresh install, and before it was handled the command died with
     `AttributeError: 'NoneType' object has no attribute 'read_recent'` — while the whole suite
-    stayed green, because every other test here names a log. Exit 0: nothing is broken."""
+    stayed green, because every other test here names a log. Exit 0: nothing is broken.
+
+    The message must answer BOTH questions a user in this state has, which is why the location is
+    asserted too: an earlier cut told them to invent a path, because the switch and the location
+    were one key and there was no default to name."""
     monkeypatch.delenv("SLUICE_USAGE", raising=False)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     assert main(["usage"]) == 0
     out = capsys.readouterr().out
-    assert "no token-usage log is configured" in out
+    assert "token accounting is off" in out
+    assert "record_usage: true" in out, "the message must name the switch that turns it on"
+    # ...and where the file will land, derived rather than spelled, so the row cannot certify a
+    # path the resolver does not actually produce.
+    assert str(tmp_path / "state" / "sluice" / "sluice_usage.jsonl") in out
     # It must say HOW to turn it on -- both doors -- or the answer is a dead end.
     assert "usage_jsonl" in out and "SLUICE_USAGE" in out
     # And it must NOT claim an empty window, which is a different fact.

@@ -690,7 +690,8 @@ on. Until then this command says so and tells you how, rather than reporting an 
 one that is true.
 
 Real output of the real command, over a **synthetic** log seeded for the illustration — the
-figures are invented, not one install's history:
+figures are invented, not one install's history. The header shows the DEFAULT location, which is
+where `record_usage: true` alone puts the file; set `usage_jsonl` to move it:
 
 ```console
 $ job-sluice usage --days 7
