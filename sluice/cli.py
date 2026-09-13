@@ -741,8 +741,8 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
     the caller: the first line already carries the product name, so a caller-side prefix
     carrying it too would say "job-sluice triage" twice in two lines. That first line is
     what a phone renders as the preview, so exactly one of them may carry the name -- and
-    when there is an alert it has to be the alert, since that arm has just dismissed leads
-    irreversibly.
+    when there is an alert it has to be the alert, since that arm has just applied a
+    re-verdict it could not record first.
 
     This is read on a phone. It used to be an f-string interpolation of the counts DICT,
     so it put all seven rows on screen -- most of them zero on a typical run -- named none
@@ -1131,27 +1131,38 @@ def cmd_triage_run(args, config) -> int:
     # not triage anything and a summary of zeroes underneath the notice would read as an
     # ordinary quiet run. `role_type` records which SEARCH found a lead; leads written
     # before that was recorded stop being judged on it, and the batch below is what
-    # moves. Said in full rather than counted: `dismiss` is not re-selected by a later
-    # run, so a lead dismissed here is one the user never sees again.
+    # moves. Said in full rather than counted, because `dismiss` is not re-selected by a
+    # default run: a count would not tell a user which leads to look for.
     if report.reverdict_pending and not report.reverdict_deferred:
         # The run announced the change AND applied it, because the acknowledgement could
         # not be recorded and repeating the notice forever would mean never triaging
         # again (see `triage/engine.py`). Printed and then FALLEN THROUGH to the ordinary
         # summary: an earlier version branched on `reverdict_pending` alone, which is
         # non-empty on both arms, so it told the user "WROTE NOTHING" over a run that had
-        # just dismissed every lead it named and returned before the summary and the
-        # failures line explaining why.
+        # just applied the re-verdict, and returned before the summary and the failures
+        # line explaining why.
+        #
+        # Split by the NEW VERDICT, not by what this run did. A lead it rejects is rejected
+        # again by any re-judging under the same settings and exchange rates (a run refreshes
+        # rates only under `triage.refresh_fx_rates`), so a sweep is no way back for it
+        # -- this line once offered one. A lead it would keep may still sit at `dismiss`,
+        # left there or dismissed by the judge this run, and no default run selects it: a
+        # `--status dismiss` run re-judges it only with the judge, since `--no-llm` never
+        # writes a kept lead, and a hand move back to `new` puts it in the next default run.
         print(f"triage: APPLIED a re-verdict it could not record first. "
               f"{len(report.reverdict_pending)} lead(s) are judged differently by this "
-              "version (#223); the run below went ahead anyway. A lead now at `dismiss` "
-              "is not re-selected, so recovering one needs a `--status dismiss` sweep:",
+              "version (#223); the run below went ahead anyway. A lead the new verdict "
+              "rejects is rejected again by any re-judging under the same settings and "
+              "exchange rates. To re-judge one it would keep that is at `dismiss`, which no "
+              "default run selects, use `--status dismiss` with the judge (not `--no-llm`) "
+              "or move it back to `new` by hand:",
               file=sys.stderr)
         for msg in report.reverdict_pending:
             print(f"  {msg}", file=sys.stderr)
     if report.reverdict_deferred and report.reverdict_pending:
         # Both conjuncts, mirroring the arm above. `deferred` with an EMPTY list is
         # unreachable today -- the engine sets it only inside `if reverdict_pending:` --
-        # but unpinned it would print "WROTE NOTHING. 0 lead(s)", push the same, and
+        # but unpinned it would print "CHANGED NO LEADS. 0 lead(s)", push the same, and
         # suppress the summary for a run that had nothing to announce.
         #
         # A dry run gets a different last sentence. It never spends the marker (it writes
@@ -1170,13 +1181,18 @@ def cmd_triage_run(args, config) -> int:
         # about, and two copies of it is how they diverge anyway.
         push_nudge = (nudge if args.dry_run
                       else "Check the run output, then run it again to apply them.")
-        print(f"triage: WROTE NOTHING. {len(report.reverdict_pending)} lead(s) are "
+        # CHANGED NO LEADS, not "wrote nothing": this run writes the acknowledgement
+        # marker, which is what makes the next run apply the change, and it may have
+        # refreshed exchange rates before reaching the notice.
+        print(f"triage: CHANGED NO LEADS. {len(report.reverdict_pending)} lead(s) are "
               "judged differently by this version: a role_type recorded before sluice "
               "tracked where it came from is no longer trusted as a fact about the "
               "posting, and hourly and weekly pay are no longer judged against the "
-              "annual floor (#223). It moves verdicts BOTH ways -- a lead already at "
-              f"`dismiss` is not re-selected, so recovering one needs a deliberate "
-              f"`--status dismiss` sweep. {nudge}",
+              "annual floor (#223). It moves verdicts BOTH ways. A lead already at "
+              "`dismiss` is listed only when the new verdict would keep it, and no default "
+              "run selects `dismiss`: to re-judge one, use `--status dismiss` with the judge "
+              "(not `--no-llm`) or move it back to `new` by hand. "
+              f"{nudge}",
               file=sys.stderr)
         for msg in report.reverdict_pending:
             print(f"  {msg}", file=sys.stderr)
@@ -1192,9 +1208,21 @@ def cmd_triage_run(args, config) -> int:
         # "Run it again to apply" unconditionally, so a dry run pushed an instruction that
         # would never come true -- the same defect `nudge` exists to fix, on the one
         # channel an unattended install actually reads.
+        # ...and the `dismiss` caveat stderr carries. The notice can name a lead already at
+        # `dismiss` -- one the new verdict would keep -- and neither re-run nudge applies
+        # anything to it, because no default run re-selects `dismiss`. With the judge,
+        # because `--no-llm` counts a kept lead and never writes it; and not the only way,
+        # since a lead moved back to `new` by hand is re-judged by the next default run --
+        # back to `new` specifically, as a default run selects neither `shortlist` nor
+        # `needs_review`.
+        # Worded to promise no list, since the push carries none: no colon after the
+        # headline at all, which the CLI tests pin.
         _notify_reporting(
-            f"job-sluice triage: WROTE NOTHING -- {len(report.reverdict_pending)} lead(s) "
-            f"are judged differently by this version (#223). {push_nudge}",
+            f"job-sluice triage: CHANGED NO LEADS -- {len(report.reverdict_pending)} "
+            f"lead(s) are judged differently by this version (#223). {push_nudge} "
+            "A default run skips a lead already at `dismiss`; to re-judge one, use "
+            "`--status dismiss` with the judge (not `--no-llm`) or move it back to `new` "
+            "by hand.",
             config=config, label="triage-summary")
         return 0
     print(f"triage: {report.counts} judged={report.judged} "
@@ -1211,19 +1239,29 @@ def cmd_triage_run(args, config) -> int:
     for msg in report.role_type_conflicts:
         print(f"  {msg}", file=sys.stderr)
     # The APPLIED arm's push carries the re-verdict too, and getting this backwards was
-    # the round-3 finding: the HELD arm -- which writes NOTHING -- pushed an urgent
-    # "#223, run it again" while the arm that had just irreversibly dismissed leads sent
-    # a summary indistinguishable from an ordinary run. On a cron or container install
-    # the push is the only surface a human sees, and `dismiss` is never re-selected, so
-    # the alert was on the recoverable arm and absent from the unrecoverable one.
+    # the round-3 finding: the HELD arm -- which changes NO lead -- pushed an urgent
+    # "#223, run it again" while the arm that had just applied the re-verdict sent a
+    # summary indistinguishable from an ordinary run. On a cron or container install
+    # stderr goes unread, so there the only alert came from the arm that changed no lead,
+    # and none from the one that had just applied it.
     # Leads the message rather than sitting inside the headline: the digest opens with
-    # what the reader has to act on, and an irreversible re-verdict buried mid-sentence in
+    # what the reader has to act on, and an applied re-verdict buried mid-sentence in
     # front of that is how it gets skimmed past.
     alert = (f"APPLIED a re-verdict it could not record first: "
              f"{len(report.reverdict_pending)} lead(s) judged differently (#223)."
              if report.reverdict_pending else "")
-    _notify_reporting(_format_triage_digest(report, alert, dry_run=args.dry_run),
-                      config=config, label="triage-summary")
+    body = _format_triage_digest(report, alert, dry_run=args.dry_run)
+    # ...and the steps the stderr line gives that a user can act on, on the channel an
+    # unattended install reads -- this arm repeats on every run while the marker cannot be
+    # recorded. Appended as the LAST line rather than built into the alert: the alert is the
+    # first line, the phone's preview, and stays the urgent clause. Only for a lead the new
+    # verdict would keep: one it rejects is rejected again by any re-judging under the same
+    # settings and exchange rates.
+    if report.reverdict_pending:
+        body += ("\nTo re-judge a lead at `dismiss` that the new verdict would keep, use "
+                 "`--status dismiss` with the judge (not `--no-llm`) or move it back to "
+                 "`new` by hand.")
+    _notify_reporting(body, config=config, label="triage-summary")
     return 0
 
 

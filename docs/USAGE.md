@@ -179,13 +179,15 @@ configured are never rejected on pay. Before hourly and weekly had floors of the
 basis was not parsed at all and both fell to `perm_floor_gbp`, so `£2,000 per week` — about
 £104k a year — was silently binned as a sub-floor salary.
 
-**The first run on a vault written before this feature writes nothing.** Those notes
+**The first run on a vault written before this feature changes no lead.** Those notes
 carry no `role_type_source`, so they read as `assumed` and stop being judged on
 `role_type`; weekly and hourly leads stop being judged as salaries at the same time. That
 moves a batch of verdicts at once, in BOTH directions, so the run names the affected leads
 and stops. Review them, then run it again to apply. A `--dry-run` shows the notice without
-consuming it. Leads already at `dismiss` are not re-selected by a later run, so recovering
-any the old gate binned needs a deliberate `--status dismiss` sweep.
+consuming it. Leads already at `dismiss` are not re-selected by a default run. The notice
+names one only when the new verdict would keep it -- one the new verdict rejects stays at
+`dismiss` anyway -- and to re-judge it, run a deliberate `--status dismiss` with the judge
+(not `--no-llm`, which never writes a kept lead), or move it back to `new` by hand.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
 observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr.

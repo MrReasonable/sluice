@@ -150,7 +150,7 @@ class TriageReport:
     # non-empty on both arms and cannot also say which one was taken: the run holds when
     # the acknowledgement landed, and PROCEEDS when it could not be recorded. Inferring
     # the arm from the list alone made `cmd_triage_run` print "WROTE NOTHING" over a run
-    # that had just dismissed every lead it named, push the same claim to the
+    # that had just applied the re-verdict, push the same claim to the
     # notification channel, and return before the summary and the failures line saying
     # so. Found by a reviewer and independently while reading the CLI back.
     reverdict_deferred: bool = False
@@ -371,9 +371,9 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     if limit:
         notes = notes[:limit]
 
-    # #223 §2.1's delivery requirement, and it runs BEFORE anything else in this
-    # function: the first run that would re-verdict a pre-#223 vault names the affected
-    # leads and writes nothing at all. Returning here rather than skipping the affected
+    # #223 §2.1's delivery requirement, and it runs before any lead is judged or written:
+    # the first run that would re-verdict a pre-#223 vault names the affected leads and
+    # changes no lead. Returning here rather than skipping the affected
     # leads individually is deliberate -- the whole run is cheap to repeat (no judge call
     # is reached), and a partial run is harder for a user to reason about than one that
     # plainly did nothing.
@@ -382,13 +382,27 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     # nothing and that has to include this marker: a user who happens to preview first
     # must still get the notice on their real run.
     if not reverdict.acknowledged(reverdict_scope):
-        # Over every status triage OWNS, and BEFORE `--limit` -- never over `notes`,
-        # which both have already narrowed. The acknowledgement covers a whole VAULT, so
-        # its scope has to be the vault rather than this run's selection. Measured on the
-        # narrowed version, with two affected leads and `--limit 1`: run 1 named one lead
-        # and spent the marker; run 2 named nothing and dismissed BOTH. The lead it never
-        # named went to `dismiss`, which `DEFAULT_TRIAGE_STATUSES` does not re-select, so
-        # nothing would ever surface it again.
+        # Over every status triage OWNS, and BEFORE `--limit` -- never over `notes`, which
+        # both have already narrowed. The acknowledgement covers a whole VAULT, so its scope
+        # has to be the vault rather than this run's selection. Measured on the narrowed
+        # version, with two affected leads and `--limit 1`: run 1 named one lead and spent
+        # the marker; run 2 named nothing and dismissed BOTH. The lead it never named went to
+        # `dismiss`, and `DEFAULT_TRIAGE_STATUSES` does not re-select it.
+        #
+        # A lead already at `dismiss` is named only when the new verdict would KEEP it. One
+        # the new verdict rejects stays at `dismiss` -- the re-verdict moves no status for
+        # it -- and listing it held a vault whose affected leads an earlier run had already
+        # dismissed for a notice with nothing in it to act on, once for every
+        # acknowledgement lost; #324's re-key lost all of them. One it would keep is the
+        # opposite case: a lead the old gate binned, which no default run re-selects, so this
+        # notice is the only place that says the new verdict would keep it.
+        #
+        # Residual, stated rather than closed: whenever a run records the acknowledgement for
+        # the leads it names while a dismissed lead is left out, the left-out lead, if later
+        # moved back to `new` by hand, is re-verdicted on its next run without having been
+        # named -- the same one-shot gap as a note synced into an already-acknowledged vault.
+        # A `--dry-run`, or a run whose marker does not land, leaves the marker unspent, so
+        # such a lead is named by the next notice instead.
         #
         # COST, stated correctly after a first version of this comment got it wrong: an
         # AFFECTED vault pays one extra read, once, because the marker is spent and
@@ -399,7 +413,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         affected = vault.read_leads(set(_status.TRIAGE_OWNED))
         report.reverdict_pending = [
             f"{note.slug}: {said}" for note in affected
-            if (said := reverdict_notice(note.fm, cfg))]
+            if (said := reverdict_notice(note.fm, cfg))
+            and not (note.status == "dismiss" and said.rejected_after)]
         if report.reverdict_pending:
             if dry_run:
                 report.reverdict_deferred = True
@@ -1018,7 +1033,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             lead_id = verdict.get("lead_id")
             # FIRST verdict wins. Applying both wrote one lead twice with conflicting
             # verdicts -- and since triage owns every status either write lands, so a lead
-            # could pass through `shortlist` and come to rest at `dismiss`, which no later
+            # could pass through `shortlist` and come to rest at `dismiss`, which no default
             # run re-selects. It also counted one lead under two outcomes and let
             # `surfaced` name it at a status the vault does not hold, which is the one
             # thing the digest must never do.

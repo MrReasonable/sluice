@@ -571,9 +571,12 @@ whichever neighbour it was written next to:
    `reverdict.py` is a one-shot migration marker, not a store. Notes written
    before provenance existed read as `assumed`, so the gate stops consulting
    their `role_type` -- a BATCH re-verdict on the first run after upgrade, and
-   `dismiss` is not re-selected, so a lead dismissed that way is never seen
-   again. The first run that would apply it names the affected leads and writes
-   nothing; re-invoking applies it. Unlike the two dedup stores, a missing or
+   `dismiss` is not re-selected by a default run. The first run that would apply it
+   names the affected leads and changes
+   no lead; re-invoking applies it. A lead already at `dismiss` is named only when
+   the new verdict would keep it: one the new verdict rejects stays at `dismiss`
+   anyway, while one it would keep is a lead the old gate binned, which no
+   default run re-selects. Unlike the two dedup stores, a missing or
    corrupt marker must fail LOUD rather than refuse: it means "show the notice
    again", which costs one skipped run.
 3. **cv** (`sluice/cv/`): select verified source material, bundle it into
@@ -1997,6 +2000,14 @@ sentence cannot be.
   runs *because* something is already wrong. It is read-only by contract: stats paths and reuses
   this store's own read methods, never opens anything that does not already
   exist, so it cannot disarm the #81 relocation notice above.
+  The store also has an optional ATTRIBUTE, `dir`, likewise undeclared on the
+  `Protocol` and read via `getattr` by `Sluice._reverdict_scope`, which keys the
+  #223 re-verdict acknowledgement on it (resolved with `realpath` exactly as given, so
+  a store that expands `~` must expose the expanded path). Without it the key falls
+  back to the store name plus `VAULT_DIR`, or
+  `vault_dir` when that is unset, so a store whose location those do not fully
+  determine must expose `dir`; the obligation is stated in `core/protocols.py`'s
+  `Store` docstring.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
   `template`). Implementations: `template` (fills a user's own Jinja2 template --
   or the packaged default at `sluice/templates/cv_plain.html.j2` when

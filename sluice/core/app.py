@@ -1642,8 +1642,8 @@ class Sluice:
         So the fallback is built from what the application knows rather than from the
         store object: the configured store NAME plus the same `VAULT_DIR`-then-config
         precedence `stores/vault.py`'s factory itself uses. Two dir-less stores of the
-        same name under the same config ARE the same store and correctly share a key;
-        two of different names do not.
+        same name under the same `VAULT_DIR`/`vault_dir` are treated as one store and share
+        a key; two of different names do not.
 
         RESOLVED in both branches, and HERE rather than in `reverdict._key` (#324). The scope
         is hashed into a marker that outlives the process, which is the `docs/ARCHITECTURE.md`
@@ -1651,8 +1651,8 @@ class Sluice:
         receives this SCOPE and not a path: `vault:<dir>` has no leading `/`, so `abspath`
         prepended the process cwd and the acknowledgement was keyed per (vault, cwd). A
         scheduled run and a hand-run one start in different directories, so each new cwd
-        re-showed the notice, wrote nothing and exited 0. Only here is the directory still a
-        path, so only here can it be resolved; `_key` hashes what it is given.
+        re-showed the notice, applied nothing and exited 0. Only here is the directory still
+        a path, so only here can it be resolved; `_key` hashes what it is given.
 
         `realpath` rather than `abspath`, because this is an IDENTITY and the dangerous error
         is two directories sharing one. `abspath` keeps a symlink's NAME, so a link
@@ -1661,22 +1661,40 @@ class Sluice:
         Resolving the link errs the loud way instead: a vault that moves beneath an unchanged
         link is shown the notice once more.
 
-        The fallback reads `VAULT_DIR` and the config file's `vault_dir`, and neither arrives
-        expanded (`load_config` stores the YAML value as written), which makes it an INGRESS
-        point, so it expands `~` as well -- `realpath` does not, and `~/v` resolved alone
-        lands under the cwd again. An EMPTY value stays empty, because `realpath("")` IS the
-        cwd. `Vault.dir` needs no expansion: `Vault` did that at construction.
+        What a path cannot see is a DIFFERENT directory mounted at the SAME path. The shipped
+        `docker-compose.yml` mounts whichever host vault `SLUICE_VAULT` names at one fixed
+        container path and keeps this marker in a persistent volume, so swapping vaults keeps
+        the key and the new vault inherits the acknowledgement. That is stated there, with
+        its remedy, rather than closed here: keying on the directory's inode as well would
+        show the notice on every run wherever a file-sharing layer does not keep inodes
+        stable, and a notice that never stops means triage never triages again.
 
-        That empty value is SHARED by every dir-less store of one kind, from any directory,
-        which is correct only because such a store's location cannot depend on the cwd. A
-        store that does locate itself relative to the cwd has to expose `dir` -- the `Store`
-        contract in `core/protocols.py` says so -- or every copy of it, run from a different
-        project directory, shares one acknowledgement.
+        Both branches key on the configured store KIND, so two implementations at one
+        location keep separate acknowledgements. For the shipped `vault` store that kind is
+        the literal the store-built branch used to spell, so the prefix leaves its key where
+        the #324 fix put it.
+
+        The fallback expands `~` before resolving, because `realpath` does not and `~/v`
+        resolved alone lands under the cwd again: it reads `VAULT_DIR` and the config file's
+        `vault_dir`, neither of which arrives expanded (`load_config` stores the YAML value as
+        written), which makes it an INGRESS point. The store-built branch deliberately does
+        NOT. A store's `dir` is the location that store itself opens, so it arrives expanded
+        wherever the store expands it -- `Vault` does, at construction -- and a `~` still in
+        it names a directory literally called `~` under the cwd. Expanding it here would key
+        every such directory on one `$HOME` path, so the first to acknowledge would silence
+        the rest. An EMPTY fallback value stays empty, because `realpath("")` IS the cwd.
+
+        That empty value is SHARED by every dir-less store of one kind, from any directory
+        and under any setting of its own, which is correct only because the `Store` contract
+        in `core/protocols.py` requires a store whose location is not fully determined by its
+        name plus `VAULT_DIR` (or `vault_dir` when that is unset) to expose `dir`. Without
+        that, copies of such a store that differ only in location would share one
+        acknowledgement.
         """
+        kind = getattr(self.config, "store", "vault")
         named = getattr(store, "dir", "")
         if named:
-            return f"vault:{os.path.realpath(named)}"
-        kind = getattr(self.config, "store", "vault")
+            return f"{kind}:{os.path.realpath(named)}"
         configured = os.environ.get("VAULT_DIR") or getattr(self.config, "vault_dir", "")
         if configured:
             configured = os.path.realpath(os.path.expanduser(configured))
