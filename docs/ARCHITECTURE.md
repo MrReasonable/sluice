@@ -1905,8 +1905,13 @@ sentence cannot be.
   Where the metering is WRAPPED is a separate decision from where the call happens, and the
   two are in different modules on purpose. `core/app.py` wraps at the application boundary,
   because almost every backend it builds serves exactly one stage; `cv/engine.py` takes the
-  log instead and wraps per call, because it spends ONE backend on compose, audit and voice
-  and is the only place a lead id is in scope. `tests/test_usage_wiring.py` rosters both ends
+  log instead and wraps per call, because it spends ONE backend on compose, audit and voice.
+  cv is also the only stage that records a LEAD, and that is a choice rather than a
+  constraint -- triage's tier-3 resolve has a note in scope at its own call site and is still
+  wrapped once at the boundary, being a bulk pass over many leads. The recorded value is the
+  store-issued `slug`, never `LeadNote.ref`, which is an opaque store handle (a filesystem
+  path for the vault store) and would put the user's vault location in a telemetry file.
+  `tests/test_usage_wiring.py` rosters both ends
   -- every `.complete(` call site against every stage `meter(...)` passes -- and each stage
   names the runtime test that witnesses it actually recording, because the static roster
   proves the wiring is declared and cannot prove it fires.

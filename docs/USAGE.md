@@ -684,6 +684,9 @@ per-call JSONL every backend call writes (#308). Fully offline -- it constructs 
 Exit 0 always, including with nothing recorded: "no calls in this window" is a true answer to
 the question asked, not a failure, and a fresh install must not look broken.
 
+Real output of the real command, over a **synthetic** log seeded for the illustration — the
+figures are invented, not one install's history:
+
 ```
 $ job-sluice usage --days 7
 usage over the last 7 day(s), from ~/.local/state/sluice/sluice_usage.jsonl
@@ -705,7 +708,7 @@ to that definition for every provider -- Anthropic reports uncached input and it
 counters separately, so `hit%` computed against its raw `input_tokens` can exceed 100%. See
 `core/backends.py::Usage`.
 
-**A dash is not a zero.** `track-classify` above ran eighteen real calls against a flat-rate
+**A dash is not a zero.** `track-classify` above stands for calls against a flat-rate
 `claude-max` backend, which reports no token counts at all; printing `0` there would say those
 calls were free. Any group whose *every* call reported nothing shows `-`, and a footnote says
 how many calls that was and that the totals are therefore a **floor**. A group with only
@@ -718,7 +721,7 @@ A second footnote appears when a call was **billed without serving an answer** -
 backend that spent tokens and then failed, whose spend would otherwise vanish inside the
 fallback. Those tokens *are* in the totals, because they were billed.
 
-`--days` defaults to 30, matching the triage audit log's own window. `--json` prints the same
+`--days` defaults to 30, matching the triage audit log's own window; `0` reports today only, and a negative value is a usage error (exit 2) rather than an empty report, which would read as "you spent nothing". `--json` prints the same
 totals machine-readably, with `hit_rate` null (not 0.0) where the table shows a dash, and
 `total_tokens` derived rather than stored so it cannot disagree with its own parts.
 

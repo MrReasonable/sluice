@@ -399,6 +399,33 @@ def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
     assert used == [str(tmp_path / "from-env")] * 2
 
 
+# ── usage_jsonl (#308) ────────────────────────────────────────────────────────
+# The same three rows `dossier_dir` above has, and for the same reason it needed them: the
+# `""` default is what makes `resolve`'s env -> config -> XDG chain reachable at all, and a
+# non-empty default is ALWAYS truthy, so it short-circuits the chain, the XDG location is never
+# reached, and the log lands in whatever cwd the run started in. Nothing else in the suite pins
+# it -- every other test sets `SLUICE_USAGE` or the key -- so mutating the dataclass default to
+# a literal survived the whole suite until these rows existed.
+
+def test_unconfigured_usage_jsonl_lands_under_the_state_root(tmp_path, monkeypatch):
+    # STATE, not cache: a usage log is history that cannot be re-derived, unlike a dossier,
+    # which is a re-fetchable copy of a job ad.
+    app = _app(tmp_path, monkeypatch)
+    assert app.usage_log().path == os.path.join(
+        os.environ["XDG_STATE_HOME"], "sluice", "sluice_usage.jsonl")
+
+
+def test_the_root_usage_jsonl_key_is_honoured(tmp_path, monkeypatch):
+    mine = str(tmp_path / "mine-usage.jsonl")
+    assert _app(tmp_path, monkeypatch, usage_jsonl=mine).usage_log().path == mine
+
+
+def test_usage_env_var_beats_the_root_key(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch, usage_jsonl=str(tmp_path / "from-config.jsonl"))
+    monkeypatch.setenv("SLUICE_USAGE", str(tmp_path / "from-env.jsonl"))
+    assert app.usage_log().path == str(tmp_path / "from-env.jsonl")
+
+
 def test_the_root_dossier_concurrency_reaches_the_triage_engine(tmp_path, monkeypatch):
     """#309: the root key is FORWARDED, not merely parsed.
 

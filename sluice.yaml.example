@@ -102,13 +102,20 @@ baseline_rel: My CV/CV.md
 # be answered twice the moment cv does, for one profile.
 
 # Where the per-call token-usage log goes (#308): one JSON line per LLM call, holding the
-# stage, the provider and model, and the token counts the provider reported.
+# stage, the provider and model, the token counts the provider reported -- and, for the
+# per-lead stages (cv compose/audit/voice), THE LEAD'S NAME, which is the employer and the
+# role. So this file names companies you are applying to. It lives under your own state
+# directory and nothing sends it anywhere, but decide accordingly before syncing or sharing
+# it. `job-sluice usage` never prints a lead: it groups by stage and by model only, so the
+# REPORT is safe to paste even though the file behind it is not.
 # `job-sluice usage` reads it back and reports what you spent, by stage and by model, with
 # the cache hit rate. ON by default -- leave this commented and it lands under the XDG state
 # root -- because the question is always about a run that has already finished, and an
 # opt-in log answers it with "no data". Append-only, never rotated; delete it if you want to
-# start the history over. A cached input token can cost two orders of magnitude less than an
-# uncached one, so the hit rate is the single most actionable number in that report.
+# start the history over. Providers charge much less for an input token served from cache than
+# for one they have to read, so the hit rate is usually the most actionable number in that
+# report -- deliberately no ratio here, because a price is a claim about the world that rots,
+# which is the same reason sluice ships no price table and reports tokens rather than money.
 # usage_jsonl:        # <- uncomment and set YOUR OWN
 
 # Hosts the dossier fetcher may reach even though they are not globally routable.

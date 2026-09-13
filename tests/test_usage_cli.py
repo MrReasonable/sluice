@@ -54,8 +54,12 @@ def test_the_report_names_the_stages_and_the_file_it_read():
 def test_a_group_that_measured_nothing_prints_a_dash_not_a_zero():
     """THE row. claude-max is flat-rate and reports no counts, and its accumulator is 0
     because unmeasured rows add nothing to it -- so rendering the accumulator states that a
-    provider's calls were free. Measured before the fix: `track-classify 18  0  0  0` for
-    eighteen real, billed-against-quota calls."""
+    provider's calls were free.
+
+    The defect was observed by running the real command over a SYNTHETIC seeded log during
+    development: a group of claude-max rows rendered as `track-classify  N  0  0  0`. The row
+    count came from the seed, so the count is invented; what was measured is the RENDERING,
+    which is the part this test pins."""
     blind = _row(stage="track-classify", provider="claude-max",
                  input_tokens=None, output_tokens=None, cache_read_tokens=None)
     out = _fmt([blind, blind, blind])
@@ -95,9 +99,10 @@ def test_the_unserved_footnote_appears_only_when_a_call_was_billed_without_servi
 
 def test_a_model_label_is_never_truncated():
     """The model is what a reader is comparing, so clipping it to a tidy column destroys the
-    report's own subject. Measured before the fix, at a fixed 16-char label: a
-    `deepseek/deepseek-v4-flash` row printed as `deepseek/deepsee`, beside
-    `claude-max/claud` -- two rows whose distinguishing half was gone."""
+    report's own subject. Observed by running the real command over a synthetic seeded log at
+    the original fixed 16-char label: `deepseek/deepseek-v4-flash` printed as
+    `deepseek/deepsee` beside `claude-max/claud` -- two rows whose distinguishing half was
+    gone. The model names are sluice's own registry defaults, not anyone's configuration."""
     out = _fmt([_row(provider="deepseek", model="deepseek-v4-flash"),
                 _row(provider="claude-max", model="claude-sonnet-4-5")])
     assert "deepseek/deepseek-v4-flash" in out
@@ -211,3 +216,45 @@ def test_the_command_never_constructs_a_backend(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SLUICE_USAGE", str(tmp_path / "u.jsonl"))
     assert main(["usage"]) == 0
     capsys.readouterr()
+
+
+def test_a_negative_window_is_a_usage_error_not_an_empty_report(tmp_path, monkeypatch, capsys):
+    """`--days -5` would otherwise exclude every row and print "No calls recorded", which
+    reads as "you spent nothing" -- a false answer to the question asked, produced by a
+    mistyped flag. Exit 2, a usage error, via `main`'s ValueError handling. `--days 0` is
+    legal and means today only, so the boundary is asserted in both directions."""
+    _seed(tmp_path, monkeypatch, [_row()])
+    assert main(["usage", "--days", "-5"]) == 2
+    err = capsys.readouterr().err
+    assert "must be 0 or more" in err
+
+    assert main(["usage", "--days", "0"]) == 0
+    assert "triage-judge" in capsys.readouterr().out
+
+
+def test_a_column_no_row_reported_is_dashed_without_hiding_one_that_was():
+    """Per COLUMN, not per row. A row reporting only `output_tokens` -- both parsers can
+    produce one, each count being independently optional -- had its real measured output
+    number dashed along with the columns nobody reported, because the rendering keyed on the
+    input count alone. A dash claims nothing is known, so it must be scoped to the column
+    that nothing is known about."""
+    out = _fmt([_row(input_tokens=None, output_tokens=30, cache_read_tokens=None)])
+    line, = [ln for ln in out.splitlines() if ln.startswith("triage-judge")]
+    _label, calls, *cells = line.split()
+    assert calls == "1"
+    # input dashed, output SHOWN, cached dashed, rate dashed.
+    assert cells == ["-", "30", "-", "-"], f"per-column coverage not honoured: {line!r}"
+    # And this row is not what the FLOOR footnote speaks for: it reported something.
+    assert "reported no token counts at all" not in out
+
+
+def test_the_json_reports_per_count_coverage(tmp_path, monkeypatch, capsys):
+    """JSON has no dash, so a consumer needs the coverage counts to tell a measured zero from
+    an unreported column -- otherwise a dashboard plots 0 for both."""
+    _seed(tmp_path, monkeypatch, [_row(input_tokens=None, output_tokens=30,
+                                       cache_read_tokens=None)])
+    main(["usage", "--json"])
+    total = json.loads(capsys.readouterr().out)["total"]
+    assert (total["input_calls"], total["output_calls"], total["cache_calls"]) == (0, 1, 0)
+    assert total["output_tokens"] == 30
+    assert total["hit_rate"] is None

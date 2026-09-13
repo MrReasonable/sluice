@@ -113,11 +113,23 @@ class BackendError(Exception):
     spend can be recorded at all, since on this path there is no return value to carry it.
     A transport failure (timeout, HTTP error, missing binary) has no body to parse and leaves
     it None, so `usage is None` here means "no usage was ever seen", never "it was free".
+
+    `unserved_usage` carries the OTHER legs that also billed, mirroring the field of the same
+    name on `Completion`. One call can spend on more than one backend: `FallbackBackend` with
+    both legs reporting usage and then failing is paid for nothing TWICE, which is the worst
+    case for cost and so exactly the one a report must not under-state. A single `usage` field
+    could only carry the first of them, and did -- the first cut of this coalesced the two
+    with `e.usage or fe.usage` and silently dropped the fallback's.
+
+    Every count on this path is unserved by definition (the call raised), so both fields are
+    recorded with `served: false`; which leg each belonged to is in its own `provider`.
     """
 
-    def __init__(self, *args, usage: Usage | None = None):
+    def __init__(self, *args, usage: Usage | None = None,
+                 unserved_usage: tuple = ()):
         super().__init__(*args)
         self.usage = usage
+        self.unserved_usage = unserved_usage
 
 
 def _int_or_none(value):
@@ -605,12 +617,15 @@ class FallbackBackend:
                 # is the less interesting half (the primary going down is what put us
                 # here), and chaining from the primary keeps its traceback attached.
                 #
-                # The primary's spend rides along on the raised error too: with both legs
-                # down there is no completion to hang it on, and dropping it would make a
-                # primary that bills then fails look free.
+                # BOTH legs' spend rides along on the raised error: with both down there is
+                # no completion to hang it on, and dropping either would make a leg that bills
+                # then fails look free. Kept as two fields rather than coalesced -- `e.usage
+                # or fe.usage` was the first cut and silently reported only the primary, in
+                # the one case where the user paid twice and got nothing.
                 raise BackendError(
                     f"both backends failed: primary={e}; fallback={fe}",
-                    usage=e.usage or fe.usage) from e
+                    usage=e.usage,
+                    unserved_usage=() if fe.usage is None else (fe.usage,)) from e
             self.last_backend = "fallback"
             # No provider/model of its own to stamp: the LEG that served already did that,
             # which is what makes attribution structural here rather than reconstructed.

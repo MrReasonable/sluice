@@ -378,10 +378,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # ONE backend, THREE stages -- so the stage is attached HERE, per call,
                 # rather than once where the backend was built. `meter` returns `backend`
                 # unchanged when `usage` is None (a direct call in a test), so this costs one
-                # comparison on that path and constructs nothing. The lead is in scope here and
-                # nowhere upstream, which is the other half of why cv takes the log itself.
+                # comparison on that path and constructs nothing.
+                #
+                # `note.slug`, never `note.ref`. `ref` is an OPAQUE STORE HANDLE
+                # (`core/protocols.py::LeadNote`) -- a filesystem path for the vault store and
+                # a row id for a future SQLite one -- so persisting it would put the user's
+                # vault path in a telemetry file AND make the log's own shape a property of
+                # which store is configured. `slug` is the store-issued stable identity, which
+                # is what a report about a lead should name.
                 cv_text = _compose.compose(meter(usage, backend, "cv-compose",
-                                                 lead=note.ref),
+                                                 lead=note.slug),
                                            bundle_text, jd, company, role,
                                            name=cv_name, contact=cv_contact,
                                            employers=cvcfg.employers,
@@ -653,7 +659,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 if cvcfg.voice_check and scoped_text.strip():
                     try:
                         _report, voice_flags = run_voice(
-                            meter(usage, backend, "cv-voice", lead=note.ref), scoped_text)
+                            meter(usage, backend, "cv-voice", lead=note.slug), scoped_text)
                     except Exception as e:
                         _log.warning("voice check for %s failed (%s); treating as "
                                      "clean", note.ref, e)
@@ -719,7 +725,7 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # rendering -- swallow and log, never propagate.
         try:
             _report, audit_flags = run_audit(
-                meter(usage, backend, "cv-audit", lead=note.ref), cv_text, audit_bundle_text)
+                meter(usage, backend, "cv-audit", lead=note.slug), cv_text, audit_bundle_text)
         except Exception as e:
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
             audit_flags = []

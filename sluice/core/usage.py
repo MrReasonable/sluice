@@ -15,12 +15,24 @@ log must not -- so the shared part would be the read half alone.
 
     THE WIRING, in one place so it does not have to be reconstructed from call sites:
 
-    `Sluice` builds one `UsageLog` (or None, if no path resolves) and `meter(...)` wraps a
-    backend with it AT THE POINT A STAGE IS HANDED ONE. Almost all of those sites are in
+    `Sluice` builds one `UsageLog` -- ALWAYS one, never None: `Sluice._usage_log` resolves
+    `SLUICE_USAGE` -> the `usage_jsonl` key -> the XDG state root, and that last rung cannot
+    fail, so no install is in a no-log state. `meter(...)` wraps a backend with it AT THE
+    POINT A STAGE IS HANDED ONE. Almost all of those sites are in
     `core/app.py`, because almost every backend there serves exactly one stage and the stage
     is therefore known where the backend is constructed. `cv/engine.py` is the exception: it
-    spends ONE backend on three stages (compose, audit, voice), so it takes the log itself and
-    wraps per call, which is also the only place a lead id is in scope.
+    spends ONE backend on three stages (compose, audit, voice), so a stage fixed where the
+    backend was built would mislabel two of the three -- it takes the log itself and wraps per
+    call, with the lead attached.
+
+    Attaching the LEAD is a separate choice from where the wrap goes, and only cv makes it.
+    `triage/engine.py` has a note in scope at its own `resolve_company` call, so tier-3
+    resolution COULD be attributed per lead; it is wrapped once at the boundary instead because
+    it is a bulk pass over many leads and the extra parameter buys little. That is a placement
+    decision, not a fact about scope -- changing it means threading the log into
+    `triage/engine.py` the way cv already takes it. The recorded value is the store-issued
+    `slug`, never `LeadNote.ref`, which is an opaque store handle (a filesystem path for the
+    vault store) and would put the user's vault location in a telemetry file.
 
     There is deliberately no wrap-now-label-later: a wrapper holding `stage=None` would write
     rows nobody can group, and no static check could catch the call site that forgot to
@@ -96,10 +108,19 @@ class UsageLog:
         because what is lost is a measurement of work rather than the work, which is exactly
         why the same swallow would be wrong in `AuditLog` or in any write to the vault.
         """
+        # ONE `write` of a whole line in append mode, deliberately, and the reason is a
+        # forward hazard rather than a live one. Nothing calls a backend concurrently today:
+        # `triage/engine.py`'s pool runs `dossier_cache.get_or_build` only (a browser fetch),
+        # and the judge is sequential -- checked, not assumed. If a future concurrent judge
+        # appends from several threads, a single write is what keeps the damage to at worst a
+        # torn line, which `read_recent` skips as malformed: one row lost, nothing else
+        # corrupted, and no lock on the hot path of every LLM call. Building the string before
+        # opening the file is part of that -- two writes could interleave where one cannot.
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            line = json.dumps(entry, ensure_ascii=False) + "\n"
             with open(self.path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+                f.write(line)
         except OSError as e:
             # Once per failure, not once per call: a broken path fails on every call of a
             # long run, and a warning per lead would bury everything else in the log.
@@ -159,24 +180,22 @@ class MeteredBackend:
     def last_backend(self):
         """Which leg served, delegated to the wrapped backend.
 
-        Present so a caller that reads it off whatever `meter` handed back gets the truth.
-        `triage/engine.py` and `cv/engine.py` do `getattr(backend, "last_backend", None)`,
-        and without this property that reads None through a wrapper.
+        ONE consumer reads it through a wrapper: `triage/engine.py`, whose backend
+        `core/app.py` wraps before handing it down. `cv/engine.py` also does
+        `getattr(backend, "last_backend", None)` but reads the BARE backend -- cv receives the
+        log and wraps locally -- so it is unaffected either way.
 
-        `cli.py::_format_triage_digest` documents THREE legitimate reasons `report.backend` is
-        null, and tells them apart by `report.sent_to_judge` rather than by the null itself --
-        so a spurious null on a run that DID judge lands on the third reading, "every batch
-        raised and the judge swallowed it". That is an outage report produced as a side effect
-        of turning metering on, which is a worse failure than the thing it would be a side
-        effect of.
+        What a missing delegation costs, read off `cli.py::_format_triage_digest` rather than
+        assumed: on a run that judged, `if report.judged:` is the arm taken, and a null
+        `report.backend` merely empties its `via` clause, so the digest prints "Judged N."
+        without naming a leg. That is not an outage report -- the outage arm is
+        `elif report.sent_to_judge:`, unreachable while `judged` is truthy -- it is the loss of
+        the fallback-degradation signal: the operator can no longer tell from the digest
+        whether the primary answered or the fallback did. Cheap to delegate, and silent if not.
+        (Two earlier versions of this docstring claimed the outage reading. Both were written
+        from the shape of the code rather than from reading the branch order.)
         """
         return getattr(self.inner, "last_backend", None)
-
-    @property
-    def model(self):
-        """Delegated for the same reason as `last_backend`: a wrapper must not make the
-        thing it wraps look like it has fewer facts about itself than it does."""
-        return getattr(self.inner, "model", None)
 
     def complete(self, prompt: str):
         try:
@@ -189,6 +208,10 @@ class MeteredBackend:
             burned = getattr(e, "usage", None)
             if burned is not None:
                 self._record(burned, served=False)
+            # A call can have spent on more than one leg -- FallbackBackend with both legs
+            # billing and then failing. Everything here is unserved: the call raised.
+            for also in getattr(e, "unserved_usage", ()):
+                self._record(also, served=False)
             raise
         if c.usage is not None:
             self._record(c.usage)
@@ -203,29 +226,51 @@ class MeteredBackend:
 def meter(log, backend, stage: str, *, lead=None):
     """Wrap `backend` so each call's usage is recorded under `stage`.
 
-    Returns `backend` UNCHANGED when `log` is None, which is the shipped state of an install
-    with no usage path: no wrapper is constructed, and the cost at every call site is one
-    comparison. That identity is asserted (`meter(None, b, "x") is b`) so the off path cannot
-    quietly grow a wrapper later.
+    Returns `backend` UNCHANGED when `log` is None. That is NOT a shipped state -- every
+    install gets a log (see the module docstring) -- it is for a caller that has no log to
+    give: a sub-app function called directly, which is how most of this repo's tests reach
+    `run_one`, `run_batch` and `judge`. Those callers pass `usage=None` and must not be made
+    to construct a telemetry sink to run.
+
+    The identity is asserted (`meter(None, b, "x") is b`) so that path cannot quietly grow a
+    wrapper later, which would put a delegating call and an attribute lookup on every LLM
+    call of every direct caller.
     """
     return backend if log is None else MeteredBackend(backend, log, stage, lead)
 
 
 @dataclass(frozen=True)
 class Totals:
-    """One group's counts. `unmeasured` is calls that reported no input count at all --
-    claude-max, or an endpoint that sent no usage block -- kept as its own number rather than
-    folded in as zeros, so "we spent nothing here" and "we cannot see what we spent here" stay
-    different answers."""
+    """One group's counts, with PER-COLUMN coverage beside the sums.
+
+    `unmeasured` is calls that reported NO count at all -- claude-max, or an endpoint that sent
+    no usage block -- kept as its own number rather than folded in as zeros, so "we spent
+    nothing here" and "we cannot see what we spent here" stay different answers.
+
+    The three `*_calls` fields count how many rows contributed to each sum, and they exist
+    because one number cannot answer that question per column. Keying the whole row's
+    rendering on the INPUT count alone was the first shape and was wrong in a way the report
+    states out loud: a row reporting `output_tokens` and no input -- which both parsers can
+    produce, since each count is independently optional -- rendered a dash over every column,
+    including the output number it really had measured. A dash is a claim that nothing is
+    known, so it has to be per column.
+    """
     calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     unmeasured: int = 0
+    input_calls: int = 0
+    output_calls: int = 0
+    cache_calls: int = 0
 
     @property
     def hit_rate(self):
         """Cached share of input tokens, or None when there is no measured input to divide by.
+
+        Gated on `input_calls` as well as on the sum: a group where NO row reported an input
+        count has no rate at all, which is a different fact from a group whose reported inputs
+        happen to total zero.
 
         None, never 0.0: a group whose every call was unmeasured has no hit rate, and
         printing 0% there would report a cache that is working badly rather than one that was
@@ -235,7 +280,7 @@ class Totals:
         tokens for every provider -- see `core/backends.py::Usage`. Against Anthropic's raw
         `input_tokens`, which excludes them, this ratio can exceed 1.0.
         """
-        if not self.input_tokens:
+        if not self.input_calls or not self.input_tokens:
             return None
         return self.cache_read_tokens / self.input_tokens
 
@@ -258,13 +303,23 @@ class Summary:
 
 
 def _add(t: Totals, row: dict) -> Totals:
-    got = _count(row, "input_tokens")
+    """Fold one row into a group's totals.
+
+    Each count is tallied INDEPENDENTLY -- both its sum and how many rows reported it -- because
+    a provider may report some and not others, and the report must not generalise one column's
+    silence to the rest. `unmeasured` is the row that reported NONE of them, which is the only
+    row the footnote is entitled to speak for.
+    """
+    got = {k: _count(row, k) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}
     return Totals(
         calls=t.calls + 1,
-        input_tokens=t.input_tokens + (got or 0),
-        output_tokens=t.output_tokens + (_count(row, "output_tokens") or 0),
-        cache_read_tokens=t.cache_read_tokens + (_count(row, "cache_read_tokens") or 0),
-        unmeasured=t.unmeasured + (1 if got is None else 0),
+        input_tokens=t.input_tokens + (got["input_tokens"] or 0),
+        output_tokens=t.output_tokens + (got["output_tokens"] or 0),
+        cache_read_tokens=t.cache_read_tokens + (got["cache_read_tokens"] or 0),
+        unmeasured=t.unmeasured + (1 if all(v is None for v in got.values()) else 0),
+        input_calls=t.input_calls + (got["input_tokens"] is not None),
+        output_calls=t.output_calls + (got["output_tokens"] is not None),
+        cache_calls=t.cache_calls + (got["cache_read_tokens"] is not None),
     )
 
 
