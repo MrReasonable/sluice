@@ -2395,7 +2395,13 @@ def cmd_usage(args, config) -> int:
         # key they had just set -- told to exactly the person deciding whether to keep an
         # employer-naming file out of their backups. Resolution still creates nothing.
         named = getattr(config, "usage_jsonl", "")
-        where = resolve(env_var="SLUICE_USAGE", config_value=named,
+        # `env_var=None`, not "SLUICE_USAGE": that rung cannot fire HERE. A truthy `SLUICE_USAGE`
+        # switches recording on by itself, so `log` is not None and this branch is unreachable --
+        # measured. Naming the variable anyway would read as precedence being honoured when it is
+        # the config key alone deciding, and `core/paths.py` makes the same call about its own
+        # `stale != expanded` term: a term that cannot change the outcome is deleted rather than
+        # left standing as a claim.
+        where = resolve(env_var=None, config_value=named,
                         kind="state", name="sluice_usage.jsonl")
         move = ("" if named else
                 " Set `usage_jsonl:` as well to put it somewhere else, or export SLUICE_USAGE,"
