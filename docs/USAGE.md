@@ -12,7 +12,7 @@ fails the build if this page falls out of sync with it.
 `job-sluice --version` prints the installed version and exits 0; it works without a
 subcommand.
 
-Thirteen top-level command groups. `main()` loads the config before dispatching to any command,
+Fourteen top-level command groups. `main()` loads the config before dispatching to any command,
 so a retired or malformed key fails identically for all of them: `job-sluice: <message>` to
 stderr, exit code `2`, no traceback. The same channel carries a usage error a COMMAND raises
 once it has the config -- `cv run` uses it to refuse a vault that has nothing to compose from
@@ -676,6 +676,55 @@ a source breaking *today* now shows a percentage against its own history rather 
 the right way round here, because a false alarm in a health report trains people to ignore the row,
 and `detect_drift`'s per-run reasons and the ingest breaker are what actually catch a source
 breaking today. Fully offline either way. Exit 0 always.
+
+## `job-sluice usage [--days N] [--json]`
+
+What this install spent on LLM calls, grouped by stage and by model, read back from the
+per-call JSONL every backend call writes (#308). Fully offline -- it constructs no backend.
+Exit 0 always, including with nothing recorded: "no calls in this window" is a true answer to
+the question asked, not a failure, and a fresh install must not look broken.
+
+```
+$ job-sluice usage --days 7
+usage over the last 7 day(s), from ~/.local/state/sluice/sluice_usage.jsonl
+
+by stage
+                               calls       input    output    cached   hit%
+triage-judge                      42     381,192    18,312   294,882   77.4
+cv-compose                        10     115,141    31,005         0    0.0
+cv-audit                           9      36,918     1,890         0    0.0
+track-classify                    18           -         -         -      -
+...
+```
+
+Rows are ordered by spend, biggest first, because "which stage is expensive" is the question
+the command exists to answer.
+
+`input` is the total input for the call **including** anything served from cache, normalised
+to that definition for every provider -- Anthropic reports uncached input and its cache
+counters separately, so `hit%` computed against its raw `input_tokens` can exceed 100%. See
+`core/backends.py::Usage`.
+
+**A dash is not a zero.** `track-classify` above ran eighteen real calls against a flat-rate
+`claude-max` backend, which reports no token counts at all; printing `0` there would say those
+calls were free. Any group whose *every* call reported nothing shows `-`, and a footnote says
+how many calls that was and that the totals are therefore a **floor**. A group with only
+*some* counts keeps its measured sum, which is a genuine floor rather than a guess.
+
+`hit%` is likewise `-`, never `0.0`, when there was no measured input to divide by: 0% reports
+a cache that is working badly, which is a different claim from one that was never observed.
+
+A second footnote appears when a call was **billed without serving an answer** -- a primary
+backend that spent tokens and then failed, whose spend would otherwise vanish inside the
+fallback. Those tokens *are* in the totals, because they were billed.
+
+`--days` defaults to 30, matching the triage audit log's own window. `--json` prints the same
+totals machine-readably, with `hit_rate` null (not 0.0) where the table shows a dash, and
+`total_tokens` derived rather than stored so it cannot disagree with its own parts.
+
+The file's location resolves `SLUICE_USAGE` -> the root `usage_jsonl` config key -> the XDG
+state root, and the report names the file it read. There is no rotation, matching the triage
+audit log.
 
 ## `job-sluice mcp`
 

@@ -120,7 +120,7 @@ def test_the_command_tree_walk_is_not_vacuous():
     tree = _command_tree()
     assert set(tree) == {
         "ingest", "triage", "cv", "apply", "track", "leads", "health", "mcp", "init", "doctor",
-        "experience", "skills", "stories"}, (
+        "experience", "skills", "stories", "usage"}, (
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
