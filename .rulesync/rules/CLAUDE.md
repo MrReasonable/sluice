@@ -293,11 +293,21 @@ the only carrier where there is no return value.
 
 **Metering is wrapped where a backend is HANDED to a stage, not where it is called.** `meter(log,
 backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log --
-which is the DEFAULT: the usage log is OPT-IN (`usage_jsonl`/`SLUICE_USAGE` must name a file, and
-there is no XDG fallback), because its per-lead rows carry the lead's slug and so name the
-employers a user is applying to. That is `0 == abstain` applied to a WRITE rather than a filter,
-and it is deliberately unlike `triage.audit_jsonl`, which is always on because it records what
-sluice DECIDED rather than what the user SPENT.
+which is the DEFAULT: recording is OFF unless the root `record_usage` key is true (or
+`SLUICE_USAGE` names a path, which also switches it on), because its per-lead rows carry the
+lead's slug and so name the employers a user is applying to. That is `0 == abstain` applied to a
+WRITE rather than a filter, and it is deliberately unlike `triage.audit_jsonl`, which is always on
+because it records what sluice DECIDED rather than what the user SPENT.
+
+The SWITCH and the LOCATION are two keys, and the split is worth knowing before "simplifying" it
+back. `usage_jsonl` says only WHERE, and an empty one resolves to the XDG state file exactly like
+every other relocatable path -- so `record_usage: true` alone needs no path. They were ONE key
+first, an empty value meaning OFF, which made this the only relocatable path in the repo with no
+XDG default and left a user who switched recording on with nowhere for the file to go: the command
+had to tell them to invent one. Turning a feature on and choosing where its file lives are two
+questions. `SLUICE_USAGE` keeps both jobs deliberately -- relocating a log that is switched off has
+nothing it could mean -- while the switch has NO env var, since an exported variable that silently
+starts writing employer names is the surprise the default exists to prevent.
 Almost every wrap is in `core/app.py`, because almost every backend built there serves exactly one
 stage; `cv/engine.py` is the exception and takes the log itself, since it spends ONE backend on
 compose, audit and voice. It is also the only stage recording a LEAD -- as the store-issued
