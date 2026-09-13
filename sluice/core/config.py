@@ -173,28 +173,65 @@ class Config:
     # at all. Opt-in rather than opt-out because the safe ceiling is a judgement about a
     # given lead mix, which nothing here can pick.
     dossier_concurrency: int = 1
-    # Where the per-call token-usage log is written (#308). ROOT, not per-sub-app: triage, cv
+    # WHETHER the per-call token-usage log is written (#308). ROOT, not per-sub-app: triage, cv
     # and track all spend LLM calls, and `job-sluice usage` answers one question -- what this
     # install spent -- which three separate files could not.
     #
-    # `""` means OFF, and that is the whole point rather than an accident of the type: the
-    # per-lead rows carry the lead's slug, so the file names the employers someone is applying
-    # to, and sluice does not create that uninvited. It IS the abstain-when-unconfigured rule
-    # the preference gates follow, applied to a write instead of a filter -- which is why there
-    # is no per-system default location at all: naming the file is how the feature turns on.
+    # `False` means OFF, and off is the shipped state: the per-lead rows carry the lead's slug,
+    # so the file names the employers someone is applying to, and sluice does not create that
+    # uninvited. That is the abstain-when-unconfigured rule the preference gates follow, applied
+    # to a write instead of a filter. Deliberately UNLIKE `triage.audit_jsonl` and
+    # `sluice_health.json`, which are always on: those record what sluice DECIDED, which a user
+    # needs in order to audit the tool, while this records what they SPENT.
     #
-    # Deliberately UNLIKE `triage.audit_jsonl` and `sluice_health.json`, which are always on.
-    # Those record what sluice DECIDED, which a user needs in order to audit the tool; this
-    # records what they SPENT, which is only useful once they ask.
+    # A SEPARATE key from `usage_jsonl` below, and the split is the point. Folding the two --
+    # "naming a file is how you turn it on" -- was the first shape, and it made this the one
+    # relocatable path in the repo with no XDG default, since an empty value had to mean OFF
+    # rather than "the standard place". Turning a feature on and choosing where its file lives
+    # are two questions, and a user who answers only the first deserves the same answer every
+    # other state file gives.
+    record_usage: bool = False
+    # WHERE that log is written, when it is. `""` is the standard XDG state location, exactly
+    # like `sluice_health.json` and `triage.audit_jsonl` -- see `core/paths.py::resolve`, and
+    # note a path key's default MUST be empty or the XDG rung is unreachable.
     #
-    # `Sluice._usage_log` returns None when neither this key nor `SLUICE_USAGE` is set, and
-    # `core/usage.py::meter` then returns each backend unchanged -- so the off path costs one
-    # comparison per stage and constructs no wrapper.
+    # `SLUICE_USAGE` outranks it, and naming the path there ALSO turns recording on: the env
+    # layer is the operator's override, and relocating a file that is switched off would be a
+    # no-op, so there is nothing the narrower reading could usefully mean. `record_usage: true`
+    # with no path here is the ordinary way in.
     usage_jsonl: str = ""
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
         return self.sources.get(id, SourceConfig())
+
+
+def _flag(data: dict, name: str) -> bool:
+    """A root BOOLEAN config key, refusing anything that merely looks like one.
+
+    PyYAML already resolves an unquoted `true`/`yes`/`on` to `True`, which is what a user types,
+    so the happy path needs nothing. What needs refusing is a value that is truthy WITHOUT being
+    a bool, and the load-bearing case is the one that fails towards ON: `record_usage: "false"`
+    is a non-empty string, so `bool(...)` makes it True and the user who was turning the feature
+    OFF has turned it on -- here, writing a file that names the employers they are applying to.
+    `0`/`1` are refused for the same reason in the other direction: an int is not a statement
+    about a switch, and accepting one invites `record_usage: 2`.
+
+    Loud at LOAD, like `lead_ttl_days` and `min_jd_chars` beside it: a YAML typo is a usage
+    error, and the alternative is a feature that is silently in the wrong state with nothing
+    said. Note the bool check here is an `isinstance` ALLOW, not the bool-BEFORE-int refusal
+    those two need -- the hazard is inverted, because for them a bool is the wrong type and
+    here it is the only right one.
+    """
+    if name not in data or data[name] is None:
+        return False
+    value = data[name]
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"{name} must be a YAML boolean (`{name}: true` or `{name}: false`), not a "
+            f"{type(value).__name__}. Note a QUOTED \"false\" is a string, and every "
+            f"non-empty string is true -- which would turn this ON.")
+    return value
 
 
 def _str_list(value, name: str) -> list:
@@ -830,6 +867,7 @@ def load_config(path: str | None = None) -> Config:
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
+                  record_usage=_flag(data, "record_usage"),
                   usage_jsonl=str(data.get("usage_jsonl") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
                   rates=str(data.get("rates") or "frankfurter"),

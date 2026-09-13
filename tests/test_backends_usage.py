@@ -104,9 +104,26 @@ def test_anthropic_usage_without_cache_counters_is_just_the_input():
     assert (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens) == (10, None, None)
 
 
+# What a token count IS, as (value, the int it reads as or None) -- the ONE alphabet, shared with
+# `tests/test_usage_log.py`, which drives `core/usage.py::_count` over it and asserts the two
+# agree. Two production docstrings state that `_int_or_none` and `_count` must not disagree about
+# what a count is; the alphabet was hand-copied into both files in different orders, so widening
+# one side edited that side's own rows with it and nothing compared the two.
+#
+# The GOOD values are here for the other direction: a one-sided NARROWING (rejecting 0, say)
+# leaves every junk row green.
+COUNT_ALPHABET = [
+    (True, None), (False, None),        # bool subclasses int: a JSON `true` would total as 1
+    ("120", None), (12.5, None),        # a stringly-typed count, and a non-whole one
+    (None, None), ({}, None), ([1], None),
+    (0, 0), (1, 1), (120, 120),
+]
+NOT_A_COUNT = [v for v, expected in COUNT_ALPHABET if expected is None]
+
+
 @pytest.mark.parametrize("parse,key", [(openai_usage, "prompt_tokens"),
                                       (anthropic_usage, "input_tokens")])
-@pytest.mark.parametrize("junk", [True, False, "120", 12.5, None, {}, [1]])
+@pytest.mark.parametrize("junk", NOT_A_COUNT)
 def test_a_non_integer_count_is_read_as_unreported_rather_than_trusted(parse, key, junk):
     """A count is taken only when it is a real int. `OpenAiCompatibleBackend` serves "any
     OpenAI-compatible endpoint", including a local server, so a wrong-typed field is a
@@ -341,7 +358,14 @@ def test_the_usage_provider_label_is_the_name_that_selected_the_factory(name):
     what checks that thread is actually connected end to end.
 
     Measured through `make_backend` rather than the class, because the class default is a
-    generic 'openai-compatible' and would pass a weaker version of this assertion."""
+    generic 'openai-compatible' and would pass a weaker version of this assertion.
+
+    This is the END-TO-END half and cannot discriminate on its own: for `anthropic` and
+    `claude-max` the class default provider IS the registry name, so deleting the factory's
+    `if provider: extra["provider"] = provider` leaves the same label in place and this row
+    stays green. `test_each_factory_carries_the_provider_label_it_is_given` below is the half
+    with teeth; both are needed, because that one cannot see whether `make_backend` still
+    passes the name."""
     from sluice.core.backends import make_backend
 
     payload = _USAGE_PAYLOADS[name]
@@ -352,3 +376,34 @@ def test_the_usage_provider_label_is_the_name_that_selected_the_factory(name):
         return
     b = make_backend(name, "a-model", api_key="k", http=_http_returning(payload["http"]))
     assert b.complete("p").usage.provider == name
+
+
+@pytest.mark.parametrize("name", sorted(_USAGE_PAYLOADS))
+def test_each_factory_carries_the_provider_label_it_is_given(name):
+    """The THREAD itself, resolved through the seam and handed a label no class default supplies.
+
+    The row above asserts the label equals the registry name, which two of the four providers
+    satisfy without the thread: `AnthropicBackend` defaults `provider="anthropic"` and
+    `ClaudeMaxBackend` defaults `provider="claude-max"`, each equal to the name that selected it.
+    So for those two, deleting the factory's `if provider: extra["provider"] = provider` is
+    invisible there -- measured, and it is precisely the line a module copied to add a provider
+    would drop.
+
+    A sentinel that matches no class default and no registry name is what makes the mutation
+    visible for all four. It goes through `plugins.get` rather than `make_backend`, because
+    `make_backend` owns the `provider=name` decision and would overwrite the sentinel with the
+    name -- the thing the row above is for."""
+    from sluice.core import plugins
+    import sluice.backends  # noqa: F401  -- import triggers factory self-registration
+
+    factory = plugins.get("backend", name)
+    payload = _USAGE_PAYLOADS[name]
+    if payload.get("runner"):
+        b = factory("a-model", provider="probe-label",
+                    runner=lambda *a, **k: _Proc(0, "x\n"))
+    else:
+        b = factory("a-model", api_key="k", provider="probe-label",
+                    http=_http_returning(payload["http"]))
+    assert b.complete("p").usage.provider == "probe-label", (
+        f"{name}'s factory dropped the provider label it was handed, so every usage row it "
+        f"writes is labelled by its class default instead of by the name that selected it")

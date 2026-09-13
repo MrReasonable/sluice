@@ -139,6 +139,27 @@ def _complete_call_sites():
     return found
 
 
+_METER = "sluice.core.usage.meter"
+
+
+def _binding_for(imported: str, local: str) -> str | None:
+    """The local dotted spelling of `meter` after `imported` was bound to the name `local`.
+
+    ONE rule for every import shape rather than an arm per shape, because the arms are what
+    went stale: each new spelling got its own branch, and the one added for a bare
+    `import sluice.core.usage` emitted a binding the matcher could not return, so that shape
+    was invisible AND not reported as unreadable -- a hole re-opened in the commit that closed
+    the same hole for two other spellings.
+
+    `imported` is the dotted module path an import statement names; `local` is the name it
+    actually binds (the `as` alias, or the first segment of a bare `import a.b.c`). Anything
+    that is not a prefix of `meter`'s own path binds nothing here.
+    """
+    if _METER == imported or _METER.startswith(imported + "."):
+        return local + _METER[len(imported):]
+    return None
+
+
 def _meter_bindings(tree):
     """The names `core/usage.py::meter` is bound to IN THIS MODULE, read off its own imports.
 
@@ -148,17 +169,26 @@ def _meter_bindings(tree):
     are not even reported as computed, so both roster guards stay green while a whole stage goes
     unrostered. `tests/test_paths.py` derives `resolve`'s local bindings the same way, for the
     same reason and after the same kind of miss.
+
+    Every shape goes through `_binding_for`, so a spelling nobody enumerated -- `from sluice
+    import core` + `core.usage.meter(...)`, which derived no binding at all and therefore made
+    `_meter_stage_literals` skip the whole file -- is covered by the rule rather than by
+    remembering to add a branch.
     """
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "sluice.core.usage":
-            names |= {a.asname or a.name for a in node.names if a.name == "meter"}
-        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core":
-            # `from sluice.core import usage [as u]` -> `u.meter(...)`
-            names |= {f"{a.asname or a.name}.meter" for a in node.names if a.name == "usage"}
+        if isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                b = _binding_for(f"{node.module}.{a.name}", a.asname or a.name)
+                if b:
+                    names.add(b)
         elif isinstance(node, ast.Import):
-            names |= {f"{a.asname or a.name}.meter" for a in node.names
-                      if a.name == "sluice.core.usage"}
+            for a in node.names:
+                # Without an alias, `import a.b.c` binds only `a` -- the call site then spells
+                # the whole path, so the imported prefix stands in for the local name.
+                b = _binding_for(a.name, a.asname or a.name)
+                if b:
+                    names.add(b)
     return names
 
 
@@ -183,13 +213,35 @@ def _callee_name(func):
     return ".".join(reversed(parts))
 
 
+def _stage_literal(node):
+    """The literal stage a `meter(...)` call names, or None if it does not name one.
+
+    POSITIONAL OR KEYWORD. Reading the third positional slot alone classified the plain string
+    constant in `meter(log, b, stage="cv-voice")` as COMPUTED, so a correct change reddened the
+    roster with a message that misdiagnosed it ("called with a non-literal stage") and also
+    reported its stage as declared-but-gone. A guard that fires on the right code with the wrong
+    diagnosis is the one that gets narrowed rather than fixed.
+
+    Separate from the sweep so it can be driven over SYNTHETIC source: the sweep walks `sluice/`,
+    and a spelling the tree does not use yet cannot be exercised through it.
+    """
+    stage = node.args[2] if len(node.args) > 2 else next(
+        (k.value for k in node.keywords if k.arg == "stage"), None)
+    if isinstance(stage, ast.Constant) and isinstance(stage.value, str):
+        return stage.value
+    return None
+
+
 def _meter_stage_literals():
     """Every stage literal passed to `meter(...)` under `sluice/`, as ({stage}, {computed}).
 
-    The stage is `meter`'s third POSITIONAL parameter, and only a literal counts: a computed
-    stage would make the label unreviewable, which is the whole reason the roster exists. A
-    non-literal is reported in the second set (`test_every_stage_is_a_literal`) rather than
-    silently skipped -- skipping is how a sweep comes to check nothing.
+    The stage is `meter`'s third parameter, and only a literal counts: a computed stage would
+    make the label unreviewable, which is the whole reason the roster exists. A non-literal is
+    reported in the second set (`test_every_stage_is_a_literal`) rather than silently skipped --
+    skipping is how a sweep comes to check nothing.
+
+    Which argument carries the stage, and whether it is a literal at all, is `_stage_literal`'s
+    question -- see there for the keyword spelling that used to be misreported.
     """
     found = set()
     computed = set()
@@ -206,9 +258,9 @@ def _meter_stage_literals():
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 enclosing = node.name
             if isinstance(node, ast.Call) and _callee_name(node.func) in bindings:
-                stage = node.args[2] if len(node.args) > 2 else None
-                if isinstance(stage, ast.Constant) and isinstance(stage.value, str):
-                    found.add(stage.value)
+                stage = _stage_literal(node)
+                if stage is not None:
+                    found.add(stage)
                 else:
                     computed.add((rel, enclosing))
             for child in ast.iter_child_nodes(node):
@@ -300,31 +352,54 @@ def test_each_declared_stage_covers_at_least_one_call_site():
 def test_every_stage_names_a_runtime_witness_that_exists(stage):
     """`_STAGES` maps each stage to the test that proves it actually RECORDS, because this
     file only proves the wiring is declared. A pointer at a test that does not exist is the
-    coverage claim that reads as proof and is not -- so the path, and the node id where one is
-    given, are both resolved here."""
+    coverage claim that reads as proof and is not -- so the path, the node id where one is
+    given, and the STAGE NAME are all resolved here.
+
+    The stage name is the part that survives a witness drifting rather than vanishing.
+    Resolving the path alone was the first shape: dropping `track-classify` from the e2e's own
+    `assert stages == {...}` set left that stage with a declared witness that no longer
+    mentioned it, and this guard could not tell (measured). A substring check is weaker than
+    parsing the assertion, and deliberately so -- it costs nothing and cannot go stale, while
+    anything that understands the witness's structure binds every future witness to write its
+    assertion one way."""
     target = _STAGES[stage]
     path, _, node = target.partition("::")
     f = pathlib.Path(__file__).resolve().parent.parent / path
     assert f.exists(), f"{stage} names witness {path}, which does not exist"
+    body = f.read_text(encoding="utf-8")
     if node:
-        assert f"def {node}(" in f.read_text(encoding="utf-8"), (
+        assert f"def {node}(" in body, (
             f"{stage} names witness {target}, but {path} defines no such test")
+    assert stage in body, (
+        f"{stage} names witness {target}, which never mentions the stage -- so either the "
+        f"witness stopped asserting it or the declaration is pointed at the wrong test")
 
 
 # ----------------------------------------------------- the sweep's own extraction logic
 
-# (import line, call expression, the binding the call should match) for every shape that can
-# reach `core/usage.py::meter`. Exercised over SYNTHETIC source rather than over `sluice/`,
-# because the whole point of the roster is to cover shapes the tree does not use YET -- and a
-# branch only production code exercises is untested exactly while it is most needed. Measured:
-# narrowing `_callee_name` to one attribute level leaves every assertion over the real tree
-# green, because nothing in `sluice/` writes the dotted form.
+# (import line, the call it licenses) per import spelling that reaches `core/usage.py::meter`.
+# Exercised over SYNTHETIC source rather than over `sluice/`, because the whole point of the
+# roster is to cover spellings the tree does not use YET -- and a branch only production code
+# exercises is untested exactly while it is most needed. Measured: narrowing `_callee_name` to
+# one attribute level leaves every assertion over the real tree green, because nothing in
+# `sluice/` writes the dotted form.
+#
+# Every alias depth of every package level, because the rows are what caught the two holes and
+# an un-enumerated depth is how the second one got in. `from sluice import core` +
+# `core.usage.meter(...)` derived NO binding at all, and `_meter_stage_literals` skips a file
+# with no bindings -- so a stage wrapped that way was unrostered with every guard green. The
+# list makes no completeness claim on its own; `_binding_for`'s one prefix rule is what covers
+# a spelling nobody thought to add here.
 _METER_SHAPES = [
     ("from sluice.core.usage import meter", 'meter(log, b, "s")'),
     ("from sluice.core.usage import meter as _meter", '_meter(log, b, "s")'),
     ("from sluice.core import usage", 'usage.meter(log, b, "s")'),
     ("from sluice.core import usage as _u", '_u.meter(log, b, "s")'),
     ("import sluice.core.usage", 'sluice.core.usage.meter(log, b, "s")'),
+    ("import sluice.core.usage as _cu", '_cu.meter(log, b, "s")'),
+    ("from sluice import core", 'core.usage.meter(log, b, "s")'),
+    ("from sluice import core as _c", '_c.usage.meter(log, b, "s")'),
+    ("import sluice.core as _sc", '_sc.usage.meter(log, b, "s")'),
 ]
 
 
@@ -344,6 +419,39 @@ def test_every_import_shape_that_reaches_meter_is_recognised(imp, call):
     called = [_callee_name(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
     assert any(c in bindings for c in called), (
         f"{call!r} matches none of the bindings {sorted(bindings)} derived from {imp!r}")
+
+
+# (call expression, the stage `_stage_literal` must read off it). A stage is reviewable only if
+# it is a literal, so the None rows are the ones that must be REPORTED as computed rather than
+# skipped -- and the keyword row is the one that was misreported: a plain string constant read as
+# a computed stage, which reddens the guard on a correct change.
+_STAGE_SPELLINGS = [
+    ('meter(log, b, "cv-voice")', "cv-voice"),
+    ('meter(log, b, stage="cv-voice")', "cv-voice"),
+    ('meter(log, b, "cv-voice", lead=x)', "cv-voice"),
+    ('meter(log, b, stage="cv-voice", lead=x)', "cv-voice"),
+    ("meter(log, b, name)", None),
+    ("meter(log, b, stage=name)", None),
+    ('meter(log, b, "cv-" + suffix)', None),
+    ("meter(log, b)", None),
+]
+
+
+@pytest.mark.parametrize("call,expected", _STAGE_SPELLINGS, ids=[c for c, _ in _STAGE_SPELLINGS])
+def test_the_stage_is_read_positionally_or_by_keyword(call, expected):
+    """`meter`'s signature accepts the stage either way, so a sweep that reads only the third
+    positional slot classifies half of the legal spellings as unreviewable.
+
+    Measured before the fix: `meter(log, b, stage="cv-voice")` yielded no stage AND was reported
+    as computed, so `test_every_stage_is_a_literal` failed saying the call used a non-literal
+    stage -- about a plain string constant -- while `test_every_metered_stage_is_declared`
+    additionally called `cv-voice` declared-but-gone. Two wrong diagnoses of one correct change.
+
+    The None rows matter as much as the literal ones: they are what keeps a genuinely computed
+    stage REPORTED rather than silently skipped, which is the difference between this guard
+    failing and this guard checking nothing."""
+    node = ast.parse(call).body[0].value
+    assert _stage_literal(node) == expected
 
 
 @pytest.mark.parametrize("src", [

@@ -773,6 +773,18 @@ def test_every_root_config_field_is_actually_read_from_the_yaml():
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
             and n.func.attr == "get" and n.args
             and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)}
+    # Not every field is read as `data.get("x")`. A field needing VALIDATION goes through a
+    # helper instead -- `_flag(data, "record_usage")`, which refuses a truthy non-bool -- and the
+    # `.get` arm alone reported such a field as DEAD, so the guard would have pushed the check
+    # back inline to satisfy itself. Second arm: any call handed `data` plus a string literal.
+    # Keyed on the ARGUMENT rather than on a roster of helper names, so the next validating
+    # helper is covered without being remembered; over-collecting is the safe direction here,
+    # since the only risk is missing a genuinely dead field and the anti-vacuity rows below
+    # bound that.
+    read |= {a.value for n in ast.walk(tree)
+             if isinstance(n, ast.Call)
+             and any(isinstance(x, ast.Name) and x.id == "data" for x in n.args)
+             for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
     fields = set(Config.__dataclass_fields__)
 
     # ANTI-VACUITY: a walk that resolved nothing would report every field as read, or none

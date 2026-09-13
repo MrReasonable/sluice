@@ -248,18 +248,23 @@ def test_input_tokens_includes_the_cached_tokens_for_every_provider(name):
     number is a property of the payload, while the INEQUALITY is the property of the
     definition, and it is what a copied field violates."""
     if _CACHED[name] is None:
-        # The opt-out is CHECKED against a STRUCTURAL fact, not taken on the table's word: only
-        # a provider with no HTTP body to carry a usage block may claim it cannot report one,
-        # and that is exactly the provider whose injection is a `runner` rather than an `http`.
-        # A new provider added with `None` to make this row pass is then caught.
+        # The opt-out is CHECKED against a STRUCTURAL fact, not taken on the table's word: only a
+        # provider with no HTTP RESPONSE BODY to carry a usage block may claim it cannot report
+        # one. So the check is the ABSENCE of `http`, not the presence of `runner` -- the property
+        # is "no body", and a future provider injected some third way (a client object, a socket)
+        # has no body either and is entitled to the same opt-out. Keyed on `runner`, it failed
+        # such a provider with a message asserting it "is driven over HTTP", which is a wrong
+        # diagnosis of a legitimate case and the kind that gets a guard narrowed rather than read.
         #
-        # An earlier version of this check compared the provider's `_VALID` response against an
-        # identity-only Usage, which was VACUOUS: no `_VALID` payload carries a usage block, so
-        # every provider satisfied it and switching any entry to `None` stayed green (measured).
-        assert "runner" in _VALID[name](), (
-            f"_CACHED opts {name} out of the normalisation row, but it is driven over HTTP and "
-            f"so has a response body that can carry a usage block -- give it a cached payload "
-            f"instead of None")
+        # An earlier version compared the provider's `_VALID` response against an identity-only
+        # Usage, which was VACUOUS: no `_VALID` payload carries a usage block, so every provider
+        # satisfied it and switching any entry to `None` stayed green (measured). This shape is
+        # non-vacuous -- flipping any other `_CACHED` entry to None reds, since each of the three
+        # HTTP providers' `_VALID` payload does carry `http`.
+        assert "http" not in _VALID[name](), (
+            f"_CACHED opts {name} out of the normalisation row, but its transport is an HTTP "
+            f"response body, which can carry a usage block -- give it a cached payload instead "
+            f"of None")
         pytest.skip(f"{name} reports no token counts (flat-rate, text mode)")
     u = _build(name, _CACHED[name]).complete("prompt").usage
     assert u.cache_read_tokens == 500, "the payload's cache read was not parsed at all"

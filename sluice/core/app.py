@@ -742,8 +742,8 @@ class Sluice:
         shape and made `cmd_usage` the one command in the file reaching through the facade
         rather than at it.
 
-        OPT-IN, so None is the ordinary answer for an install that never asked for one -- every
-        caller has to handle it, which for `cli.py::cmd_usage` means saying how to turn it on.
+        OFF BY DEFAULT, so None is the ordinary answer -- every caller has to handle it, which
+        for `cli.py::cmd_usage` means naming the switch AND the location the log would take.
 
         A NEW `UsageLog` each call when one IS configured, pointing at the same resolved path --
         not a shared instance.
@@ -756,20 +756,27 @@ class Sluice:
         return self._usage_log()
 
     def _usage_log(self):
-        """The token-usage log for this process, or None when nothing named one (#308).
+        """The token-usage log, or None when recording is off (#308).
 
-        OPT-IN, and that is the whole shape of this function. Token accounting writes a file
-        whose per-lead rows name the employers someone is applying to, and sluice does not create
-        that uninvited -- the same posture every preference gate takes, where unconfigured means
-        abstain rather than pick something on the user's behalf. It is deliberately UNLIKE
-        `triage.audit_jsonl` and `sluice_health.json`, which are always on: those record what
-        sluice DECIDED, which a user needs to audit the tool, while this records what they SPENT,
-        which is only useful if they asked the question.
+        TWO keys, and the split is load-bearing. `record_usage` is the SWITCH -- off by default,
+        because the per-lead rows carry the lead's slug and so name the employers someone is
+        applying to, and sluice does not create that uninvited. `usage_jsonl` is the LOCATION,
+        and an empty one means the standard XDG state file like every other relocatable path in
+        the repo (`core/paths.py::resolve`).
 
-        There is therefore no per-system default location: naming the file is how the feature is
-        turned on. `resolve` is still what interprets the value, so a leading `~` expands and an
-        env var outranks the config key, but its XDG fallback is unreachable from here -- which is
-        why this returns None rather than a path when neither door is open.
+        Collapsing the two into "naming a file is how you turn it on" was the first shape and was
+        wrong in a way worth recording, because it reads as tidier: it made this the ONLY
+        relocatable path with no XDG default, since an empty value had to mean OFF rather than
+        "the standard place". A user who switched recording on then got no answer to a question
+        they had not asked -- where does it go -- and `job-sluice usage` had to tell them to
+        invent a path. Turning a feature on and choosing where its file lives are two questions.
+
+        `SLUICE_USAGE` also switches it on, not merely relocates. That is not the same overload:
+        relocating a file that is switched off is a no-op, so the narrower reading has nothing it
+        could usefully mean, and the env layer is where an operator overrides config anyway. The
+        SWITCH has no env var of its own, deliberately -- an exported variable that silently
+        starts writing employer names is the surprise the default exists to prevent, and naming a
+        path is an unambiguous request.
 
         Resolved HERE rather than in `load_config`, for exactly the reason `_dossier_dir` above
         gives: the value arrives through a ROOT Config a caller can build by hand
@@ -781,8 +788,8 @@ class Sluice:
         for it -- not merely a tolerated input.
         """
         from sluice.core.usage import UsageLog
-        named = os.environ.get("SLUICE_USAGE") or getattr(self.config, "usage_jsonl", "")
-        if not named:
+        if not (os.environ.get("SLUICE_USAGE")
+                or getattr(self.config, "record_usage", False)):
             return None
         return UsageLog(_resolve_path(env_var="SLUICE_USAGE",
                                       config_value=getattr(self.config, "usage_jsonl", ""),

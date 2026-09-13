@@ -13,9 +13,10 @@ from faker import Faker
 
 # Every variable `paths.resolve` consults as `env_var=`, i.e. the rung that outranks the
 # XDG pins below. Hand-listed HERE so the fixture stays trivial, and pinned against the
-# source by `test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var` -- adding a
-# seventh in `sluice/` without adding it here reddens there rather than silently opening
-# the sandbox for whoever happens to have it exported.
+# source by `test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var` -- adding another
+# in `sluice/` without adding it here reddens there rather than silently opening the sandbox for
+# whoever happens to have it exported. No ordinal: this said "a seventh" while the tuple held
+# eight, having gone stale in the commit that added the eighth.
 PATH_ENV_VARS = (
     "DOSSIER_DIR",
     "SEEN_DB",

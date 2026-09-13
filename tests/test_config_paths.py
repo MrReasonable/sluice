@@ -399,35 +399,70 @@ def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
     assert used == [str(tmp_path / "from-env")] * 2
 
 
-# ── usage_jsonl (#308) ────────────────────────────────────────────────────────
-# OPT-IN, unlike `dossier_dir` above: an empty `usage_jsonl` with no `SLUICE_USAGE` means NO LOG
-# AT ALL, not "resolve to the XDG default". Token accounting writes a file naming the employers a
-# user is applying to, and sluice does not create that uninvited -- the same posture every
-# preference gate takes, where unconfigured means abstain rather than pick something.
+# ── record_usage + usage_jsonl (#308) ─────────────────────────────────────────
+# TWO keys, and these rows exist to pin the SPLIT. `record_usage` is the switch (off by default,
+# because the per-lead rows name the employers a user is applying to); `usage_jsonl` is the
+# location, and an empty one resolves to the XDG state file exactly like `dossier_dir` above.
 #
-# So the rows differ from `dossier_dir`'s in shape: the unconfigured case asserts ABSENCE, and the
-# two configured doors assert the path is honoured. Nothing else in the suite pins the default --
-# every other test sets `SLUICE_USAGE` or the key -- so without these rows, flipping the default
-# back to on-by-default, or to a cwd-relative literal, survives the whole suite.
+# They were ONE key first -- an empty `usage_jsonl` meant OFF, so "naming a file" was how the
+# feature turned on -- which made this the only relocatable path in the repo with no XDG default
+# and left a user who switched recording on with nowhere for it to go. The four rows below are the
+# four states, and the pair that matters is `record_usage: true` with and without a location:
+# collapsing the keys again makes the first of those unreachable.
+#
+# Nothing else in the suite pins any of this -- every other test sets `SLUICE_USAGE` -- so without
+# these rows, flipping the switch's default to True, or the path's to a cwd-relative literal,
+# survives the whole suite.
 
-def test_unconfigured_usage_jsonl_means_no_log_at_all(tmp_path, monkeypatch):
-    """Opt-in: nothing configured, nothing written, and nothing to write it with.
+def test_recording_is_off_until_asked_for(tmp_path, monkeypatch):
+    """The SHIPPED state: no switch, no log, and nothing to write one with.
 
-    Asserting `None` rather than a path is what makes the opt-in real: `core/usage.py::meter`
-    returns its backend UNCHANGED for a None log, so this is also what keeps the metering wrapper
-    off every call of an install that never asked for it."""
+    Asserting `None` rather than a path is what makes it real: `core/usage.py::meter` returns its
+    backend UNCHANGED for a None log, so this is also what keeps the metering wrapper off every
+    call of an install that never asked for it."""
     monkeypatch.delenv("SLUICE_USAGE", raising=False)
     assert _app(tmp_path, monkeypatch).usage_log() is None
 
 
+def test_the_switch_alone_lands_the_log_at_the_xdg_state_path(tmp_path, monkeypatch):
+    """`record_usage: true` and nothing else -- the ordinary way in, and the row the collapsed
+    design could not have.
+
+    The user answered "yes, record it" and did not answer "where", so they get the same answer
+    every other state file gives rather than an error telling them to invent a path. Derived from
+    the sandboxed `XDG_STATE_HOME` rather than spelled, so it certifies the resolver's real
+    output."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    log = _app(tmp_path, monkeypatch, record_usage=True).usage_log()
+    assert log is not None, "the switch did not turn recording on"
+    assert log.path == os.path.join(
+        os.environ["XDG_STATE_HOME"], "sluice", "sluice_usage.jsonl")
+    # Resolving a path must CREATE nothing: this repo has been bitten by a read that brought a
+    # file into existence and disarmed a relocation notice for every later run (`core/paths.py`).
+    assert not os.path.exists(log.path)
+
+
+def test_a_location_without_the_switch_still_records_nothing(tmp_path, monkeypatch):
+    """The other half of the split, and the direction that would leak: naming a location is not
+    consent to record.
+
+    Someone who sets `usage_jsonl` while planning to turn recording on later, or who inherits a
+    config with the key present, must not start writing employer names because a path exists. The
+    switch is the only thing that decides, and `SLUICE_USAGE` is the deliberate exception (see
+    the row below) because relocating a file that is off would be a no-op."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    app = _app(tmp_path, monkeypatch, usage_jsonl=str(tmp_path / "named-but-off.jsonl"))
+    assert app.usage_log() is None
+
+
 def test_an_unconfigured_install_hands_each_stage_a_BARE_backend(tmp_path, monkeypatch):
-    """The property that makes the opt-in real, asserted where it bites: the stage receives the
+    """The property that makes the default real, asserted where it bites: the stage receives the
     backend ITSELF, not a `MeteredBackend` around it.
 
-    A filesystem assertion is the weak version and was measured so: with the opt-in guard deleted
-    (always-on restored) "no file appears under the state root" stayed GREEN, because `usage` only
-    reads and the directory is created inside `UsageLog.record`. Asserting the object the metering
-    site actually gets is what fails under that mutant. Mirrors
+    A filesystem assertion is the weak version and was measured so: with the switch's guard
+    deleted (always-on restored) "no file appears under the state root" stayed GREEN, because
+    `usage` only reads and the directory is created inside `UsageLog.record`. Asserting the object
+    the metering site actually gets is what fails under that mutant. Mirrors
     `test_app_operations.py::test_triage_threads_the_resolve_backend_into_engine_run`, which pins
     the configured case the same way."""
     from sluice.triage.engine import TriageReport
@@ -455,15 +490,27 @@ def test_an_unconfigured_install_hands_each_stage_a_BARE_backend(tmp_path, monke
         os.path.join(os.environ["XDG_STATE_HOME"], "sluice", "sluice_usage.jsonl"))
 
 
-def test_the_root_usage_jsonl_key_is_honoured(tmp_path, monkeypatch):
+def test_the_root_usage_jsonl_key_moves_the_log(tmp_path, monkeypatch):
+    """Switch on, location named: the location wins over the XDG default."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
     mine = str(tmp_path / "mine-usage.jsonl")
-    assert _app(tmp_path, monkeypatch, usage_jsonl=mine).usage_log().path == mine
+    app = _app(tmp_path, monkeypatch, record_usage=True, usage_jsonl=mine)
+    assert app.usage_log().path == mine
 
 
-def test_usage_env_var_beats_the_root_key(tmp_path, monkeypatch):
+def test_the_env_var_records_without_the_switch_and_beats_the_key(tmp_path, monkeypatch):
+    """`SLUICE_USAGE` does BOTH jobs, deliberately, and this is the row that says so.
+
+    It is the one overload kept: the env layer is where an operator overrides config, and
+    relocating a log that is switched off has nothing it could mean. It outranks `usage_jsonl` on
+    the location, like every other path env var, AND it makes `record_usage` unnecessary -- so
+    both halves are asserted here, since a change honouring only the path would leave a user who
+    exported it with no recording and no error."""
     app = _app(tmp_path, monkeypatch, usage_jsonl=str(tmp_path / "from-config.jsonl"))
     monkeypatch.setenv("SLUICE_USAGE", str(tmp_path / "from-env.jsonl"))
-    assert app.usage_log().path == str(tmp_path / "from-env.jsonl")
+    log = app.usage_log()
+    assert log is not None, "SLUICE_USAGE did not turn recording on by itself"
+    assert log.path == str(tmp_path / "from-env.jsonl")
 
 
 def test_the_root_dossier_concurrency_reaches_the_triage_engine(tmp_path, monkeypatch):
