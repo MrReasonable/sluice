@@ -1,8 +1,9 @@
 from sluice.cv import audit as A
+from sluice.core.backends import Completion
 
 class FakeBackend:
     def __init__(self, out): self.out = out; self.prompt = None
-    def complete(self, prompt): self.prompt = prompt; return self.out
+    def complete(self, prompt): self.prompt = prompt; return Completion(self.out)
 
 def test_prompt_frames_bundle_as_only_truth():
     p = A.build_audit_prompt("CV", "BUNDLE")

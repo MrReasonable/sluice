@@ -7,6 +7,7 @@ from sluice.track import engine as E
 from sluice.track.deadletter import DeadLetterDb, Entry
 import sluice.track.google_client as gc
 from tests.test_track_google_client import FakeGoogleClient
+from sluice.core.backends import Completion
 
 
 def _dl():
@@ -47,12 +48,12 @@ class TwoMsgClient(FakeGoogleClient):
 class SeqBackend:
     def __init__(self, replies): self.replies = list(replies); self.i = 0
     def complete(self, prompt):
-        r = self.replies[self.i]; self.i = min(self.i + 1, len(self.replies) - 1); return r
+        r = self.replies[self.i]; self.i = min(self.i + 1, len(self.replies) - 1); return Completion(r)
 
 
 class FakeBackend:
     def __init__(self, reply): self.reply = reply
-    def complete(self, prompt): return self.reply
+    def complete(self, prompt): return Completion(self.reply)
 
 
 def test_run_auto_advances_and_reports():

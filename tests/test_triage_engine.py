@@ -17,7 +17,7 @@ from sluice.triage import reverdict
 from sluice.triage.audit import AuditLog
 from sluice.triage.classify import classify
 from sluice.triage.engine import run
-from sluice.core.backends import BackendError
+from sluice.core.backends import BackendError, Completion
 from sluice.triage.audit import render_rejected_note
 import sluice.triage.engine as eng
 
@@ -62,8 +62,8 @@ class _Backend:
     def complete(self, prompt):
         self.prompts.append(prompt)
         ids = re.findall(_DOSSIER_ID, prompt)
-        return json.dumps([{"lead_id": i, "verdict": "shortlist",
-                            "relevance_score": 80} for i in ids])
+        return Completion(json.dumps([{"lead_id": i, "verdict": "shortlist",
+                            "relevance_score": 80} for i in ids]))
 
 
 def _fields(company, role, status="new", *, url="https://x/y"):
@@ -209,8 +209,8 @@ class _AppliedVerdictBackend:
     last_backend = "primary"
     def complete(self, prompt):
         ids = re.findall(_DOSSIER_ID, prompt)
-        return json.dumps([{"lead_id": i, "verdict": "applied",
-                            "relevance_score": 80} for i in ids])
+        return Completion(json.dumps([{"lead_id": i, "verdict": "applied",
+                            "relevance_score": 80} for i in ids]))
 
 
 def test_a_judge_verdict_outside_the_vocabulary_is_clamped_in_the_write_the_counts_and_the_audit(
@@ -239,8 +239,8 @@ class _CapturingBackend:
     def complete(self, prompt):
         self.prompts.append(prompt)
         ids = re.findall(_DOSSIER_ID, prompt)
-        return json.dumps([{"lead_id": i, "verdict": "research",
-                            "relevance_score": 65} for i in ids])
+        return Completion(json.dumps([{"lead_id": i, "verdict": "research",
+                            "relevance_score": 65} for i in ids]))
 
 
 def test_judge_prompt_is_composed_from_vault_criteria(tmp_path):
@@ -971,7 +971,7 @@ class _CompanyKeyedBackend:
             company = json.loads(blob).get("company", "")
             out.append({"lead_id": lead_id, "verdict": self.by_company[company],
                         "relevance_score": 70})
-        return json.dumps(out)
+        return Completion(json.dumps(out))
 
 
 def test_two_leads_sharing_one_url_each_get_their_own_verdict(tmp_path, titles):
@@ -1089,8 +1089,8 @@ class _MisechoingBackend:
     last_backend = "primary"
 
     def complete(self, prompt):
-        return json.dumps([{"lead_id": "a slug nothing in this batch carries",
-                            "verdict": "shortlist", "relevance_score": 80}])
+        return Completion(json.dumps([{"lead_id": "a slug nothing in this batch carries",
+                            "verdict": "shortlist", "relevance_score": 80}]))
 
 
 def test_a_verdict_for_an_unmatched_lead_id_is_reported_not_silently_dropped(tmp_path, titles):
@@ -1134,7 +1134,7 @@ class _ResolveBackend:
         reply = self._replies.pop(0)
         if isinstance(reply, BackendError):
             raise reply
-        return reply
+        return Completion(reply)
 
 
 # `jd` carries a real markdown body (#169): these fixtures exist to prove tier-3
@@ -1242,7 +1242,7 @@ class _EmptyVerdictBackend:
     `_audit`."""
     last_backend = "primary"
     def complete(self, prompt):
-        return "[]"
+        return Completion("[]")
 
 
 def test_a_tier3_resolution_never_triggers_the_rejected_leads_note(tmp_path, titles):
@@ -2549,10 +2549,10 @@ class _DuplicateVerdictBackend:
 
     def complete(self, prompt):
         first = re.findall(_DOSSIER_ID, prompt)[0]
-        return json.dumps([
+        return Completion(json.dumps([
             {"lead_id": first, "verdict": "shortlist", "relevance_score": 90},
             {"lead_id": first, "verdict": "dismiss", "relevance_score": 10},
-        ])
+        ]))
 
 
 def test_a_duplicate_verdict_is_refused_and_the_unjudged_lead_is_reported(tmp_path):

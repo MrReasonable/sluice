@@ -15,7 +15,7 @@ def build_audit_prompt(cv_text, bundle_text):
 
 
 def run_audit(backend, cv_text, bundle_text):
-    report = backend.complete(build_audit_prompt(cv_text, bundle_text))
+    report = backend.complete(build_audit_prompt(cv_text, bundle_text)).text
     flagged = [line for line in report.splitlines()
                if line.strip().lower().startswith(("unsupported", "paraphrase"))]
     return report, flagged

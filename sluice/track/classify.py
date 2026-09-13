@@ -132,7 +132,7 @@ def _resolve_lead(name, leads):
 def classify(msg, leads, backend, cfg, ics=None) -> Event:
     ev = Event(message_id=msg.get("message_id", ""), thread_id=msg.get("thread_id", ""), ics=ics)
     try:
-        raw = backend.complete(build_prompt(msg, leads, cfg))
+        raw = backend.complete(build_prompt(msg, leads, cfg)).text
         data = json.loads(re.search(r"\{.*\}", raw, re.DOTALL).group(0))
         t = str(data.get("type", "not_job"))
         ev.type = t if t in _TYPES else "not_job"

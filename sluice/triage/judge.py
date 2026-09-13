@@ -62,7 +62,7 @@ def judge(dossiers, backend, *, batch_size=5, system_prompt=SYSTEM_PROMPT):
         parsed = None
         for attempt in (1, 2):  # one retry on parse failure
             try:
-                parsed = parse_verdicts(backend.complete(prompt))
+                parsed = parse_verdicts(backend.complete(prompt).text)
             except Exception as e:
                 _log.warning("batch %d backend error: %s", n, e)
                 parsed = None

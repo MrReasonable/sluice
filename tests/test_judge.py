@@ -1,4 +1,5 @@
 from sluice.triage.judge import judge, parse_verdicts
+from sluice.core.backends import Completion
 
 
 def test_parse_clean_array():
@@ -20,7 +21,7 @@ class _Backend:
         self.per_batch, self.prompts = per_batch, []
     def complete(self, prompt):
         self.prompts.append(prompt)
-        return self.per_batch.pop(0)
+        return Completion(self.per_batch.pop(0))
 
 
 def test_judge_batches_and_collects():

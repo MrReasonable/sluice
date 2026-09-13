@@ -5,6 +5,7 @@ import pytest
 from sluice.core.leads import UNTRUSTED_SCRAPED_CONTENT_WARNING
 from sluice.core import dossier
 from sluice.triage import resolve
+from sluice.core.backends import Completion
 
 
 class _RecordingCache:
@@ -544,7 +545,7 @@ def _backend(replies):
             reply = self._replies.pop(0)
             if isinstance(reply, _BE):
                 raise reply
-            return reply
+            return Completion(reply)
     return _Backend()
 
 

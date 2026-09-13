@@ -17,6 +17,7 @@ EXPECTED_SINKS = {
     # every enclosing FunctionDef reports one site twice and the target silently stops matching.
     ("sluice/core/dossier.py", "get_or_build"): "the dossier cache file",
     ("sluice/core/vault.py", "transform"): "note frontmatter",
+    ("sluice/core/usage.py", "append"): "the usage JSONL file (#308)",
     ("sluice/triage/audit.py", "append"): "the audit JSONL file",
     ("sluice/triage/judge.py", "_build_prompt"): "the judge prompt",
 }
