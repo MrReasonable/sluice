@@ -74,18 +74,41 @@ class ScriptedBackend:
         self.prompts.append(prompt)
         first = prompt.splitlines()[0] if prompt else ""
         if first.startswith(_TRIAGE):
-            return Completion(self._triage(prompt))
-        if first.startswith(_CV):
-            return Completion(self._cv(first))
-        if first.startswith(_AUDIT):
-            return Completion(self._audit())
-        if first.startswith(_TRACK):
-            return Completion(self._track(prompt))
-        if first.startswith(_RESOLVE):
-            return Completion(self._resolve(prompt))
-        raise AssertionError(
-            f"ScriptedBackend: unrecognised prompt (first line {first!r}). "
-            "Add a handler rather than returning a silent default.")
+            text = self._triage(prompt)
+        elif first.startswith(_CV):
+            text = self._cv(first)
+        elif first.startswith(_AUDIT):
+            text = self._audit()
+        elif first.startswith(_TRACK):
+            text = self._track(prompt)
+        elif first.startswith(_RESOLVE):
+            text = self._resolve(prompt)
+        else:
+            raise AssertionError(
+                f"ScriptedBackend: unrecognised prompt (first line {first!r}). "
+                "Add a handler rather than returning a silent default.")
+        return Completion(text, usage=self._usage(prompt, text))
+
+    def _usage(self, prompt, text):
+        """A SYNTHETIC usage report, because a real backend always files one (#308).
+
+        Reporting `usage=None` here would leave the whole metering path (`core/usage.py`)
+        unexercised by every functional and e2e test -- the wiring would be present, wrong,
+        and green, since a wrapper handed no usage writes no row. The seam's contract is that
+        a production provider always IDENTIFIES its call, so the fake honours it.
+
+        Counts are derived from the text lengths rather than fixed, at a deliberately crude
+        4 chars per token. Nothing here claims tokenizer accuracy -- what it buys is that the
+        stages come out with DIFFERENT sizes, in the real proportions (a compose prompt dwarfs
+        a voice prompt), so a per-stage report over harness data is meaningful rather than
+        uniform. `cache_read_tokens=0` is a reported zero, not a None: this fake has no cache,
+        which is a fact about it, and it keeps the hit-rate arithmetic exercised.
+        """
+        from sluice.core.backends import Usage
+        return Usage(provider="scripted", model="scripted-model",
+                     input_tokens=max(1, len(prompt) // 4),
+                     output_tokens=max(1, len(text) // 4),
+                     cache_read_tokens=0)
 
     def _triage(self, prompt):
         # Echo the batch's real lead_ids back as verdicts, exactly as a live judge

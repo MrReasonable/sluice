@@ -30,6 +30,7 @@ from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by_slug
 from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.log import get_logger
+from sluice.core.usage import meter
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
@@ -186,7 +187,7 @@ def _contact_rewording(found, expected) -> str:
 
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
-           guard_existing_cv=False, policy=StalenessPolicy()) -> CvResult:
+           guard_existing_cv=False, policy=StalenessPolicy(), usage=None) -> CvResult:
     # The OPTIONAL half of the Renderer seam (see core/protocols.py). `getattr`, not a
     # required protocol member: a renderer that imposes no grammar of its own must not be
     # made to declare one. Resolved ONCE here rather than inside the retry loop, and the
@@ -374,7 +375,14 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # could drift from this one and either request a section the gate can
                 # license nothing for (SC5's failure) or silently withhold a section the
                 # gate would have allowed.
-                cv_text = _compose.compose(backend, bundle_text, jd, company, role,
+                # ONE backend, THREE stages -- so the stage is attached HERE, per call,
+                # rather than once where the backend was built. `meter` returns `backend`
+                # unchanged when `usage` is None (a direct call in a test), so this costs one
+                # comparison on that path and constructs nothing. The lead is in scope here and
+                # nowhere upstream, which is the other half of why cv takes the log itself.
+                cv_text = _compose.compose(meter(usage, backend, "cv-compose",
+                                                 lead=note.ref),
+                                           bundle_text, jd, company, role,
                                            name=cv_name, contact=cv_contact,
                                            employers=cvcfg.employers,
                                            prior_violations=retry_msgs,
@@ -644,7 +652,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # CV, while still costing the draft its one retry.
                 if cvcfg.voice_check and scoped_text.strip():
                     try:
-                        _report, voice_flags = run_voice(backend, scoped_text)
+                        _report, voice_flags = run_voice(
+                            meter(usage, backend, "cv-voice", lead=note.ref), scoped_text)
                     except Exception as e:
                         _log.warning("voice check for %s failed (%s); treating as "
                                      "clean", note.ref, e)
@@ -709,7 +718,8 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # timeout here must not prevent a CV that already passed the HARD gate from
         # rendering -- swallow and log, never propagate.
         try:
-            _report, audit_flags = run_audit(backend, cv_text, audit_bundle_text)
+            _report, audit_flags = run_audit(
+                meter(usage, backend, "cv-audit", lead=note.ref), cv_text, audit_bundle_text)
         except Exception as e:
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
             audit_flags = []
@@ -887,7 +897,7 @@ def missing_prerequisites(vault) -> list:
 
 
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
-              dry_run=False, policy=StalenessPolicy()) -> list:
+              dry_run=False, policy=StalenessPolicy(), usage=None) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]
     # A consumer of a `read_leads` list that walked it without the slug guard (#1) --
     # not claimed as the LAST: #109's triage/engine.py reached the identical defect by a
@@ -929,7 +939,7 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
         try:
             results.append(run_one(note, vault, cvcfg, backend, dossier_cache,
                                    renderer=renderer, dry_run=dry_run,
-                                   guard_existing_cv=True, policy=policy))
+                                   guard_existing_cv=True, policy=policy, usage=usage))
         except Exception as e:
             _log.warning("cv run failed for %s: %s", note.ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising (see

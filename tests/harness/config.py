@@ -214,6 +214,10 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
         "track_seen_db": str(tmp_path / "track-seen.db"),
         "track_token": str(tmp_path / "google_token.json"),
         "disabled": str(tmp_path / "sluice_disabled.json"),
+        # #308. Pinned like every other per-system path so this tier never appends to a
+        # developer's real usage log -- and so a test can READ the rows a run wrote, which is
+        # the only way to prove the metering is wired rather than merely present.
+        "usage": str(tmp_path / "sluice_usage.jsonl"),
     }
 
     # Every cwd-relative default a run could write to is pinned, across two
@@ -267,6 +271,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
     # The operator on/off overlay defaults to ./sluice_disabled.json (cwd-relative);
     # the functional enable/disable handlers WRITE it, so pin it into tmp_path too.
     monkeypatch.setenv("SLUICE_DISABLED", p["disabled"])
+    monkeypatch.setenv("SLUICE_USAGE", p["usage"])
 
     _seed_vault(p["vault"], baseline=baseline, experience=experience, cv_name=cv_name)
 

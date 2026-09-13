@@ -173,6 +173,17 @@ def _probe_dossiers_key(cfg_path):
     return Sluice(load_config(cfg_path))._dossier_dir()
 
 
+def _probe_usage_env(_):
+    from sluice.core.app import Sluice
+    return Sluice()._usage_log().path
+
+
+def _probe_usage_key(cfg_path):
+    from sluice.core.app import Sluice
+    from sluice.core.config import load_config
+    return Sluice(load_config(cfg_path))._usage_log().path
+
+
 def _probe_track_seen_db(cfg_path):
     from sluice.track.config import load_track_config
     return load_track_config(cfg_path).seen_db
@@ -218,6 +229,12 @@ _FAMILIES = [
      _probe_triage_audit_key),
     ("fx-rates.json/env", "fx-rates.json", "SLUICE_FX_CACHE", None, None,
      _probe_fx_cache),
+    # #308. Both doors, like dossiers: it is a ROOT key, so its config door goes through
+    # `load_config` with no block.
+    ("sluice_usage.jsonl/env", "sluice_usage.jsonl", "SLUICE_USAGE", None, None,
+     _probe_usage_env),
+    ("sluice_usage.jsonl/key", "sluice_usage.jsonl", None, None, "usage_jsonl",
+     _probe_usage_key),
 ]
 _FAMILY_IDS = [f[0] for f in _FAMILIES]
 
