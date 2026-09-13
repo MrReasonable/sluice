@@ -94,24 +94,31 @@ def test_a_stage_with_no_lead_omits_the_key_rather_than_writing_null(tmp_path):
     assert "lead" not in row
 
 
-def test_a_completion_with_no_usage_writes_no_row_and_still_returns_its_text(tmp_path):
+def test_a_completion_with_no_usage_is_skipped_SILENTLY(tmp_path, caplog):
     """`Completion.usage` is `Usage | None`, and the None arm is the one nothing exercised.
 
-    Every shipped provider returns at least an identity `Usage` (pinned by the conformance
-    suite), so the guard could be deleted and nothing would redden: `_record(None)` raises an
-    AttributeError that `_record` itself catches and warns about, which is not a test failure.
-    The arm is still reachable -- the seam's declared return type permits it, and an out-of-tree
-    backend or a test double is the caller that produces it -- and an EMPTY row is worse than no
-    row, because it would count as a call in the report while naming no provider or model.
+    The assertion that matters is the SILENCE, and finding that out is the point of witnessing
+    rather than reasoning. Deleting the `if c.usage is not None:` guard does NOT write a row: it
+    calls `_record(None)`, which raises an AttributeError that `_record` deliberately catches so
+    telemetry can never replace a real exception. So "no row appears" cannot fail under the
+    mutant -- measured -- and a test asserting only that would have certified a deleted guard.
 
-    Both halves: no row, and the text still comes back. A wrapper that treated a missing usage
-    block as an error would break a backend that is working perfectly."""
+    What the guard actually buys is that a backend reporting no counts is a NORMAL case rather
+    than a swallowed error: without it, every such call logs "could not record usage". A
+    flat-rate provider would emit one warning per LLM call, which is how an operator learns to
+    ignore the log that carries the real write failures.
+
+    The arm is reachable even though every shipped provider returns at least an identity `Usage`
+    (pinned by the conformance suite): the seam's declared return type permits None, and an
+    out-of-tree backend or a test double produces it."""
     p = str(tmp_path / "u.jsonl")
     b = meter(UsageLog(p), _Fake(usage=None), "cv-compose")
+    caplog.clear()
     assert b.complete("p").text == "text"
-    assert not os.path.exists(p), (
-        "a call that reported no usage wrote a row anyway -- an empty row counts as a call in "
-        "the report while identifying nothing")
+    assert caplog.text == "", (
+        "a call that reported no usage was treated as a failed recording; the None arm is an "
+        f"ordinary outcome, not an error to warn about. Logged: {caplog.text!r}")
+    assert not os.path.exists(p), "a call that reported no usage wrote a row anyway"
     # And the log still works afterwards: the skip is per call, not a latched off-switch.
     meter(UsageLog(p), _Fake(usage=_u(input_tokens=5)), "cv-compose").complete("p")
     assert len(_rows(p)) == 1
