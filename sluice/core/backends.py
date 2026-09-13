@@ -56,8 +56,11 @@ class Usage:
     Every count is `int | None`, and `None` is load-bearing: it means THIS PROVIDER DID NOT
     REPORT THIS NUMBER, which is a different fact from a reported zero. A zero-filled Usage
     would claim a call was free, so `ClaudeMaxBackend` -- flat-rate, and run in text mode
-    where there is no usage block at all -- answers `usage=None` rather than being left out
-    of the seam, and `core/usage.py::summarize` reports how many calls answered that way.
+    where there is no usage block at all -- answers with its provider and model and every
+    COUNT None, rather than being left out of the seam OR handing back a bare `usage=None`:
+    the counts it cannot report stay None, while the call stays attributable, so
+    `core/usage.py::summarize` can say how many calls a given provider answered that way.
+    (This paragraph said `usage=None` until the identity change landed and contradicted it.)
 
     `input_tokens` is DEFINED as the total input for the call INCLUDING anything served from
     cache, and each parser below normalises into that definition rather than copying its own
