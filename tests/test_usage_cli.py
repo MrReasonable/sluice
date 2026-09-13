@@ -384,13 +384,21 @@ def test_no_configured_log_is_reported_distinctly_from_an_empty_one(tmp_path, mo
 
 
 def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
-    """No file appears under the state root when nothing named one.
+    """No file and no directory appear under the state root when recording is off.
 
     Scoped honestly: `usage` READS, it never meters, so this pins that the READER creates nothing
     — not that a metering path declines to write. An earlier docstring claimed the latter, which
     `cmd_usage` cannot reach at all. The metering side's OFF path is witnessed by
     `tests/test_doctor.py::test_no_usage_is_recorded_when_no_log_is_configured`, which drives a
-    real `doctor` probe, and by `test_config_paths.py`'s unconfigured rows."""
+    real `doctor` probe, and by `test_config_paths.py`'s four switch/location rows.
+
+    This row was a tautology when the off path printed a fixed string, and the SPLIT is what gave
+    it teeth: the message now names the location the log would take, so `cmd_usage` RESOLVES a
+    path it previously never computed. A resolver that created its parent while answering "where
+    would this go" would make the state directory appear on a command that only reads — which is
+    this repo's own recorded incident shape, a read that brought a file into existence and
+    disarmed a relocation notice for every later run (`core/paths.py`). Hence the directory is
+    asserted absent too, not just the file."""
     import os
 
     monkeypatch.delenv("SLUICE_USAGE", raising=False)
@@ -398,6 +406,9 @@ def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     main(["usage"])
     assert not os.path.exists(os.path.join(str(state), "sluice", "sluice_usage.jsonl"))
+    assert not os.path.exists(os.path.join(str(state), "sluice")), (
+        "resolving the default location to NAME it created the state directory; the off path "
+        "reads and reports, and must bring nothing into existence")
 
 
 def test_json_stays_machine_readable_when_no_log_is_configured(tmp_path, monkeypatch, capsys):
