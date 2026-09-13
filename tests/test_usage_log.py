@@ -364,14 +364,18 @@ def test_an_unreadable_log_raises_rather_than_reading_as_empty(tmp_path):
     docs/ARCHITECTURE.md): an empty read is rendered as "No calls recorded", which is a claim
     about money the operator acts on.
 
-    Distinguishing absent from unreadable needs the specific `FileNotFoundError` rather than an
-    `os.path.exists` pre-check -- `exists()` swallows every OSError and answers False, so an
-    unreadable path reported as a first run. A directory is used as the unreadable path because
-    it raises for every user including root, unlike a chmod."""
-    d = tmp_path / "a-directory"
-    d.mkdir()
+    The unreadable path is one whose PARENT is a regular file, and that shape is the whole
+    point rather than a convenience. `os.path.exists` answers FALSE there (it swallows every
+    OSError), so the pre-check this fix removed would have returned `[]` and reported a first
+    run -- which is the measured harm. A directory AT the path does not witness it: `exists()`
+    is True for one, so the old pre-check raised too and the test passed either way. It is also
+    root-safe, unlike a chmod: root ignores file modes and directory permissions alike."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+    path = str(blocker / "sluice_usage.jsonl")
+    assert not os.path.exists(path), "exists() must answer False here or this row is vacuous"
     with pytest.raises(OSError):
-        UsageLog(str(d)).read_recent(30)
+        UsageLog(path).read_recent(30)
 
 
 def test_a_broken_usage_row_cannot_replace_the_error_it_was_recording(tmp_path, caplog):
@@ -404,3 +408,39 @@ def test_a_broken_usage_row_cannot_fail_a_successful_call(tmp_path, caplog):
 
     assert meter(UsageLog(p), _OddUsage(), "cv-compose").complete("x").text == "text"
     assert "could not record usage" in caplog.text
+
+
+def test_partial_and_unmeasured_are_counted_separately():
+    """Two different ways the totals can be a floor, and the report says different things about
+    them, so they cannot be one number. `incomplete` is the pair, and is what the caveat keys
+    on -- keyed on `unmeasured` alone, a partially-reported call printed a bare total."""
+    silent = _row(input_tokens=None, output_tokens=None, cache_read_tokens=None)
+    part = _row(input_tokens=100, output_tokens=None, cache_read_tokens=None)
+    s = summarize([_row(), silent, part])
+    assert (s.total.unmeasured, s.total.partial, s.total.incomplete) == (1, 1, 2)
+    # The fully-reported row is neither.
+    assert summarize([_row()]).total.incomplete == 0
+
+
+def test_a_missing_cache_count_alone_is_not_a_partial_bill():
+    """Two shipped providers report no cache WRITE at all and a local endpoint reports no cache
+    at all, so keying the floor caveat on cache coverage would light it permanently -- and a
+    permanently-lit flag teaches its reader to skip the column. The bill is input + output."""
+    s = summarize([_row(input_tokens=100, output_tokens=10, cache_read_tokens=None)])
+    assert (s.total.partial, s.total.unmeasured, s.total.incomplete) == (0, 0, 0)
+    assert s.total.cache_calls == 0          # still reported as uncovered, just not a floor
+
+
+def test_an_uncached_call_reports_no_hit_rate_rather_than_zero_percent():
+    """The ORDINARY case, not an edge: both parsers answer `cache_read_tokens=None` for a call
+    with no prompt caching, so the `cached` column shows a dash -- and the rate beside it read
+    `0.0`, because a None contributes 0 to the sum. One row claiming "never measured" and
+    "measured at zero" at once, which `hit_rate`'s own docstring forbids.
+
+    A REPORTED zero is different and must still read 0.0: that is a provider saying the cache
+    was live and returned nothing, which is a real and actionable number."""
+    uncached = _row(input_tokens=100, output_tokens=10, cache_read_tokens=None)
+    assert summarize([uncached]).total.hit_rate is None
+
+    measured_zero = _row(input_tokens=100, output_tokens=10, cache_read_tokens=0)
+    assert summarize([measured_zero]).total.hit_rate == 0.0

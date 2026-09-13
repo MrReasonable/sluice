@@ -289,7 +289,15 @@ class Totals:
 
     `unmeasured` is calls that reported NO count at all -- claude-max, or an endpoint that sent
     no usage block -- kept as its own number rather than folded in as zeros, so "we spent
-    nothing here" and "we cannot see what we spent here" stay different answers.
+    nothing here" and "we cannot see what we spent here" stay different answers. `partial` is
+    calls that reported one of input/output and not the other: those contribute a real number
+    to one sum and nothing to the other, so they make the totals a floor WITHOUT being silent.
+    `incomplete` is the pair, and is what the report's floor caveat is keyed on.
+
+    Only input and output decide `partial`. A missing CACHE count is not a partial bill: two
+    shipped providers report no cache write at all and a local endpoint reports no cache at
+    all, so keying the caveat on it would light it permanently -- and a permanently-lit flag
+    teaches its reader to skip the column, which `CLAUDE.md` already says about health's own.
 
     The three `*_calls` fields count how many rows contributed to each sum, and they exist
     because one number cannot answer that question per column. Keying the whole row's
@@ -304,27 +312,50 @@ class Totals:
     output_tokens: int = 0
     cache_read_tokens: int = 0
     unmeasured: int = 0
+    partial: int = 0
     input_calls: int = 0
     output_calls: int = 0
     cache_calls: int = 0
 
     @property
+    def incomplete(self) -> int:
+        """Calls whose spend is not fully accounted for -- silent ones plus partial ones.
+
+        This is what makes the totals a FLOOR, and it is deliberately NOT `unmeasured` alone.
+        A row reporting an input count and no output count contributes a real number to one
+        sum and nothing to the other, so the total under-states the bill while `unmeasured`
+        stays 0 -- measured: three rows with one reporting `input_tokens=100` printed 100 as a
+        total with no caveat at all.
+        """
+        return self.unmeasured + self.partial
+
+    @property
     def hit_rate(self):
         """Cached share of input tokens, or None when there is no measured input to divide by.
 
-        Gated on `input_calls` as well as on the sum: a group where NO row reported an input
-        count has no rate at all, which is a different fact from a group whose reported inputs
-        happen to total zero.
+        Gated on `cache_calls` and on the input SUM.
 
-        None, never 0.0: a group whose every call was unmeasured has no hit rate, and
-        printing 0% there would report a cache that is working badly rather than one that was
-        never observed.
+        `cache_calls` is what stops this row contradicting itself, and the case is the ORDINARY
+        one rather than an edge: both parsers answer `cache_read_tokens=None` for a call with no
+        prompt caching, so the `cached` column correctly shows a dash -- and without this gate
+        the rate beside it read `0.0`, because a None contributes 0 to the sum. "Never measured"
+        and "measured at zero" in one row, which is exactly what the paragraph below forbids.
+        Measured on an ordinary uncached call: `cached -` next to `hit% 0.0`.
+
+        An `input_calls` term was also tried here and removed, and the contrast is the useful
+        part: it could never decide, because `input_calls == 0` implies `input_tokens == 0`
+        through `_add`, so both of the cases it claimed to separate already returned None.
+        `cache_calls == 0` with a non-zero input sum is the common case, so this one decides.
+
+        None, never 0.0: a group whose cache was never measured has no hit rate, and printing
+        0% there would report a cache that is working badly rather than one that was never
+        observed.
 
         This is only correct because `Usage.input_tokens` is normalised to INCLUDE the cached
         tokens for every provider -- see `core/backends.py::Usage`. Against Anthropic's raw
         `input_tokens`, which excludes them, this ratio can exceed 1.0.
         """
-        if not self.input_calls or not self.input_tokens:
+        if not self.cache_calls or not self.input_tokens:
             return None
         return self.cache_read_tokens / self.input_tokens
 
@@ -355,12 +386,16 @@ def _add(t: Totals, row: dict) -> Totals:
     row the footnote is entitled to speak for.
     """
     got = {k: _count(row, k) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}
+    # The BILL is input + output. A row with exactly one of them is `partial`; a row with
+    # neither is `unmeasured`. Cache is excluded from that judgement -- see `Totals`.
+    bill = (got["input_tokens"] is not None, got["output_tokens"] is not None)
     return Totals(
         calls=t.calls + 1,
         input_tokens=t.input_tokens + (got["input_tokens"] or 0),
         output_tokens=t.output_tokens + (got["output_tokens"] or 0),
         cache_read_tokens=t.cache_read_tokens + (got["cache_read_tokens"] or 0),
-        unmeasured=t.unmeasured + (1 if all(v is None for v in got.values()) else 0),
+        unmeasured=t.unmeasured + (not any(bill)),
+        partial=t.partial + (any(bill) and not all(bill)),
         input_calls=t.input_calls + (got["input_tokens"] is not None),
         output_calls=t.output_calls + (got["output_tokens"] is not None),
         cache_calls=t.cache_calls + (got["cache_read_tokens"] is not None),
