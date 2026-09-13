@@ -3389,3 +3389,40 @@ def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
     # "where did the tokens go" with one undifferentiated number.
     assert all(r["provider"] and r["model"] for r in rows)
     assert len({r["provider"] for r in rows}) >= 1
+
+
+def test_no_usage_is_recorded_when_no_log_is_configured(monkeypatch, tmp_path):
+    """The METERING side's OFF path (#308), which is the shipped default now that the log is
+    opt-in — and `doctor` is the right place to witness it, because its wrap lives inside the
+    default `probe` lambda rather than at a call site, so it is the one metering site a reader
+    cannot check by eye.
+
+    Asserts on the FILESYSTEM, not on a mock: a real probe round-trips every configured backend
+    and would append a row per provider if `meter` had been handed a log. Nothing may appear
+    anywhere under the state root — the file OR its parent directory, since `UsageLog.append`
+    creates the parent."""
+    import os
+
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+
+    class _Stub:
+        def __init__(self, provider, model):
+            self.provider, self.model = provider, model
+
+        def complete(self, prompt):
+            from sluice.core.backends import Completion, Usage
+            return Completion("OK", usage=Usage(provider=self.provider, model=self.model,
+                                                input_tokens=7, output_tokens=1))
+
+    monkeypatch.setattr("sluice.core.backends.make_backend",
+                        lambda provider, model="", **kw: _Stub(provider, model))
+
+    rep = Sluice().doctor()
+    assert rep.checks, "the probe never ran, so this witnesses nothing"
+    assert not os.path.exists(os.path.join(str(state), "sluice", "sluice_usage.jsonl"))
+    assert not os.path.exists(os.path.join(str(state), "sluice")), \
+        "no state directory should be created either -- append() makes the parent"

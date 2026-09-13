@@ -109,8 +109,7 @@ baseline_rel: My CV/CV.md
 # it back and never prints a lead -- it groups by stage and by model only -- so the REPORT is
 # safe to paste even though the file behind it is not.
 # `job-sluice usage` reads it back and reports what you spent, by stage and by model, with
-# the cache hit rate. ON by default -- leave this commented and it lands under the XDG state
-# root -- because the question is always about a run that has already finished, and an
+# the cache hit rate.
 # There is no per-system default location: naming the file is how you turn this on, and there
 # is no way to ask for "on, somewhere sensible". Append-only, never rotated; delete it if you
 # want to start the history over. Providers charge much less for an input token served from
