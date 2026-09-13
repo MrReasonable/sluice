@@ -3360,7 +3360,11 @@ def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
     import json
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    # tmp_path-derived, like the OFF-path row below: `classify` reads this only for
+    # `is not None`, and `tests/**` bars absolute paths. Declined once on #320 on a count
+    # argument about the ELEVEN inherited siblings in this file -- which still stands for
+    # them, and never did for #308's own new tests.
+    monkeypatch.setattr("shutil.which", lambda name: str(tmp_path / "bin" / "claude"))
     usage_path = tmp_path / "usage.jsonl"
     monkeypatch.setenv("SLUICE_USAGE", str(usage_path))
 
@@ -3407,7 +3411,12 @@ def test_no_usage_is_recorded_when_no_log_is_configured(monkeypatch, tmp_path):
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    # A tmp_path-derived stand-in, not a literal `/usr/bin/claude`. `classify` reads this only
+    # for `is not None`, so the value is arbitrary -- and `tests/**` bars absolute paths. The
+    # sibling rows in this file predate that reading and are left alone here: sweeping them is a
+    # guard change plus every call site, which is its own PR, but there is no case for adding
+    # another instance to a pattern this one can avoid for free.
+    monkeypatch.setattr("shutil.which", lambda name: str(tmp_path / "bin" / "claude"))
 
     class _Stub:
         def __init__(self, provider, model):
