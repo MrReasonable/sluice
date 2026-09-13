@@ -28,7 +28,18 @@ Shared by every sub-app:
   CLI, local or over SSH; `AnthropicBackend` calls the Anthropic Messages
   API directly; `OpenAiCompatibleBackend` calls any OpenAI-compatible HTTP
   endpoint; `FallbackBackend` tries the first and falls back to the second
-  on error; `make_backend` builds any of them by name.
+  on error; `make_backend` builds any of them by name. `complete()` returns a
+  `Completion` (text plus optional `Usage`), not a bare string, since #308.
+- `usage.py`: per-call token accounting (#308). `MeteredBackend` decorates the
+  backend seam and appends one JSONL row per call -- stage, provider, model, and
+  the counts the provider reported; `meter(log, backend, stage, lead=None)` is
+  the wrap, and returns the backend UNCHANGED when there is no log, so the off
+  path constructs nothing. `summarize` is the pure aggregation `job-sluice usage`
+  renders. Separate from `backends.py` because the clients and the telemetry sink
+  are different concerns, and deliberately a PARALLEL implementation of
+  `triage/audit.py::AuditLog` rather than a shared one: that lives in a sub-app,
+  and `core/` sits below every sub-app, so importing it would invert the layering
+  -- and the two do not share an append contract (see below).
 - `camofox.py`: an HTTP client for a Camofox headless-browser server, the
   impure fetch boundary that ingest sources drive a tab through.
 - `urlguard.py`: url policy for the dossier fetcher. Decides whether a
@@ -1872,9 +1883,33 @@ sentence cannot be.
   the config picks which provider fills each role, the role picks which backend runs.
   `tests/conformance/test_backend_contract.py` asserts the portable contract over every
   registered provider — an empty/whitespace response and a transport failure both raise
-  `BackendError` (the property `FallbackBackend` relies on), and a valid response returns as
-  its text — so a new provider passes it or does not ship, exactly as the store bullet's
+  `BackendError` (the property `FallbackBackend` relies on), a valid response returns as
+  its text, and (since #308) that response is a `Completion` whose `Usage` IDENTIFIES the
+  call — so a new provider passes it or does not ship, exactly as the store bullet's
   conformance suite does.
+
+  **Token usage is carried on the RESULT, not on a mutable attribute.** `Usage.input_tokens`
+  is defined as the total input INCLUDING anything served from cache, and each provider's
+  parse normalises into that definition rather than copying its own similarly-named field:
+  Anthropic's `input_tokens` counts uncached tokens only, with the cache counters beside it,
+  so a straight copy puts the cache hit rate above 1.0 on a well-cached call. Every count is
+  `int | None` and None means NOT REPORTED, which is why `claude-max` -- flat-rate, run in
+  text mode -- answers with its identity and no counts rather than with zeros: a zero would
+  claim the call was free. `provider` is threaded down from `make_backend`, never written as
+  a literal in a factory, so a module copied to add a provider cannot keep the original's
+  label. Spend from a call that billed and then RAISED rides on `BackendError.usage` (the
+  only carrier left where there is no return value), and `FallbackBackend` threads a burned
+  primary leg's usage onto the served completion's `unserved_usage` rather than swallowing it
+  in its `except`.
+
+  Where the metering is WRAPPED is a separate decision from where the call happens, and the
+  two are in different modules on purpose. `core/app.py` wraps at the application boundary,
+  because almost every backend it builds serves exactly one stage; `cv/engine.py` takes the
+  log instead and wraps per call, because it spends ONE backend on compose, audit and voice
+  and is the only place a lead id is in scope. `tests/test_usage_wiring.py` rosters both ends
+  -- every `.complete(` call site against every stage `meter(...)` passes -- and each stage
+  names the runtime test that witnesses it actually recording, because the static roster
+  proves the wiring is declared and cannot prove it fires.
 - **store**: `sluice/stores/`, selected by `store:` (default `vault`).
   Implementations: `vault` (the Obsidian-style markdown vault in
   `core/vault.py`). A SQLite store is the obvious next one, and the
