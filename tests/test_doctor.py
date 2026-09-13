@@ -3359,6 +3359,8 @@ def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
     """
     import json
 
+    from collections import Counter
+
     from sluice.core.backends import DEFAULT_MODELS
 
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
@@ -3394,15 +3396,17 @@ def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
     # backends is several calls, and a report that could not tell them apart would answer
     # "where did the tokens go" with one undifferentiated number.
     assert all(r["provider"] and r["model"] for r in rows)
-    # The EXACT set, not a floor. `len(...) >= 1` was the first shape and could not fail: the
-    # two assertions above already establish a non-empty row list with a truthy provider on
-    # every row, so any one-provider report satisfied it -- including a probe that metered only
-    # the first target, or a stub that reported one fixed label for all of them. The point of
-    # the row is that a doctor run over SEVERAL configured backends is several calls the report
-    # can tell apart, and only naming both providers says that.
-    assert {(r["provider"], r["model"]) for r in rows} == {
-        ("claude-max", DEFAULT_MODELS["claude-max"]),
-        ("deepseek", DEFAULT_MODELS["deepseek"])}
+    # A MULTISET, not a set, and not a floor. `len(...) >= 1` was the first shape and could not
+    # fail: the two assertions above already establish a non-empty row list with a truthy provider
+    # on every row, so any one-provider report satisfied it -- including a probe that metered only
+    # the first target, or a stub reporting one fixed label for all of them. An exact SET fixed
+    # that half and kept a blind spot of its own: set equality holds while a provider is recorded
+    # TWICE, so a probe billing one backend twice per run read as correct, and "what did I spend"
+    # would over-report by a call with nothing red. `Counter` catches an addition, a removal, a
+    # relabelling AND a duplicate -- the same reason the wiring roster uses one.
+    assert Counter((r["provider"], r["model"]) for r in rows) == Counter({
+        ("claude-max", DEFAULT_MODELS["claude-max"]): 1,
+        ("deepseek", DEFAULT_MODELS["deepseek"]): 1})
 
 
 def test_no_usage_is_recorded_when_no_log_is_configured(monkeypatch, tmp_path):

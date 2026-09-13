@@ -41,7 +41,9 @@ The RUNTIME half -- that a real run actually writes rows under these stages -- i
 those prove it fires.
 """
 import ast
+import io
 import pathlib
+import tokenize
 from collections import Counter
 
 import pytest
@@ -382,19 +384,33 @@ def test_each_declared_stage_covers_at_least_one_call_site():
 
 
 def _code_only(src: str) -> str:
-    """`src` with every docstring blanked, so a substring search sees CODE and not prose.
+    """`src` with every docstring AND comment blanked, so a substring search sees CODE, not prose.
 
     The stage-name check below is satisfied by any occurrence, and a witness names its own stage in
-    its docstring as well as its assertion -- so gutting the assertion left the declaration
-    certified by the prose describing it (measured: replacing `cv-voice`'s assertion with a bare
-    length check kept every row in this file green). Prose is not a check, and this repo has been
-    bitten by a comment standing in for one before.
+    the prose around its assertion -- so gutting the assertion left the declaration certified by the
+    text describing it (measured: replacing `cv-voice`'s assertion with a bare length check kept
+    every row in this file green). Prose is not a check, and this repo has been bitten by a comment
+    standing in for one before.
 
-    Blanks by LINE RANGE, never `src.replace(ast.get_docstring(n), "")`: `get_docstring` returns
-    `cleandoc`-ed text, which does not appear verbatim in the source, so the replace is a silent
-    no-op -- a fix that reads exactly like a working one.
+    BOTH kinds, because closing this for docstrings alone left the identical hole one character
+    away: a `# cv-voice` comment satisfied the check exactly as the docstring had (measured after
+    the docstring fix, which is how this got a second round). Closing a gap class for one instance
+    does not close it for the others.
+
+    Docstrings blank by LINE RANGE, never `src.replace(ast.get_docstring(n), "")`: `get_docstring`
+    returns `cleandoc`-ed text, which does not appear verbatim in the source, so the replace is a
+    silent no-op -- a fix that reads exactly like a working one. Comments blank through `tokenize`,
+    which is the only thing that knows a `#` inside a string literal is not a comment; a regex over
+    the bytes would blank half of any line containing one.
     """
     lines = src.splitlines()
+
+    # Comments first, blanking in place so the line NUMBERING survives for the docstring pass.
+    for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+        if tok.type == tokenize.COMMENT:
+            row = tok.start[0] - 1
+            lines[row] = lines[row][:tok.start[1]]
+
     for node in ast.walk(ast.parse(src)):
         body = getattr(node, "body", None)
         if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
