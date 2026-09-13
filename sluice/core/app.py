@@ -765,9 +765,11 @@ class Sluice:
         the repo (`core/paths.py::resolve`).
 
         Collapsing the two into "naming a file is how you turn it on" was the first shape and was
-        wrong in a way worth recording, because it reads as tidier: it made this the ONLY
-        relocatable path with no XDG default, since an empty value had to mean OFF rather than
-        "the standard place". A user who switched recording on then got no answer to a question
+        wrong in a way worth recording, because it reads as tidier. Every other caller of
+        `paths.resolve` passes a `kind` and a `name` and so reaches the XDG rung; this one
+        SHORT-CIRCUITED above the call, because an empty value had to mean OFF -- so the rung
+        existed and was unreachable, which is not the same defect as lacking one and is harder to
+        see. A user who switched recording on then got no answer to a question
         they had not asked -- where does it go -- and `job-sluice usage` had to tell them to
         invent a path. Turning a feature on and choosing where its file lives are two questions.
 

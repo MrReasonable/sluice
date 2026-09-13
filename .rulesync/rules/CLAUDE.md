@@ -302,9 +302,10 @@ because it records what sluice DECIDED rather than what the user SPENT.
 The SWITCH and the LOCATION are two keys, and the split is worth knowing before "simplifying" it
 back. `usage_jsonl` says only WHERE, and an empty one resolves to the XDG state file exactly like
 every other relocatable path -- so `record_usage: true` alone needs no path. They were ONE key
-first, an empty value meaning OFF, which made this the only relocatable path in the repo with no
-XDG default and left a user who switched recording on with nowhere for the file to go: the command
-had to tell them to invent one. Turning a feature on and choosing where its file lives are two
+first, an empty value meaning OFF, which left this the one `paths.resolve` caller that returned
+above its own XDG rung -- every other passes a `kind` and reaches it -- and left a user who
+switched recording on with nowhere for the file to go: the command had to tell them to invent
+one. Turning a feature on and choosing where its file lives are two
 questions. `SLUICE_USAGE` keeps both jobs deliberately -- relocating a log that is switched off has
 nothing it could mean -- while the switch has NO env var, since an exported variable that silently
 starts writing employer names is the surprise the default exists to prevent.

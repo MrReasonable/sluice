@@ -185,9 +185,12 @@ class Config:
     # needs in order to audit the tool, while this records what they SPENT.
     #
     # A SEPARATE key from `usage_jsonl` below, and the split is the point. Folding the two --
-    # "naming a file is how you turn it on" -- was the first shape, and it made this the one
-    # relocatable path in the repo with no XDG default, since an empty value had to mean OFF
-    # rather than "the standard place". Turning a feature on and choosing where its file lives
+    # "naming a file is how you turn it on" -- was the first shape, and it left this the one path
+    # routed through `paths.resolve` whose XDG rung was unreachable: not because `resolve` lacked
+    # one, but because an empty value had to mean OFF, so `Sluice._usage_log` returned before ever
+    # calling it. (The seven cwd-relative artefact paths have no XDG default either, deliberately
+    # -- they name a workspace the user is standing in and never go through `resolve` at all.)
+    # Turning a feature on and choosing where its file lives
     # are two questions, and a user who answers only the first deserves the same answer every
     # other state file gives.
     record_usage: bool = False

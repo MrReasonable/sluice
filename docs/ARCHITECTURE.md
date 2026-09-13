@@ -38,8 +38,9 @@ Shared by every sub-app:
   `record_usage` is true (or `SLUICE_USAGE` names a path, which also switches it on),
   so an install that never asked for accounting constructs no wrapper on any LLM call.
   WHERE the file goes is the separate `usage_jsonl` key, empty meaning the ordinary XDG
-  state location: the two were one key first, which made this the only relocatable path
-  with no XDG default and left "recording on" with no answer to "written where".
+  state location: the two were one key first, which left this the one `paths.resolve` caller
+  that returned above its own XDG rung -- every other passes a `kind` and reaches it -- so
+  "recording on" had no answer to "written where".
   `summarize` is the pure aggregation `job-sluice usage` renders. Separate from `backends.py` because the clients and the telemetry sink
   are different concerns, and deliberately a PARALLEL implementation of
   `triage/audit.py::AuditLog` rather than a shared one: that lives in a sub-app,

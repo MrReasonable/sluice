@@ -405,9 +405,9 @@ def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
 # location, and an empty one resolves to the XDG state file exactly like `dossier_dir` above.
 #
 # They were ONE key first -- an empty `usage_jsonl` meant OFF, so "naming a file" was how the
-# feature turned on -- which made this the only relocatable path in the repo with no XDG default
-# and left a user who switched recording on with nowhere for it to go. The four rows below are the
-# four states, and the pair that matters is `record_usage: true` with and without a location:
+# feature turned on -- which left this the one `paths.resolve` caller that returned above its own
+# XDG rung (every other passes a `kind` and reaches it), so a user who switched recording on had
+# nowhere for the file to go. The four rows below are the four states, and the pair that matters is `record_usage: true` with and without a location:
 # collapsing the keys again makes the first of those unreachable.
 #
 # Nothing else in the suite pins any of this -- every other test sets `SLUICE_USAGE` -- so without
