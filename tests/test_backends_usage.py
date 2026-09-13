@@ -274,15 +274,34 @@ def test_a_primary_that_failed_without_spending_adds_no_unserved_record():
     assert b.complete("p").unserved_usage == ()
 
 
-def test_when_both_legs_fail_the_primary_spend_still_rides_on_the_error():
+def test_when_both_legs_fail_every_leg_that_billed_rides_on_the_error():
     """There is no completion to hang it on, so the raised error carries it -- otherwise the
-    worst case (paid for nothing, twice) is the one case that records nothing at all."""
-    burned = Usage(provider="openai", model="p-model", input_tokens=100)
-    b = FallbackBackend(_Leg("openai", error="truncated", usage=burned),
-                        _Leg("deepseek", error="down"))
+    worst case (paid for nothing, twice) is the one case that records nothing at all.
+
+    BOTH legs, not just the primary. The first cut coalesced them (`e.usage or fe.usage`) and
+    reported only the first, which under-states the bill in exactly the case a user most wants
+    the number -- and both HTTP providers DO attach a Usage on their refusal paths, so it is
+    reachable rather than theoretical. The two legs carry different providers here so a
+    coalesce is caught: with one provider on both, the assertion would hold either way."""
+    p_burned = Usage(provider="openai", model="p-model", input_tokens=100)
+    f_burned = Usage(provider="deepseek", model="f-model", input_tokens=40)
+    b = FallbackBackend(_Leg("openai", error="truncated", usage=p_burned),
+                        _Leg("deepseek", error="also truncated", usage=f_burned))
     with pytest.raises(BackendError) as e:
         b.complete("p")
-    assert e.value.usage == burned
+    assert e.value.usage == p_burned
+    assert e.value.unserved_usage == (f_burned,)
+
+
+def test_a_fallback_leg_that_failed_without_billing_adds_no_second_record():
+    """An empty tuple says "the fallback spent nothing", which is what a host that is simply
+    down reports. A zero-valued entry would claim a call happened and cost nothing."""
+    p_burned = Usage(provider="openai", model="p-model", input_tokens=100)
+    b = FallbackBackend(_Leg("openai", error="truncated", usage=p_burned),
+                        _Leg("deepseek", error="ssh: connect failed"))
+    with pytest.raises(BackendError) as e:
+        b.complete("p")
+    assert (e.value.usage, e.value.unserved_usage) == (p_burned, ())
 
 
 # ------------------------------------------- the provider label cannot drift from the name

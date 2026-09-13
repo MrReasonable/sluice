@@ -295,7 +295,11 @@ the only carrier where there is no return value.
 backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log.
 Almost every wrap is in `core/app.py`, because almost every backend built there serves exactly one
 stage; `cv/engine.py` is the exception and takes the log itself, since it spends ONE backend on
-compose, audit and voice and is the only place a lead id is in scope. So a guard of the shape
+compose, audit and voice. It is also the only stage recording a LEAD -- as the store-issued
+`slug`, never the opaque `LeadNote.ref`, which is a filesystem path for the vault store -- and
+that is a placement choice rather than a scope fact: triage's tier-3 resolve has a note in
+scope at its own call site and is wrapped once at the boundary anyway, being a bulk pass. So a
+guard of the shape
 "every module holding a `.complete(` also meters" is FALSE BY DESIGN -- the first draft of
 `tests/test_usage_wiring.py` asserted that and would have had to be narrowed until it checked
 nothing. What that file rosters instead is both ENDS against hand-written targets: every

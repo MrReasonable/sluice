@@ -2296,18 +2296,26 @@ def format_usage(summary, *, days: int, path: str) -> str:
     # tidy column turned `deepseek/deepseek-v4-flash` and `claude-max/claude-sonnet-4-5`
     # into `deepseek/deepsee` and `claude-max/claud` -- the report's own subject, unreadable.
     labels = [*summary.by_stage, *summary.by_model, "TOTAL"]
-    w = max(len("stage / model"), *(len(x) for x in labels)) + 2
+    # No floor against a header string: the label column has no header (the two table captions
+    # sit above it), so a floor would pad against text nobody prints. `labels` always holds at
+    # least "TOTAL" -- this is past the no-calls short-circuit -- so the max() is never empty.
+    w = max(len(x) for x in labels) + 2
     head = f"{'':{w}}{'calls':>6}{'input':>12}{'output':>10}{'cached':>10}{'hit%':>7}"
 
     def row(label, t):
-        # A group whose EVERY call reported nothing did not spend zero -- it spent an
-        # unknown amount. Rendering the accumulator (which is 0, since unmeasured rows add
-        # nothing to it) would state the one thing this report must never say: that a
-        # flat-rate provider's calls were free. Partial groups keep their measured sum,
-        # which is a genuine floor, and the footnote below says so.
-        blind = t.calls > 0 and t.calls == t.unmeasured
-        counts = (None, None, None) if blind else (t.input_tokens, t.output_tokens,
-                                                   t.cache_read_tokens)
+        # A column no row reported did not total zero -- it spent an unknown amount. Rendering
+        # the accumulator (which IS 0, since a missing count adds nothing to it) would state
+        # the one thing this report must never say: that a flat-rate provider's calls were
+        # free. Where a column WAS reported by some rows, the sum stands as a genuine floor
+        # and the footnote below says so.
+        #
+        # PER COLUMN, keyed on that column's own `*_calls`. Keying the whole row on the input
+        # count was the first shape: a row reporting only `output_tokens` -- which both parsers
+        # can produce, each count being independently optional -- then dashed its real,
+        # measured output number too.
+        counts = (t.input_tokens if t.input_calls else None,
+                  t.output_tokens if t.output_calls else None,
+                  t.cache_read_tokens if t.cache_calls else None)
         return (f"{label:{w}}{t.calls:>6}{_thousands(counts[0]):>12}"
                 f"{_thousands(counts[1]):>10}{_thousands(counts[2]):>10}"
                 f"{_pct(t.hit_rate):>7}")
@@ -2323,7 +2331,7 @@ def format_usage(summary, *, days: int, path: str) -> str:
     if summary.total.unmeasured:
         out += ["",
                 f"{summary.total.unmeasured} of {summary.total.calls} call(s) reported no "
-                f"token counts, so the totals above are a FLOOR, not the whole bill. "
+                f"token counts at all, so the totals above are a FLOOR, not the whole bill. "
                 f"claude-max is flat-rate and reports none by design."]
     if summary.unserved_calls:
         out += ["",
@@ -2343,7 +2351,16 @@ def cmd_usage(args, config) -> int:
     from sluice.core.app import Sluice
     from sluice.core.usage import summarize
 
-    log = Sluice(config)._usage_log()
+    # A negative window would silently report NOTHING -- every row older than "minus five
+    # days" -- and an empty report reads as "you spent nothing", which is this codebase's
+    # signature bug class rather than a cosmetic complaint. `main`'s `except ValueError`
+    # renders it as exit 2, a usage error, which is what a mistyped flag is. 0 is legal and
+    # means today.
+    if args.days < 0:
+        raise ValueError(
+            f"usage --days must be 0 or more, not {args.days}; 0 reports today only")
+
+    log = Sluice(config).usage_log()
     summary = summarize(log.read_recent(args.days))
     if args.json:
         print(json.dumps({
@@ -2367,6 +2384,11 @@ def _usage_json(t) -> dict:
     return {"calls": t.calls, "input_tokens": t.input_tokens,
             "output_tokens": t.output_tokens, "total_tokens": t.total_tokens,
             "cache_read_tokens": t.cache_read_tokens, "unmeasured": t.unmeasured,
+            # How many rows contributed to each sum. Without these a consumer cannot tell a
+            # measured zero from an unreported column -- the same distinction the table draws
+            # with a dash, which JSON has no equivalent of.
+            "input_calls": t.input_calls, "output_calls": t.output_calls,
+            "cache_calls": t.cache_calls,
             "hit_rate": t.hit_rate}
 
 

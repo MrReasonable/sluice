@@ -1,4 +1,5 @@
 import io
+import json
 import os
 
 from sluice.apply.engine import PrepResult
@@ -258,14 +259,35 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
     -- meaning a future edit that silently drops or breaks this threading would
     leave tier 3 dark in production (config on, resolved/llm_calls all zero) with
     an all-green test suite. Distinct sentinels per role so the judge's backend and
-    the resolution backend cannot be confused for each other by accident."""
+    the resolution backend cannot be confused for each other by accident.
+
+    Since #308 it is also `triage-resolve`'s RECORDING witness (named by
+    `tests/test_usage_wiring.py::_STAGES`), which is why the fake run below drives each
+    backend rather than only inspecting it: stubbing `engine.run` means no real `.complete()`
+    happens, so an assertion on the wrapper's `.stage` proves the LABEL is attached and says
+    nothing about whether a call under it writes a row."""
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    usage_path = str(tmp_path / "usage.jsonl")
+    monkeypatch.setenv("SLUICE_USAGE", usage_path)
     _triage_llm_config(tmp_path, monkeypatch)
     app = Sluice(Config())
-    judge_sentinel = object()
-    resolve_sentinel = object()
+
+    # Sentinels that can be CALLED, because the fake run drives each one: distinct objects so
+    # the two roles cannot be confused, and each reports a Usage naming itself so the recorded
+    # rows are attributable to the role that produced them.
+    class _Sentinel:
+        def __init__(self, provider):
+            self.provider = provider
+
+        def complete(self, prompt):
+            from sluice.core.backends import Completion, Usage
+            return Completion("ok", usage=Usage(provider=self.provider, model="m",
+                                                input_tokens=7, output_tokens=1))
+
+    judge_sentinel = _Sentinel("judge-provider")
+    resolve_sentinel = _Sentinel("resolve-provider")
     monkeypatch.setattr(
         app, "backend",
         lambda role, **kw: resolve_sentinel if role == "fallback" else judge_sentinel)
@@ -273,6 +295,9 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
     def fake_run(vault, cfg, backend, cache, audit, **kw):
         seen["judge_backend"] = backend
         seen.update(kw)
+        # One call through each, so the rows below exist to assert on.
+        backend.complete("judge prompt")
+        kw["resolve_backend"].complete("resolve prompt")
         from sluice.triage.engine import TriageReport
         return TriageReport()
     monkeypatch.setattr("sluice.triage.engine.run", fake_run)
@@ -286,6 +311,13 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
     assert seen["judge_backend"].stage == "triage-judge"
     assert seen["resolve_backend"].inner is resolve_sentinel
     assert seen["resolve_backend"].stage == "triage-resolve"
+
+    # And each call RECORDED under its own stage -- the half that makes this a runtime witness
+    # rather than a wiring inspection. A wrapper labelled correctly but writing nothing would
+    # satisfy every assertion above.
+    rows = [json.loads(ln) for ln in open(usage_path, encoding="utf-8") if ln.strip()]
+    assert [(r["stage"], r["provider"]) for r in rows] == [
+        ("triage-judge", "judge-provider"), ("triage-resolve", "resolve-provider")]
 
 
 def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):

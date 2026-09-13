@@ -734,6 +734,17 @@ class Sluice:
                              config_value=getattr(self.config, "dossier_dir", ""),
                              kind="cache", name="dossiers")
 
+    def usage_log(self):
+        """The token-usage log, for a caller that wants to READ it (#308).
+
+        Public because `cli.py::cmd_usage` needs it and every other facade the CLI reaches is
+        public (`health_report`, `doctor`, `triage`, ...). A private `_usage_log` was the first
+        shape and made `cmd_usage` the one command in the file reaching through the facade
+        rather than at it. Same object the wrapping sites use -- there is one log per process
+        and no reason for a reader to get a different one.
+        """
+        return self._usage_log()
+
     def _usage_log(self):
         """The one token-usage log for this process (#308).
 
@@ -1716,7 +1727,9 @@ class Sluice:
 
         # cv is the one sub-app that gets the LOG rather than a pre-metered backend: it spends
         # ONE backend on three stages (compose, audit, voice), so a stage fixed here would
-        # mislabel two of the three -- and it is the only place a lead id is in scope (#308).
+        # mislabel two of the three (#308). It is also the only stage that records a LEAD --
+        # a choice, not a constraint: triage's tier-3 resolve has a note in scope too and is
+        # wrapped once here anyway, being a bulk pass. See `core/usage.py`'s module docstring.
         usage = self._usage_log()
         if all_shortlist:
             return run_batch(store, cvcfg, backend, cache, renderer=renderer,

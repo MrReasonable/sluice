@@ -3050,8 +3050,10 @@ def test_the_voice_check_call_is_metered_as_its_own_stage(monkeypatch, tmp_path)
     e2e test covers compose and audit on the default path; voice needs `cv.voice_check` on,
     which is off by default, so it is witnessed here.
 
-    The lead is asserted too: it is in scope only inside this loop, and a row without it
-    cannot attribute a CV's cost to the application it was composed for.
+    The lead is asserted too, and as the store-issued SLUG rather than `note.ref`: `ref` is an
+    opaque store handle (`core/protocols.py::LeadNote`) -- a filesystem path for the vault
+    store -- so recording it would put the user's vault location in a telemetry file and make
+    the log's shape depend on which store is configured.
     """
     import json
 
@@ -3071,4 +3073,4 @@ def test_the_voice_check_call_is_metered_as_its_own_stage(monkeypatch, tmp_path)
     rows = [json.loads(ln) for ln in open(log.path, encoding="utf-8") if ln.strip()]
     # One row per call, each under its OWN stage -- not three rows under one label.
     assert [r["stage"] for r in rows] == ["cv-compose", "cv-voice", "cv-audit"]
-    assert all(r["lead"] == str(note.ref) for r in rows)
+    assert all(r["lead"] == note.slug for r in rows)

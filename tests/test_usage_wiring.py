@@ -16,10 +16,13 @@ narrowed until it checked nothing.
 
 What it checks instead is both ENDS of the roster, each against a hand-written target:
 
-  1. every `.complete(` call site in `sluice/`, keyed (module, innermost function), is named
-     in `_CALL_SITES` together with the stage that meters it -- or is exempted there with a
-     stated reason.
-  2. every stage literal passed to `meter(...)` in `sluice/` is in `_STAGES`.
+  1. every `.complete(` call site in `sluice/`, counted per (module, innermost function), is
+     named in `_CALL_SITES` together with the stage that meters it and HOW MANY calls that
+     function holds -- or is exempted there with a stated reason. Counted, because a set lets
+     a second call inside an already-declared function pass unnoticed.
+  2. every stage literal passed to `meter(...)` in `sluice/` is in `_STAGES`, with `meter`'s
+     local bindings derived from each module's own imports rather than assumed to be the bare
+     name -- an aliased or attribute-qualified call is invisible to a name-keyed sweep.
   3. the two agree: each declared stage meters at least one declared call site, and each
      metered call site names a stage that some `meter(...)` actually passes.
 
@@ -39,6 +42,7 @@ those prove it fires.
 """
 import ast
 import pathlib
+from collections import Counter
 
 import pytest
 
@@ -61,24 +65,29 @@ _STAGES = {
 # Every `.complete(` call site in `sluice/`, keyed (module-relative path, innermost enclosing
 # function) -> the stage whose `meter(...)` covers it, or None with a reason below.
 #
-# The three None rows are not "unmetered call sites we tolerate" -- they are the plumbing that
-# metering is built out of, and wrapping them would double-count or recurse:
+# A None row is not "an unmetered call site we tolerate" -- it is the plumbing metering is built
+# out of, and wrapping it would double-count or recurse. Deliberately not counted here: an
+# earlier version of this comment said "three" when there were two.
 #
 #   core/backends.py::complete  x2  FallbackBackend delegating to its own two legs. The wrapper
 #                                   sits OUTSIDE it, so the leg's call is the same call already
 #                                   counted; metering here would record every fallback twice.
 #   core/usage.py::complete         MeteredBackend itself, delegating inward. Metering it would
 #                                   be the recursion.
+#
+# The `x2` above is not this comment's claim: it is in the target below as a NUMBER the guard
+# compares, because a set-keyed roster lets a second call inside an already-declared function
+# pass unnoticed (see `_complete_call_sites`).
 _CALL_SITES = {
-    ("core/app.py", "doctor"): "doctor-probe",
-    ("core/backends.py", "complete"): None,
-    ("core/usage.py", "complete"): None,
-    ("cv/audit.py", "run_audit"): "cv-audit",
-    ("cv/compose.py", "compose"): "cv-compose",
-    ("cv/voice.py", "run_voice"): "cv-voice",
-    ("track/classify.py", "classify"): "track-classify",
-    ("triage/judge.py", "judge"): "triage-judge",
-    ("triage/resolve.py", "resolve_company"): "triage-resolve",
+    ("core/app.py", "doctor"): ("doctor-probe", 1),
+    ("core/backends.py", "complete"): (None, 2),
+    ("core/usage.py", "complete"): (None, 1),
+    ("cv/audit.py", "run_audit"): ("cv-audit", 1),
+    ("cv/compose.py", "compose"): ("cv-compose", 1),
+    ("cv/voice.py", "run_voice"): ("cv-voice", 1),
+    ("track/classify.py", "classify"): ("track-classify", 1),
+    ("triage/judge.py", "judge"): ("triage-judge", 1),
+    ("triage/resolve.py", "resolve_company"): ("triage-resolve", 1),
 }
 
 
@@ -105,44 +114,95 @@ def _walk(fn):
 
 
 def _complete_call_sites():
-    """Every `<something>.complete(...)` under `sluice/`, as {(module, function)}.
+    """Every `<something>.complete(...)` under `sluice/`, as a Counter of (module, function).
 
     Matched on the ATTRIBUTE name, so it finds the call however the receiver is spelled --
     `backend.complete`, `self.inner.complete`, `resolve_backend.complete`. A sweep keyed on a
     receiver NAME would walk straight past the next one someone invents, which is this repo's
     documented hand-listing hazard.
+
+    A COUNTER, not a set, and that is load-bearing rather than tidy. Keyed as a set, a SECOND
+    `.complete(` added inside an already-declared function collapses into the existing key and
+    the roster stays green -- and the function it would most plausibly be added to is
+    `core/app.py::doctor`, the exact site whose unmetered call is why this file exists. Measured
+    against a set: adding one there changed nothing. This is the repo's #304 lesson (a set
+    absorbs an addition that shares a key; `Counter` equality catches add, remove AND rename).
     """
-    found = set()
+    found = Counter()
 
     def check(rel, node, enclosing):
         if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr == "complete"):
-            found.add((rel, enclosing))
+            found[(rel, enclosing)] += 1
 
     _walk(check)
     return found
 
 
+def _meter_bindings(tree):
+    """The names `core/usage.py::meter` is bound to IN THIS MODULE, read off its own imports.
+
+    Derived, never assumed to be the bare word `meter`. A sweep keyed on `node.func.id ==
+    "meter"` sees neither `from sluice.core import usage` + `usage.meter(...)` nor
+    `from sluice.core.usage import meter as _meter` -- measured: both yield no stage at all and
+    are not even reported as computed, so both roster guards stay green while a whole stage goes
+    unrostered. `tests/test_paths.py` derives `resolve`'s local bindings the same way, for the
+    same reason and after the same kind of miss.
+    """
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "sluice.core.usage":
+            names |= {a.asname or a.name for a in node.names if a.name == "meter"}
+        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core":
+            # `from sluice.core import usage [as u]` -> `u.meter(...)`
+            names |= {f"{a.asname or a.name}.meter" for a in node.names if a.name == "usage"}
+        elif isinstance(node, ast.Import):
+            names |= {f"{a.asname or a.name}.meter" for a in node.names
+                      if a.name == "sluice.core.usage"}
+    return names
+
+
+def _callee_name(func):
+    """`meter` for a bare call, `usage.meter` for an attribute call, else None."""
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        return f"{func.value.id}.{func.attr}"
+    return None
+
+
 def _meter_stage_literals():
-    """Every stage literal passed to `meter(...)` under `sluice/`, as {stage}.
+    """Every stage literal passed to `meter(...)` under `sluice/`, as ({stage}, {computed}).
 
     The stage is `meter`'s third POSITIONAL parameter, and only a literal counts: a computed
-    stage would make the label unreviewable, which is the whole reason the roster exists.
-    A non-literal is surfaced by `test_every_stage_is_a_literal` rather than skipped.
+    stage would make the label unreviewable, which is the whole reason the roster exists. A
+    non-literal is reported in the second set (`test_every_stage_is_a_literal`) rather than
+    silently skipped -- skipping is how a sweep comes to check nothing.
     """
     found = set()
     computed = set()
 
-    def check(rel, node, enclosing):
-        if not (isinstance(node, ast.Call) and getattr(node.func, "id", None) == "meter"):
-            return
-        stage = node.args[2] if len(node.args) > 2 else None
-        if isinstance(stage, ast.Constant) and isinstance(stage.value, str):
-            found.add(stage.value)
-        else:
-            computed.add((rel, enclosing))
+    for path in sorted(_SLUICE.rglob("*.py")):
+        rel = path.relative_to(_SLUICE).as_posix()
+        src = path.read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        bindings = _meter_bindings(tree)
+        if not bindings:
+            continue
 
-    _walk(check)
+        def check(node, enclosing):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                enclosing = node.name
+            if isinstance(node, ast.Call) and _callee_name(node.func) in bindings:
+                stage = node.args[2] if len(node.args) > 2 else None
+                if isinstance(stage, ast.Constant) and isinstance(stage.value, str):
+                    found.add(stage.value)
+                else:
+                    computed.add((rel, enclosing))
+            for child in ast.iter_child_nodes(node):
+                check(child, enclosing)
+
+        check(tree, "<module>")
     return found, computed
 
 
@@ -168,15 +228,22 @@ def test_every_llm_call_site_is_declared():
     configured backend on a default `doctor` run, a commit message said it was metered, and no
     `meter(...)` call existed. The report was short by however many probes had been run, with
     nothing red anywhere.
+
+    Compared as a COUNTER, so a second call added inside an ALREADY-DECLARED function reds too.
+    As a set it did not: measured, adding a second unmetered `.complete(` to
+    `core/app.py::doctor` -- the very site above -- left this assertion green, because the key
+    was already present. That is the #304 lesson (a set absorbs an addition sharing a key)
+    reproduced inside the guard written to stop this exact class.
     """
     found = _complete_call_sites()
-    declared = set(_CALL_SITES)
+    declared = Counter({site: count for site, (_stage, count) in _CALL_SITES.items()})
     assert found == declared, (
         "the LLM call sites under sluice/ and _CALL_SITES disagree.\n"
-        f"  new, undeclared: {sorted(found - declared)}\n"
-        f"  declared but gone: {sorted(declared - found)}\n"
+        f"  found: {dict(sorted(found.items()))}\n"
+        f"  declared: {dict(sorted(declared.items()))}\n"
         "A NEW site needs a row here naming the stage whose meter(...) covers it -- or None "
-        "with a reason, if it is metering plumbing rather than a billable call.")
+        "with a reason, if it is metering plumbing rather than a billable call. A changed "
+        "COUNT for an existing row means a call was added or removed inside that function.")
 
 
 def test_every_metered_stage_is_declared():
@@ -202,7 +269,7 @@ def test_each_declared_call_site_names_a_real_stage():
     """The join. A row naming `cv-komposer` would satisfy both roster guards independently
     while pointing at a stage no `meter(...)` passes, so the site would be declared and
     unmetered -- exactly the state this file exists to make impossible."""
-    named = {stage for stage in _CALL_SITES.values() if stage is not None}
+    named = {stage for stage, _count in _CALL_SITES.values() if stage is not None}
     unknown = named - set(_STAGES)
     assert not unknown, (
         f"_CALL_SITES names stage(s) {sorted(unknown)} that no meter(...) call passes")
@@ -211,7 +278,7 @@ def test_each_declared_call_site_names_a_real_stage():
 def test_each_declared_stage_covers_at_least_one_call_site():
     """The other direction: a stage that meters nothing is either a leftover after a call site
     was deleted, or a wrap someone added to the wrong object."""
-    covered = {stage for stage in _CALL_SITES.values() if stage is not None}
+    covered = {stage for stage, _count in _CALL_SITES.values() if stage is not None}
     orphans = set(_STAGES) - covered
     assert not orphans, (
         f"stage(s) {sorted(orphans)} are passed to meter(...) but cover no declared call site")

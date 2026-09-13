@@ -3,7 +3,8 @@
 Three properties here are the load-bearing ones, and each exists because getting it wrong
 fails QUIETLY:
 
-  * `meter(None, b, ...) is b` -- the shipped-off path must construct no wrapper at all.
+  * `meter(None, b, ...) is b` -- a caller with no log to give (a sub-app function called
+    directly, as most of this repo's tests reach one) must get its backend back untouched.
   * A write failure warns and does not raise -- the tokens are already spent by then.
   * `hit_rate` is None, never 0.0, for a group with no measured input -- 0% reports a cache
     that is working badly, which is a different claim from one that was never observed.
@@ -47,10 +48,11 @@ def _rows(path):
 # ------------------------------------------------------------------ meter(): the off path
 
 def test_meter_with_no_log_returns_the_very_same_object():
-    """Identity, not equality. The shipped default has no usage path, so the off path must
-    construct nothing -- and asserting identity is what stops a wrapper being added later
+    """Identity, not equality. Every INSTALL has a log, so this is not the shipped path -- it
+    is the path of a caller that has none to give, which is how most tests here reach a
+    sub-app function. Asserting identity is what stops a wrapper being added later
     "harmlessly", which would put a delegating call and an attribute lookup on every LLM call
-    of every install that never asked for metering."""
+    of every one of them."""
     b = _Fake()
     assert meter(None, b, "cv-compose") is b
     assert meter(None, b, "cv-compose", lead="x") is b
@@ -233,7 +235,8 @@ def test_summarize_totals_and_groups():
         _row(stage="cv-compose", input_tokens=300, output_tokens=40, cache_read_tokens=0),
     ])
     assert s.total == Totals(calls=2, input_tokens=400, output_tokens=50,
-                             cache_read_tokens=50, unmeasured=0)
+                             cache_read_tokens=50, unmeasured=0,
+                             input_calls=2, output_calls=2, cache_calls=2)
     assert s.total.total_tokens == 450
     assert set(s.by_stage) == {"triage-judge", "cv-compose"}
     assert s.by_stage["cv-compose"].input_tokens == 300
@@ -249,8 +252,8 @@ def test_by_model_is_keyed_by_provider_and_model_together():
 
 
 def test_an_unmeasured_call_is_counted_separately_not_as_zeros():
-    """claude-max reports no counts. Folding it in as zeros would make "we spent nothing on
-    this provider" and "we cannot see what we spent" the same answer, and the second is the
+    """claude-max reports no counts AT ALL. Folding it in as zeros would make "we spent nothing
+    on this provider" and "we cannot see what we spent" the same answer, and the second is the
     one that is true."""
     s = summarize([_row(input_tokens=100, output_tokens=10, cache_read_tokens=50),
                    _row(provider="claude-max", model="cli-model", input_tokens=None,
@@ -297,9 +300,29 @@ def test_a_non_integer_count_is_treated_as_unreported_rather_than_crashing(junk)
     total as 1 and a `false` as 0, silently. `12.5` is here because token counts are whole and
     one float would turn every total that touches it into a float. The admissible set is
     deliberately the same as `core/backends.py::_int_or_none`'s -- the two vet a count at
-    opposite ends of the same pipe and must not disagree about what one is."""
+    opposite ends of the same pipe and must not disagree about what one is.
+
+    `unmeasured` stays 0 here because the row's OTHER counts are fine: it is the row that
+    reported nothing at all, which this one is not. Its input COVERAGE is what drops to 0."""
     s = summarize([_row(input_tokens=junk)])
-    assert (s.total.input_tokens, s.total.unmeasured) == (0, 1)
+    assert (s.total.input_tokens, s.total.input_calls) == (0, 0)
+    assert s.total.unmeasured == 0
+    assert s.total.output_calls == 1        # the output count was perfectly good
+
+
+def test_coverage_is_tracked_per_count_not_inferred_from_the_input_count():
+    """A provider may report some counts and not others -- each is independently optional in
+    both parsers -- so the report must not generalise one column's silence to the rest.
+
+    Keying a whole row's rendering on the input count was the first shape, and it dashed a
+    real measured output number on exactly this row. `unmeasured` is reserved for the row that
+    reported NOTHING, which is the only row the report's FLOOR footnote speaks for."""
+    s = summarize([_row(input_tokens=None, output_tokens=30, cache_read_tokens=None)])
+    assert (s.total.input_calls, s.total.output_calls, s.total.cache_calls) == (0, 1, 0)
+    assert s.total.output_tokens == 30
+    assert s.total.unmeasured == 0, "a row that reported an output count reported something"
+    # And with no measured input there is no rate to state, even though a column WAS measured.
+    assert s.total.hit_rate is None
 
 
 def test_a_row_with_no_stage_or_provider_is_grouped_as_unknown_not_dropped():
@@ -313,3 +336,24 @@ def test_a_row_with_no_stage_or_provider_is_grouped_as_unknown_not_dropped():
 def test_summarize_of_nothing_is_an_empty_summary():
     s = summarize([])
     assert (s.total.calls, s.total.hit_rate, s.by_stage, s.unserved_calls) == (0, None, {}, 0)
+
+
+def test_every_leg_that_billed_on_a_failed_call_gets_its_own_row(tmp_path):
+    """The worst case for cost -- paid twice, served nothing -- must not be the one case the
+    log under-states. `BackendError.unserved_usage` carries the extra legs and each gets its
+    own row, marked unserved, so the two are attributable by provider rather than summed into
+    one anonymous number."""
+    p = str(tmp_path / "u.jsonl")
+    primary = _u(provider="openai", model="p-model", input_tokens=100)
+    fallback = _u(provider="deepseek", model="f-model", input_tokens=40)
+    err = BackendError("both backends failed", usage=primary, unserved_usage=(fallback,))
+
+    class _BothDown:
+        def complete(self, prompt):
+            raise err
+
+    with pytest.raises(BackendError):
+        meter(UsageLog(p), _BothDown(), "triage-judge").complete("x")
+    rows = _rows(p)
+    assert [(r["provider"], r["input_tokens"], r["served"]) for r in rows] == [
+        ("openai", 100, False), ("deepseek", 40, False)]

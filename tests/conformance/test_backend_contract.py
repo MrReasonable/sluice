@@ -202,6 +202,62 @@ def test_a_valid_response_is_returned_as_its_text(name):
     assert _build(name, _VALID[name]).complete("prompt").text == "HELLO"
 
 
+# A body carrying a cache read, per provider, for the normalisation row below. Each is that
+# provider's OWN spelling of "most of this input came from cache" -- which is the point: the
+# contract is about the normalised answer, not about the keys.
+_CACHED = {
+    "deepseek": lambda: {"http": _http_returning(
+        '{"choices":[{"finish_reason":"stop","message":{"content":"HELLO"}}],'
+        '"usage":{"prompt_tokens":600,"completion_tokens":5,'
+        '"prompt_cache_hit_tokens":500,"prompt_cache_miss_tokens":100}}')},
+    "openai": lambda: {"http": _http_returning(
+        '{"choices":[{"finish_reason":"stop","message":{"content":"HELLO"}}],'
+        '"usage":{"prompt_tokens":600,"completion_tokens":5,'
+        '"prompt_tokens_details":{"cached_tokens":500}}}')},
+    # Anthropic's `input_tokens` EXCLUDES the cache counters, so 100 + 500 is the real 600.
+    # A provider that copied the field across would report 100 here and fail this row.
+    "anthropic": lambda: {"http": _http_returning(
+        '{"content":[{"type":"text","text":"HELLO"}],"stop_reason":"end_turn",'
+        '"usage":{"input_tokens":100,"output_tokens":5,"cache_read_input_tokens":500}}')},
+    # Flat-rate, text mode: no counts to normalise, so the row below skips it by name.
+    "claude-max": None,
+}
+
+
+def test_the_cached_payload_table_covers_the_registry():
+    """The anti-drift teeth for `_CACHED`, mirroring `test_payload_tables_cover_the_registry`:
+    a new provider absent from the table would simply not be parametrized, so the
+    normalisation row would silently stop covering it -- which is the whole failure this
+    property exists to prevent."""
+    assert set(_CACHED) == set(_BACKENDS), \
+        f"_CACHED is out of sync with the backend registry: {set(_BACKENDS) ^ set(_CACHED)}"
+
+
+@pytest.mark.parametrize("name", _BACKENDS)
+def test_input_tokens_includes_the_cached_tokens_for_every_provider(name):
+    """The seam's cross-provider NORMALISATION, as a portable contract row (#308).
+
+    `Usage.input_tokens` is defined as the total input INCLUDING anything served from cache.
+    Nothing else in this suite pins that: the identity row below checks shape and labels, and
+    the per-provider parse tests live in tests/test_backends_usage.py, which a NEW
+    self-registering provider would not be added to. So a provider that copied its endpoint's
+    own `input_tokens` -- the natural thing to write, and wrong for the Anthropic shape --
+    would pass everything here while `Totals.hit_rate` reported above 1.0 in the report.
+
+    Asserted as `input_tokens >= cache_read_tokens` rather than an exact figure: the exact
+    number is a property of the payload, while the INEQUALITY is the property of the
+    definition, and it is what a copied field violates."""
+    if _CACHED[name] is None:
+        pytest.skip(f"{name} reports no token counts (flat-rate, text mode)")
+    u = _build(name, _CACHED[name]).complete("prompt").usage
+    assert u.cache_read_tokens == 500, "the payload's cache read was not parsed at all"
+    assert u.input_tokens >= u.cache_read_tokens, (
+        f"{name} reports input_tokens={u.input_tokens} below its own "
+        f"cache_read_tokens={u.cache_read_tokens}: Usage.input_tokens must be the TOTAL "
+        f"input INCLUDING cached tokens, so this provider is copying a field that excludes "
+        f"them -- the cache hit rate computed from it exceeds 1.0")
+
+
 @pytest.mark.parametrize("name", _BACKENDS)
 def test_the_result_is_a_completion_that_identifies_its_own_call(name):
     """The seam's RETURN SHAPE, asserted over every provider rather than per class (#308).
