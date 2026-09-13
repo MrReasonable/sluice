@@ -370,8 +370,13 @@ def test_no_configured_log_is_reported_distinctly_from_an_empty_one(tmp_path, mo
 
 
 def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
-    """The property the opt-in exists for, asserted on the filesystem: a command that reaches the
-    metering path writes nothing when no log is named."""
+    """No file appears under the state root when nothing named one.
+
+    Scoped honestly: `usage` READS, it never meters, so this pins that the READER creates nothing
+    — not that a metering path declines to write. An earlier docstring claimed the latter, which
+    `cmd_usage` cannot reach at all. The metering side's OFF path is witnessed by
+    `tests/test_doctor.py::test_no_usage_is_recorded_when_no_log_is_configured`, which drives a
+    real `doctor` probe, and by `test_config_paths.py`'s unconfigured rows."""
     import os
 
     monkeypatch.delenv("SLUICE_USAGE", raising=False)
@@ -379,3 +384,21 @@ def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     main(["usage"])
     assert not os.path.exists(os.path.join(str(state), "sluice", "sluice_usage.jsonl"))
+
+
+def test_json_stays_machine_readable_when_no_log_is_configured(tmp_path, monkeypatch, capsys):
+    """`--json` promises machine-readable totals, so the unconfigured path must not emit prose.
+
+    Measured before the fix: `usage --json` on a default install printed the human paragraph and
+    exited 0, so `json.loads` raised — and a wrapper that tolerated the parse failure reported
+    zero spend. That is the exact conflation the prose branch exists to prevent, re-created one
+    layer down.
+
+    `configured: false` with NO `total` key is what makes the distinction machine-readable: a
+    consumer keying on totals gets a KeyError rather than a silent zero."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    assert main(["usage", "--json", "--days", "7"]) == 0
+    data = json.loads(capsys.readouterr().out)      # raises if prose leaked back in
+    assert data == {"configured": False, "path": None, "days": 7}
+    assert "total" not in data, "an unconfigured install must expose no totals to read as zero"

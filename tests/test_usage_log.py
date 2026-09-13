@@ -3,8 +3,10 @@
 Three properties here are the load-bearing ones, and each exists because getting it wrong
 fails QUIETLY:
 
-  * `meter(None, b, ...) is b` -- a caller with no log to give (a sub-app function called
-    directly, as most of this repo's tests reach one) must get its backend back untouched.
+  * `meter(None, b, ...) is b` -- the SHIPPED path since the log became opt-in (#308): an
+    install that has not named a file gets None from `Sluice._usage_log`, so every stage is a
+    no-op wrap. It also covers a caller with no log to give, which is how most tests here reach
+    a sub-app function.
   * A write failure warns and does not raise -- the tokens are already spent by then.
   * `hit_rate` is None, never 0.0, for a group with no measured input -- 0% reports a cache
     that is working badly, which is a different claim from one that was never observed.
@@ -48,11 +50,10 @@ def _rows(path):
 # ------------------------------------------------------------------ meter(): the off path
 
 def test_meter_with_no_log_returns_the_very_same_object():
-    """Identity, not equality. Every INSTALL has a log, so this is not the shipped path -- it
-    is the path of a caller that has none to give, which is how most tests here reach a
-    sub-app function. Asserting identity is what stops a wrapper being added later
-    "harmlessly", which would put a delegating call and an attribute lookup on every LLM call
-    of every one of them."""
+    """Identity, not equality, on the SHIPPED path: the log is opt-in (#308), so an install that
+    has named no file gets None here and every metering site is a no-op wrap. Asserting identity
+    is what stops a wrapper being added later "harmlessly" -- that would put a delegating call and
+    an attribute lookup on every LLM call of every install that never asked for accounting."""
     b = _Fake()
     assert meter(None, b, "cv-compose") is b
     assert meter(None, b, "cv-compose", lead="x") is b

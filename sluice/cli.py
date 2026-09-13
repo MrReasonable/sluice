@@ -2374,12 +2374,19 @@ def cmd_usage(args, config) -> int:
 
     log = Sluice(config).usage_log()
     if log is None:
-        # OPT-IN (#308): no log is configured, so there is nothing to report and nothing was
-        # ever written. Distinct from an EMPTY log, which says calls were recorded and none fall
-        # in the window -- conflating the two would answer "you spent nothing" to someone who has
-        # not turned recording on. Exit 0: nothing is broken, and this is a true answer to the
-        # question asked.
-        print("usage: no token-usage log is configured, so nothing has been recorded.\n"
+        # OPT-IN (#308): no log is configured, so nothing is being recorded. Distinct from an
+        # EMPTY log, which says calls were recorded and none fall in the window -- conflating the
+        # two would answer "you spent nothing" to someone who has not turned recording on.
+        # Exit 0: nothing is broken, and this is a true answer to the question asked.
+        #
+        # `--json` gets JSON. The prose branch alone was the SAME conflation one layer down: a
+        # wrapper parsing this output got a JSONDecodeError and, if it tolerated that, reported
+        # zero spend. `configured: false` with NO totals keys is what makes the distinction
+        # machine-readable -- a consumer that keys on `total` gets a KeyError rather than a zero.
+        if args.json:
+            print(json.dumps({"configured": False, "path": None, "days": args.days}))
+            return 0
+        print("usage: no token-usage log is configured, so nothing is being recorded.\n"
               "Turn it on by naming a file: set `usage_jsonl:` at the top level of your config, "
               "or export SLUICE_USAGE=/path/to/usage.jsonl.\n"
               "Recording starts with the next run that makes an LLM call.")

@@ -420,14 +420,39 @@ def test_unconfigured_usage_jsonl_means_no_log_at_all(tmp_path, monkeypatch):
     assert _app(tmp_path, monkeypatch).usage_log() is None
 
 
-def test_an_unconfigured_install_writes_no_usage_file(tmp_path, monkeypatch):
-    """The property a user cares about, asserted on the FILESYSTEM rather than on the return
-    value: no file appears under the state root, and the state dir is not even created."""
+def test_an_unconfigured_install_hands_each_stage_a_BARE_backend(tmp_path, monkeypatch):
+    """The property that makes the opt-in real, asserted where it bites: the stage receives the
+    backend ITSELF, not a `MeteredBackend` around it.
+
+    A filesystem assertion is the weak version and was measured so: with the opt-in guard deleted
+    (always-on restored) "no file appears under the state root" stayed GREEN, because `usage` only
+    reads and the directory is created inside `UsageLog.record`. Asserting the object the metering
+    site actually gets is what fails under that mutant. Mirrors
+    `test_app_operations.py::test_triage_threads_the_resolve_backend_into_engine_run`, which pins
+    the configured case the same way."""
+    from sluice.triage.engine import TriageReport
+
     monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
     app = _app(tmp_path, monkeypatch)
-    assert app.usage_log() is None
-    state = os.path.join(os.environ["XDG_STATE_HOME"], "sluice")
-    assert not os.path.exists(os.path.join(state, "sluice_usage.jsonl"))
+
+    sentinel = object()
+    monkeypatch.setattr(app, "backend", lambda role, **kw: sentinel)
+    seen = {}
+
+    def fake_run(vault, cfg, backend, cache, audit, **kw):
+        seen["judge_backend"] = backend
+        return TriageReport()
+
+    monkeypatch.setattr("sluice.triage.engine.run", fake_run)
+    app.triage(backend_role="primary")
+
+    assert seen["judge_backend"] is sentinel, (
+        "an unconfigured install wrapped the judge's backend in a MeteredBackend; the opt-in is "
+        "not reaching the metering sites")
+    # And nothing was written, which is the consequence rather than the mechanism.
+    assert not os.path.exists(
+        os.path.join(os.environ["XDG_STATE_HOME"], "sluice", "sluice_usage.jsonl"))
 
 
 def test_the_root_usage_jsonl_key_is_honoured(tmp_path, monkeypatch):

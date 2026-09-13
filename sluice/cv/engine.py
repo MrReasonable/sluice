@@ -377,8 +377,10 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 # gate would have allowed.
                 # ONE backend, THREE stages -- so the stage is attached HERE, per call,
                 # rather than once where the backend was built. `meter` returns `backend`
-                # unchanged when `usage` is None (a direct call in a test), so this costs one
-                # comparison on that path and constructs nothing.
+                # unchanged when `usage` is None, which is the SHIPPED state (the log is
+                # opt-in -- #308) as well as what a direct call in a test passes, so on an
+                # install that never asked for accounting these three wraps cost one
+                # comparison each and construct nothing.
                 #
                 # `note.slug`, never `note.ref`. `ref` is an OPAQUE STORE HANDLE
                 # (`core/protocols.py::LeadNote`) -- a filesystem path for the vault store and

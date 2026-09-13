@@ -15,10 +15,13 @@ log must not -- so the shared part would be the read half alone.
 
     THE WIRING, in one place so it does not have to be reconstructed from call sites:
 
-    `Sluice` builds one `UsageLog` -- ALWAYS one, never None: `Sluice._usage_log` resolves
-    `SLUICE_USAGE` -> the `usage_jsonl` key -> the XDG state root, and that last rung cannot
-    fail, so no install is in a no-log state. `meter(...)` wraps a backend with it AT THE
-    POINT A STAGE IS HANDED ONE. Almost all of those sites are in
+    The log is OPT-IN, so `Sluice._usage_log` answers None unless `SLUICE_USAGE` or the
+    `usage_jsonl` key NAMES a file -- there is no XDG fallback, because the per-lead rows carry
+    the lead's slug and so name the employers a user is applying to. **None is therefore the
+    shipped state**, and `meter` returning its backend unchanged is what keeps this wrapper off
+    every LLM call of an install that never asked for accounting. Do not "simplify" that branch
+    away. When a log IS configured, `meter(...)` wraps a backend with it AT THE POINT A STAGE IS
+    HANDED ONE. Almost all of those sites are in
     `core/app.py`, because almost every backend there serves exactly one stage and the stage
     is therefore known where the backend is constructed. `cv/engine.py` is the exception: it
     spends ONE backend on three stages (compose, audit, voice), so a stage fixed where the
@@ -270,11 +273,12 @@ class MeteredBackend:
 def meter(log, backend, stage: str, *, lead=None):
     """Wrap `backend` so each call's usage is recorded under `stage`.
 
-    Returns `backend` UNCHANGED when `log` is None. That is NOT a shipped state -- every
-    install gets a log (see the module docstring) -- it is for a caller that has no log to
-    give: a sub-app function called directly, which is how most of this repo's tests reach
-    `run_one`, `run_batch` and `judge`. Those callers pass `usage=None` and must not be made
-    to construct a telemetry sink to run.
+    Returns `backend` UNCHANGED when `log` is None, which is the SHIPPED state: the log is
+    opt-in, so an install that has not named a file gets None from `Sluice._usage_log` and every
+    stage here is a no-op wrap. It also covers a caller that simply has no log to give -- a
+    sub-app function called directly, which is how most of this repo's tests reach `run_one`,
+    `run_batch` and `judge`; those pass `usage=None` and must not be made to construct a
+    telemetry sink to run.
 
     The identity is asserted (`meter(None, b, "x") is b`) so that path cannot quietly grow a
     wrapper later, which would put a delegating call and an attribute lookup on every LLM
