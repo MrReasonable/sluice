@@ -258,15 +258,21 @@ def _add(t: Totals, row: dict) -> Totals:
 
 
 def _count(row: dict, key: str):
-    """A row's count, or None when it is absent, null, or not a number.
+    """A row's count, or None when it is absent, null, or not a whole number.
 
     Rows are read back off disk, where a hand edit or a half-written line can put anything in
-    a field, so a non-numeric value is treated as unreported rather than crashing the command
-    -- the same posture `read_recent` takes toward a malformed line. `bool` is excluded
-    because it subclasses `int`, so a JSON `true` would otherwise total as 1.
+    a field, so a bad value is treated as unreported rather than crashing the command -- the
+    same posture `read_recent` takes toward a malformed line.
+
+    Deliberately the same admissible set as `core/backends.py::_int_or_none`, which vets a
+    count on the way IN: `bool` is excluded because it subclasses `int`, so a JSON `true`
+    would otherwise total as 1, and a float is excluded because token counts are whole and one
+    `100.0` in a hand-edited row would otherwise turn every total that touches it into a
+    float. The two functions cannot be shared (one reads a provider body, the other a stored
+    row) but they must not disagree about what a count is.
     """
     v = row.get(key)
-    if isinstance(v, bool) or not isinstance(v, (int, float)):
+    if isinstance(v, bool) or not isinstance(v, int):
         return None
     return v
 

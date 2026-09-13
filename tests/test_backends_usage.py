@@ -104,6 +104,28 @@ def test_anthropic_usage_without_cache_counters_is_just_the_input():
     assert (u.input_tokens, u.cache_read_tokens, u.cache_write_tokens) == (10, None, None)
 
 
+@pytest.mark.parametrize("parse,key", [(openai_usage, "prompt_tokens"),
+                                      (anthropic_usage, "input_tokens")])
+@pytest.mark.parametrize("junk", [True, False, "120", 12.5, None, {}, [1]])
+def test_a_non_integer_count_is_read_as_unreported_rather_than_trusted(parse, key, junk):
+    """A count is taken only when it is a real int. `OpenAiCompatibleBackend` serves "any
+    OpenAI-compatible endpoint", including a local server, so a wrong-typed field is a
+    deployment away rather than hypothetical -- and every one of these values would otherwise
+    reach a total.
+
+    `True` and `False` are the load-bearing rows: bool subclasses int, so without an explicit
+    bool check a JSON `true` loads as the count 1 and a `false` as 0, quietly. That is the same
+    trap `lead_ttl_days`' validator exists for, and it was a comment here with nothing
+    falsifying it until this row was added -- the mutation survived.
+
+    A float is excluded too: token counts are whole, and accepting 12.5 would put a
+    non-integer into a sum that is reported as a token count."""
+    u = parse({"usage": {key: junk, "output_tokens": 5, "completion_tokens": 5}},
+              provider="p", model="m")
+    assert u is not None            # the output count IS reported, so the block is not empty
+    assert u.input_tokens is None
+
+
 @pytest.mark.parametrize("parse", [openai_usage, anthropic_usage])
 @pytest.mark.parametrize("data", [{}, {"usage": None}, {"usage": {}}, {"usage": "nonsense"}])
 def test_a_response_with_no_usage_block_reports_None_not_zeros(parse, data):
