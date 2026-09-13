@@ -245,8 +245,12 @@ def test_a_column_no_row_reported_is_dashed_without_hiding_one_that_was():
     assert calls == "1"
     # input dashed, output SHOWN, cached dashed, rate dashed.
     assert cells == ["-", "30", "-", "-"], f"per-column coverage not honoured: {line!r}"
-    # And this row is not what the FLOOR footnote speaks for: it reported something.
-    assert "reported no token counts at all" not in out
+    # And the footnote describes it correctly: the bill is incomplete (no input count), but the
+    # call was not silent. Asserted on the sentences `format_usage` ACTUALLY prints -- an earlier
+    # version of this line said `"reported no token counts at all" not in out`, a string the
+    # formatter never emits at all, so it held for any output including a regressed one.
+    assert "did not report a full set of token counts" in out
+    assert "reported none at all" not in out
 
 
 def test_the_json_reports_per_count_coverage(tmp_path, monkeypatch, capsys):

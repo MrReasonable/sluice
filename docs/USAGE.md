@@ -687,7 +687,7 @@ the question asked, not a failure, and a fresh install must not look broken.
 Real output of the real command, over a **synthetic** log seeded for the illustration — the
 figures are invented, not one install's history:
 
-```
+```console
 $ job-sluice usage --days 7
 usage over the last 7 day(s), from ~/.local/state/sluice/sluice_usage.jsonl
 

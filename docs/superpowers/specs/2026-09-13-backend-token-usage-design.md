@@ -204,8 +204,11 @@ One line per call:
  "cache_read_tokens": 17920, "cache_write_tokens": null}
 ```
 
-`lead` is absent rather than null where the stage has none. The file records counts and a lead
-name; no prompt text and no completion text ever reach it.
+`lead` is absent rather than null where the stage has none. It is the STORE-ISSUED SLUG, never
+`LeadNote.ref` -- `ref` is an opaque store handle, a filesystem path for the vault store, so
+recording it would put the user's vault location in a telemetry file. For the vault store the
+slug is the note filename, which is why the example above looks like a name. The file therefore
+records counts and a lead slug; no prompt text and no completion text ever reach it.
 
 ## 6. Tests
 
