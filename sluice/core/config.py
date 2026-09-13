@@ -177,16 +177,19 @@ class Config:
     # and track all spend LLM calls, and `job-sluice usage` answers one question -- what this
     # install spent -- which three separate files could not.
     #
-    # `""` is REQUIRED to be the default, and is not an off switch: a path's default must be
-    # empty or it is always truthy, short-circuits `resolve`'s env -> config -> XDG chain, and
-    # the XDG location is never reached (the feature then sits inert in the cwd with nothing
-    # red). Resolution happens in `Sluice._usage_log`, and an unconfigured install writes to
-    # the per-system state root -- ON by default, like `triage.audit_jsonl` and
-    # `sluice_health.json`, because the first question anyone asks is about a run that has
-    # ALREADY happened and an opt-in log answers it with "no data".
+    # `""` means OFF, and that is the whole point rather than an accident of the type: the
+    # per-lead rows carry the lead's slug, so the file names the employers someone is applying
+    # to, and sluice does not create that uninvited. It IS the abstain-when-unconfigured rule
+    # the preference gates follow, applied to a write instead of a filter -- which is why there
+    # is no per-system default location at all: naming the file is how the feature turns on.
     #
-    # Not one of the `0 == abstain` preference gates: it records what was spent, it does not
-    # decide anything about a lead.
+    # Deliberately UNLIKE `triage.audit_jsonl` and `sluice_health.json`, which are always on.
+    # Those record what sluice DECIDED, which a user needs in order to audit the tool; this
+    # records what they SPENT, which is only useful once they ask.
+    #
+    # `Sluice._usage_log` returns None when neither this key nor `SLUICE_USAGE` is set, and
+    # `core/usage.py::meter` then returns each backend unchanged -- so the off path costs one
+    # comparison per stage and constructs no wrapper.
     usage_jsonl: str = ""
 
     def source(self, id: str) -> SourceConfig:

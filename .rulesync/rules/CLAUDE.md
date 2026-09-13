@@ -292,7 +292,12 @@ every row silently. Spend from a call that billed and then RAISED rides on `Back
 the only carrier where there is no return value.
 
 **Metering is wrapped where a backend is HANDED to a stage, not where it is called.** `meter(log,
-backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log.
+backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log --
+which is the DEFAULT: the usage log is OPT-IN (`usage_jsonl`/`SLUICE_USAGE` must name a file, and
+there is no XDG fallback), because its per-lead rows carry the lead's slug and so name the
+employers a user is applying to. That is `0 == abstain` applied to a WRITE rather than a filter,
+and it is deliberately unlike `triage.audit_jsonl`, which is always on because it records what
+sluice DECIDED rather than what the user SPENT.
 Almost every wrap is in `core/app.py`, because almost every backend built there serves exactly one
 stage; `cv/engine.py` is the exception and takes the log itself, since it spends ONE backend on
 compose, audit and voice. It is also the only stage recording a LEAD -- as the store-issued

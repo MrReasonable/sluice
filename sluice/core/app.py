@@ -735,14 +735,18 @@ class Sluice:
                              kind="cache", name="dossiers")
 
     def usage_log(self):
-        """The token-usage log, for a caller that wants to READ it (#308).
+        """The token-usage log, or None when none is configured (#308).
 
         Public because `cli.py::cmd_usage` needs it and every other facade the CLI reaches is
         public (`health_report`, `doctor`, `triage`, ...). A private `_usage_log` was the first
         shape and made `cmd_usage` the one command in the file reaching through the facade
         rather than at it.
 
-        A NEW `UsageLog` each call, pointing at the same resolved path -- not a shared instance.
+        OPT-IN, so None is the ordinary answer for an install that never asked for one -- every
+        caller has to handle it, which for `cli.py::cmd_usage` means saying how to turn it on.
+
+        A NEW `UsageLog` each call when one IS configured, pointing at the same resolved path --
+        not a shared instance.
         An earlier version of this docstring claimed "same object ... one log per process" and
         was measured false. Nothing depends on identity: the class holds no state but its
         warn-once flag, so the only consequence is that a broken path can warn once per sub-app
@@ -752,20 +756,34 @@ class Sluice:
         return self._usage_log()
 
     def _usage_log(self):
-        """The one token-usage log for this process (#308).
+        """The token-usage log for this process, or None when nothing named one (#308).
 
-        Resolved HERE rather than in `load_config`, for exactly the reason `_dossier_dir`
-        above gives: the value arrives through a ROOT Config a caller can build by hand
-        (`Sluice(Config())`, which every test does), so a blank left unresolved would write
-        the log into the cwd.
+        OPT-IN, and that is the whole shape of this function. Token accounting writes a file
+        whose per-lead rows name the employers someone is applying to, and sluice does not create
+        that uninvited -- the same posture every preference gate takes, where unconfigured means
+        abstain rather than pick something on the user's behalf. It is deliberately UNLIKE
+        `triage.audit_jsonl` and `sluice_health.json`, which are always on: those record what
+        sluice DECIDED, which a user needs to audit the tool, while this records what they SPENT,
+        which is only useful if they asked the question.
 
-        Always a log, never None -- an install that configured nothing still gets one under
-        the per-system state root, because "what did last night cost" is a question about a
-        run that has already finished. `core/usage.py::meter` tolerates None for callers that
-        have no log to give (a sub-app function called directly in a test), which is why its
-        off path is not dead code.
+        There is therefore no per-system default location: naming the file is how the feature is
+        turned on. `resolve` is still what interprets the value, so a leading `~` expands and an
+        env var outranks the config key, but its XDG fallback is unreachable from here -- which is
+        why this returns None rather than a path when neither door is open.
+
+        Resolved HERE rather than in `load_config`, for exactly the reason `_dossier_dir` above
+        gives: the value arrives through a ROOT Config a caller can build by hand
+        (`Sluice(Config())`, which every test does), so a blank left unresolved would write the
+        log into the cwd.
+
+        `core/usage.py::meter` returns its backend UNCHANGED for a None log, so the off path here
+        is what keeps the metering wrapper off every LLM call of every install that never asked
+        for it -- not merely a tolerated input.
         """
         from sluice.core.usage import UsageLog
+        named = os.environ.get("SLUICE_USAGE") or getattr(self.config, "usage_jsonl", "")
+        if not named:
+            return None
         return UsageLog(_resolve_path(env_var="SLUICE_USAGE",
                                       config_value=getattr(self.config, "usage_jsonl", ""),
                                       kind="state", name="sluice_usage.jsonl"))

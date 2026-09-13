@@ -680,9 +680,14 @@ breaking today. Fully offline either way. Exit 0 always.
 ## `job-sluice usage [--days N] [--json]`
 
 What this install spent on LLM calls, grouped by stage and by model, read back from the
-per-call JSONL every backend call writes (#308). Fully offline -- it constructs no backend.
-Exit 0 always, including with nothing recorded: "no calls in this window" is a true answer to
-the question asked, not a failure, and a fresh install must not look broken.
+per-call JSONL (#308). Fully offline -- it constructs no backend. Exit 0 always.
+
+**Recording is OPT-IN.** Nothing is written until you name a file, because the per-lead rows
+carry the lead's slug — the employer and the role. Set the root `usage_jsonl` key, or export
+`SLUICE_USAGE`; there is no per-system default location, so naming the file *is* how you turn it
+on. Until then this command says so and tells you how, rather than reporting an empty window —
+"nothing configured" and "nothing spent in this window" are different answers and it gives the
+one that is true.
 
 Real output of the real command, over a **synthetic** log seeded for the illustration — the
 figures are invented, not one install's history:
@@ -732,9 +737,10 @@ fallback. Those tokens *are* in the totals, because they were billed.
 totals machine-readably, with `hit_rate` null (not 0.0) where the table shows a dash, and
 `total_tokens` derived rather than stored so it cannot disagree with its own parts.
 
-The file's location resolves `SLUICE_USAGE` -> the root `usage_jsonl` config key -> the XDG
-state root, and the report names the file it read. There is no rotation, matching the triage
-audit log.
+The file is wherever you named it: `SLUICE_USAGE` outranks the root `usage_jsonl` config key, a
+leading `~` expands, and the report names the file it read. There is no XDG fallback — an unset
+key means off, not a default location. No rotation, matching the triage audit log; delete the
+file to start the history over.
 
 ## `job-sluice mcp`
 

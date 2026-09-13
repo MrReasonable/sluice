@@ -400,19 +400,34 @@ def test_dossier_dir_env_var_beats_the_root_key(tmp_path, monkeypatch):
 
 
 # ── usage_jsonl (#308) ────────────────────────────────────────────────────────
-# The same three rows `dossier_dir` above has, and for the same reason it needed them: the
-# `""` default is what makes `resolve`'s env -> config -> XDG chain reachable at all, and a
-# non-empty default is ALWAYS truthy, so it short-circuits the chain, the XDG location is never
-# reached, and the log lands in whatever cwd the run started in. Nothing else in the suite pins
-# it -- every other test sets `SLUICE_USAGE` or the key -- so mutating the dataclass default to
-# a literal survived the whole suite until these rows existed.
+# OPT-IN, unlike `dossier_dir` above: an empty `usage_jsonl` with no `SLUICE_USAGE` means NO LOG
+# AT ALL, not "resolve to the XDG default". Token accounting writes a file naming the employers a
+# user is applying to, and sluice does not create that uninvited -- the same posture every
+# preference gate takes, where unconfigured means abstain rather than pick something.
+#
+# So the rows differ from `dossier_dir`'s in shape: the unconfigured case asserts ABSENCE, and the
+# two configured doors assert the path is honoured. Nothing else in the suite pins the default --
+# every other test sets `SLUICE_USAGE` or the key -- so without these rows, flipping the default
+# back to on-by-default, or to a cwd-relative literal, survives the whole suite.
 
-def test_unconfigured_usage_jsonl_lands_under_the_state_root(tmp_path, monkeypatch):
-    # STATE, not cache: a usage log is history that cannot be re-derived, unlike a dossier,
-    # which is a re-fetchable copy of a job ad.
+def test_unconfigured_usage_jsonl_means_no_log_at_all(tmp_path, monkeypatch):
+    """Opt-in: nothing configured, nothing written, and nothing to write it with.
+
+    Asserting `None` rather than a path is what makes the opt-in real: `core/usage.py::meter`
+    returns its backend UNCHANGED for a None log, so this is also what keeps the metering wrapper
+    off every call of an install that never asked for it."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    assert _app(tmp_path, monkeypatch).usage_log() is None
+
+
+def test_an_unconfigured_install_writes_no_usage_file(tmp_path, monkeypatch):
+    """The property a user cares about, asserted on the FILESYSTEM rather than on the return
+    value: no file appears under the state root, and the state dir is not even created."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
     app = _app(tmp_path, monkeypatch)
-    assert app.usage_log().path == os.path.join(
-        os.environ["XDG_STATE_HOME"], "sluice", "sluice_usage.jsonl")
+    assert app.usage_log() is None
+    state = os.path.join(os.environ["XDG_STATE_HOME"], "sluice")
+    assert not os.path.exists(os.path.join(state, "sluice_usage.jsonl"))
 
 
 def test_the_root_usage_jsonl_key_is_honoured(tmp_path, monkeypatch):
