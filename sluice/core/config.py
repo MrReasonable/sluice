@@ -173,6 +173,21 @@ class Config:
     # at all. Opt-in rather than opt-out because the safe ceiling is a judgement about a
     # given lead mix, which nothing here can pick.
     dossier_concurrency: int = 1
+    # Where the per-call token-usage log is written (#308). ROOT, not per-sub-app: triage, cv
+    # and track all spend LLM calls, and `job-sluice usage` answers one question -- what this
+    # install spent -- which three separate files could not.
+    #
+    # `""` is REQUIRED to be the default, and is not an off switch: a path's default must be
+    # empty or it is always truthy, short-circuits `resolve`'s env -> config -> XDG chain, and
+    # the XDG location is never reached (the feature then sits inert in the cwd with nothing
+    # red). Resolution happens in `Sluice._usage_log`, and an unconfigured install writes to
+    # the per-system state root -- ON by default, like `triage.audit_jsonl` and
+    # `sluice_health.json`, because the first question anyone asks is about a run that has
+    # ALREADY happened and an opt-in log answers it with "no data".
+    #
+    # Not one of the `0 == abstain` preference gates: it records what was spent, it does not
+    # decide anything about a lead.
+    usage_jsonl: str = ""
 
     def source(self, id: str) -> SourceConfig:
         """Config for a source id; unlisted sources default to enabled + no tuning."""
@@ -812,6 +827,7 @@ def load_config(path: str | None = None) -> Config:
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
+                  usage_jsonl=str(data.get("usage_jsonl") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
                   rates=str(data.get("rates") or "frankfurter"),
                   # #176: `_str_list`, not `list(...)`. The bare `list()` here was the

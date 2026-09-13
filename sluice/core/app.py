@@ -734,6 +734,25 @@ class Sluice:
                              config_value=getattr(self.config, "dossier_dir", ""),
                              kind="cache", name="dossiers")
 
+    def _usage_log(self):
+        """The one token-usage log for this process (#308).
+
+        Resolved HERE rather than in `load_config`, for exactly the reason `_dossier_dir`
+        above gives: the value arrives through a ROOT Config a caller can build by hand
+        (`Sluice(Config())`, which every test does), so a blank left unresolved would write
+        the log into the cwd.
+
+        Always a log, never None -- an install that configured nothing still gets one under
+        the per-system state root, because "what did last night cost" is a question about a
+        run that has already finished. `core/usage.py::meter` tolerates None for callers that
+        have no log to give (a sub-app function called directly in a test), which is why its
+        off path is not dead code.
+        """
+        from sluice.core.usage import UsageLog
+        return UsageLog(_resolve_path(env_var="SLUICE_USAGE",
+                                      config_value=getattr(self.config, "usage_jsonl", ""),
+                                      kind="state", name="sluice_usage.jsonl"))
+
     def dossier_cache(self, dossier_dir, ttl_days, min_jd_chars):
         """A DossierCache whose fetcher is resolved lazily on the first cache miss, so a
         --no-llm or fully-cached run never opens a browser. JD text read via
@@ -1500,6 +1519,7 @@ class Sluice:
         `ingest.base`/`ingest.engine` -- `triage/` itself never imports
         `sluice.ingest` directly."""
         from sluice.core.backends import BackendError
+        from sluice.core.usage import meter
         from sluice.ingest import sources
         from sluice.triage.audit import AuditLog
         from sluice.triage.config import load_triage_config
@@ -1520,11 +1540,18 @@ class Sluice:
             effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
             claude_path=tcfg.claude_max_path, fallback_name=tcfg.fallback_backend,
             fallback_model=tcfg.cheap_model)
-        backend = None if no_llm else self.backend(backend_role, **_common)
+        # METERED HERE, where each backend is constructed, because each serves exactly ONE
+        # stage: the judge's, and tier-3 company resolution's. The stage is therefore known at
+        # construction and no sub-app has to be handed a log (#308). cv is the exception --
+        # see `compose_cv` below.
+        usage = self._usage_log()
+        backend = None if no_llm else meter(
+            usage, self.backend(backend_role, **_common), "triage-judge")
         resolve_backend = None
         if not no_llm and tcfg.company_resolve_llm:
             try:
-                resolve_backend = self.backend("fallback", **_common)
+                resolve_backend = meter(
+                    usage, self.backend("fallback", **_common), "triage-resolve")
             except BackendError as e:
                 _log.warning(
                     "company resolution's tier-3 backend unavailable, tier 3 disabled "
@@ -1687,9 +1714,13 @@ class Sluice:
         # cannot disagree about what stale means or about --include-stale (#9).
         policy = self.staleness(include_stale=include_stale)
 
+        # cv is the one sub-app that gets the LOG rather than a pre-metered backend: it spends
+        # ONE backend on three stages (compose, audit, voice), so a stage fixed here would
+        # mislabel two of the three -- and it is the only place a lead id is in scope (#308).
+        usage = self._usage_log()
         if all_shortlist:
             return run_batch(store, cvcfg, backend, cache, renderer=renderer,
-                             limit=limit, dry_run=dry_run, policy=policy)
+                             limit=limit, dry_run=dry_run, policy=policy, usage=usage)
         notes = [n for n in store.read_leads({"shortlist"}) if slug_matches(n, lead)]
         if not notes:
             return []
@@ -1721,7 +1752,7 @@ class Sluice:
         # (#16); that must not escape to the CLI as an unhandled traceback.
         try:
             return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
-                            dry_run=dry_run, policy=policy)]
+                            dry_run=dry_run, policy=policy, usage=usage)]
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising it (see
@@ -2280,11 +2311,13 @@ class Sluice:
             tcfg.token_path,
             gmail_max_messages=tcfg.gmail_max_messages,
             calendar_max_events=tcfg.calendar_max_events)
-        backend = self.backend(
+        from sluice.core.usage import meter
+        backend = meter(self._usage_log(), self.backend(
             backend_role, primary_name=tcfg.primary_backend,
             primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
             host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
-            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model)
+            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model),
+            "track-classify")
         now_iso = now_iso or datetime.now(timezone.utc).isoformat()
         rep = track_engine.run(self.store(), tcfg, client, backend, seen=seen,
                                deadletter=deadletter, now_iso=now_iso,

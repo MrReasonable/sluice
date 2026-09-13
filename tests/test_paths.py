@@ -472,7 +472,13 @@ def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
     # user can have an older copy left behind and a `_LEGACY` row would name a path that
     # has never existed. Losing it costs nothing at all -- `core/fx.py` falls back to its
     # pinned table, which is the same behaviour a first run has.
-    exempt = {"config.yaml", "role_type_reverdict_ack.json", "fx-rates.json"}
+    # #308's usage log is a fourth, on the same ground: it is new in this release, so no
+    # cwd-relative predecessor exists to warn about. Losing it costs the HISTORY it holds
+    # and nothing else -- unlike the two dedup stores, which REFUSE on relocation because an
+    # empty dedup set re-submits an already-applied lead. A missing usage log makes a report
+    # start from today, which is visible in the report itself.
+    exempt = {"config.yaml", "role_type_reverdict_ack.json", "fx-rates.json",
+              "sluice_usage.jsonl"}
     missing = called - set(paths._LEGACY) - exempt
     assert not missing, (
         "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "

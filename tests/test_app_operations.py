@@ -277,8 +277,15 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
         return TriageReport()
     monkeypatch.setattr("sluice.triage.engine.run", fake_run)
     app.triage(backend_role="primary")
-    assert seen["judge_backend"] is judge_sentinel
-    assert seen["resolve_backend"] is resolve_sentinel
+    # Each backend arrives METERED (#308), so the identity is asserted through the wrapper
+    # rather than against it. The STAGE is asserted too, which this test could not do before
+    # and which closes the other half of the same confusion: two backends threaded into the
+    # right parameters but labelled each other's stage would attribute every judge call to
+    # tier-3 resolution in the usage log, and the parameter assertions alone cannot see that.
+    assert seen["judge_backend"].inner is judge_sentinel
+    assert seen["judge_backend"].stage == "triage-judge"
+    assert seen["resolve_backend"].inner is resolve_sentinel
+    assert seen["resolve_backend"].stage == "triage-resolve"
 
 
 def test_compose_cv_unknown_lead_returns_empty(tmp_path, monkeypatch):
