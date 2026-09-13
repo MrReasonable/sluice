@@ -219,13 +219,25 @@ name; no prompt text and no completion text ever reach it.
 - **Fallback attribution**, measured on both legs: the record names the leg that served, and a
   primary that burned tokens before raising leaves its own `served: false` record.
 - **`tests/test_usage_wiring.py`** — the both-ends guard. AST-collect every `.complete(` call site
-  in `sluice/` and every `meter(...)` stage literal; assert each module holding a call site also
-  meters, with `core/backends.py` (`FallbackBackend` delegating to its own legs) and
-  `core/usage.py` (the wrapper itself) allow-listed by name and reason. The stage roster is
-  hand-written as the equality target and the probe derived, so a new stage must be declared and a
-  deleted one reds — a roster derived from the constant it checks could only ever sweep fewer and
-  stay green. Both derived sets are asserted non-empty: for a guard whose success case is finding
-  no violation, a sweep that discovers nothing is indistinguishable from a sweep that is broken.
+  in `sluice/` and every `meter(...)` stage literal, and assert each against a hand-written roster:
+  `_CALL_SITES` maps (module, innermost function) to the stage that meters it, or to None with a
+  stated reason for the metering plumbing itself (`FallbackBackend` delegating to its own legs,
+  `MeteredBackend` delegating inward); `_STAGES` names every stage and the runtime test that
+  witnesses it recording. Plus the join in both directions. Both derived sets are asserted
+  non-empty: for a guard whose success case is finding no violation, a sweep that discovers nothing
+  is indistinguishable from a sweep that is broken. The rosters are hand-written and the probes
+  derived, never the reverse — a roster derived from the thing it checks compares the code against
+  itself, sweeps fewer after a deletion, and stays green.
+
+  **Corrected after implementation.** This section first specified "assert each module holding a
+  call site also meters", with two allow-listed exemptions. That assertion is FALSE BY DESIGN:
+  `meter` wraps where a backend is HANDED to a stage, which is a different module from where the
+  call happens and often a different sub-app — the metering for `cv/compose.py::compose` lives in
+  `cv/engine.py`, and for `triage/judge.py::judge` in `core/app.py`. Written as specified it would
+  have had to be narrowed until it checked nothing, which is this repo's documented way of turning
+  a guard into decoration. The roster shape above is what replaced it, and unlike the original it
+  states plainly what it cannot check: whether the backend reaching a given call site was
+  ACTUALLY metered is a dataflow question, which is why each stage names a runtime witness.
 - **`summarize`** is pure, so totals, the hit rate, the no-usage footer and a malformed line are
   tested without touching a file.
 
