@@ -1,5 +1,6 @@
 from sluice.cv import compose as C
 from sluice.cv.slop import _PHRASES
+from sluice.core.backends import Completion
 
 # `name` is now a required keyword-only argument on build_prompt/compose (#133/#107 removed
 # the "Your Name" signature default -- a shipped identity placeholder with nothing left to
@@ -21,7 +22,7 @@ def _phrases_named_in(prompt):
 
 class FakeBackend:
     def __init__(self, outputs): self.outputs = list(outputs); self.prompts = []
-    def complete(self, prompt): self.prompts.append(prompt); return self.outputs.pop(0)
+    def complete(self, prompt): self.prompts.append(prompt); return Completion(self.outputs.pop(0))
 
 def test_prompt_contains_bundle_jd_and_forbids_em_dashes():
     p = C.build_prompt("BUNDLE-TEXT", "JD-TEXT", "Acme", "Analyst", name=_NAME)

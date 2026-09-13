@@ -2,8 +2,7 @@ import subprocess
 import traceback
 import pytest
 from sluice.core.backends import (
-    BackendError, ClaudeMaxBackend, FallbackBackend, OpenAiCompatibleBackend,
-    AnthropicBackend, make_backend, DEFAULT_MODELS, _redact,
+    AnthropicBackend, BackendError, ClaudeMaxBackend, Completion, DEFAULT_MODELS, FallbackBackend, OpenAiCompatibleBackend, _redact, make_backend,
 )
 
 
@@ -14,20 +13,20 @@ class _Fake:
         self.calls += 1
         if self.raise_:
             raise BackendError("down")
-        return self.out
+        return Completion(self.out)
 
 
 def test_fallback_uses_primary_when_ok():
     p, f = _Fake(out="P"), _Fake(out="F")
     fb = FallbackBackend(p, f)
-    assert fb.complete("x") == "P"
+    assert fb.complete("x").text == "P"
     assert (p.calls, f.calls, fb.last_backend) == (1, 0, "primary")
 
 
 def test_fallback_switches_on_primary_error():
     p, f = _Fake(raise_=True), _Fake(out="F")
     fb = FallbackBackend(p, f)
-    assert fb.complete("x") == "F"
+    assert fb.complete("x").text == "F"
     assert (p.calls, f.calls, fb.last_backend) == (1, 1, "fallback")
 
 
@@ -56,7 +55,7 @@ def test_openai_compatible_parses_choice():
         assert url == "http://x/api/v1/chat/completions"
         return '{"choices":[{"message":{"content":"HELLO"},"finish_reason":"stop"}]}'
     be = OpenAiCompatibleBackend("m", base_url="http://x/api/v1", api_key="k", http=http)
-    assert be.complete("prompt") == "HELLO"
+    assert be.complete("prompt").text == "HELLO"
 
 
 def test_openai_compatible_includes_max_tokens_when_set():
@@ -135,7 +134,7 @@ def test_anthropic_posts_and_parses_text():
     out = AnthropicBackend("claude-sonnet-4-5", api_key="sk-1",
                            base_url="https://api.anthropic.com", http=http,
                            max_tokens=1024).complete("prompt")
-    assert out == "HELLO"
+    assert out.text == "HELLO"
     assert seen["url"] == "https://api.anthropic.com/v1/messages"
     assert seen["headers"]["x-api-key"] == "sk-1"
     assert seen["headers"]["anthropic-version"] == "2023-06-01"
@@ -150,7 +149,7 @@ def test_anthropic_joins_multiple_text_blocks_with_newline():
         return ('{"stop_reason":"end_turn","content":['
                 '{"type":"text","text":"A"},'
                 '{"type":"text","text":"B"}]}')
-    assert AnthropicBackend("m", api_key="k", http=http).complete("x") == "A\nB"
+    assert AnthropicBackend("m", api_key="k", http=http).complete("x").text == "A\nB"
 
 
 def test_anthropic_skips_thinking_block_before_text():
@@ -158,7 +157,7 @@ def test_anthropic_skips_thinking_block_before_text():
         return ('{"stop_reason":"end_turn","content":['
                 '{"type":"thinking","thinking":"hmm"},'
                 '{"type":"text","text":"ANSWER"}]}')
-    assert AnthropicBackend("m", api_key="k", http=http).complete("x") == "ANSWER"
+    assert AnthropicBackend("m", api_key="k", http=http).complete("x").text == "ANSWER"
 
 
 def test_anthropic_truncation_raises():

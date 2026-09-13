@@ -1,9 +1,10 @@
 from sluice.cv import voice as V
+from sluice.core.backends import Completion
 
 
 class FakeBackend:
     def __init__(self, out): self.out = out; self.prompt = None
-    def complete(self, prompt): self.prompt = prompt; return self.out
+    def complete(self, prompt): self.prompt = prompt; return Completion(self.out)
 
 
 def test_prompt_frames_the_judgement_as_voice_not_accuracy():

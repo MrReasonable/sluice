@@ -457,7 +457,8 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
     INCLUDING when a candidate fails frontmatter_safe or (tier 0/tier 3) the
     deny-list/board-name guards below. `get_source` is `sluice.ingest.sources.get`
     (or None, meaning tier 1 always abstains); `resolve_backend` is a
-    `.complete(str) -> str` object (or None, meaning tier 3 always abstains) --
+    `.complete(str) -> Completion` object (#308 -- the reply text is on `.text`; this
+    tier reads nothing else off it) (or None, meaning tier 3 always abstains) --
     both injected so this stays testable without importing the real registry or
     constructing a real backend. Tier 0 needs neither and so is never gated by
     either."""
@@ -530,7 +531,7 @@ def resolve_company(fm: dict, get_source, dossier_cache, *,
     if prompt is None:
         return _ABSTAIN  # every evidence field blank after capping -- nothing to reason over
     try:
-        reply = resolve_backend.complete(prompt)
+        reply = resolve_backend.complete(prompt).text
     except BackendError as e:
         # BackendError only, never a broad `except Exception`: the test harness's
         # ScriptedBackend deliberately RAISES AssertionError on an unrecognised

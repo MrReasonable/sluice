@@ -32,7 +32,7 @@ import subprocess
 import pytest
 
 from sluice.core.app import Sluice
-from sluice.core.backends import BackendError, make_backend
+from sluice.core.backends import BackendError, Completion, Usage, make_backend
 
 _BACKENDS = Sluice.available("backend")   # ['anthropic', 'claude-max', 'deepseek', 'openai']
 
@@ -136,10 +136,15 @@ _VALID = {
 }
 
 
+# The model every row is built with. Named rather than inlined so a property ASSERTING on it
+# (the identity row below) reads the same literal `_build` passes, instead of restating it.
+_MODEL = "test-model"
+
+
 def _build(name, thunk):
     # api_key is required by the per-token factories and ignored by claude-max, so pass one
     # uniformly. base_url is left to default -- the injected fake http/runner ignores it.
-    return make_backend(name, "test-model", api_key="test-key", **thunk())
+    return make_backend(name, _MODEL, api_key="test-key", **thunk())
 
 
 def test_payload_tables_cover_the_registry():
@@ -194,4 +199,26 @@ def test_a_valid_response_is_returned_as_its_text(name):
     Without this, a backend that raised on EVERYTHING would pass both negative properties while
     being wholly broken -- the two 'raises' tests cannot tell a strict backend from a dead
     one."""
-    assert _build(name, _VALID[name]).complete("prompt") == "HELLO"
+    assert _build(name, _VALID[name]).complete("prompt").text == "HELLO"
+
+
+@pytest.mark.parametrize("name", _BACKENDS)
+def test_the_result_is_a_completion_that_identifies_its_own_call(name):
+    """The seam's RETURN SHAPE, asserted over every provider rather than per class (#308).
+
+    A provider that answered with a bare string -- as all four did before #308 -- would break
+    every call site with an AttributeError on `.text`. A provider that answered with no Usage
+    at all would be ANONYMOUS in the usage log: the row could not say which provider or model
+    the call went to, so `job-sluice usage` would simply omit it rather than report it as
+    unmeasured. Both are properties of the seam, so they belong here with the other portable
+    contract rows -- the next provider inherits them or does not ship.
+
+    The COUNTS are deliberately not asserted. None of the `_VALID` payloads carries a usage
+    block (they predate #308 and pin the text path), and claude-max cannot report counts at
+    all -- it is flat-rate and runs the CLI in text mode. Per-count parsing is pinned in
+    tests/test_backends_usage.py against real response shapes; what belongs here is only the
+    part every provider owes regardless of what its endpoint sends back."""
+    c = _build(name, _VALID[name]).complete("prompt")
+    assert isinstance(c, Completion)
+    assert isinstance(c.usage, Usage)
+    assert (c.usage.provider, c.usage.model) == (name, _MODEL)

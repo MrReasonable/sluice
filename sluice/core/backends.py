@@ -16,6 +16,7 @@ import re
 import subprocess
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, replace
 
 from sluice.core.log import get_logger
 
@@ -48,8 +49,165 @@ DEFAULT_BASE_URLS = {
 DEFAULT_TIMEOUT = 300
 
 
+@dataclass(frozen=True)
+class Usage:
+    """What one backend call cost, as the provider reported it (#308).
+
+    Every count is `int | None`, and `None` is load-bearing: it means THIS PROVIDER DID NOT
+    REPORT THIS NUMBER, which is a different fact from a reported zero. A zero-filled Usage
+    would claim a call was free, so `ClaudeMaxBackend` -- flat-rate, and run in text mode
+    where there is no usage block at all -- answers `usage=None` rather than being left out
+    of the seam, and `core/usage.py::summarize` reports how many calls answered that way.
+
+    `input_tokens` is DEFINED as the total input for the call INCLUDING anything served from
+    cache, and each parser below normalises into that definition rather than copying its own
+    provider's similarly-named field. That is not tidiness: Anthropic's `input_tokens`
+    counts UNCACHED tokens only (the cache counters sit beside it, not inside it), so a
+    straight copy yields a cache hit rate of `cache_read / (input - cache_read)` -- above
+    1.0 on exactly the well-cached call the number exists to report. OpenAI's
+    `prompt_tokens` is the other convention and already includes them.
+
+    No `total_tokens`: it is `input + output`, and a stored total is a second value free to
+    disagree with its own parts. `completion_tokens_details.reasoning_tokens` is likewise
+    not captured -- reasoning tokens are already inside `completion_tokens`, so recording
+    both invites double counting for no new fact.
+
+    `provider` is passed in by the registry factory rather than inferred, because
+    `OpenAiCompatibleBackend` serves deepseek, openai and any other compatible endpoint: the
+    class genuinely does not know which vendor it is talking to, and a base_url guess would
+    be a classifier where the caller already has the answer.
+    """
+    provider: str
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class Completion:
+    """What `Backend.complete` returns: the text, and optionally what it cost.
+
+    The seam used to return a bare `str`, so every provider's `usage` block was parsed past
+    and dropped and a run's spend was unobservable (#308). Carrying it on the RESULT rather
+    than on a mutable attribute is what makes it attributable to a specific call --
+    `FallbackBackend.last_backend` is the counter-example, overwritten on every call and so
+    unable to say which leg served which completion.
+
+    `unserved_usage` is spend that happened but did NOT produce this text: a
+    `FallbackBackend` primary that parsed a usage block and then raised, whose tokens were
+    still billed. Without it that spend vanishes inside the fallback's `except`, and a leg
+    that bills on every call while never serving one reads as free.
+    """
+    text: str
+    usage: Usage | None = None
+    unserved_usage: tuple[Usage, ...] = ()
+
+
 class BackendError(Exception):
-    pass
+    """A backend call that cannot be used, whatever it may already have cost.
+
+    `usage` is set when the provider reported a usage block and the response was THEN judged
+    unusable -- a truncation, a non-stop finish_reason. It is the only route by which that
+    spend can be recorded at all, since on this path there is no return value to carry it.
+    A transport failure (timeout, HTTP error, missing binary) has no body to parse and leaves
+    it None, so `usage is None` here means "no usage was ever seen", never "it was free".
+    """
+
+    def __init__(self, *args, usage: Usage | None = None):
+        super().__init__(*args)
+        self.usage = usage
+
+
+def _int_or_none(value):
+    """A count, or None when the provider did not report one.
+
+    `bool` is rejected before `int` because `bool` subclasses `int`, so a JSON `true`
+    would otherwise load as the count 1 -- the same trap `lead_ttl_days`' validator
+    exists for. Anything non-numeric is treated as absent rather than raised on: a
+    malformed usage block must not fail a call whose TEXT is perfectly good.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def openai_usage(data, *, provider: str, model: str) -> Usage | None:
+    """Usage from an OpenAI-compatible chat/completions body, or None if it reported none.
+
+    ONE parser for the whole family this class serves -- openai, deepseek, a local server --
+    because which keys a compatible endpoint fills is a property of the deployment, not of
+    a name in our registry.
+
+    The input total is read in two ways, and which one applies is decided by what is
+    PRESENT rather than by the provider name:
+
+      * DeepSeek reports `prompt_cache_hit_tokens` + `prompt_cache_miss_tokens`, documented
+        as partitioning "the input of this request". Their docs say nothing about how either
+        relates to `prompt_tokens`, so when BOTH are present their sum is used as the total
+        -- self-consistent by construction, with no relation assumed. Half a partition is
+        not a partition, so one without the other falls through.
+      * Otherwise `prompt_tokens`, which OpenAI documents as including the cached tokens,
+        with `prompt_tokens_details.cached_tokens` as a breakdown of it.
+    """
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    details = usage.get("prompt_tokens_details")
+    details = details if isinstance(details, dict) else {}
+    hit = _int_or_none(usage.get("prompt_cache_hit_tokens"))
+    miss = _int_or_none(usage.get("prompt_cache_miss_tokens"))
+    if hit is not None and miss is not None:
+        total_in = hit + miss
+        cache_read = hit
+    else:
+        total_in = _int_or_none(usage.get("prompt_tokens"))
+        cache_read = _int_or_none(details.get("cached_tokens"))
+        if cache_read is None:
+            cache_read = hit
+    out = Usage(provider=provider, model=model, input_tokens=total_in,
+                output_tokens=_int_or_none(usage.get("completion_tokens")),
+                cache_read_tokens=cache_read,
+                cache_write_tokens=_int_or_none(details.get("cache_write_tokens")))
+    # An empty `usage: {}` parses to a Usage of all-None counts, which says the same thing
+    # as no usage block at all while looking like a report. Collapse it to None so the two
+    # cannot be told apart downstream by accident.
+    return out if _reported_anything(out) else None
+
+
+def anthropic_usage(data, *, provider: str, model: str) -> Usage | None:
+    """Usage from an Anthropic Messages body, or None if it reported none.
+
+    `input_tokens` here is UNCACHED tokens only -- the two cache counters are separate
+    totals, not a breakdown of it -- so the normalised input is the sum of all three. See
+    `Usage` for why copying the field straight across breaks the hit rate.
+    """
+    usage = data.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    uncached = _int_or_none(usage.get("input_tokens"))
+    cache_read = _int_or_none(usage.get("cache_read_input_tokens"))
+    cache_write = _int_or_none(usage.get("cache_creation_input_tokens"))
+    parts = [n for n in (uncached, cache_read, cache_write) if n is not None]
+    out = Usage(provider=provider, model=model,
+                input_tokens=sum(parts) if parts else None,
+                output_tokens=_int_or_none(usage.get("output_tokens")),
+                cache_read_tokens=cache_read, cache_write_tokens=cache_write)
+    return out if _reported_anything(out) else None
+
+
+def _reported_anything(u: Usage) -> bool:
+    """Did the provider actually report any number at all?
+
+    Compared against a Usage carrying the same identity and NOTHING else, rather than by
+    enumerating the count fields: a count added to `Usage` later defaults to None on both
+    sides of this comparison, so it is covered with no second edit here. Introspecting
+    `dataclasses.fields` to skip the two `str` fields was the first shape and is the
+    hand-list trap wearing a derivation's clothes -- `f.type` is the annotation as written,
+    so the skip would have keyed on a spelling.
+    """
+    return u != Usage(provider=u.provider, model=u.model)
 
 
 def option_like(value) -> bool:
@@ -127,7 +285,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
 class ClaudeMaxBackend:
     def __init__(self, model, *, host: str = "", claude_path: str = "claude",
                  cmd_template=None, runner=subprocess.run,
-                 timeout=DEFAULT_TIMEOUT, effort="max"):
+                 timeout=DEFAULT_TIMEOUT, effort="max", provider="claude-max"):
         # cmd_template is the argv up to (but not including) the prompt on stdin.
         # host/claude_path are ignored once cmd_template is supplied explicitly.
         #
@@ -164,6 +322,7 @@ class ClaudeMaxBackend:
                     f"config value into argument injection (e.g. -oProxyCommand=...)."
                 )
         self.model = model
+        self.provider = provider
         self.host = host
         self.claude_path = claude_path
         if cmd_template is not None:
@@ -220,7 +379,7 @@ class ClaudeMaxBackend:
             secrets[self.claude_path] = "<path>"
         return _redact(text, secrets)
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str) -> "Completion":
         try:
             proc = self.runner(self.cmd_template, input=prompt,
                                capture_output=True, text=True, timeout=self.timeout)
@@ -295,25 +454,42 @@ class ClaudeMaxBackend:
                 f"claude-max returned no text (exit 0, {len(proc.stdout)} chars of whitespace"
                 + (f"; stderr: {detail}" if detail else "") + ")"
             )
-        return text
+        # A Usage carrying the IDENTITY and no counts. Flat-rate, and run in TEXT mode,
+        # so there are no token counts to report -- `--output-format json` would carry them
+        # (along with a stop_reason), but adopting it replaces this whole parse path, see the
+        # truncation note above. Every count therefore stays None, which is what "did not
+        # report" looks like; inventing zeros would claim the call was free.
+        #
+        # Returning the identity anyway rather than a bare `usage=None` is what lets the
+        # usage log record that this call HAPPENED, on this provider and model. Without it a
+        # flat-rate call is anonymous in the log and `job-sluice usage` cannot say which
+        # provider the silent calls went to -- the summary would simply be missing them.
+        return Completion(text, usage=Usage(provider=self.provider, model=self.model))
 
 
 class OpenAiCompatibleBackend:
     """Any OpenAI-compatible chat/completions endpoint (DeepSeek, OpenAI, Together,
     a local server, ...). Provider is just a base_url + key. `max_tokens` is sent
     only when set; an incomplete response (finish_reason other than stop, e.g.
-    length or content_filter) or empty content is a hard error, not a partial."""
+    length or content_filter) or empty content is a hard error, not a partial.
+
+    `provider` is the registry name of whoever is being called, supplied by that provider's
+    factory, and it exists only to label the `Usage` this returns. It has a generic default
+    because the class genuinely cannot know: one deployment of it is DeepSeek and the next
+    is a local server, and guessing from base_url would be a classifier where the caller
+    already has the answer."""
 
     def __init__(self, model, *, api_key, base_url, http=_urlopen, timeout=DEFAULT_TIMEOUT,
-                 max_tokens=None):
+                 max_tokens=None, provider="openai-compatible"):
         self.model = model
+        self.provider = provider
         self.url = base_url.rstrip("/") + "/chat/completions"
         self.api_key = api_key
         self.http = http
         self.timeout = timeout
         self.max_tokens = max_tokens
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str) -> "Completion":
         body = {"model": self.model,
                 "messages": [{"role": "user", "content": prompt}]}
         if self.max_tokens is not None:
@@ -323,6 +499,16 @@ class OpenAiCompatibleBackend:
         try:
             data = json.loads(self.http(self.url, json.dumps(body).encode(),
                                         headers, self.timeout))
+            # Parsed BEFORE the refusals below, and attached to them. Those tokens were
+            # billed whether or not the response is usable, and an exception is the only
+            # thing left to carry them on a path that has no return value (#308).
+            # `or Usage(identity)`: an endpoint that sent no usage block still made a
+            # call, and the log needs to know whose. The parser answers None for "this body
+            # reported no counts", which is the honest answer ABOUT THE BODY and is what its
+            # own tests pin; the coalesce here is about the CALL, whose provider and model
+            # are known regardless. Counts stay None either way -- nothing is invented.
+            usage = (openai_usage(data, provider=self.provider, model=self.model)
+                     or Usage(provider=self.provider, model=self.model))
             choice = data["choices"][0]
             reason = choice.get("finish_reason")
             # Only a natural stop (or an endpoint that omits the field) is a
@@ -331,12 +517,14 @@ class OpenAiCompatibleBackend:
             # AnthropicBackend guards below.
             if reason not in (None, "stop"):
                 raise BackendError(
-                    f"openai-compatible response incomplete (finish_reason={reason})")
+                    f"openai-compatible response incomplete (finish_reason={reason})",
+                    usage=usage)
             text = choice["message"]["content"].strip()
             if not text:
                 raise BackendError(
-                    f"openai-compatible returned no text (finish_reason={reason})")
-            return text
+                    f"openai-compatible returned no text (finish_reason={reason})",
+                    usage=usage)
+            return Completion(text, usage=usage)
         except BackendError:
             raise
         except Exception as e:
@@ -352,15 +540,17 @@ class AnthropicBackend:
     _VERSION = "2023-06-01"
 
     def __init__(self, model, *, api_key, base_url=DEFAULT_BASE_URLS["anthropic"],
-                 http=_urlopen, timeout=DEFAULT_TIMEOUT, max_tokens=8192):
+                 http=_urlopen, timeout=DEFAULT_TIMEOUT, max_tokens=8192,
+                 provider="anthropic"):
         self.model = model
+        self.provider = provider
         self.url = base_url.rstrip("/") + "/v1/messages"
         self.api_key = api_key
         self.http = http
         self.timeout = timeout
         self.max_tokens = max_tokens
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str) -> "Completion":
         body = {"model": self.model, "max_tokens": self.max_tokens,
                 "messages": [{"role": "user", "content": prompt}]}
         headers = {"content-type": "application/json",
@@ -369,15 +559,21 @@ class AnthropicBackend:
         try:
             data = json.loads(self.http(self.url, json.dumps(body).encode(),
                                         headers, self.timeout))
+            # Before the refusals, for the same reason as the sibling above: a truncated
+            # response still billed, and the exception is the only carrier left.
+            usage = (anthropic_usage(data, provider=self.provider, model=self.model)
+                     or Usage(provider=self.provider, model=self.model))
             if data.get("stop_reason") == "max_tokens":
-                raise BackendError("anthropic response truncated (stop_reason=max_tokens)")
+                raise BackendError("anthropic response truncated (stop_reason=max_tokens)",
+                                   usage=usage)
             text = "\n".join(
                 b.get("text", "") for b in data.get("content", [])
                 if b.get("type") == "text" and b.get("text")).strip()
             if not text:
                 raise BackendError(
-                    f"anthropic returned no text (stop_reason={data.get('stop_reason')})")
-            return text
+                    f"anthropic returned no text (stop_reason={data.get('stop_reason')})",
+                    usage=usage)
+            return Completion(text, usage=usage)
         except BackendError:
             raise
         except Exception as e:
@@ -390,7 +586,7 @@ class FallbackBackend:
         self.fallback = fallback
         self.last_backend = None
 
-    def complete(self, prompt: str) -> str:
+    def complete(self, prompt: str) -> "Completion":
         try:
             out = self.primary.complete(prompt)
             self.last_backend = "primary"
@@ -403,9 +599,20 @@ class FallbackBackend:
                 # Both legs are down. Report both causes: the fallback's error alone
                 # is the less interesting half (the primary going down is what put us
                 # here), and chaining from the primary keeps its traceback attached.
+                #
+                # The primary's spend rides along on the raised error too: with both legs
+                # down there is no completion to hang it on, and dropping it would make a
+                # primary that bills then fails look free.
                 raise BackendError(
-                    f"both backends failed: primary={e}; fallback={fe}") from e
+                    f"both backends failed: primary={e}; fallback={fe}",
+                    usage=e.usage or fe.usage) from e
             self.last_backend = "fallback"
+            # No provider/model of its own to stamp: the LEG that served already did that,
+            # which is what makes attribution structural here rather than reconstructed.
+            # What this must NOT do is swallow a primary that spent tokens before raising --
+            # those are billed, and this `except` is the only place they are still visible.
+            if e.usage is not None:
+                out = replace(out, unserved_usage=out.unserved_usage + (e.usage,))
             return out
 
 
@@ -459,6 +666,14 @@ def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run,
     # line existed while only claude-max had it -- the three HTTP siblings returned
     # `timeout=None` from a direct `_make`, the exact hazard this comment names.
     timeout = DEFAULT_TIMEOUT if timeout is None else timeout
+    # `provider=name` is passed from HERE rather than written as a literal inside each
+    # factory, for the same reason the timeout is coalesced here: this is the one choke point
+    # every provider crosses, and it already holds the name. A per-factory literal is a third
+    # spelling of something already stated twice in that module (the `register(...)` call and
+    # the missing-key message), so a module copied to add a provider would keep the original's
+    # label and mislabel every usage row it wrote -- silently, since nothing downstream can
+    # tell a wrong provider name from a right one. Threaded through the seam instead, the
+    # label cannot disagree with the name that selected the factory.
     return factory(model, api_key=api_key, base_url=base_url, http=http, runner=runner,
                    timeout=timeout, max_tokens=max_tokens, claude_host=claude_host,
-                   claude_path=claude_path, effort=effort)
+                   claude_path=claude_path, effort=effort, provider=name)

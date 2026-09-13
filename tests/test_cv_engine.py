@@ -6,7 +6,9 @@ import pytest
 from sluice.cv.bundle import build_bundle, bundle_sources
 from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
-from sluice.core.backends import BackendError, FallbackBackend, OpenAiCompatibleBackend
+from sluice.core.backends import (
+    BackendError, Completion, FallbackBackend, OpenAiCompatibleBackend,
+)
 from sluice.core.leads import StalenessPolicy
 from sluice.core.protocols import CandidateProfile
 
@@ -147,7 +149,7 @@ class FakeBackend:
     def complete(self, prompt):
         self.calls += 1
         # first call = compose, later audit; return CV then audit
-        return self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out
+        return Completion(self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out)
 
 ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "delivery",
             "category": "people", "metrics": "3 8", "body": "Grew 3 to 8."}]
@@ -226,9 +228,9 @@ def test_a_parse_failure_feeds_the_retry_not_the_bin(monkeypatch):
             # Mirrors FakeBackend's routing: compose prompts carry "SOURCE BUNDLE"
             # and not "auditing"; audit prompts carry both.
             if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
-                return "supported\tx\tSF1"
+                return Completion("supported\tx\tSF1")
             self.prompts.append(prompt)
-            return UNPARSEABLE_CV if len(self.prompts) == 1 else CLEAN_CV
+            return Completion(UNPARSEABLE_CV if len(self.prompts) == 1 else CLEAN_CV)
 
     be = TwoShotBackend()
     v = FakeVault(ENTRIES)
@@ -864,9 +866,9 @@ def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
             self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
-                return "supported\tx\tSF1"
+                return Completion("supported\tx\tSF1")
             self.prompts.append(prompt)
-            return PREAMBLE_BEFORE_NAME_CV if len(self.prompts) == 1 else CLEAN_CV
+            return Completion(PREAMBLE_BEFORE_NAME_CV if len(self.prompts) == 1 else CLEAN_CV)
 
     be = TwoShotBackend()
     v = FakeVault(ENTRIES)
@@ -894,8 +896,8 @@ class ComposeCountingBackend:
     def complete(self, prompt):
         if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
             self.compose_calls += 1
-            return self.cv_out
-        return self.audit_out
+            return Completion(self.cv_out)
+        return Completion(self.audit_out)
 
 
 # ── #28 (sixth branch): a conversational envelope around an otherwise-clean CV ──
@@ -1184,8 +1186,8 @@ def test_the_compose_prompt_carries_the_derived_identity_not_cvcfg(tmp_path):
             self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             self.prompts.append(prompt)
-            return CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
-                else "supported\tx\tSF1"
+            return Completion(CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+                else "supported\tx\tSF1")
 
     vault = _vault_with_candidate(
         tmp_path, {"forenames": "Distinctive", "surname": "Candidate",
@@ -1228,8 +1230,8 @@ def test_slop_allow_reaches_the_shipped_compose_prompt():
             self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             self.prompts.append(prompt)
-            return CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
-                else "supported\tx\tSF1"
+            return Completion(CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+                else "supported\tx\tSF1")
 
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
@@ -1294,7 +1296,7 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
             self.prompts.append(prompt)
             # compose prompts contain "SOURCE BUNDLE" and not "auditing"; audit
             # prompts contain both, so this mirrors FakeBackend's routing.
-            return self.cv if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else "supported\tx\tSF1"
+            return Completion(self.cv if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else "supported\tx\tSF1")
 
     be = RecordingBackend(slop_cv)
     v = FakeVault(ENTRIES)
@@ -1340,7 +1342,7 @@ def test_advisory_audit_failure_does_not_block_render(monkeypatch):
             # (same routing rule as FakeBackend: contains "SOURCE BUNDLE" AND
             # "auditing") raises, simulating a backend timeout/error.
             if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
-                return self.cv
+                return Completion(self.cv)
             self.audited = True
             raise RuntimeError("backend timeout during advisory audit")
 
@@ -2006,11 +2008,11 @@ class _SequenceBackend:
                 # times out, or a reply is truncated at max_tokens. compose() catches
                 # nothing, so this lands in the engine's loop.
                 raise BackendError("compose timeout: every backend leg is down")
-            return _DRAFTS[name]
+            return Completion(_DRAFTS[name])
         body = prompt.partition(self._CV_MARKER)[2]
         assert body, "cv/audit.py no longer carries the CV under '=== CV ==='"
         self.audited.append(body[:-1])   # build_audit_prompt appends exactly one "\n"
-        return self.audit_out
+        return Completion(self.audit_out)
 
 
 def _run_sequence(monkeypatch, drafts):
@@ -2261,17 +2263,17 @@ class _VoiceBackend:
                 # the other's prompt by accident. Indexed `[1]`, never `[-1]`: a marker
                 # that stopped matching would make `[-1]` hand back the WHOLE prompt and
                 # scan the preamble with it, passing silently.
-                return _voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks)
-            return self.voice_out
+                return Completion(_voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks))
+            return Completion(self.voice_out)
         if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
             self.calls.append("compose")
             self.compose_prompts.append(prompt)
             assert len(self.compose_prompts) <= len(self.drafts), (
                 f"the engine composed {len(self.compose_prompts)} times; this "
                 f"sequence scripts {len(self.drafts)} draft(s)")
-            return _DRAFTS[self.drafts[len(self.compose_prompts) - 1]]
+            return Completion(_DRAFTS[self.drafts[len(self.compose_prompts) - 1]])
         self.calls.append("audit")
-        return self.audit_out
+        return Completion(self.audit_out)
 
 
 def _run_voice_sequence(monkeypatch, drafts, *, voice_check, entries=ENTRIES, **kw):
@@ -2814,9 +2816,9 @@ class RecordingBackend:
     def complete(self, prompt):
         if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
             self.prompts.append(prompt)
-            return self.cv_out
+            return Completion(self.cv_out)
         self.audit_prompts.append(prompt)
-        return "supported\tx\tSF1"
+        return Completion("supported\tx\tSF1")
 
 
 class SkillsVault(FakeVault):

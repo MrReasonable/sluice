@@ -76,7 +76,7 @@ def run_voice(backend, excerpt: str):
     (a backend error or timeout) is the CALLER's job, exactly as it is for run_audit:
     this function makes no attempt to swallow anything itself, so a caller that forgets
     to wrap it finds out immediately rather than shipping a silent no-op."""
-    report = backend.complete(build_voice_prompt(excerpt))
+    report = backend.complete(build_voice_prompt(excerpt)).text
     # Matches the FLAG token exactly -- the first tab-delimited field of the
     # `flag\t<phrase>\t<why>` line the prompt asks for -- not a prefix, the same
     # discipline `cv/audit.py`'s `unsupported_claims` states for the same reason one

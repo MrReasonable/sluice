@@ -20,6 +20,7 @@ Two design points, both load-bearing:
 """
 import json
 import re
+from sluice.core.backends import Completion
 
 # Stable first-line prefixes of the five call sites. cv-compose is a prefix
 # because its first line is fully interpolated (see module docstring).
@@ -73,15 +74,15 @@ class ScriptedBackend:
         self.prompts.append(prompt)
         first = prompt.splitlines()[0] if prompt else ""
         if first.startswith(_TRIAGE):
-            return self._triage(prompt)
+            return Completion(self._triage(prompt))
         if first.startswith(_CV):
-            return self._cv(first)
+            return Completion(self._cv(first))
         if first.startswith(_AUDIT):
-            return self._audit()
+            return Completion(self._audit())
         if first.startswith(_TRACK):
-            return self._track(prompt)
+            return Completion(self._track(prompt))
         if first.startswith(_RESOLVE):
-            return self._resolve(prompt)
+            return Completion(self._resolve(prompt))
         raise AssertionError(
             f"ScriptedBackend: unrecognised prompt (first line {first!r}). "
             "Add a handler rather than returning a silent default.")

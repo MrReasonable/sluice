@@ -2482,6 +2482,9 @@ class Sluice:
         # docstring), so triage's and track's backends are still checked.
         targets = _doctor.enumerate_targets(triage_cfg, cv_cfg, track_cfg)
         if probe is None:
+            # The RESULT is discarded: this probe asks whether a round trip succeeds
+            # at all, and a backend that cannot answer raises. Nothing reads `.text`, so
+            # nothing here depends on the seam's return shape.
             probe = lambda b: b.complete(_doctor.PROBE_PROMPT)  # noqa: E731
 
         # A provider is usable only if make_backend could actually build it, which

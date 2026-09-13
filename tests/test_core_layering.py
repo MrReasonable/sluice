@@ -83,7 +83,7 @@ def test_core_module_discovery_finds_the_real_fleet():
     # message behind is not hypothetical: #305 added core/fx.py, moved this to 25, and left
     # the message reading "expected 24" -- so the guard would have MIS-STATED the number it
     # was enforcing at the exact moment it fired, which is when a reader most needs it.
-    expected = 25
+    expected = 26
     assert len(modules) == expected, (
         f"core/ module discovery found {len(modules)} files, expected {expected}: "
         f"{sorted(names)}.\n"

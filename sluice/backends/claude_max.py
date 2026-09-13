@@ -10,7 +10,8 @@ from sluice.core.backends import ClaudeMaxBackend
 
 
 def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=None,
-          max_tokens=None, claude_host="", claude_path="claude", effort="max"):
+          max_tokens=None, claude_host="", claude_path="claude", effort="max",
+          provider=""):
     extra = {} if runner is None else {"runner": runner}
     # OMIT when None rather than coalescing to a number spelled here. An earlier version
     # of this factory carried its own `_DEFAULT_TIMEOUT = 300` and claimed to be "one
@@ -22,6 +23,12 @@ def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=Non
     # otherwise reach `subprocess.run(timeout=None)` and wait forever.
     if timeout is not None:
         extra["timeout"] = timeout
+    # See the deepseek/openai/anthropic siblings: omit when unset so the class default
+    # applies. This backend reports no token COUNTS (flat-rate, text mode), but it still
+    # labels the call with its provider and model so the usage log can record that it
+    # happened -- see ClaudeMaxBackend.complete.
+    if provider:
+        extra["provider"] = provider
     return ClaudeMaxBackend(model, host=claude_host, claude_path=claude_path,
                             effort=effort, **extra)
 

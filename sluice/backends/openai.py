@@ -9,7 +9,8 @@ from sluice.core.backends import BackendError, DEFAULT_BASE_URLS, OpenAiCompatib
 
 
 def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=None,
-          max_tokens=None, claude_host="", claude_path="claude", effort="max"):
+          max_tokens=None, claude_host="", claude_path="claude", effort="max",
+          provider=""):
     if not api_key:
         raise BackendError(
             "backend 'openai' requires an api_key (set the provider's API key env var)")
@@ -23,6 +24,11 @@ def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=Non
     # `plugins.get`, bypassing make_backend's coalesce entirely.
     if timeout is not None:
         extra["timeout"] = timeout
+    # Same omit-when-unset idiom: an empty provider means the caller expressed no
+    # preference, and the class supplies its own generic label. make_backend always
+    # passes one; a direct `plugins.get` construction (tests) need not.
+    if provider:
+        extra["provider"] = provider
     return OpenAiCompatibleBackend(model, api_key=api_key,
                                    base_url=base_url or DEFAULT_BASE_URLS["openai"],
                                    max_tokens=max_tokens, **extra)

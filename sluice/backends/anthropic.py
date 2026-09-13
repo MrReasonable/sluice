@@ -9,7 +9,8 @@ from sluice.core.backends import AnthropicBackend, BackendError, DEFAULT_BASE_UR
 
 
 def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=None,
-          max_tokens=None, claude_host="", claude_path="claude", effort="max"):
+          max_tokens=None, claude_host="", claude_path="claude", effort="max",
+          provider=""):
     if not api_key:
         raise BackendError(
             "backend 'anthropic' requires an api_key (set the provider's API key env var)")
@@ -23,6 +24,9 @@ def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=Non
     # `plugins.get`, bypassing make_backend's coalesce entirely.
     if timeout is not None:
         extra["timeout"] = timeout
+    # See the deepseek/openai siblings: omit when unset so the class default applies.
+    if provider:
+        extra["provider"] = provider
     mt = {} if max_tokens is None else {"max_tokens": max_tokens}
     return AnthropicBackend(model, api_key=api_key,
                             base_url=base_url or DEFAULT_BASE_URLS["anthropic"],

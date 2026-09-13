@@ -400,5 +400,5 @@ def compose(backend, bundle_text, jd, company, role, *, name, contact="",
                                         contact=contact, employers=employers,
                                         prior_violations=prior_violations,
                                         slop_allow=slop_allow,
-                                        skills_requested=skills_requested))
+                                        skills_requested=skills_requested)).text
     return _unwrap_agent_envelope(raw)

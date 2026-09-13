@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from sluice.track.config import TrackConfig
 from sluice.track import classify as C
+from sluice.core.backends import Completion
 
 
 def _lead(company, role, status="applied", slug=None):
@@ -12,7 +13,7 @@ def _lead(company, role, status="applied", slug=None):
 
 class FakeBackend:
     def __init__(self, reply): self.reply = reply
-    def complete(self, prompt): return self.reply
+    def complete(self, prompt): return Completion(self.reply)
 
 
 class RaisingBackend:
