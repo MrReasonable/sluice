@@ -411,6 +411,41 @@ def test_an_unconfigured_run_writes_no_usage_file(tmp_path, monkeypatch):
         "reads and reports, and must bring nothing into existence")
 
 
+def test_the_off_path_names_the_location_the_user_actually_chose(tmp_path, monkeypatch, capsys):
+    """With a location set but the switch off, the message must name THAT location.
+
+    Measured before the fix: `cmd_usage` resolved with a literal `config_value=""`, so it printed
+    the XDG default to a user who had already chosen a path, and then advised them to "set
+    `usage_jsonl:` to move it" -- the key they had just set. The person reading this message is
+    deciding whether to keep an employer-naming file out of their backups and sync, so naming the
+    wrong file is the whole harm rather than a cosmetic slip.
+
+    Both branches are asserted, because a fix that always echoed the configured value would print
+    an empty location on the ordinary unconfigured install -- the case the message exists for."""
+    monkeypatch.delenv("SLUICE_USAGE", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    mine = str(tmp_path / "mine-usage.jsonl")
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"vault_dir: {tmp_path / 'v'}\nusage_jsonl: {mine}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg))
+
+    assert main(["usage"]) == 0
+    out = capsys.readouterr().out
+    assert mine in out, f"the off path named a location the user did not choose: {out}"
+    assert "sluice_usage.jsonl" not in out, (
+        "the off path named the XDG default to a user who configured a different file")
+    assert "Set `usage_jsonl:`" not in out, (
+        "the off path advised setting the key the user had already set")
+
+    # The unconfigured branch still names the default AND how to move it.
+    cfg.write_text(f"vault_dir: {tmp_path / 'v'}\n", encoding="utf-8")
+    assert main(["usage"]) == 0
+    bare = capsys.readouterr().out
+    assert str(tmp_path / "state" / "sluice" / "sluice_usage.jsonl") in bare
+    assert "Set `usage_jsonl:`" in bare, (
+        "the unconfigured branch stopped telling the user how to move the file")
+
+
 def test_json_stays_machine_readable_when_no_log_is_configured(tmp_path, monkeypatch, capsys):
     """`--json` promises machine-readable totals, so the unconfigured path must not emit prose.
 

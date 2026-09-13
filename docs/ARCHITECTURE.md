@@ -31,8 +31,9 @@ Shared by every sub-app:
   on error; `make_backend` builds any of them by name. `complete()` returns a
   `Completion` (text plus optional `Usage`), not a bare string, since #308.
 - `usage.py`: per-call token accounting (#308), OFF by default. `MeteredBackend` decorates
-  the backend seam and appends one JSONL row per call -- stage, provider, model,
-  and the counts the provider reported; `meter(log, backend, stage, lead=None)` is
+  the backend seam and appends one JSONL row per call -- stage, provider, model, the counts the
+  provider reported, and on the three `cv-*` stages the lead's SLUG, which is why the feature is
+  off by default; `meter(log, backend, stage, lead=None)` is
   the wrap, and returns the backend UNCHANGED when there is no log, which is the
   DEFAULT state rather than an edge case -- `Sluice._usage_log` answers None until
   `record_usage` is true (or `SLUICE_USAGE` names a path, which also switches it on),

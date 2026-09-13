@@ -2390,13 +2390,21 @@ def cmd_usage(args, config) -> int:
             # flag is the one a consumer branches on.
             print(json.dumps({"configured": False, "path": None, "days": args.days}))
             return 0
-        default = resolve(env_var="SLUICE_USAGE", config_value="",
-                          kind="state", name="sluice_usage.jsonl")
+        # THE USER'S OWN `usage_jsonl`, not a literal "". A hard-coded empty value named the XDG
+        # default to someone who had already chosen a location, and then advised them to set the
+        # key they had just set -- told to exactly the person deciding whether to keep an
+        # employer-naming file out of their backups. Resolution still creates nothing.
+        named = getattr(config, "usage_jsonl", "")
+        where = resolve(env_var="SLUICE_USAGE", config_value=named,
+                        kind="state", name="sluice_usage.jsonl")
+        move = ("" if named else
+                " Set `usage_jsonl:` as well to put it somewhere else, or export SLUICE_USAGE,"
+                " which does both.")
         print("usage: token accounting is off, so nothing is being recorded.\n"
               "Turn it on with `record_usage: true` at the top level of your config. The log "
-              f"then lands at\n  {default}\n"
-              "unless you also set `usage_jsonl:` to move it (or export SLUICE_USAGE, which "
-              "does both).\n"
+              f"then lands at\n  {where}\n"
+              f"which is {'the location you configured' if named else 'the default location'}."
+              f"{move}\n"
               "Recording starts with the next run that makes an LLM call. Note the per-lead "
               "rows name the\nemployers you are applying to, which is why it is off by "
               "default.")
