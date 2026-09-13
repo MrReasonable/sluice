@@ -139,6 +139,7 @@ Shared by every sub-app:
   | source health | `SLUICE_HEALTH` | state | |
   | disabled sources | `SLUICE_DISABLED` | state | |
   | triage audit | `TRIAGE_AUDIT` | state | was a dead config key |
+  | token usage | `SLUICE_USAGE` | state | #308; no `_LEGACY` row -- new in its release, so nothing can be left behind |
   | dossier cache | `DOSSIER_DIR` | cache | ONE root key; was two sub-app keys |
   | Google OAuth token | *none* | state | written `0600`, parent created |
   | vault | `VAULT_DIR` | **unmoved** | gains a config key; precedence in `stores/vault.py:_make` |
@@ -267,6 +268,15 @@ whichever neighbour it was written next to:
     queue and every writer hits the database independently. It raises for its
     own reason (F1): an empty read silently discards the backlog of proposals a
     human has not acted on, and reports the run as ordinary.
+  - `UsageLog.read_recent` (`core/usage.py`, #308) is neither read-modify-written nor a
+    queue, and raises for a third reason: an empty read prints "No calls recorded in this
+    window", which is a claim about MONEY that the operator acts on. `cli.py::cmd_usage`
+    renders the OSError as exit 1 naming the file, so the tier costs a diagnosis rather
+    than a traceback. A MISSING file still returns `[]` -- a real first-run state -- and
+    the read creates nothing. Note this is the opposite ruling from the same file's WRITE
+    (`UsageLog.append` warns and continues), because the two failures cost different
+    things: a failed append loses a measurement of work already done, while a failed read
+    is the whole of what the reader asked for.
 - **Warn and continue** when a wrong answer is recoverable AND the caller only
   reports it: `_disabled_or_warn` (`cli.py`), used by `list-sources`, where a
   wrong answer misprints a status line. Its raising sibling `_load_disabled` is
