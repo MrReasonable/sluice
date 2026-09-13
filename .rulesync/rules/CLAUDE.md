@@ -273,6 +273,38 @@ key, and warns loudly; `--backend fallback` hard-errors instead, because there i
 to. Construction failures are raised at build time, not at first call. See `_select_backend` in
 `cli.py`.
 
+**`complete()` returns a `Completion`, not a string (#308), and `Usage.input_tokens` is DEFINED
+rather than copied.** The seam carries the text plus an optional `Usage`, so a call's cost belongs
+to that call -- `FallbackBackend.last_backend` is the counter-example the widening was argued
+against, overwritten per call and unable to say which leg served which completion. `input_tokens`
+means the TOTAL input including anything served from cache, and each provider's parse normalises
+INTO that definition: Anthropic's own `input_tokens` counts uncached tokens only, with
+`cache_read_input_tokens`/`cache_creation_input_tokens` beside it rather than inside it, so copying
+the field across puts the cache hit rate above 1.0 on exactly the well-cached call the number
+exists to report. DeepSeek's docs do not state how `prompt_tokens` relates to its hit/miss split,
+so the parser sums hit+miss when both are present and assumes no relation. Every count is
+`int | None`, and None means NOT REPORTED: `claude-max` is flat-rate in text mode and answers with
+its identity and no counts, because zeros would claim the call was free, and a bare `usage=None`
+would leave its calls anonymous in the log. `provider` is threaded down from `make_backend`, never
+written as a literal in each factory -- that is a third spelling of something the module already
+states twice, so a module copied to add a provider would keep the original's label and mislabel
+every row silently. Spend from a call that billed and then RAISED rides on `BackendError.usage`,
+the only carrier where there is no return value.
+
+**Metering is wrapped where a backend is HANDED to a stage, not where it is called.** `meter(log,
+backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log.
+Almost every wrap is in `core/app.py`, because almost every backend built there serves exactly one
+stage; `cv/engine.py` is the exception and takes the log itself, since it spends ONE backend on
+compose, audit and voice and is the only place a lead id is in scope. So a guard of the shape
+"every module holding a `.complete(` also meters" is FALSE BY DESIGN -- the first draft of
+`tests/test_usage_wiring.py` asserted that and would have had to be narrowed until it checked
+nothing. What that file rosters instead is both ENDS against hand-written targets: every
+`.complete(` call site, and every stage literal `meter(...)` passes. It cannot prove the wiring
+FIRES, which is a dataflow question, so each stage also names the runtime test that witnesses it
+recording. That gap is not hypothetical: a `.complete(` in `core/app.py::doctor` was claimed
+metered by a COMMIT MESSAGE while no `meter(...)` call existed, and the report was short by every
+probe ever run with nothing red.
+
 **Sources are declarative plugins.** A module in `sluice/ingest/sources/` calls `register(...)` at
 import time; the package auto-imports every sibling, and one broken plugin is logged and skipped
 rather than sinking the registry. Most boards are one `BrowserListSource(id, extractor_js,

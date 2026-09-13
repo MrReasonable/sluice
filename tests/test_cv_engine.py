@@ -2248,6 +2248,15 @@ class _VoiceBackend:
         self.compose_prompts = []
         self.voice_prompts = []
 
+    def _usage(self, prompt):
+        """A synthetic usage report, because a real backend always files one (#308). Sized
+        from the prompt so the three stages come out in realistic proportions rather than
+        uniform -- mirrors tests/harness/backend.py::ScriptedBackend._usage."""
+        from sluice.core.backends import Usage
+        return Usage(provider="scripted", model="scripted-model",
+                     input_tokens=max(1, len(prompt) // 4), output_tokens=1,
+                     cache_read_tokens=0)
+
     def complete(self, prompt):
         first = prompt.splitlines()[0] if prompt else ""
         if first.startswith("You are judging the VOICE"):
@@ -2263,17 +2272,17 @@ class _VoiceBackend:
                 # the other's prompt by accident. Indexed `[1]`, never `[-1]`: a marker
                 # that stopped matching would make `[-1]` hand back the WHOLE prompt and
                 # scan the preamble with it, passing silently.
-                return Completion(_voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks))
-            return Completion(self.voice_out)
+                return Completion(_voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks), usage=self._usage(prompt))
+            return Completion(self.voice_out, usage=self._usage(prompt))
         if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
             self.calls.append("compose")
             self.compose_prompts.append(prompt)
             assert len(self.compose_prompts) <= len(self.drafts), (
                 f"the engine composed {len(self.compose_prompts)} times; this "
                 f"sequence scripts {len(self.drafts)} draft(s)")
-            return Completion(_DRAFTS[self.drafts[len(self.compose_prompts) - 1]])
+            return Completion(_DRAFTS[self.drafts[len(self.compose_prompts) - 1]], usage=self._usage(prompt))
         self.calls.append("audit")
-        return Completion(self.audit_out)
+        return Completion(self.audit_out, usage=self._usage(prompt))
 
 
 def _run_voice_sequence(monkeypatch, drafts, *, voice_check, entries=ENTRIES, **kw):
@@ -3029,3 +3038,37 @@ def test_one_malformed_skills_value_fails_every_lead_in_the_run():
     assert [r.status for r in results] == ["dry-run", "dry-run", "dry-run"], (
         "the control run must succeed, or the failure above proves nothing about the "
         "malformed value")
+
+
+def test_the_voice_check_call_is_metered_as_its_own_stage(monkeypatch, tmp_path):
+    """cv spends ONE backend on three stages, so each call must carry its own label (#308).
+
+    This is the runtime witness `tests/test_usage_wiring.py::_STAGES` names for `cv-voice`,
+    and the reason cv takes the usage log rather than a pre-metered backend: a stage fixed
+    where the backend was BUILT would label all three `cv-compose`, and the usage report
+    would then answer "which stage is expensive" with the only stage it knew about. The
+    e2e test covers compose and audit on the default path; voice needs `cv.voice_check` on,
+    which is off by default, so it is witnessed here.
+
+    The lead is asserted too: it is in scope only inside this loop, and a row without it
+    cannot attribute a CV's cost to the application it was composed for.
+    """
+    import json
+
+    from sluice.core.usage import UsageLog
+
+    _served(monkeypatch)
+    log = UsageLog(str(tmp_path / "usage.jsonl"))
+    be = _VoiceBackend(["clean"])
+    cfg = _cfg()
+    cfg.voice_check = True
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    res = run_one(note, FakeVault(ENTRIES), cfg, be, FakeCache(),
+                  renderer=FakeRenderer(), usage=log)
+    assert res.status == "rendered"
+    assert be.calls == ["compose", "voice", "audit"]     # all three really happened
+
+    rows = [json.loads(ln) for ln in open(log.path, encoding="utf-8") if ln.strip()]
+    # One row per call, each under its OWN stage -- not three rows under one label.
+    assert [r["stage"] for r in rows] == ["cv-compose", "cv-voice", "cv-audit"]
+    assert all(r["lead"] == str(note.ref) for r in rows)

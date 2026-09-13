@@ -2482,6 +2482,7 @@ class Sluice:
         from sluice.apply.config import load_apply_config
         from sluice.core import doctor as _doctor
         from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
+        from sluice.core.usage import meter
         from sluice.core.protocols import RenderDependencyError, RenderError
         from sluice.cv.config import load_cv_config
         from sluice.track.config import load_track_config
@@ -2518,7 +2519,19 @@ class Sluice:
             # The RESULT is discarded: this probe asks whether a round trip succeeds
             # at all, and a backend that cannot answer raises. Nothing reads `.text`, so
             # nothing here depends on the seam's return shape.
-            probe = lambda b: b.complete(_doctor.PROBE_PROMPT)  # noqa: E731
+            #
+            # METERED (#308), and the wrap belongs INSIDE this default rather than around
+            # `probe(...)` at the call site. `doctor` round-trips every configured backend
+            # unless --offline, so those tokens are real spend and omitting them makes "what
+            # did I spend" wrong by however many probes were run. But an INJECTED probe is a
+            # stand-in FOR the round trip, not one: it spends nothing, so metering it would
+            # record calls that never happened -- and, measured, it also broke a test that
+            # discriminates on the backend's own type (`isinstance(b,
+            # OpenAiCompatibleBackend)`), because a wrapper is not the class it wraps. An
+            # injected probe therefore receives the bare backend.
+            usage = self._usage_log()
+            probe = lambda b: meter(usage, b, "doctor-probe").complete(   # noqa: E731
+                _doctor.PROBE_PROMPT)
 
         # A provider is usable only if make_backend could actually build it, which
         # takes BOTH guards: the name in DEFAULT_MODELS (its default-model + the

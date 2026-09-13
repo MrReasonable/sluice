@@ -101,6 +101,16 @@ baseline_rel: My CV/CV.md
 # browser profile. Only triage fetches in parallel today; a per-sub-app key would have to
 # be answered twice the moment cv does, for one profile.
 
+# Where the per-call token-usage log goes (#308): one JSON line per LLM call, holding the
+# stage, the provider and model, and the token counts the provider reported.
+# `job-sluice usage` reads it back and reports what you spent, by stage and by model, with
+# the cache hit rate. ON by default -- leave this commented and it lands under the XDG state
+# root -- because the question is always about a run that has already finished, and an
+# opt-in log answers it with "no data". Append-only, never rotated; delete it if you want to
+# start the history over. A cached input token can cost two orders of magnitude less than an
+# uncached one, so the hit rate is the single most actionable number in that report.
+# usage_jsonl:        # <- uncomment and set YOUR OWN
+
 # Hosts the dossier fetcher may reach even though they are not globally routable.
 # The fetcher follows lead urls scraped off job boards, so by default it refuses
 # non-http(s) schemes and any address that is not globally routable (loopback,

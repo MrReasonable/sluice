@@ -3333,3 +3333,59 @@ def test_an_absent_evidence_fact_is_not_graded_as_zero():
     assert rows["Experience Library"].state != DEAD, (
         "an absent fact was graded as a zero count, which is what preflight forbids")
     assert rows["Experience Library"].blocks == ()
+
+
+def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
+    """`doctor` round-trips every configured backend unless --offline, so those tokens are
+    real spend and must appear in `job-sluice usage` (#308).
+
+    This is the runtime witness `tests/test_usage_wiring.py::_STAGES` names for
+    `doctor-probe`, and it exists because the gap it closes was live: a commit message
+    claimed the probe was metered while no `meter(...)` call existed anywhere near it. The
+    report was short by however many probes had been run, with nothing red.
+
+    Driven with the DEFAULT probe, not an injected one, because the wrap lives inside that
+    default -- an injected probe is a stand-in FOR the round trip rather than one, spends
+    nothing, and is deliberately reached unmetered (metering it would record calls that
+    never happened, and a wrapper is not the class an injected probe's `isinstance` check
+    discriminates on).
+
+    The BACKEND FACTORY is what is faked, not the transport: `make_backend`'s `http`
+    parameter defaults at function-definition time, so patching `_urlopen` on the module
+    does not reach the default -- doctor passes no `http=`, and the call would resolve real
+    DNS, which the suite blocks outright. Patching the factory is also the more direct
+    statement of the property under test: the default probe meters whatever backend it is
+    handed.
+    """
+    import json
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    usage_path = tmp_path / "usage.jsonl"
+    monkeypatch.setenv("SLUICE_USAGE", str(usage_path))
+
+    class _Stub:
+        """The minimum doctor's probe touches: a `complete` that answers. It reports a Usage
+        naming its own provider/model, exactly as every real provider does."""
+
+        def __init__(self, provider, model):
+            self.provider, self.model = provider, model
+
+        def complete(self, prompt):
+            from sluice.core.backends import Completion, Usage
+            return Completion("OK", usage=Usage(provider=self.provider, model=self.model,
+                                                input_tokens=7, output_tokens=1))
+
+    monkeypatch.setattr("sluice.core.backends.make_backend",
+                        lambda provider, model="", **kw: _Stub(provider, model))
+
+    Sluice().doctor()
+
+    rows = [json.loads(ln) for ln in open(usage_path, encoding="utf-8") if ln.strip()]
+    assert rows, "a live doctor run recorded no usage at all"
+    assert {r["stage"] for r in rows} == {"doctor-probe"}
+    # Each row identifies WHICH provider was probed: a doctor run against several configured
+    # backends is several calls, and a report that could not tell them apart would answer
+    # "where did the tokens go" with one undifferentiated number.
+    assert all(r["provider"] and r["model"] for r in rows)
+    assert len({r["provider"] for r in rows}) >= 1
