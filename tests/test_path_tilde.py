@@ -693,6 +693,8 @@ _EXPANDUSER_SITES = {
     # miscounted them.
     "core/paths.py": "the explicit branch and the XDG fallback -- resolution's own ingress",
     "core/vault.py": "$VAULT_DIR or a constructor argument, at construction",
+    "core/app.py": ("$VAULT_DIR or the config file's vault_dir, both unexpanded, re-read for "
+                    "#223's re-verdict scope when a store has no dir"),
     "onboard/questions.py": "an answer typed at the wizard prompt",
     "cli.py": "--vault against $VAULT_DIR, and the preset handed to `sluice init`",
     "renderers/template.py": "cv.template, read from YAML where no shell expanded it",
@@ -732,8 +734,10 @@ def test_the_expanduser_roster_matches_the_source():
             found[str(py.relative_to(pkg))] = n
     assert found, "the expanduser sweep matched nothing -- it stopped finding call sites"
     assert set(found) == set(_EXPANDUSER_SITES), (
-        f"the normalisation convention in paths.py's docstring and ARCHITECTURE.md is "
-        f"stated over the wrong set of files; only-in-source="
+        f"_EXPANDUSER_SITES -- the roster paths.py's docstring and ARCHITECTURE.md defer "
+        f"to for which modules expand at ingress -- names the wrong set of files; "
+        f"record the new module's reason there, or drop a module that stopped; "
+        f"only-in-source="
         f"{sorted(set(found) - set(_EXPANDUSER_SITES))} only-in-roster="
         f"{sorted(set(_EXPANDUSER_SITES) - set(found))}")
     assert any(n > 1 for n in found.values()), (

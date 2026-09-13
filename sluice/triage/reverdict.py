@@ -17,8 +17,9 @@ re-verdicted in silence -- which is the entire harm this exists to prevent.
 **Keyed per VAULT, not per install.** The notice is a claim about one vault's
 accumulated notes. A single global flag meant acknowledging on vault A silenced it for
 vault B, which then re-verdicted in silence -- the same harm, through a door the first
-version left open. The file maps a vault-path hash to the date its notice was shown; the
-date is read by nothing and exists so a human who finds the file can tell what it is.
+version left open. The file maps a hash of each vault's scope to the date its notice was
+shown; the date is read by nothing and exists so a human who finds the file can tell what
+it is.
 
 A marker FILE rather than a row in an existing store. The two dedup stores REFUSE when
 relocated, and rightly -- an empty dedup set
@@ -51,7 +52,7 @@ def _path(path: str | None = None) -> str:
                            name="role_type_reverdict_ack.json")
 
 
-def _key(vault_dir: str) -> str:
+def _key(scope: str) -> str:
     """Which VAULT this acknowledgement is about.
 
     The notice is a claim about one vault's accumulated notes, so the marker has to be
@@ -59,23 +60,27 @@ def _key(vault_dir: str) -> str:
     notice for vault B, which then re-verdicted in silence -- the exact harm, reached
     through a door the first version left open.
 
-    A hash rather than the path itself, for the reason `dedup_key` gives: a path is the
-    user's own directory layout, and this file lives outside the vault. Absolutised
-    first so `./vault` and the same directory named in full share one key.
+    A hash rather than the scope itself, for the reason `dedup_key` gives: the scope
+    carries the user's own directory layout, and this file lives outside the vault.
 
-    `abspath` only, deliberately NOT `expanduser`. This is not an INGRESS point -- the
-    value arrives as `Vault.dir`, which `Vault` expanded at construction -- and
-    `tests/test_path_tilde.py` enumerates the ingress sites from the source to keep that
-    convention checkable. Adding a redundant expansion here put this module in that
-    roster and made the convention state itself over a file that does not participate in
-    it, which the sweep said out loud.
+    Hashed VERBATIM (#324). The value is `Sluice._reverdict_scope`'s output, `vault:<dir>`
+    -- a scope string, not a path -- and this function used to `abspath` it so that
+    `./vault` and its absolute spelling shared a key. A string with no leading `/` gets the
+    process cwd prepended, so the key was per (vault, cwd): a scheduled run and a hand-run
+    one start in different directories, and each new cwd re-showed the notice, wrote
+    nothing and exited 0. Every test passed a bare path, where `abspath` is correct, so
+    none of them could see it. The directory is resolved where it is still a path, in
+    `_reverdict_scope`, and nothing here interprets the scope -- so no path function
+    belongs here: each would parse a string this function does not own.
     """
-    return hashlib.sha256(
-        os.path.abspath(vault_dir or "").encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256((scope or "").encode("utf-8")).hexdigest()[:16]
 
 
-def acknowledged(vault_dir: str, path: str | None = None) -> bool:
+def acknowledged(scope: str, path: str | None = None) -> bool:
     """Has the re-verdict notice already been shown FOR THIS VAULT?
+
+    `scope` is the store identity `Sluice._reverdict_scope` computes, compared exactly as
+    given (see `_key`).
 
     Any unreadable or malformed marker reads as NOT acknowledged. Failing toward showing
     the notice again is the cheap direction -- it costs one skipped run -- while failing
@@ -86,12 +91,12 @@ def acknowledged(vault_dir: str, path: str | None = None) -> bool:
     try:
         with open(target, encoding="utf-8") as f:
             shown = json.load(f)
-        return isinstance(shown, dict) and _key(vault_dir) in shown
+        return isinstance(shown, dict) and _key(scope) in shown
     except (OSError, ValueError):
         return False
 
 
-def acknowledge(vault_dir: str, path: str | None = None, *, today=None) -> bool:
+def acknowledge(scope: str, path: str | None = None, *, today=None) -> bool:
     """Record that the notice was shown. Returns whether it LANDED, and never raises.
 
     The return value is load-bearing rather than informational. The caller returns early
@@ -115,7 +120,7 @@ def acknowledge(vault_dir: str, path: str | None = None, *, today=None) -> bool:
                 shown = {}
         except (OSError, ValueError):
             shown = {}
-        shown[_key(vault_dir)] = (today or date.today()).isoformat()
+        shown[_key(scope)] = (today or date.today()).isoformat()
         os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
         with open(target, "w", encoding="utf-8") as f:
             json.dump(shown, f)

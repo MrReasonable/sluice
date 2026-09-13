@@ -27,31 +27,31 @@ behaviour change smuggled into a path sweep.
 NORMALISATION, stated once here because it was four separate decisions with no shared
 home and two of them read as contradicting each other:
 
-    expanduser at INGRESS -- wherever a path first arrives from outside: this module's
-    explicit branch and its XDG fallback, `Vault.__init__`, `onboard/questions.py`,
-    `cli.py` (both its `--vault`-versus-`$VAULT_DIR` comparison and the preset it hands
-    `sluice init`), `renderers/template.py` (`cv.template`, read out of YAML where
-    no shell expanded it), and `track/auth.py` (`--client-secrets`, in its `=`-joined
-    form no shell expands). Deliberately NO count: this paragraph has carried a wrong
-    one twice -- it said four when there were five, and five when a sixth landed -- and
-    nothing went red either time, because a number in prose is not a check.
+    expanduser at INGRESS -- wherever a path first arrives from outside. WHICH modules
+    those are is deliberately not listed here: `tests/test_path_tilde.py::_EXPANDUSER_SITES`
+    names each one with the reason it expands, and
     `tests/test_path_tilde.py::test_the_expanduser_roster_matches_the_source` derives the
     set from the source and fails in both directions, which is the only form of this
-    claim that can go stale loudly. Its granularity is the FILE, not the call: it compares
-    the set of modules CONTAINING an `expanduser` call against a roster keyed the same
-    way, so a brand-new module reds and a module that loses its last call reds, while a
-    SECOND ingress added inside a module already on the roster does not. That is a real
-    limit and it is stated rather than implied: a module on this roster can, and does,
-    spend more than one syntactic `expanduser` call on the single decision its roster
-    entry describes, so a per-call roster would pin formatting rather than convention.
-    NO COUNT here either -- and that is the third time of asking, because the sentence
-    you are reading shipped carrying a wrong one ("three of the modules" when it is two),
-    four lines below the warning above that a number in prose is not a check.
-    `test_the_expanduser_roster_matches_the_source` asserts the multi-call fact itself
-    rather than any number, which is the form of it that can go stale loudly.
+    claim that can go stale loudly. This paragraph used to name them by hand, and went
+    stale every way a list in prose can -- a wrong count twice (four when there were five,
+    five when a sixth landed), then a module missing outright when #324 added one -- with
+    nothing going red any of those times. The roster's granularity is the FILE, not the
+    call: it compares the set of modules CONTAINING an `expanduser` call against a roster
+    keyed the same way, so a brand-new module reds and a module that loses its last call
+    reds, while a SECOND ingress added inside a module already on the roster does not.
+    That is a real limit and it is stated rather than implied: a module on the roster
+    can, and does, spend more than one syntactic `expanduser` call on the single decision
+    its roster entry describes, so a per-call roster would pin formatting rather than
+    convention. NO COUNT here either -- this sentence once shipped carrying a wrong one
+    ("three of the modules" when it is two), a few lines below a warning that a number in
+    prose is not a check. `test_the_expanduser_roster_matches_the_source` asserts the
+    multi-call fact itself rather than any number, which is the form of it that can go
+    stale loudly.
     abspath ONLY where the value outlives the cwd it was read in -- either written down
     or compared. `questions.py` and `cli.py`'s preset write the answer into a config
-    file; `cli.py`'s comparison needs two spellings to be judged equal. Neither is true
+    file, and `Sluice._reverdict_scope` builds the #223 re-verdict scope that is hashed
+    into a state marker (with `realpath`, since that value is an IDENTITY);
+    `cli.py`'s comparison needs two spellings to be judged equal. Neither is true
     of a path this module returns, so it does not abspath, and a relative explicit value
     is handed back exactly as the caller wrote it.
     At CONSUMPTION, neither -- with one exception that is not really one: a path being

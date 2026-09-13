@@ -567,6 +567,16 @@ class Store(Protocol):
     """The lead/experience store. See tests/conformance/test_store_contract.py -- an
     implementation that does not pass that suite is not a Store, whatever it claims.
 
+    OPTIONAL ATTRIBUTE -- `dir`. Not declared below either, and for the same reason as
+    `preflight`: a store with no directory is still a store. `Sluice._reverdict_scope`
+    reads it via `getattr` to key #223's one-shot re-verdict acknowledgement to ONE store,
+    and falls back to the configured store name plus `VAULT_DIR`/`vault_dir` when it is
+    absent. So a store whose LOCATION depends on the process working directory -- an
+    implicit relative default, say -- MUST expose `dir` as that location. Without it every
+    copy of the store run from a different directory resolves to one fallback key, and the
+    first to acknowledge silences the notice for the rest, whose leads are then dismissed
+    unannounced.
+
     OPTIONAL MEMBER -- `preflight() -> dict`. Not declared below, for the identical
     reason `Renderer.precheck` is not: a Protocol member is a REQUIRED member, and the
     whole point of this hook is that a store may omit it. `sluice doctor` (core/app.py)
