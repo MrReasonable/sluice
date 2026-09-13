@@ -417,6 +417,59 @@ def test_a_genuine_scalar_typo_still_gets_the_diagnostic_repr(tmp_path):
         f"a genuine scalar typo lost its diagnostic repr: {e.value}")
 
 
+# The shipped switch is a BOOLEAN, and a truthy non-bool is the shape that fails towards ON.
+# Parametrized over the values PyYAML actually produces for the spellings a user reaches for:
+# every one of these is truthy, so `bool(...)` would enable token accounting -- including the
+# QUOTED "false" of someone switching it OFF.
+_TRUTHY_NON_BOOLS = ['"false"', '"true"', '"no"', "1", "0", "[]", '"off"']
+
+
+@pytest.mark.parametrize("literal", _TRUTHY_NON_BOOLS)
+def test_record_usage_refuses_a_value_that_is_merely_truthy(tmp_path, literal):
+    """`record_usage` gates a file that names the employers a user is applying to, so the
+    quiet-wrong-state bug class costs more here than a traceback would.
+
+    The load-bearing row is `"false"`: a quoted YAML scalar is a STRING, every non-empty string
+    is truthy, and `bool("false")` is True -- so the user switching the feature OFF would have
+    switched it on, with nothing said. `0` and `[]` are falsy and refused anyway: an int or a
+    list is not a statement about a switch, and accepting either invites `record_usage: 2`.
+
+    Loud at LOAD like `lead_ttl_days` and `min_jd_chars` above, and note the check is the MIRROR
+    of theirs rather than a copy -- for an int field a bool is the wrong type and must be refused
+    first, while here a bool is the only right one."""
+    path = _write(tmp_path, "flag.yaml", f"vault_dir: ./v\nrecord_usage: {literal}\n")
+    with pytest.raises(ValueError) as e:
+        load_config(path)
+    msg = str(e.value)
+    assert "record_usage" in msg, f"the refusal did not name the key: {msg}"
+    assert "boolean" in msg, f"the refusal did not say what was wanted: {msg}"
+
+
+@pytest.mark.parametrize("literal,expected", [
+    ("true", True), ("false", False), ("yes", True), ("no", False),
+    ("on", True), ("off", False), ("True", True),
+])
+def test_record_usage_accepts_every_spelling_yaml_resolves_to_a_bool(tmp_path, literal, expected):
+    """The other direction, so the refusal above cannot pass by rejecting everything.
+
+    PyYAML resolves all of these to a real `bool`, and each is a spelling someone will type --
+    `yes`/`on` especially, which is exactly why the QUOTED forms above have to be refused rather
+    than coerced. A validator that took only the word `true` would be a usage trap of its own."""
+    path = _write(tmp_path, "flag-ok.yaml", f"vault_dir: ./v\nrecord_usage: {literal}\n")
+    assert load_config(path).record_usage is expected
+
+
+def test_record_usage_is_off_when_the_key_is_absent_or_null(tmp_path):
+    """Absent and explicitly `~` both mean OFF -- the shipped state.
+
+    `record_usage:` with nothing after it is a NULL to YAML, not False, and a user writing it
+    means "I am not turning this on". Refusing it as a non-bool would be pedantic about a
+    perfectly clear intention; reading it as truthy would be the leak."""
+    assert load_config(_write(tmp_path, "absent.yaml", "vault_dir: ./v\n")).record_usage is False
+    path = _write(tmp_path, "null.yaml", "vault_dir: ./v\nrecord_usage:\n")
+    assert load_config(path).record_usage is False
+
+
 def test_apply_has_no_container_field_and_would_be_guarded_if_it_gained_one(
         tmp_path, monkeypatch):
     """`apply` is the loader with nothing to sweep, so it needs its own assertion.
