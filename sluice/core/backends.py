@@ -202,10 +202,15 @@ def _reported_anything(u: Usage) -> bool:
 
     Compared against a Usage carrying the same identity and NOTHING else, rather than by
     enumerating the count fields: a count added to `Usage` later defaults to None on both
-    sides of this comparison, so it is covered with no second edit here. Introspecting
-    `dataclasses.fields` to skip the two `str` fields was the first shape and is the
-    hand-list trap wearing a derivation's clothes -- `f.type` is the annotation as written,
-    so the skip would have keyed on a spelling.
+    sides of this comparison, so it is covered with no second edit here.
+
+    Introspecting `dataclasses.fields` to skip the two `str` fields was the first shape and
+    was measurably broken: `f.type` holds the EVALUATED annotation for this module (there is
+    no `from __future__ import annotations`), so it is `<class 'str'>` and `int | None`, and
+    `f.type != "str"` is therefore true of every field including the two identity strings --
+    which are never None, so the function would have answered True unconditionally. It would
+    also have meant something different again under postponed annotations, where `f.type` IS
+    the source spelling. A derivation that depends on which of those is in force is not one.
     """
     return u != Usage(provider=u.provider, model=u.model)
 

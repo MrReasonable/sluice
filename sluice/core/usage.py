@@ -82,12 +82,19 @@ class UsageLog:
     def append(self, entry: dict) -> None:
         """Append one row, and WARN rather than raise if the write fails.
 
-        This is the one place in the codebase that deliberately swallows a write error, and
-        the asymmetry is the argument: by the time a usage row is written the tokens are
+        The asymmetry is the argument: by the time a usage row is written the tokens are
         already spent and the verdict (or the composed CV) already earned, so failing the run
         because a telemetry append hit a full disk or a read-only mount destroys real work to
         protect a measurement of it. `triage/audit.py::AuditLog.append` does NOT do this,
         because an audit row is part of the record a user reads to understand a decision.
+
+        It is NOT the only deliberately-caught write failure in the tree, and the distinction
+        matters because "no silent failures" is a hard rule here. `cli.py::cmd_init` catches
+        OSError around each artefact it writes too -- but it COLLECTS each failure and returns
+        1, so the caller's exit code still reports it. This one does not reach the exit code at
+        all: the run succeeds and a WARNING is the whole signal. That is defensible only
+        because what is lost is a measurement of work rather than the work, which is exactly
+        why the same swallow would be wrong in `AuditLog` or in any write to the vault.
         """
         try:
             os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
@@ -154,10 +161,14 @@ class MeteredBackend:
 
         Present so a caller that reads it off whatever `meter` handed back gets the truth.
         `triage/engine.py` and `cv/engine.py` do `getattr(backend, "last_backend", None)`,
-        and without this property that reads None through a wrapper -- which `cli.py`'s
-        digest renders as "the judge was never called", indistinguishable from the three
-        legitimate nulls `_format_triage_digest` documents. A silent outage report is a
-        worse failure than the metering it would be a side effect of.
+        and without this property that reads None through a wrapper.
+
+        `cli.py::_format_triage_digest` documents THREE legitimate reasons `report.backend` is
+        null, and tells them apart by `report.sent_to_judge` rather than by the null itself --
+        so a spurious null on a run that DID judge lands on the third reading, "every batch
+        raised and the judge swallowed it". That is an outage report produced as a side effect
+        of turning metering on, which is a worse failure than the thing it would be a side
+        effect of.
         """
         return getattr(self.inner, "last_backend", None)
 
