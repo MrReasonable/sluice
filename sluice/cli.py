@@ -1127,6 +1127,26 @@ def cmd_triage_run(args, config) -> int:
     report = Sluice(config).triage(statuses=statuses, limit=args.limit,
                                    dry_run=args.dry_run, no_llm=args.no_llm,
                                    backend_role=args.backend)
+    # The engine STOPPED before changing any lead (see `TriageReport.stopped`). Handled
+    # first: a stopped report can carry the #223 notice with `reverdict_deferred` False,
+    # which is the APPLIED arm's condition below. Exit 1, without a traceback.
+    if report.stopped:
+        print(f"triage: STOPPED before changing any lead -- {report.stopped}. Fix that, "
+              "then run it again.", file=sys.stderr)
+        if report.reverdict_pending:
+            print(f"triage: {len(report.reverdict_pending)} lead(s) are judged differently "
+                  "by this version (#223); this run applied none of it:", file=sys.stderr)
+            for msg in report.reverdict_pending:
+                print(f"  {msg}", file=sys.stderr)
+        # The reason stays on the local terminal: it names a filesystem path, and the push
+        # goes to another service.
+        pending = (f" {len(report.reverdict_pending)} lead(s) are judged differently by "
+                   "this version (#223)." if report.reverdict_pending else "")
+        _notify_reporting(
+            "job-sluice triage: STOPPED before changing any lead -- the triage audit log "
+            f"failed the pre-write check; the run's output says why.{pending}",
+            config=config, label="triage-summary")
+        return 1
     # #223 §2.1, printed BEFORE the summary and returning early, because this run did
     # not triage anything and a summary of zeroes underneath the notice would read as an
     # ordinary quiet run. `role_type` records which SEARCH found a lead; leads written
@@ -1146,16 +1166,19 @@ def cmd_triage_run(args, config) -> int:
         # again by any re-judging under the same settings and exchange rates (a run refreshes
         # rates only under `triage.refresh_fx_rates`), so a sweep is no way back for it
         # -- this line once offered one. A lead it would keep may still sit at `dismiss`,
-        # left there or dismissed by the judge this run, and no default run selects it: a
-        # `--status dismiss` run re-judges it only with the judge, since `--no-llm` never
-        # writes a kept lead, and a hand move back to `new` puts it in the next default run.
+        # left there or dismissed by the judge this run, and no default run selects it. A
+        # hand move back to `new` puts that one lead in the next default run, so it comes
+        # first; a `--status dismiss` run re-judges it only with the judge, since `--no-llm`
+        # never writes a kept lead, and it takes EVERY lead at `dismiss`, including ones the
+        # user dismissed on purpose.
         print(f"triage: APPLIED a re-verdict it could not record first. "
               f"{len(report.reverdict_pending)} lead(s) are judged differently by this "
               "version (#223); the run below went ahead anyway. A lead the new verdict "
               "rejects is rejected again by any re-judging under the same settings and "
               "exchange rates. To re-judge one it would keep that is at `dismiss`, which no "
-              "default run selects, use `--status dismiss` with the judge (not `--no-llm`) "
-              "or move it back to `new` by hand:",
+              "default run selects, move it back to `new` by hand, or use `--status dismiss` "
+              "with the judge (not `--no-llm`), which takes every lead at `dismiss`, "
+              "including ones you dismissed yourself:",
               file=sys.stderr)
         for msg in report.reverdict_pending:
             print(f"  {msg}", file=sys.stderr)
@@ -1168,8 +1191,12 @@ def cmd_triage_run(args, config) -> int:
         # A dry run gets a different last sentence. It never spends the marker (it writes
         # nothing, and that has to include the marker), so "run it again to apply them"
         # is false for it: executed dry, dry, real, real, the identical sentence printed
-        # three times before anything applied.
-        nudge = ("Re-run WITHOUT --dry-run to apply them." if args.dry_run
+        # three times before anything applied. So is "re-run WITHOUT --dry-run to apply
+        # them": that run lists these leads again, then holds, stops, or -- when the
+        # acknowledgement cannot be recorded but the audit log passes the pre-write check --
+        # goes ahead. The sentence says only what all three arms do.
+        nudge = ("A dry run records nothing, so a run without --dry-run lists these leads "
+                 "again." if args.dry_run
                  else "Review these, then run it again to apply them:")
         # The push's own wording. On stderr the colon introduces the per-lead list
         # printed immediately below it; the push carries no such list, so the shared
@@ -1177,8 +1204,9 @@ def cmd_triage_run(args, config) -> int:
         # notice exists for. It differs in more than the punctuation -- with no list to
         # point at, "Review these" has no referent either, so the push says where to look.
         # In the `--dry-run` arm it IS `nudge`, by reference rather than by a second copy
-        # of the literal: that sentence names no list, so there is nothing to diverge
-        # about, and two copies of it is how they diverge anyway.
+        # of the literal: the list that sentence names is the next run's, not one printed
+        # below it, so there is nothing to diverge about, and two copies of it is how they
+        # diverge anyway.
         push_nudge = (nudge if args.dry_run
                       else "Check the run output, then run it again to apply them.")
         # CHANGED NO LEADS, not "wrote nothing": this run writes the acknowledgement
@@ -1190,8 +1218,9 @@ def cmd_triage_run(args, config) -> int:
               "posting, and hourly and weekly pay are no longer judged against the "
               "annual floor (#223). It moves verdicts BOTH ways. A lead already at "
               "`dismiss` is listed only when the new verdict would keep it, and no default "
-              "run selects `dismiss`: to re-judge one, use `--status dismiss` with the judge "
-              "(not `--no-llm`) or move it back to `new` by hand. "
+              "run selects `dismiss`: to re-judge one, move it back to `new` by hand, or use "
+              "`--status dismiss` with the judge (not `--no-llm`), which takes every lead at "
+              "`dismiss`, including ones you dismissed yourself. "
               f"{nudge}",
               file=sys.stderr)
         for msg in report.reverdict_pending:
@@ -1220,9 +1249,9 @@ def cmd_triage_run(args, config) -> int:
         _notify_reporting(
             f"job-sluice triage: CHANGED NO LEADS -- {len(report.reverdict_pending)} "
             f"lead(s) are judged differently by this version (#223). {push_nudge} "
-            "A default run skips a lead already at `dismiss`; to re-judge one, use "
-            "`--status dismiss` with the judge (not `--no-llm`) or move it back to `new` "
-            "by hand.",
+            "A default run skips a lead already at `dismiss`; to re-judge one, move it back "
+            "to `new` by hand, or use `--status dismiss` with the judge (not `--no-llm`), "
+            "which takes every lead at `dismiss`, including ones you dismissed yourself.",
             config=config, label="triage-summary")
         return 0
     print(f"triage: {report.counts} judged={report.judged} "
@@ -1258,9 +1287,10 @@ def cmd_triage_run(args, config) -> int:
     # verdict would keep: one it rejects is rejected again by any re-judging under the same
     # settings and exchange rates.
     if report.reverdict_pending:
-        body += ("\nTo re-judge a lead at `dismiss` that the new verdict would keep, use "
-                 "`--status dismiss` with the judge (not `--no-llm`) or move it back to "
-                 "`new` by hand.")
+        body += ("\nTo re-judge a lead at `dismiss` that the new verdict would keep, move it "
+                 "back to `new` by hand, or use `--status dismiss` with the judge (not "
+                 "`--no-llm`), which takes every lead at `dismiss`, including ones you "
+                 "dismissed yourself.")
     _notify_reporting(body, config=config, label="triage-summary")
     return 0
 

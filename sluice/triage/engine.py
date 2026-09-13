@@ -146,14 +146,21 @@ class TriageReport:
     # #223 §2.1: leads whose pay verdict this release MOVES, on a vault written before
     # provenance existed. See `triage/reverdict.py`.
     reverdict_pending: list = field(default_factory=list)
-    # ...and whether the run therefore STOPPED. Two bits, because `reverdict_pending` is
-    # non-empty on both arms and cannot also say which one was taken: the run holds when
-    # the acknowledgement landed, and PROCEEDS when it could not be recorded. Inferring
+    # ...and whether the run therefore HELD. A field of its own, because `reverdict_pending`
+    # is non-empty on every arm and cannot also say which one was taken: the run holds when
+    # the acknowledgement landed, and proceeds when it could not be recorded. A run
+    # `stopped` (below) never tries to record it. Inferring
     # the arm from the list alone made `cmd_triage_run` print "WROTE NOTHING" over a run
     # that had just applied the re-verdict, push the same claim to the
     # notification channel, and return before the summary and the failures line saying
     # so. Found by a reviewer and independently while reading the CLI back.
     reverdict_deferred: bool = False
+    # Why the run STOPPED before changing any lead, or "" when it did not. Set when
+    # `AuditLog.cannot_append` refuses the audit log. A string rather than a
+    # bool because the CLI prints the reason; a field of its own rather than a `failures`
+    # line because the CLI has to act on it -- no summary of zeroes under it, and a non-zero
+    # exit.
+    stopped: str = ""
 
 
 class _FetchFailed:
@@ -381,6 +388,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     # `dry_run` prints the notice and does NOT acknowledge it, because a dry run writes
     # nothing and that has to include this marker: a user who happens to preview first
     # must still get the notice on their real run.
+    record = False
     if not reverdict.acknowledged(reverdict_scope):
         # Over every status triage OWNS, and BEFORE `--limit` -- never over `notes`, which
         # both have already narrowed. The acknowledgement covers a whole VAULT, so its scope
@@ -419,19 +427,56 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if dry_run:
                 report.reverdict_deferred = True
                 return report          # writes nothing, the marker included
-            if reverdict.acknowledge(reverdict_scope):
-                report.reverdict_deferred = True
-                return report          # recorded, so the next run applies it
-            # The marker did NOT land (a read-only state dir, a full disk). Returning
-            # early anyway would repeat this forever and triage would never triage
-            # again -- worse than the harm, and it exits 0 looking like an idle run. So
-            # the run PROCEEDS, having printed the notice: the half of §2.1 that
-            # actually protects the user is that they SEE the affected leads, and they
-            # do. The half being given up is "and nothing is written yet".
-            report.failures.append(
-                "role-type re-verdict: the notice above could not be recorded, so this "
-                "run is APPLYING it rather than repeating the notice forever -- fix the "
-                "state directory if you wanted to review the listed leads first")
+            record = True              # once the audit-log check below has passed
+
+    # Checked before any lead write rather than discovered at it. A real run writes a lead
+    # and THEN appends its audit line, so an audit log that cannot be appended to raised one
+    # line after the lead's write had landed. Measured end to end on a state directory
+    # sluice could read but not write -- where the acknowledgement and this log both resolve
+    # by default: the lead was dismissed, the run crashed, and the #223 notice was never
+    # printed, because the CLI prints it only after `run()` returns. Stopping here returns
+    # the report instead, notice included, with no lead changed. The check reads permissions
+    # and the path's shape, so a write can still fail for a reason it does not see -- a full
+    # disk, a quota, an I/O error, a name the filesystem refuses -- which is why the notice is
+    # also logged below.
+    #
+    # ...and before the acknowledgement is recorded. The marker and this log are separate
+    # paths (the log follows `TRIAGE_AUDIT` or `triage.audit_jsonl`, and an existing read-only
+    # log can sit in a writable directory), so the marker can land where the log cannot.
+    # Were the marker recorded first, a run could hold with "run it again to apply them" and
+    # the next run stop, apply nothing and, the marker spent, name no lead.
+    #
+    # Asked by every real run that selected a lead or would record the acknowledgement; a dry
+    # run writes no audit line. A run that selects no lead can still record it, when the
+    # notice names a lead outside the selection. A run whose selected leads turn out to need
+    # no write is asked anyway: what a run writes is only known inside the classify pass,
+    # where the writes begin.
+    if not dry_run and (notes or record):
+        blocked = audit.cannot_append()
+        if blocked:
+            report.stopped = f"the triage audit log failed the pre-write check: {blocked}"
+            return report
+    if record:
+        if reverdict.acknowledge(reverdict_scope):
+            report.reverdict_deferred = True
+            return report          # recorded, so the next run applies it
+        # The marker did NOT land (a read-only state dir, a full disk). Returning early
+        # anyway would repeat this forever and triage would never triage again -- worse
+        # than the harm, and it exits 0 looking like an idle run. So the run PROCEEDS: the
+        # half of §2.1 that actually protects the user is that they SEE the affected leads.
+        # The half being given up is "and nothing is written yet".
+        report.failures.append(
+            "role-type re-verdict: the notice above could not be recorded, so this "
+            "run is APPLYING it rather than repeating the notice forever -- fix the "
+            "state directory if you wanted to review the listed leads first")
+        # Logged HERE, before the first lead write, as well as carried in the report: the CLI
+        # prints the notice only once `run()` returns, and a write below can still raise for
+        # a reason the check above cannot see. At CRITICAL, the highest level
+        # `SLUICE_LOG_LEVEL` names, so no setting of it drops the line. On a run that does
+        # return the CLI prints the list again with the steps; the repeat is the price of not
+        # depending on the return.
+        for line in report.reverdict_pending:
+            _log.critical("#223 re-verdict notice (not recorded): %s", line)
 
     keeps = []          # notes that pass the pre-gate, headed for enrich + judge
     audit_entries = []

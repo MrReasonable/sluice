@@ -186,14 +186,20 @@ moves a batch of verdicts at once, in BOTH directions, so the run names the affe
 and stops. Review them, then run it again to apply. A `--dry-run` shows the notice without
 consuming it. Leads already at `dismiss` are not re-selected by a default run. The notice
 names one only when the new verdict would keep it -- one the new verdict rejects stays at
-`dismiss` anyway -- and to re-judge it, run a deliberate `--status dismiss` with the judge
-(not `--no-llm`, which never writes a kept lead), or move it back to `new` by hand.
+`dismiss` anyway -- and to re-judge it, move it back to `new` by hand, or run a deliberate
+`--status dismiss` with the judge (not `--no-llm`, which never writes a kept lead), which
+takes every lead at `dismiss`, including ones you dismissed yourself.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
 observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr.
 `tests/test_docs_claims.py` derives those key names from `cli.py` and fails when this
 line and the real one disagree, because every previous version of this sentence went
-stale silently. Exit 0 always.
+stale silently. If the pre-write check finds that the triage audit log cannot be written,
+the run stops before changing any lead, prints the reason and exits 1. It stops the same way
+on an audit log path with `..` after a directory that does not exist yet, without working out
+where that lands. The check does not see every reason a write can fail -- a full disk, a
+quota, an I/O error or a name the filesystem refuses among them. A write that hits one still
+fails: the run exits 1 with a traceback, and leads written before it stay written.
 
 The Telegram notification is a **separate, human-readable digest**, not a copy of that
 line: it is read on a phone, where a dict of seven mostly-zero rows names none of the

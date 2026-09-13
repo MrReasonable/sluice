@@ -4,6 +4,7 @@ Obsidian note grouped by reason for eyeballing. The note is a generated view tha
 triage owns and overwrites, never confused with a real lead note."""
 import json
 import os
+import stat
 from datetime import date, datetime
 
 
@@ -19,6 +20,90 @@ class AuditLog:
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+    def cannot_append(self) -> str:
+        """Why an `append` here would fail or is refused, or "" when neither. Creates nothing.
+
+        `triage/engine.py::run` asks before any lead write. A real run writes a lead and
+        THEN its audit line, so a log that cannot be appended to raised from `append` one line
+        after the lead's write had landed -- measured on a state directory sluice could read
+        but not write: the lead was dismissed, the run crashed, and the #223 notice was never
+        printed.
+
+        Nothing is created, deliberately. `core/paths.py`'s `_LEGACY` warns about a
+        left-behind `./triage-audit.jsonl` only while this path does NOT exist, and a run that
+        rejects nothing leaves no file behind. So this reads permissions on the file, or on
+        the nearest ancestor that exists, and creates nothing.
+
+        `os.access` answers for the real user, root included, and can still disagree with
+        `open`. It does not see every reason a write fails -- a full disk, a quota, an I/O
+        error, or a name the filesystem refuses or rewrites (too long, bytes it will not store,
+        or the trailing dots and spaces Windows drops) among them -- and those surface as the
+        error from `append` they always did. It can also refuse what `open` allows: measured
+        on macOS, a directory whose mode denies writing but whose ACL grants adding a file is
+        reported "not writable", and the run stops.
+        A `..` after a directory that does not exist yet is refused, wherever it would land.
+
+        A special file at the log path is answered from its permissions, except a socket,
+        which `open` never accepts. Measured: `/dev/null` appends, and a FIFO appends once
+        something reads it and blocks until then.
+        """
+        path = self.path
+        # Paths no file can have. The walk below would answer for a directory instead, and could
+        # say yes.
+        if not path:
+            return "the audit log path is empty"
+        if chr(0) in path:
+            return "the audit log path contains a NUL byte"
+        try:
+            os.fsencode(path)
+        except UnicodeEncodeError:
+            return "the audit log path cannot be encoded as a file name"
+        if os.path.basename(path) in ("", os.curdir, os.pardir):
+            return f"{path} names a directory, not a file"
+        # A dangling link: `open(path, "a")` follows it and creates the target, so the question
+        # is whether the TARGET can be created. Measured: `os.access` on the link reads the
+        # missing target and answered "not writable" for a link into a writable directory,
+        # which would have stopped every run. Bounded, so a loop of links ends here and is
+        # reported like any other unwritable path.
+        for _ in range(40):
+            if not (os.path.islink(path) and not os.path.exists(path)):
+                break
+            path = os.path.join(os.path.dirname(path), os.readlink(path))
+        if path != self.path and not os.path.lexists(path):
+            # ...and ONLY the target: `append`'s `makedirs` runs on the link's own directory,
+            # which exists, so a target whose directory is missing is never created.
+            parent = os.path.dirname(path) or "."
+            if not os.path.lexists(parent):
+                return f"{parent} does not exist"
+            if not os.path.isdir(parent):
+                return f"{parent} is not a directory"
+            return "" if os.access(parent, os.W_OK | os.X_OK) else f"{parent} is not writable"
+        if os.path.lexists(path):
+            if os.path.isdir(path):
+                return f"{path} is a directory"
+            # `exists` first: it is False for a loop of links, where `stat` would raise.
+            if os.path.exists(path) and stat.S_ISSOCK(os.stat(path).st_mode):
+                return f"{path} is a socket"
+            return "" if os.access(path, os.W_OK) else f"{path} is not writable"
+        cur = os.path.dirname(path) or "."
+        stripped = []
+        while not os.path.lexists(cur):
+            parent = os.path.dirname(cur) or "."
+            if parent == cur:
+                return f"no existing directory above {path}"
+            stripped.insert(0, os.path.basename(cur))
+            cur = parent
+        if not os.path.isdir(cur):
+            return f"{cur} is not a directory"
+        if not os.access(cur, os.W_OK | os.X_OK):
+            return f"{cur} is not writable"
+        if os.pardir in stripped:
+            # `dirname` strips a `..` as text, so the walk above stepped down past it, while
+            # `open` resolves it only after `makedirs` has created the directories before it.
+            # Where it then lands is not predicted: the path is refused.
+            return f"{path} has a `..` after a directory that does not exist yet"
+        return ""
 
     def read_recent(self, days: int, clock=date.today) -> list:
         """Entries within the last `days`. Malformed lines are skipped; an entry

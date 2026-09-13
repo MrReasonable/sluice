@@ -1,4 +1,6 @@
+import errno
 import json
+import logging
 import os
 import re
 import threading
@@ -2170,6 +2172,210 @@ def test_a_marker_that_cannot_be_recorded_does_not_brick_triage(tmp_path, monkey
     assert len(report.reverdict_pending) == 1          # still told
     assert v.read_leads()[0].status == "dismiss"       # ...and not stuck
     assert any("could not be recorded" in f for f in report.failures)
+
+
+def _blocked_audit(tmp_path):
+    # The audit log's parent is a regular FILE, so no append can succeed -- and, unlike a
+    # chmod, that holds for root as well, so these rows cannot pass vacuously on a root runner.
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    return AuditLog(str(blocker / "audit.jsonl"))
+
+
+def _plain_reject_fields():
+    # Provenance present and one pay basis, so #223's notice does not fire: a permanent role
+    # under the annual floor, which `classify` rejects on pay alone.
+    return _legacy_fields(role_type="permanent") + ['role_type_source: "declared"']
+
+
+def test_an_audit_log_that_cannot_be_written_stops_the_run_before_any_lead_changes(tmp_path):
+    """Measured end to end before the fix, on a state directory sluice could read but not
+    write: the run wrote the lead's `dismiss`, then raised from the audit append on the next
+    line, so the user got a traceback AND a changed lead. The audit log is now checked before
+    any lead is written, and a run that cannot write it changes no lead."""
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",))
+    assert report.stopped
+    assert v.read_leads()[0].status == "new"
+    assert report.reverdict_pending == []
+
+
+def test_a_blocked_audit_log_keeps_the_re_verdict_notice_and_applies_nothing(
+        tmp_path, monkeypatch, caplog):
+    """The #223 half of the same crash. When the acknowledgement could not be recorded the
+    run proceeded on the premise that the notice had been printed -- but the engine prints
+    nothing; the CLI does, after `run()` returns, and a run that raised never returned. So the
+    lead was dismissed and the notice never shown. A stopped run returns, carrying the notice,
+    and applies nothing."""
+    monkeypatch.setattr(reverdict, "acknowledge", lambda *a, **kw: False)
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    with caplog.at_level("WARNING"):
+        report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                     statuses=("new",))
+    assert report.stopped
+    assert len(report.reverdict_pending) == 1
+    assert report.reverdict_deferred is False
+    assert v.read_leads()[0].status == "new"
+    # ...and nothing in the report claims the run is applying it.
+    assert not any("APPLYING" in f for f in report.failures)
+    # ...nor in the log: the CLI prints this run's notice from the report, beside "this run
+    # applied none of it", so a line logged here would repeat it on a run that applied nothing.
+    said = [r.getMessage() for r in caplog.records if r.name == "sluice.triage.engine"]
+    assert not any("#223" in m for m in said), said
+
+
+@pytest.mark.parametrize("failing", ["audit_append", "lead_write"])
+def test_the_re_verdict_notice_is_logged_before_a_write_the_audit_check_cannot_foresee(
+        tmp_path, monkeypatch, caplog, failing):
+    """A write can fail for a reason `AuditLog.cannot_append` does not see (its docstring names
+    some), whether the audit append or the lead write. With the acknowledgement unrecorded, such
+    a failure raised out of `run()`, and the CLI -- which prints the notice only once `run()`
+    returns -- never printed it. The engine now logs the notice before it writes a lead or an
+    audit line, whichever write then fails."""
+    monkeypatch.setattr(reverdict, "acknowledge", lambda *a, **kw: False)
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+
+    def _full_disk(*a, **kw):
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    # Patched after the note is seated, so only the run's own writes meet it.
+    if failing == "audit_append":
+        monkeypatch.setattr(AuditLog, "append", _full_disk)
+    else:
+        monkeypatch.setattr(Vault, "update_fields", _full_disk)
+    with caplog.at_level("WARNING"), pytest.raises(OSError):
+        run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    said = [r for r in caplog.records if r.name == "sluice.triage.engine"
+            and "#223" in r.getMessage() and "acme" in r.getMessage()]
+    assert said, [r.getMessage() for r in caplog.records]
+    # At CRITICAL, the highest level `SLUICE_LOG_LEVEL` names, so no setting of it drops
+    # the line.
+    assert all(r.levelno >= logging.CRITICAL for r in said)
+
+
+def test_an_empty_audit_log_path_stops_the_run_before_any_lead_changes(tmp_path):
+    # `append` raises on an empty path, so the run has to stop before any lead is written.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), AuditLog(""), statuses=("new",))
+    assert "empty" in report.stopped
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_dotdot_after_a_missing_directory_stops_the_run_with_a_refusal_not_a_failed_write(
+        tmp_path):
+    # This log could be written: the check refuses the path instead, so the reason says the log
+    # failed the check, and why, rather than that it cannot be written.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    audit = AuditLog(str(tmp_path / "missing") + "/../triage-audit.jsonl")
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    assert "pre-write check" in report.stopped and "does not exist yet" in report.stopped
+    assert v.read_leads()[0].status == "new"
+    # ...though the log could be written.
+    audit.append({"slug": "a", "ts": "2026-07-07"})
+    assert (tmp_path / "triage-audit.jsonl").exists()
+
+
+def test_a_dry_run_is_not_stopped_by_an_audit_log_it_never_writes(tmp_path):
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",), dry_run=True)
+    assert not report.stopped
+
+
+def test_a_run_that_selects_no_lead_is_not_stopped_by_the_audit_log(tmp_path):
+    # Nothing selected and no #223 notice to record, so nothing written: a run with nothing to
+    # decide must not start failing because of a log it would never have touched.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("shortlist",))
+    assert not report.stopped
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_blocked_audit_log_stops_the_run_before_company_resolution_writes(tmp_path, titles):
+    # Tier 0 writes a placeholder lead's `company` INSIDE the classify loop, before that lead's
+    # verdict is written. Every other stop row's lead already names its company, so a stop
+    # moved below that write, still ahead of the verdict write, would pass them all.
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "sentinel.md", _sentinel_fields(f"{accept[0]} at Example Meridian"))
+    cfg = TriageConfig()
+    cfg.company_resolve_fetch = False
+    cfg.company_resolve_llm = False
+    report = run(v, cfg, None, _RecordingCache(), _blocked_audit(tmp_path), statuses=("new",),
+                 no_llm=True, get_source=None, resolve_backend=None)
+    assert report.stopped
+    after = v.read_leads()[0]
+    assert after.fm["company"] == "Unknown"
+    assert after.status == "new"
+    assert report.resolved.get("tier0", 0) == 0
+
+
+def test_a_blocked_audit_log_stops_the_run_before_the_notice_is_recorded(tmp_path):
+    """The acknowledgement and the audit log are separate paths -- the log follows
+    `TRIAGE_AUDIT` or `triage.audit_jsonl`, and an existing read-only log can sit in a writable
+    directory -- so the marker can land where the log cannot. A run that cannot apply stops
+    with the notice and leaves the marker unspent."""
+    scope = str(tmp_path / "vault")
+    v = Vault(scope)
+    _note(v, "acme.md", _legacy_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",), reverdict_scope=scope)
+    assert report.stopped
+    assert report.reverdict_deferred is False
+    assert len(report.reverdict_pending) == 1
+    assert not reverdict.acknowledged(scope)
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_blocked_audit_log_stops_a_run_on_a_vault_already_acknowledged(tmp_path):
+    # Every other stop row starts with no acknowledgement recorded, so its run passes through
+    # the #223 gate first. A stop reachable only that way would pass them all, and every vault
+    # past its first notice would change the lead and then crash.
+    scope = str(tmp_path / "vault")
+    assert reverdict.acknowledge(scope)          # really recorded
+    v = Vault(scope)
+    _note(v, "acme.md", _plain_reject_fields())
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",), reverdict_scope=scope)
+    assert report.stopped
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_no_llm_run_whose_leads_all_keep_is_stopped_too(tmp_path):
+    # Stopped though its lead keeps: what a run writes is only known inside the classify pass,
+    # where the writes begin, so every real run that selected a lead is asked first.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields(role_type="permanent", salary="£120,000")
+          + ['role_type_source: "declared"'])
+    report = run(v, _floors(), None, _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",), no_llm=True)
+    assert report.stopped
+    assert v.read_leads()[0].status == "new"
+
+
+def test_a_run_that_selects_no_lead_is_stopped_when_it_would_record_the_notice(tmp_path):
+    """A run that selects nothing still writes the #223 acknowledgement when the notice names a
+    lead outside its selection -- here one at `needs_review`, on a run over `new` -- so it is
+    asked too, and stops with the notice."""
+    scope = str(tmp_path / "vault")
+    v = Vault(scope)
+    _note(v, "acme.md", _legacy_fields(status="needs_review"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), _blocked_audit(tmp_path),
+                 statuses=("new",), reverdict_scope=scope)
+    assert report.stopped
+    assert len(report.reverdict_pending) == 1
+    assert not reverdict.acknowledged(scope)
+
 
 
 def test_a_posting_that_agrees_is_confirmed_rather_than_filled(tmp_path):
