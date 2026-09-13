@@ -3,6 +3,8 @@ triage.engine failure MESSAGES on stderr, not just their count. `report.failures
 carries actionable strings (dossier fetch errors, judge/lead_id mismatches, and
 company-resolve conflicts); a bare `failures=N` gives a user no way to act on them short of
 re-running under a debugger."""
+import pytest
+
 from sluice import cli
 from sluice.cli import _build_parser, cmd_triage_run
 from sluice.core import status as _status
@@ -177,7 +179,7 @@ def test_cmd_triage_run_reports_how_many_role_types_the_postings_settled(
         capsys.readouterr().err
 
 
-def test_cmd_triage_run_prints_the_reverdict_notice_and_says_the_run_wrote_nothing(
+def test_cmd_triage_run_prints_the_reverdict_notice_and_says_the_run_changed_no_leads(
         monkeypatch, tmp_path, capsys):
     # #223 §2.1. The notice is the entire point of skipping the run, so it must not be
     # one line among a summary that otherwise reads like an ordinary quiet run: a user
@@ -193,23 +195,32 @@ def test_cmd_triage_run_prints_the_reverdict_notice_and_says_the_run_wrote_nothi
     assert cmd_triage_run(args, Config()) == 0
     err = capsys.readouterr().err
     assert "acme: pay was judged as day" in err
-    # Case-folded: what has to hold is that the user is told the run wrote nothing and
-    # what to do next, not how the notice is capitalised.
-    assert "wrote nothing" in err.lower()
+    # Case-folded: what has to hold is that the user is told the run changed no lead and
+    # what to do next, not how the notice is capitalised. NOT "wrote nothing": a held run
+    # writes the acknowledgement marker, which is what makes the next run apply the change.
+    assert "changed no leads" in err.lower()
+    assert "wrote nothing" not in err.lower()
     assert "run it again" in err.lower()
+    # ...and how a listed lead already at `dismiss` gets re-judged, since no default run
+    # selects it: a `--status dismiss` run WITH the judge (`--no-llm` never writes a kept
+    # lead), or a hand move back to `new` -- not merely out of `dismiss`, since a default run
+    # selects neither `shortlist` nor `needs_review`.
+    assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
+    # ...and which leads those steps are for.
+    assert "already at `dismiss`" in err
     # ...and the ordinary summary is NOT printed underneath it. A row of zeroes below
     # the notice reads as a quiet run rather than a suppressed one.
     assert "judged=" not in err
 
 
-def test_cmd_triage_run_does_not_claim_it_wrote_nothing_when_it_wrote(
+def test_cmd_triage_run_does_not_claim_it_changed_no_leads_when_it_did(
         monkeypatch, tmp_path, capsys):
     """The round-1 fix's own defect, found by a reviewer and while reading the CLI back.
 
     `run()` PROCEEDS when the acknowledgement could not be recorded -- repeating the
     notice forever would mean never triaging again. `reverdict_pending` is non-empty on
     BOTH arms, so branching on it alone printed "WROTE NOTHING" over a run that had just
-    dismissed every lead it named, pushed the same claim to the notification channel, and
+    applied the re-verdict, pushed the same claim to the notification channel, and
     returned before the summary and the failures line explaining why.
     """
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
@@ -224,10 +235,21 @@ def test_cmd_triage_run_does_not_claim_it_wrote_nothing_when_it_wrote(
     args = _build_parser().parse_args(["triage", "run", "--no-llm"])
     assert cmd_triage_run(args, Config()) == 0
     err = capsys.readouterr().err
+    # Neither claim, the retired one included: this row exists because the applied arm
+    # once said "wrote nothing" over a run that had just applied the re-verdict.
+    assert "changed no leads" not in err.lower()
     assert "wrote nothing" not in err.lower()
     assert "acme: pay was judged as day" in err          # still named
     assert "judged=" in err                              # ...and the summary survives
     assert "could not be recorded" in err                # ...and so does the reason
+    # A lead the new verdict rejects is rejected again by any re-judging under the same
+    # settings and exchange rates, so the line must not offer a sweep as its way back -- it
+    # once did -- and the steps it gives must say they are for a lead it would keep. Keyed on
+    # the VERDICT, not on what this run did: a lead the new verdict keeps may still have
+    # been dismissed by the judge this run, and re-asking the judge can change that.
+    assert "the new verdict rejects is rejected again" in err
+    assert "would keep" in err
+    assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
 
 
 def test_cmd_triage_run_still_holds_when_the_marker_landed(monkeypatch, tmp_path, capsys):
@@ -240,7 +262,7 @@ def test_cmd_triage_run_still_holds_when_the_marker_landed(monkeypatch, tmp_path
     args = _build_parser().parse_args(["triage", "run", "--no-llm"])
     assert cmd_triage_run(args, Config()) == 0
     err = capsys.readouterr().err
-    assert "wrote nothing" in err.lower()
+    assert "changed no leads" in err.lower()
     assert "judged=" not in err
 
 
@@ -265,17 +287,60 @@ def test_the_reverdict_notice_reaches_the_push_channel(monkeypatch, tmp_path, ca
     assert len(sent) == 1, "the held run notified nobody"
     msg, label = sent[0]
     assert "1 lead" in msg and "#223" in msg
+    # The same claim stderr makes, on the one channel an unattended install reads.
+    assert "changed no leads" in msg.lower()
+    assert "wrote nothing" not in msg.lower()
+    # ...and what to do next. The no-list row cannot see this: a push that lost the nudge
+    # has no colon either.
+    assert "run it again to apply" in msg.lower()
     assert label == "triage-summary"
+
+
+def _held_push(monkeypatch, tmp_path, *extra):
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(
+        reverdict_pending=["acme: pay was judged as annual, now judged as week: "
+                           "reject -> keep"],
+        reverdict_deferred=True))
+    args = _build_parser().parse_args(["triage", "run", "--no-llm", *extra])
+    assert cmd_triage_run(args, Config()) == 0
+    assert len(sent) == 1
+    return sent[0]
+
+
+def test_the_held_push_says_a_listed_dismissed_lead_needs_a_status_dismiss_sweep(
+        monkeypatch, tmp_path, capsys):
+    # The notice can name a lead already at `dismiss` -- one the new verdict would keep --
+    # and a default run applies nothing to that lead, because it does not select
+    # `dismiss`. stderr says so; the push is the one thing an unattended install reads, so
+    # it has to say so too, or that lead is acknowledged away unrecovered.
+    msg = _held_push(monkeypatch, tmp_path)
+    # With the judge: under `--no-llm` a kept lead is counted and never written, so that
+    # sweep leaves it at `dismiss` while the run reports `keep: 1`. And not the only way:
+    # moved back to `new` by hand, the next default run re-judges it.
+    assert "--status dismiss" in msg and "--no-llm" in msg and "to `new` by hand" in msg
+    # ...for a lead at `dismiss`, and skipped by a DEFAULT run: the hold is reached by a
+    # `--status dismiss` run too, which does select it.
+    assert "a default run skips a lead already at `dismiss`" in msg.lower()
+
+
+def test_the_held_dry_run_push_says_it_too(monkeypatch, tmp_path, capsys):
+    # The dry run's push takes a different nudge (see `push_nudge`), so it is a separate
+    # string that can lose the sentence on its own.
+    msg = _held_push(monkeypatch, tmp_path, "--dry-run")
+    assert "--status dismiss" in msg and "--no-llm" in msg and "to `new` by hand" in msg
+    assert "a default run skips a lead already at `dismiss`" in msg.lower()
 
 
 def test_the_APPLIED_arm_pushes_the_re_verdict_too(monkeypatch, tmp_path, capsys):
     """Round 3's High, and it was exactly backwards.
 
-    The HELD arm writes NOTHING and pushed an urgent "#223, run it again". The APPLIED
-    arm has just dismissed leads irreversibly -- `dismiss` is not re-selected -- and sent
-    a summary indistinguishable from an ordinary run. On the cron or container install
-    the push exists for, that put the alert on the recoverable arm and left the
-    unrecoverable one silent.
+    The HELD arm changes NO lead and pushed an urgent "#223, run it again". The APPLIED
+    arm has just applied the re-verdict and sent a summary indistinguishable from an
+    ordinary run. On the cron or container install the push exists for, that put the
+    alert on the arm that changed no lead and left silent the one that had applied it.
     """
     sent = []
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
@@ -291,10 +356,38 @@ def test_the_APPLIED_arm_pushes_the_re_verdict_too(monkeypatch, tmp_path, capsys
     assert cmd_triage_run(args, Config()) == 0
     assert len(sent) == 1
     assert "#223" in sent[0] and "1 lead" in sent[0]
+    assert "changed no leads" not in sent[0].lower()
+    assert "wrote nothing" not in sent[0].lower()
     # ...and still carries the counts. Re-spelled when the body stopped being `counts`'
     # repr: what has to hold is that the alert does not REPLACE the run's numbers, which
     # is the same guarantee this line always made.
     assert "1 dismissed" in sent[0]
+
+
+def test_the_applied_push_says_how_a_lead_left_at_dismiss_is_re_judged(
+        monkeypatch, tmp_path, capsys):
+    # stderr says it; the push is all an unattended install reads, and this arm repeats on
+    # every run while the marker cannot be recorded. A listed lead at `dismiss` that the
+    # new verdict would keep is not re-selected by a default run, and nothing in the digest
+    # says how to re-judge it.
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(
+        reverdict_pending=["acme: pay was judged as annual, now judged as week: "
+                           "reject -> keep"],
+        reverdict_deferred=False))
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    assert cmd_triage_run(args, Config()) == 0
+    assert len(sent) == 1
+    assert "--status dismiss" in sent[0] and "--no-llm" in sent[0]
+    assert "to `new` by hand" in sent[0]
+    # Only for a lead the new verdict would KEEP: offering a sweep to one it rejects is the
+    # false advice the stderr line once gave.
+    assert "would keep" in sent[0]
+    # ...and after the alert, never in it: the first line is the phone's preview.
+    assert "--status dismiss" not in sent[0].splitlines()[0]
 
 
 def test_an_ordinary_run_pushes_no_re_verdict_wording(monkeypatch, tmp_path, capsys):
@@ -308,6 +401,7 @@ def test_an_ordinary_run_pushes_no_re_verdict_wording(monkeypatch, tmp_path, cap
     args = _build_parser().parse_args(["triage", "run", "--no-llm"])
     assert cmd_triage_run(args, Config()) == 0
     assert "#223" not in sent[0]
+    assert "--status dismiss" not in sent[0]
 
 
 def test_a_dry_run_is_told_to_re_run_without_dry_run(monkeypatch, tmp_path, capsys):
@@ -324,6 +418,9 @@ def test_a_dry_run_is_told_to_re_run_without_dry_run(monkeypatch, tmp_path, caps
     err = capsys.readouterr().err
     assert "without --dry-run" in err.lower()
     assert "run it again to apply them" not in err.lower()
+    # The dry run prints a different `nudge`, so the `dismiss` sentence has to survive it.
+    assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
+    assert "already at `dismiss`" in err
 
 
 def test_a_dry_run_push_does_not_promise_that_re_running_applies(monkeypatch, tmp_path):
@@ -582,10 +679,15 @@ def test_a_clean_push_does_not_mention_failures(monkeypatch, tmp_path):
     assert "failure" not in body.lower()
 
 
-def test_the_held_push_does_not_promise_a_list_it_does_not_carry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)], ids=["run", "dry-run"])
+def test_the_held_push_does_not_promise_a_list_it_does_not_carry(monkeypatch, tmp_path, extra):
     """The #223 hold pushed "Review these, then run it again to apply them:" -- a colon
     introducing a list that only ever went to stderr. On the unattended install the push
-    exists for, that is a message ending mid-sentence."""
+    exists for, that is a message ending mid-sentence.
+
+    Any colon after the headline, not only a trailing one. The check was `endswith(":")`,
+    and once the `--status dismiss` sentence followed the nudge, stderr's list-introducing
+    nudge could come back mid-message with every row green."""
     sent = []
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
@@ -593,9 +695,12 @@ def test_the_held_push_does_not_promise_a_list_it_does_not_carry(monkeypatch, tm
         reverdict_pending=["acme: pay was judged as day, now judged as annual"],
         reverdict_deferred=True))
 
-    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    args = _build_parser().parse_args(["triage", "run", "--no-llm", *extra])
     assert cmd_triage_run(args, Config()) == 0
-    assert not sent[0].rstrip().endswith(":"), "the push promises a list it never carries"
+    # The headline first: a push that lost it partitions to "" and passes the next line.
+    assert "CHANGED NO LEADS" in sent[0]
+    assert ":" not in sent[0].partition("CHANGED NO LEADS")[2], (
+        "the push promises a list it never carries")
     assert "#223" in sent[0]
 
 
@@ -605,7 +710,7 @@ def test_the_applied_alert_does_not_repeat_the_product_name(monkeypatch, tmp_pat
 
     The FIRST line is what a phone renders as the preview, so that is the one that has to
     carry the name -- and on this arm it has to be the alert, because the run has just
-    dismissed leads irreversibly.
+    applied a re-verdict it could not record first.
     """
     sent = []
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))

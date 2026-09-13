@@ -3,10 +3,10 @@
 `triage run` stops consulting a `role_type` whose provenance is untrusted, and every
 note written before #223 is untrusted by construction. On an accumulated vault that is
 not one lead changing verdict -- it is a batch, all at once, on the first run after an
-upgrade. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so a lead dismissed on the new
-basis is never re-selected and the user never sees it again.
+upgrade. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so no default run re-selects a lead
+dismissed on the new basis.
 
-So the first run that WOULD apply it prints the affected leads and writes nothing.
+So the first run that WOULD apply it prints the affected leads and changes no lead.
 `--dry-run` is not sufficient on its own, because it requires the user to know to use it.
 
 **The acknowledgement records that a NOTICE WAS SHOWN, never merely that a run
@@ -63,15 +63,16 @@ def _key(scope: str) -> str:
     A hash rather than the scope itself, for the reason `dedup_key` gives: the scope
     carries the user's own directory layout, and this file lives outside the vault.
 
-    Hashed VERBATIM (#324). The value is `Sluice._reverdict_scope`'s output, `vault:<dir>`
-    -- a scope string, not a path -- and this function used to `abspath` it so that
-    `./vault` and its absolute spelling shared a key. A string with no leading `/` gets the
-    process cwd prepended, so the key was per (vault, cwd): a scheduled run and a hand-run
-    one start in different directories, and each new cwd re-showed the notice, wrote
-    nothing and exited 0. Every test passed a bare path, where `abspath` is correct, so
-    none of them could see it. The directory is resolved where it is still a path, in
-    `_reverdict_scope`, and nothing here interprets the scope -- so no path function
-    belongs here: each would parse a string this function does not own.
+    Hashed VERBATIM (#324). The value is `Sluice._reverdict_scope`'s output, `<kind>:<dir>`
+    (`vault:<dir>` for the shipped store) -- a scope string, not a path -- and this
+    function used to `abspath` it so that `./vault` and its absolute spelling shared a key.
+    A string with no leading `/` gets the process cwd prepended, so the key was per (vault,
+    cwd): a scheduled run and a hand-run one start in different directories, and each new
+    cwd re-showed the notice, applied nothing and exited 0. Every test passed a bare path,
+    where `abspath` is correct, so none of them could see it. The directory is resolved
+    where it is still a path, in `_reverdict_scope`, and nothing here interprets the scope
+    -- so no path function belongs here: each would parse a string this function does not
+    own.
     """
     return hashlib.sha256((scope or "").encode("utf-8")).hexdigest()[:16]
 

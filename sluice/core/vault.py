@@ -2184,8 +2184,8 @@ class Vault:
         when unset; the caller falls back to the shipped (opinion-free) default.
 
         This was `build_system_prompt(vault.dir)`: triage reached THROUGH the store to a
-        filesystem path. `.dir` is not on the Store contract and a SQLite store has none,
-        so a second store would have AttributeError'd on the judge's critical path.
+        filesystem path. `.dir` is not a REQUIRED member of the Store contract, so a second
+        store may have none, and would have AttributeError'd on the judge's critical path.
         """
         try:
             return _read(self._doc_path(_CRITERIA_RELPATH))

@@ -2,8 +2,8 @@
 
 Every property here is about failing in the LOUD direction. A marker that reads as
 present when it is not silently re-verdicts a vault, and `dismiss` is not in
-`DEFAULT_TRIAGE_STATUSES`, so those leads are never re-selected and the user never sees
-them again. A marker that reads as absent when it is present costs one skipped run.
+`DEFAULT_TRIAGE_STATUSES`, so no default run re-selects those leads. A marker that reads as
+absent when it is present costs one skipped run.
 """
 import os
 
@@ -125,6 +125,24 @@ def test_a_symlink_repointed_at_another_vault_does_not_inherit_its_acknowledgeme
     assert reverdict.acknowledged(_scope(store()), path) is False
 
 
+def test_a_store_dir_is_keyed_as_given_not_expanded(tmp_path, monkeypatch):
+    # `dir` names the location the store itself opens. A store handed `~/v` that does not
+    # expand it opens a directory literally named `~` under whatever cwd the run starts in
+    # -- a different directory from each cwd. Expanding it here would key all of them on
+    # `$HOME/v`, so the first to acknowledge would silence the notice for the rest: the
+    # silent direction. Resolved as given they stay apart, and a store that DOES expand `~`
+    # has to expose the expanded path, as `Vault` does.
+    class _TildeDir:
+        dir = "~/v"
+
+    path = str(tmp_path / "ack.json")
+    a, b = _two_directories(tmp_path)
+    monkeypatch.chdir(a)
+    assert reverdict.acknowledge(_scope(_TildeDir()), path) is True
+    monkeypatch.chdir(b)
+    assert reverdict.acknowledged(_scope(_TildeDir()), path) is False
+
+
 @pytest.mark.parametrize("configured", ["", "~/v", "{tmp}/v"],
                          ids=["unset", "tilde", "absolute"])
 def test_a_dir_less_store_keeps_its_acknowledgement_across_directories(
@@ -134,9 +152,9 @@ def test_a_dir_less_store_keeps_its_acknowledgement_across_directories(
     # for the obvious fix of absolutising unconditionally: `abspath("")` IS the cwd, and
     # `abspath` does not expand `~`, so `~/v` absolutised alone lands under the cwd too.
     # `unset` sharing ONE key from every directory is correct only under the `Store`
-    # contract that a store locating itself relative to the cwd exposes `dir` -- see
-    # `Sluice._reverdict_scope` -- so this row pins that contract's consequence, not a fact
-    # about every possible store.
+    # contract that a store whose location is not fully determined by its name plus
+    # `VAULT_DIR`/`vault_dir` exposes `dir` -- see `core/protocols.py` -- so this row pins
+    # that contract's consequence, not a fact about every possible store.
     configured = configured.format(tmp=tmp_path)
     if configured:
         monkeypatch.setenv("VAULT_DIR", configured)

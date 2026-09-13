@@ -636,14 +636,26 @@ def _pay_reject(salary: str, basis: str, cfg) -> tuple[str, str] | None:
     return None
 
 
-def reverdict_notice(lead: dict, cfg) -> str | None:
+class ReverdictNotice(str):
+    """The notice line for one lead, carrying the direction it describes as data.
+
+    A `str` because the line is what every caller prints. The attribute is for the one
+    caller that has to DECIDE on the direction -- the engine leaves a lead already at
+    `dismiss` out when its new verdict is a reject -- so that decision never has to
+    parse the printed text.
+    """
+
+    rejected_after = False
+
+
+def reverdict_notice(lead: dict, cfg) -> ReverdictNotice | None:
     """What #223 changes for THIS lead's pay verdict, or None when it changes nothing.
 
     A note written before #223 carries no `role_type_source` key and reads as `assumed`,
     so the gate stops consulting its `role_type` (§2.1). On an accumulated vault that is
     a BATCH of leads changing verdict at once, on the first run after an upgrade -- and
-    `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so a lead dismissed that way is never
-    re-selected and the user never sees it again.
+    `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so no default run re-selects a lead
+    dismissed that way.
 
     Compares the PAY GATE's own verdict under each basis, which is the thing that
     actually moves. A lead an earlier gate already rejects is not affected: `classify`
@@ -674,8 +686,13 @@ def reverdict_notice(lead: dict, cfg) -> str | None:
     # which is exactly the kind of thing a private job hunt should not leak into a shared
     # log. CodeQL flags the flow (`py/clear-text-logging-sensitive-data`); it is right
     # that this is the wrong sink, and the numbers are in the lead's own note anyway.
-    return (f"pay was judged as {was}, now judged as {now}: "
-            f"{'reject' if before else 'keep'} -> {'reject' if after else 'keep'}")
+    notice = ReverdictNotice(
+        f"pay was judged as {was}, now judged as {now}: "
+        f"{'reject' if before else 'keep'} -> {'reject' if after else 'keep'}")
+    # The same truthiness the line above prints, so the attribute and the text cannot
+    # disagree about which way this lead moves.
+    notice.rejected_after = bool(after)
+    return notice
 
 
 def classify(lead: dict, cfg) -> tuple[str, str]:

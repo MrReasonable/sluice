@@ -569,13 +569,19 @@ class Store(Protocol):
 
     OPTIONAL ATTRIBUTE -- `dir`. Not declared below either, and for the same reason as
     `preflight`: a store with no directory is still a store. `Sluice._reverdict_scope`
-    reads it via `getattr` to key #223's one-shot re-verdict acknowledgement to ONE store,
-    and falls back to the configured store name plus `VAULT_DIR`/`vault_dir` when it is
-    absent. So a store whose LOCATION depends on the process working directory -- an
-    implicit relative default, say -- MUST expose `dir` as that location. Without it every
-    copy of the store run from a different directory resolves to one fallback key, and the
-    first to acknowledge silences the notice for the rest, whose leads are then dismissed
-    unannounced.
+    reads it via `getattr` to key #223's one-shot re-verdict acknowledgement to ONE store.
+    When it is absent the key is built from the configured store name plus `VAULT_DIR`, or
+    `vault_dir` when that is unset, and nothing else: that value has a leading `~` expanded
+    and is resolved with `realpath`, and the marker holding the key is one file per user.
+    So a store whose location is NOT fully determined by that name and that value, read
+    that way -- one located relative to the working directory, one that does not expand a
+    `~` in that value, or one located by a setting of its own such as a database path --
+    MUST expose that location as `dir`: the filesystem path the store itself opens, with
+    any `~` already expanded wherever the store expands it. The key resolves `dir` with
+    `realpath` exactly as given, so a `~` left in it names a directory literally called `~`
+    under the working directory. Without it, every copy of the store that differs only in
+    that location resolves to one key, and the first to acknowledge silences the notice
+    for the rest, whose leads are then dismissed unannounced.
 
     OPTIONAL MEMBER -- `preflight() -> dict`. Not declared below, for the identical
     reason `Renderer.precheck` is not: a Protocol member is a REQUIRED member, and the

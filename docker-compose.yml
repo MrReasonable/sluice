@@ -141,6 +141,14 @@ x-sluice: &sluice
     # It lands at /work/vault because WORKDIR is /work and this codebase's DEFAULT_VAULT is the
     # cwd-relative "./vault", so the default resolves to exactly this mount with no config at
     # all. The vault deliberately does not relocate via XDG; it is not per-system state.
+    #
+    # One vault per compose PROJECT. Pointing SLUICE_VAULT at a different vault keeps this
+    # container path and the sluice-state volume below, and that volume holds state about the
+    # vault it has been serving: seen.db, so leads the old vault already recorded are never
+    # offered to the new one; and triage's one-shot #223 re-verdict acknowledgement, keyed on
+    # this path, so the new vault's affected leads are re-verdicted without the notice naming
+    # them first. Give another vault a project of its own -- `docker compose -p <name> ...`
+    # on every invocation -- and it gets volumes of its own.
     - ${SLUICE_VAULT:-./vault}:/work/vault
 
     # Config. $XDG_CONFIG_HOME is /app/config in the image, and config_file() resolves to

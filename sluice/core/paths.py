@@ -42,9 +42,8 @@ home and two of them read as contradicting each other:
     That is a real limit and it is stated rather than implied: a module on the roster
     can, and does, spend more than one syntactic `expanduser` call on the single decision
     its roster entry describes, so a per-call roster would pin formatting rather than
-    convention. NO COUNT here either -- this sentence once shipped carrying a wrong one
-    ("three of the modules" when it is two), a few lines below a warning that a number in
-    prose is not a check. `test_the_expanduser_roster_matches_the_source` asserts the
+    convention. NO COUNT here either -- this sentence once shipped carrying a wrong count
+    of such modules, a few lines below a warning that a number in prose is not a check. `test_the_expanduser_roster_matches_the_source` asserts the
     multi-call fact itself rather than any number, which is the form of it that can go
     stale loudly.
     abspath ONLY where the value outlives the cwd it was read in -- either written down

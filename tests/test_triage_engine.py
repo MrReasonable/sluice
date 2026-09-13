@@ -1780,10 +1780,10 @@ def test_a_conflict_never_reaches_the_rejected_leads_note(tmp_path):
 # A note written before this feature carries no `role_type_source` key and reads as
 # `assumed`, so the gate stops consulting its `role_type`. On an accumulated vault that
 # is not one lead changing verdict -- it is a batch, all at once, on the first run after
-# an upgrade. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so a lead dismissed that way
-# is not re-selected and the user never sees it again.
+# an upgrade. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so no default run re-selects a
+# lead dismissed that way.
 #
-# So the first run that WOULD apply it prints the affected leads and writes nothing.
+# So the first run that WOULD apply it prints the affected leads and changes no lead.
 # `--dry-run` alone is not sufficient: it requires the user to know to use it.
 
 
@@ -1831,7 +1831,7 @@ def test_the_first_run_names_every_lead_whose_verdict_this_changes(tmp_path):
     assert "90000" not in said and "45000" not in said
 
 
-def test_the_first_run_writes_nothing_at_all(tmp_path):
+def test_the_first_run_changes_no_lead_and_pays_for_no_judge(tmp_path):
     report, v = _run_legacy(tmp_path)
     assert v.read_leads()[0].status == "new"           # not dismissed
     assert report.judged == 0                          # and no judge call was paid for
@@ -1875,6 +1875,92 @@ def test_an_uneventful_run_does_not_spend_the_acknowledgement(tmp_path):
     assert v.read_leads()[0].status == "new"
 
 
+def test_a_dismissed_lead_the_new_verdict_rejects_is_left_out_of_the_notice(tmp_path):
+    # `_legacy_fields` moves keep -> reject, and this lead is already at `dismiss`, so it
+    # stays there -- the re-verdict moves no status for it. Listed anyway, a vault whose
+    # every affected lead an earlier run had dismissed was held for a notice with nothing
+    # in it to act on -- one skipped run for nothing, every time the acknowledgement is
+    # lost.
+    report, _ = _run_legacy(tmp_path, _legacy_fields(status="dismiss"))
+    assert report.reverdict_pending == []
+
+
+def test_a_dismissed_lead_the_new_verdict_would_keep_is_still_named(tmp_path):
+    # The RECOVERING direction, at `dismiss`: the old gate binned `£2,000 per week` against
+    # the annual floor, and the new basis keeps it. No default run re-selects a dismissed lead, so
+    # the notice is the only place that says the new verdict would keep it -- leaving every
+    # dismissed lead out dropped exactly the leads worth recovering along with the ones with
+    # nothing to do.
+    report, _ = _run_legacy(
+        tmp_path, _legacy_fields(salary="£2,000 per week", role_type="", status="dismiss"))
+    assert len(report.reverdict_pending) == 1
+    assert "reject -> keep" in report.reverdict_pending[0]
+
+
+def _rejected_on_both_bases():
+    # `£300 per week` on a contract role: judged before as a day rate under the day floor,
+    # and now as a weekly rate under the week floor. The verdict is a reject either way, for
+    # a different reason, so the notice reads `reject -> reject`. `_floors()` cannot build
+    # this -- its week floor is 0, which abstains.
+    cfg = TriageConfig(contract_floor_gbp_day=480, contract_floor_gbp_week=1000)
+    cfg.accept_titles, cfg.reject_titles = [], []
+    return cfg
+
+
+def test_a_lead_rejected_on_both_bases_is_named_while_it_is_live(tmp_path):
+    # The control for the row below. Without it, that row would also pass if this lead were
+    # not affected at all.
+    report, _ = _run_legacy(tmp_path, _legacy_fields(salary="£300 per week"),
+                            cfg=_rejected_on_both_bases())
+    assert len(report.reverdict_pending) == 1
+    assert "reject -> reject" in report.reverdict_pending[0]
+
+
+def test_a_dismissed_lead_rejected_on_both_bases_is_left_out_of_the_notice(tmp_path):
+    # The rule is the NEW verdict, not the direction of travel: a lead the new basis rejects
+    # stays at `dismiss`, whichever basis rejected it before. A filter keyed on "moved into
+    # reject" would name this one and hold the vault for nothing.
+    report, _ = _run_legacy(tmp_path,
+                            _legacy_fields(salary="£300 per week", status="dismiss"),
+                            cfg=_rejected_on_both_bases())
+    assert report.reverdict_pending == []
+
+
+# Hand-written, NOT derived from `TRIAGE_OWNED`: a roster built from the constant under test
+# cannot see a status dropped from the scan. The row below keeps it honest the other way,
+# failing when `TRIAGE_OWNED` gains a status this list does not name.
+_NOTICE_SCANS_EVERY_AFFECTED_LEAD_AT = ["shortlist", "research", "needs_review", "unjudgeable"]
+
+
+def test_the_scanned_status_list_accounts_for_every_triage_owned_status():
+    # `new` is what every other notice row seats a lead at; `dismiss` is scanned but
+    # filtered by direction, and has rows of its own above.
+    assert (set(_NOTICE_SCANS_EVERY_AFFECTED_LEAD_AT) | {"new", "dismiss"}
+            == set(_status.TRIAGE_OWNED))
+
+
+@pytest.mark.parametrize("status", _NOTICE_SCANS_EVERY_AFFECTED_LEAD_AT)
+def test_the_notice_names_an_affected_lead_at_every_status_it_scans(tmp_path, status):
+    # `unjudgeable` matters most: `DEFAULT_TRIAGE_STATUSES` re-selects it, so a scan that
+    # skipped it would let a default run dismiss it without naming it -- the harm this
+    # notice exists to prevent.
+    report, _ = _run_legacy(tmp_path, _legacy_fields(status=status))
+    assert len(report.reverdict_pending) == 1
+
+
+def test_the_notice_still_names_a_live_lead_beside_a_dismissed_one(tmp_path):
+    # The exclusion is decided lead by lead: a vault holding both is still held, and the
+    # notice names only the lead the run would actually change.
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "live.md", _legacy_fields())
+    _note(v, "gone.md", _legacy_fields(status="dismiss"))
+    audit = AuditLog(str(tmp_path / "audit.jsonl"))
+    report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    live = [note.slug for note in v.read_leads() if note.status == "new"]
+    assert len(live) == 1
+    assert [line.partition(": ")[0] for line in report.reverdict_pending] == live
+
+
 def test_a_lead_rejected_for_a_reason_that_is_not_pay_is_not_affected(tmp_path):
     # Its verdict does not move, because the title reject fires before the pay check
     # ever runs. Counting it would inflate the notice with leads nothing changes for.
@@ -1897,8 +1983,8 @@ def test_a_lead_whose_provenance_is_already_recorded_is_not_affected(tmp_path):
 # trusted and re-run the gate" SURVIVED every other row in this file -- the docstring
 # asserted the shortcut under-reports, and nothing here could falsify it.
 #
-# Both flip keep -> reject, which is the direction that costs: `dismiss` is not
-# re-selected, so an unannounced one is a lead the user never sees again.
+# Both flip keep -> reject, which is the direction that costs: no default run re-selects
+# `dismiss`, so a missed flip is a lead dismissed without the notice naming it first.
 
 def test_a_value_the_old_substring_test_read_as_contract_is_still_announced(tmp_path):
     # `"contract" in "contract-to-perm"` was True, so the old gate judged this lead on
@@ -2020,7 +2106,9 @@ def test_a_lead_the_old_gate_binned_on_the_annual_floor_is_announced_too(
     these met `perm_floor_gbp` and were rejected -- `£2,000 per week` is about £104k a
     year. They keep now. A user is told, because a lead the old gate dismissed sits at
     `dismiss`, which `DEFAULT_TRIAGE_STATUSES` does not re-select: nothing brings it back
-    on its own, so the notice is the only place that pairing is visible.
+    on its own, so the notice is the only place that pairing is visible. This row seats
+    the lead at `new`; `test_a_dismissed_lead_the_new_verdict_would_keep_is_still_named`
+    pins the same pairing at `dismiss`.
     """
     report, _ = _run_legacy(
         tmp_path, _legacy_fields(salary=salary, role_type=""))
@@ -2039,8 +2127,8 @@ def test_the_notice_names_every_affected_lead_even_under_limit(tmp_path):
     Found independently by three reviewers. On the narrowed version: run 1 with
     `--limit 1` named one lead and spent the marker; run 2 named nothing and dismissed
     BOTH. `dismiss` is not in `DEFAULT_TRIAGE_STATUSES`, so the lead that was never named
-    would not surface again -- the precise harm `triage/reverdict.py`'s own docstring
-    claims to prevent.
+    was dismissed and no default run re-selects it -- the precise harm
+    `triage/reverdict.py`'s own docstring claims to prevent.
     """
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", _legacy_fields())
@@ -2109,12 +2197,6 @@ def test_a_dry_run_does_not_report_a_write_require_status_would_refuse(tmp_path,
     reverdict.acknowledge(scope)
     report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
                  statuses=(status,), dry_run=True, reverdict_scope=scope)
-    # Past the gate, asserted: both rows below are ABSENCES, which a run held at the
-    # re-verdict notice would satisfy without observing anything. The notice cannot hold
-    # this run today -- it scans only triage-owned leads, and these are application-owned
-    # -- so this is for the day that scan widens, when these rows would otherwise pass
-    # vacuously.
-    assert report.reverdict_deferred is False and report.reverdict_pending == []
     assert report.observed_role_types["conflicted"] == 0
     assert report.role_type_conflicts == []
 
@@ -2122,7 +2204,7 @@ def test_a_dry_run_does_not_report_a_write_require_status_would_refuse(tmp_path,
 def test_the_held_run_and_the_applied_run_are_distinguishable(tmp_path, monkeypatch):
     """`reverdict_pending` is non-empty on BOTH arms, so it cannot also say which was
     taken. The CLI branched on it alone and told the user "WROTE NOTHING" over a run that
-    had just dismissed every lead it named."""
+    had just applied the re-verdict."""
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", _legacy_fields())
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
@@ -2291,9 +2373,28 @@ def test_two_dir_less_stores_of_different_kinds_do_not_share_a_scope(tmp_path):
     assert vault_app._reverdict_scope(_NoDir()) != other_app._reverdict_scope(_NoDir())
 
 
-def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
-    # The wiring, not just the helper: `run()` defaults to a SHARED bucket, so the whole
-    # protection is that the application boundary overrides it on every real call.
+def test_two_stores_of_different_kinds_at_one_directory_do_not_share_a_scope(tmp_path):
+    # The store-built branch keys on the configured store KIND, as the fallback above does,
+    # so two implementations pointed at one directory keep separate acknowledgements. It
+    # used to spell the literal `vault:` whatever the kind.
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    class _Dir:
+        dir = str(tmp_path / "v")
+
+    vault_app = Sluice(Config())
+    other = Config()
+    other.store = "somethingelse"
+    assert vault_app._reverdict_scope(_Dir()) != Sluice(other)._reverdict_scope(_Dir())
+    # ...and the shipped `vault` store keeps the key it already had: its kind IS the
+    # literal the prefix replaced, so no acknowledgement is invalidated by this.
+    assert vault_app._reverdict_scope(_Dir()) == (
+        "vault:" + os.path.realpath(str(tmp_path / "v")))
+
+
+def _scope_triage_passes(monkeypatch):
+    """Run `Sluice.triage` with the engine faked out; return the scope it handed over."""
     from sluice.core.app import Sluice
     from sluice.core.config import Config
     import sluice.triage.engine as eng
@@ -2305,13 +2406,33 @@ def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
         return eng.TriageReport()
 
     monkeypatch.setattr(eng, "run", _fake_run)
+    Sluice(Config()).triage(no_llm=True)
+    assert seen.get("reverdict_scope"), "triage() passed no scope, so every store shares one"
+    return seen["reverdict_scope"]
+
+
+def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
+    # The wiring, not just the helper: `run()` defaults to a SHARED bucket, so the whole
+    # protection is that the application boundary overrides it on every real call.
+    #
     # Named through VAULT_DIR, which the vault store's factory prefers over the config key.
     # This row used to set only `Config(vault_dir=...)` and assert a SUBSTRING, so it read
     # the vault conftest pins and passed because `<tmp>/v` is a prefix of `<tmp>/vault`.
     monkeypatch.setenv("VAULT_DIR", str(tmp_path / "v"))
-    Sluice(Config()).triage(no_llm=True)
-    assert seen.get("reverdict_scope"), "triage() passed no scope, so every store shares one"
-    assert seen["reverdict_scope"] == "vault:" + os.path.realpath(str(tmp_path / "v"))
+    assert _scope_triage_passes(monkeypatch) == (
+        "vault:" + os.path.realpath(str(tmp_path / "v")))
+
+
+def test_an_unconfigured_vault_is_scoped_by_the_store_triage_built(tmp_path, monkeypatch):
+    # The row above cannot tell WHICH store `Sluice.triage` handed `_reverdict_scope`: with
+    # VAULT_DIR set, the dir-less fallback reads that same value and yields the same scope,
+    # so passing no store at all survived it. With nothing configured the two differ -- the
+    # store falls back to its cwd-relative default and names a directory, while the
+    # fallback has nothing to name and yields a scope every project directory would share.
+    monkeypatch.delenv("VAULT_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+    assert _scope_triage_passes(monkeypatch) == (
+        "vault:" + os.path.join(os.path.realpath(str(tmp_path)), "vault"))
 
 
 def test_an_acknowledged_notice_stays_acknowledged_from_another_directory(
@@ -2322,7 +2443,7 @@ def test_an_acknowledged_notice_stays_acknowledged_from_another_directory(
     (`vault:<dir>`), not a path. `reverdict._key` used to `abspath` it, and a string with no
     leading `/` gets the process cwd prepended -- so the key was per (vault, cwd). A
     scheduled run and a hand-run one start in different directories, so each new cwd
-    re-showed the notice, wrote nothing and exited 0, reading like an ordinary notice.
+    re-showed the notice, applied nothing and exited 0, reading like an ordinary notice.
 
     Driven through `Sluice.triage` rather than by handing `reverdict` a string, because a
     hand-written string is how this shipped: every row in `tests/test_reverdict_ack.py`
@@ -2356,10 +2477,7 @@ def test_an_acknowledged_notice_stays_acknowledged_from_another_directory(
     second = Sluice(Config()).triage(no_llm=True)
     assert second.reverdict_pending == [], (
         "the same vault re-showed the notice from a different working directory")
-    # ...and applied it. Not implied by the row above: when the marker cannot be written
-    # the engine proceeds too, with the notice still pending.
-    assert second.reverdict_deferred is False
-    assert Vault(str(vault_dir)).read_leads()[0].status == "dismiss"
+    assert Vault(str(vault_dir)).read_leads()[0].status == "dismiss"   # ...and applied it
 
 
 def test_two_notes_sharing_a_slug_each_get_their_own_conflict_row(tmp_path):
@@ -2633,7 +2751,7 @@ def test_a_duplicate_verdict_is_refused_and_the_unjudged_lead_is_reported(tmp_pa
     """A model returning the same `lead_id` twice wrote one lead twice with CONFLICTING
     verdicts and left the other unjudged, silently.
 
-    Measured before the fix: `Acme` ended at `dismiss` (terminal, never re-selected) having
+    Measured before the fix: `Acme` ended at `dismiss` (not re-selected by a default run) having
     passed through `shortlist`; `Alpha` stayed `new`; `counts` claimed one shortlist AND one
     dismiss for a single lead; `failures` was empty because two verdicts for two dossiers
     matched on length. Worst of all, `surfaced` named `Acme` as shortlisted while the vault

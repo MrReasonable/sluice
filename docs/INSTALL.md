@@ -119,6 +119,15 @@ from state that persists pointing at an artefact that does not. In particular `V
 pinned there deliberately, and `docker compose down -v` destroys the volumes that hold the dedup
 databases.
 
+One compose project serves one vault. Its volumes hold state about the vault they have been
+serving, so pointing `SLUICE_VAULT` at a different vault under the same project inherits that
+state: leads the old vault already recorded are never offered to the new one, and a re-verdict
+notice the old vault acknowledged is not shown for the new one -- triage keys that acknowledgement
+on the vault's path inside the container, which the compose file pins at `/work/vault` whichever
+host directory is mounted there. Give another vault a project of
+its own by passing `-p <name>` to every `docker compose` invocation for it; compose prefixes each
+volume with the project name, so the two never share state.
+
 Camofox is **not** in the image and cannot be — it is a separate persistent browser service. It
 runs on your host, and the compose file points the container at it via
 `CAMOFOX_URL=http://host.docker.internal:9377`.
