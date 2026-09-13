@@ -208,6 +208,10 @@ def test_cmd_triage_run_prints_the_reverdict_notice_and_says_the_run_changed_no_
     assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
     # ...and which leads those steps are for.
     assert "already at `dismiss`" in err
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in err
+    assert err.index("to `new` by hand") < err.index("--status dismiss")
     # ...and the ordinary summary is NOT printed underneath it. A row of zeroes below
     # the notice reads as a quiet run rather than a suppressed one.
     assert "judged=" not in err
@@ -250,6 +254,10 @@ def test_cmd_triage_run_does_not_claim_it_changed_no_leads_when_it_did(
     assert "the new verdict rejects is rejected again" in err
     assert "would keep" in err
     assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in err
+    assert err.index("to `new` by hand") < err.index("--status dismiss")
 
 
 def test_cmd_triage_run_still_holds_when_the_marker_landed(monkeypatch, tmp_path, capsys):
@@ -324,6 +332,10 @@ def test_the_held_push_says_a_listed_dismissed_lead_needs_a_status_dismiss_sweep
     # ...for a lead at `dismiss`, and skipped by a DEFAULT run: the hold is reached by a
     # `--status dismiss` run too, which does select it.
     assert "a default run skips a lead already at `dismiss`" in msg.lower()
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in msg
+    assert msg.index("to `new` by hand") < msg.index("--status dismiss")
 
 
 def test_the_held_dry_run_push_says_it_too(monkeypatch, tmp_path, capsys):
@@ -332,6 +344,10 @@ def test_the_held_dry_run_push_says_it_too(monkeypatch, tmp_path, capsys):
     msg = _held_push(monkeypatch, tmp_path, "--dry-run")
     assert "--status dismiss" in msg and "--no-llm" in msg and "to `new` by hand" in msg
     assert "a default run skips a lead already at `dismiss`" in msg.lower()
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in msg
+    assert msg.index("to `new` by hand") < msg.index("--status dismiss")
 
 
 def test_the_APPLIED_arm_pushes_the_re_verdict_too(monkeypatch, tmp_path, capsys):
@@ -388,6 +404,10 @@ def test_the_applied_push_says_how_a_lead_left_at_dismiss_is_re_judged(
     assert "would keep" in sent[0]
     # ...and after the alert, never in it: the first line is the phone's preview.
     assert "--status dismiss" not in sent[0].splitlines()[0]
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in sent[0]
+    assert sent[0].index("to `new` by hand") < sent[0].index("--status dismiss")
 
 
 def test_an_ordinary_run_pushes_no_re_verdict_wording(monkeypatch, tmp_path, capsys):
@@ -404,7 +424,7 @@ def test_an_ordinary_run_pushes_no_re_verdict_wording(monkeypatch, tmp_path, cap
     assert "--status dismiss" not in sent[0]
 
 
-def test_a_dry_run_is_told_to_re_run_without_dry_run(monkeypatch, tmp_path, capsys):
+def test_a_dry_run_says_a_run_without_it_lists_these_leads_again(monkeypatch, tmp_path, capsys):
     # A dry run never spends the marker, so "run it again to apply them" is false for it
     # -- executed dry, dry, real, real, that sentence printed three times before
     # anything applied.
@@ -418,9 +438,18 @@ def test_a_dry_run_is_told_to_re_run_without_dry_run(monkeypatch, tmp_path, caps
     err = capsys.readouterr().err
     assert "without --dry-run" in err.lower()
     assert "run it again to apply them" not in err.lower()
+    # ...nor that a run WITHOUT it applies them: that run lists these leads again, and goes
+    # ahead only when the acknowledgement cannot be recorded but the audit log passes the
+    # pre-write check.
+    assert "to apply them" not in err.lower()
+    assert "lists these leads again" in err.lower()
     # The dry run prints a different `nudge`, so the `dismiss` sentence has to survive it.
     assert "--status dismiss" in err and "--no-llm" in err and "to `new` by hand" in err
     assert "already at `dismiss`" in err
+    # The targeted route first, and the sweep's reach said: `--status dismiss` takes every
+    # lead at `dismiss`, including ones the user dismissed on purpose.
+    assert "including ones you dismissed yourself" in err
+    assert err.index("to `new` by hand") < err.index("--status dismiss")
 
 
 def test_a_dry_run_push_does_not_promise_that_re_running_applies(monkeypatch, tmp_path):
@@ -440,6 +469,113 @@ def test_a_dry_run_push_does_not_promise_that_re_running_applies(monkeypatch, tm
     assert len(sent) == 1
     assert "without --dry-run" in sent[0].lower()
     assert "run it again to apply" not in sent[0].lower()
+    assert "to apply them" not in sent[0].lower()
+    assert "lists these leads again" in sent[0].lower()
+
+
+def test_a_stopped_run_says_so_and_exits_non_zero(monkeypatch, tmp_path, capsys):
+    """A run the engine STOPPED before changing any lead says so and exits 1. The engine is
+    stubbed here; the end-to-end row below is the one that sees the lead left unchanged."""
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    audit_path = str(tmp_path / "state" / "sluice" / "triage-audit.jsonl")
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(
+        stopped=f"the triage audit log failed the pre-write check: {audit_path} is not writable"))
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    assert cmd_triage_run(args, Config()) == 1
+    err = capsys.readouterr().err
+    assert "STOPPED" in err
+    assert audit_path in err
+    # Not the ordinary summary: a row of zeroes under it would read as a quiet run.
+    assert "judged=" not in err
+    assert len(sent) == 1 and "STOPPED" in sent[0] and "pre-write check" in sent[0]
+    # The path stays on the local terminal; the push goes to another service.
+    assert str(tmp_path) not in sent[0]
+
+
+def test_a_stopped_run_still_names_the_leads_the_re_verdict_would_move(
+        monkeypatch, tmp_path, capsys):
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(
+        stopped="the triage audit log failed the pre-write check",
+        reverdict_pending=["acme: pay was judged as day, now judged as annual: "
+                           "keep -> reject"]))
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    assert cmd_triage_run(args, Config()) == 1
+    err = capsys.readouterr().err
+    assert "acme: pay was judged as day" in err and "#223" in err
+    # A stopped run applied nothing, so it must not say it did.
+    assert "APPLIED" not in err
+    assert len(sent) == 1 and "#223" in sent[0] and "1 lead" in sent[0]
+
+
+def test_an_unwritable_state_directory_stops_triage_with_the_notice_and_no_lead_changed(
+        tmp_path, monkeypatch, capsys):
+    """The measured incident, through the real composition root. With a state directory
+    sluice could not write, `triage run` on a vault holding a lead #223's notice names used
+    to exit 1 with a traceback from the audit-log append, having ALREADY dismissed the lead
+    and never printed the notice -- the unannounced re-verdict #223 exists to prevent. The
+    acknowledgement and the audit log both resolve under that directory by default, so one
+    broken directory reaches both.
+
+    The state root sits under a regular FILE rather than behind a chmod, so the row holds for
+    root as well.
+    """
+    from sluice.cli import main
+    from tests.test_triage_engine import _legacy_fields
+    blocker = tmp_path / "blocker"
+    blocker.write_text("not a directory\n", encoding="utf-8")
+    monkeypatch.setenv("XDG_STATE_HOME", str(blocker / "state"))
+    cfg = tmp_path / "sluice.yaml"
+    cfg.write_text("triage:\n  contract_floor_gbp_day: 480\n  perm_floor_gbp: 90000\n"
+                   "  accept_titles: []\n  reject_titles: []\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg))
+    # conftest pins the same directory; named here so the row does not lean on that.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    leads = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    note = leads / "acme.md"
+    note.write_text("---\n" + "\n".join(_legacy_fields()) + "\n---\n# body\n",
+                    encoding="utf-8")
+
+    assert main(["triage", "run", "--no-llm"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "STOPPED" in err
+    # ...with the engine's reason: which path cannot be written.
+    assert str(blocker) in err
+    assert "acme: pay was judged as day" in err
+    assert "status: new" in note.read_text(encoding="utf-8")
+
+
+def test_an_audit_log_path_naming_a_directory_stops_triage_before_any_lead_changes(
+        tmp_path, monkeypatch, capsys):
+    """`TRIAGE_AUDIT` ending in a separator names a directory. `append` would create it and then
+    fail to open it as a file, after the lead's write; the run stops first."""
+    from sluice.cli import main
+    from tests.test_triage_engine import _plain_reject_fields
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "state") + "/")
+    cfg = tmp_path / "sluice.yaml"
+    cfg.write_text("triage:\n  contract_floor_gbp_day: 480\n  perm_floor_gbp: 90000\n"
+                   "  accept_titles: []\n  reject_titles: []\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfg))
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "vault"))
+    leads = tmp_path / "vault" / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True)
+    note = leads / "acme.md"
+    note.write_text("---\n" + "\n".join(_plain_reject_fields()) + "\n---\n# body\n",
+                    encoding="utf-8")
+
+    assert main(["triage", "run", "--no-llm"]) == 1
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "STOPPED" in err and "names a directory" in err
+    assert "status: new" in note.read_text(encoding="utf-8")
 
 
 # ── the push body is read on a phone: prose, not a dict repr ─────────────────

@@ -1617,7 +1617,9 @@ def test_the_summary_key_extraction_is_not_vacuous():
 def test_usage_md_documents_every_key_the_triage_summary_prints():
     doc = open("docs/USAGE.md", encoding="utf-8").read()
     line = doc[doc.index("Prints `job-sluice triage:"):]
-    line = line[:line.index("Exit 0 always")]
+    # Bounded by the paragraph, not by its closing sentence: the sentence names the exit
+    # code, which changed when a blocked audit log began stopping the run.
+    line = line[:line.index("\n\n")]
     missing = sorted(k for k in _printed_summary_keys() if f"{k}=" not in line)
     assert not missing, (
         f"docs/USAGE.md's triage summary sentence omits {missing}, so a user reading it "
