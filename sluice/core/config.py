@@ -202,6 +202,17 @@ class Config:
     # layer is the operator's override, and relocating a file that is switched off would be a
     # no-op, so there is nothing the narrower reading could usefully mean. `record_usage: true`
     # with no path here is the ordinary way in.
+    #
+    # A path here with the switch OFF is ACCEPTED, not refused, and the ruling is recorded because
+    # `triage/config.py`'s `company_resolve_llm`/`company_resolve_fetch` pair looks like the same
+    # shape and is refused -- so the next reader will reach for a matching raise. The difference is
+    # what the key ASSERTS. `company_resolve_llm: true` asserts a FEATURE IS ON while it can never
+    # fire, so the config states something false about itself; `usage_jsonl: <path>` asserts only
+    # WHERE a file goes, which stays true whether or not anything is written yet. Refusing it would
+    # also forbid the two cases the split exists to serve: staging a location before turning
+    # recording on, and a shared config that names a path while each machine decides for itself.
+    # That would put the keys back in lockstep, which is the collapse this pair replaced.
+    # `job-sluice usage` says so out loud in that state rather than leaving it to be inferred.
     usage_jsonl: str = ""
 
     def source(self, id: str) -> SourceConfig:
@@ -209,7 +220,7 @@ class Config:
         return self.sources.get(id, SourceConfig())
 
 
-def _flag(data: dict, name: str) -> bool:
+def _flag(value, name: str) -> bool:
     """A root BOOLEAN config key, refusing anything that merely looks like one.
 
     PyYAML already resolves an unquoted `true`/`yes`/`on` to `True`, which is what a user types,
@@ -225,10 +236,16 @@ def _flag(data: dict, name: str) -> bool:
     said. Note the bool check here is an `isinstance` ALLOW, not the bool-BEFORE-int refusal
     those two need -- the hazard is inverted, because for them a bool is the wrong type and
     here it is the only right one.
+
+    Takes the VALUE, not `(data, name)`, to match `_str_list` beside it -- so `load_config` reads
+    the key as `data.get(...)` like every other field. That is not cosmetic: the dead-root-field
+    guard sweeps `load_config` for `.get("x")` calls, and a helper taking the dict hid the key from
+    it, which forced a second, over-collecting arm into that guard. Over-collecting there weakens
+    it -- a genuinely dead field could be reported as read -- so the signature is what keeps the
+    sweep narrow. An absent key and an explicit `~` both arrive here as None and mean OFF.
     """
-    if name not in data or data[name] is None:
+    if value is None:
         return False
-    value = data[name]
     if not isinstance(value, bool):
         raise ValueError(
             f"{name} must be a YAML boolean (`{name}: true` or `{name}: false`), not a "
@@ -870,7 +887,7 @@ def load_config(path: str | None = None) -> Config:
                   baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
-                  record_usage=_flag(data, "record_usage"),
+                  record_usage=_flag(data.get("record_usage"), "record_usage"),
                   usage_jsonl=str(data.get("usage_jsonl") or ""),
                   fetcher=str(data.get("fetcher") or "camofox"),
                   rates=str(data.get("rates") or "frankfurter"),

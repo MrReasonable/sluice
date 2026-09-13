@@ -146,7 +146,7 @@ Shared by every sub-app:
   | source health | `SLUICE_HEALTH` | state | |
   | disabled sources | `SLUICE_DISABLED` | state | |
   | triage audit | `TRIAGE_AUDIT` | state | was a dead config key |
-  | token usage | `SLUICE_USAGE` | state | #308; the key is `usage_jsonl`, but a SECOND key gates it -- `record_usage` is off by default, since the per-lead rows name employers, so an install that never asked resolves nothing and creates nothing. Switched on, the XDG fallback is ordinary. No `_LEGACY` row: new in 2.15.0, so losing it costs history only |
+  | token usage | `SLUICE_USAGE` | state | #308; the key is `usage_jsonl`, but a SECOND key gates it -- `record_usage` is off by default, since the per-lead rows name employers, so an install that never asked resolves nothing and creates nothing. Switched on, the XDG fallback is ordinary. No `_LEGACY` row: the file has no earlier location to have been left behind at, so losing it costs history only |
   | dossier cache | `DOSSIER_DIR` | cache | ONE root key; was two sub-app keys |
   | Google OAuth token | *none* | state | written `0600`, parent created |
   | vault | `VAULT_DIR` | **unmoved** | gains a config key; precedence in `stores/vault.py:_make` |

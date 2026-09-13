@@ -138,6 +138,18 @@ _VALID = {
 
 # The model every row is built with. Named rather than inlined so a property ASSERTING on it
 # (the identity row below) reads the same literal `_build` passes, instead of restating it.
+# The injection styles that genuinely cannot carry token counts, so a provider using one may
+# opt out of the normalisation row. `runner` is a subprocess whose entire output is the text the
+# model produced -- `claude --print` in text mode -- and there is no second channel for a usage
+# block to arrive on.
+#
+# Deliberately an ALLOW-list. Every other transport can report: an HTTP body obviously, and an SDK
+# client object just as readily. Written as a deny-list (`"http" not in ...`) this check passed a
+# hypothetical `{"client": ...}` provider that should have been refused -- measured, and the reason
+# the enumeration goes this way round.
+_NO_USABLE_USAGE_TRANSPORT = frozenset({"runner"})
+
+
 _MODEL = "test-model"
 
 
@@ -233,6 +245,40 @@ def test_the_cached_payload_table_covers_the_registry():
         f"_CACHED is out of sync with the backend registry: {set(_BACKENDS) ^ set(_CACHED)}"
 
 
+@pytest.mark.parametrize("injected,entitled", [
+    ({"runner"}, True),                 # a subprocess printing text: no second channel
+    ({"http"}, False),                  # a response body can always carry a usage block
+    ({"client"}, False),                # an SDK object carries usage as readily as a body
+    ({"socket"}, False),                # anything nobody has ruled on yet
+    ({"runner", "http"}, False),        # a hybrid still has the capable half
+])
+def test_only_an_enumerated_transport_may_claim_it_cannot_report_usage(injected, entitled):
+    """The opt-out predicate, asserted as a PREDICATE rather than only through the four providers.
+
+    The rows above are the point: this check is an allow-list because the deny-list version failed
+    OPEN. Keyed on `"http" not in ...`, a `{"client": ...}` provider satisfied the opt-out and was
+    believed when it said it could not report token counts -- so its calls would have been exempt
+    from the one normalisation the whole feature depends on, silently.
+
+    `socket` is here as the transport nobody has thought of: it must be REFUSED by default, since
+    the guard cannot know whether a future channel carries usage and the safe answer is to make a
+    human rule on it. Testing it through `_BACKENDS` alone could not cover this -- all four
+    shipped providers use one of two transports, and the hole was in the third case."""
+    assert (injected <= _NO_USABLE_USAGE_TRANSPORT) is entitled
+
+
+def test_the_benign_transport_set_is_not_vacuously_wide():
+    """Anti-vacuity for the row above: a `_NO_USABLE_USAGE_TRANSPORT` that grew to include every
+    transport in use would make the opt-out unconditional and every assertion over it green.
+
+    So it must be a STRICT subset of what the registry actually injects -- at least one real
+    provider's transport must be outside it, or nothing is being checked."""
+    in_use = {k for name in _BACKENDS for k in _VALID[name]()}
+    assert _NO_USABLE_USAGE_TRANSPORT < in_use, (
+        f"the benign set {sorted(_NO_USABLE_USAGE_TRANSPORT)} is not a strict subset of the "
+        f"transports in use {sorted(in_use)}: the opt-out check can no longer refuse anything")
+
+
 @pytest.mark.parametrize("name", _BACKENDS)
 def test_input_tokens_includes_the_cached_tokens_for_every_provider(name):
     """The seam's cross-provider NORMALISATION, as a portable contract row (#308).
@@ -248,23 +294,32 @@ def test_input_tokens_includes_the_cached_tokens_for_every_provider(name):
     number is a property of the payload, while the INEQUALITY is the property of the
     definition, and it is what a copied field violates."""
     if _CACHED[name] is None:
-        # The opt-out is CHECKED against a STRUCTURAL fact, not taken on the table's word: only a
-        # provider with no HTTP RESPONSE BODY to carry a usage block may claim it cannot report
-        # one. So the check is the ABSENCE of `http`, not the presence of `runner` -- the property
-        # is "no body", and a future provider injected some third way (a client object, a socket)
-        # has no body either and is entitled to the same opt-out. Keyed on `runner`, it failed
-        # such a provider with a message asserting it "is driven over HTTP", which is a wrong
-        # diagnosis of a legitimate case and the kind that gets a guard narrowed rather than read.
+        # The opt-out is CHECKED against a STRUCTURAL fact, not taken on the table's word, and the
+        # check names the BENIGN set rather than the guilty one. A transport that genuinely cannot
+        # carry token counts is a short, enumerable list; the transports that CAN are unbounded and
+        # grow with every SDK, so a deny-list fails OPEN on the first one nobody listed.
+        #
+        # Measured, and this went the wrong way once: keying the check on the ABSENCE of `http`
+        # let `{"client": <sdk object>}` through -- it has no HTTP key, so it could claim it cannot
+        # report usage and be believed, while an SDK response object carries usage as readily as a
+        # JSON body. The version before THAT keyed on `runner` being PRESENT, which was
+        # fail-closed and right, but refused a third injection style with a message asserting it
+        # "is driven over HTTP" -- a wrong diagnosis of a legitimate case, and the kind that gets a
+        # guard narrowed instead of read. The subset form below is fail-closed AND diagnoses
+        # correctly: a new transport is refused until a human rules on whether it can report, which
+        # is the direction to fail in.
         #
         # An earlier version compared the provider's `_VALID` response against an identity-only
         # Usage, which was VACUOUS: no `_VALID` payload carries a usage block, so every provider
         # satisfied it and switching any entry to `None` stayed green (measured). This shape is
         # non-vacuous -- flipping any other `_CACHED` entry to None reds, since each of the three
-        # HTTP providers' `_VALID` payload does carry `http`.
-        assert "http" not in _VALID[name](), (
-            f"_CACHED opts {name} out of the normalisation row, but its transport is an HTTP "
-            f"response body, which can carry a usage block -- give it a cached payload instead "
-            f"of None")
+        # HTTP providers injects `http`.
+        injected = set(_VALID[name]())
+        assert injected <= _NO_USABLE_USAGE_TRANSPORT, (
+            f"_CACHED opts {name} out of the normalisation row, but it is injected as "
+            f"{sorted(injected)} and only {sorted(_NO_USABLE_USAGE_TRANSPORT)} is known to carry "
+            f"no token counts. Either give it a cached payload, or -- if this transport really "
+            f"cannot report usage -- add it to _NO_USABLE_USAGE_TRANSPORT with the reason")
         pytest.skip(f"{name} reports no token counts (flat-rate, text mode)")
     u = _build(name, _CACHED[name]).complete("prompt").usage
     assert u.cache_read_tokens == 500, "the payload's cache read was not parsed at all"

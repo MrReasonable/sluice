@@ -459,6 +459,25 @@ def test_record_usage_accepts_every_spelling_yaml_resolves_to_a_bool(tmp_path, l
     assert load_config(path).record_usage is expected
 
 
+def test_a_location_with_the_switch_off_loads_rather_than_raising(tmp_path):
+    """The RULING, pinned so it is not "fixed" into a refusal later.
+
+    `triage/config.py` refuses `company_resolve_llm` without `company_resolve_fetch`, on the
+    ground that a config claiming a feature is on while it can never fire states something false
+    about itself. This pair LOOKS identical and is deliberately not refused: `usage_jsonl` asserts
+    only WHERE a file goes, which is true whether or not anything is written yet, while
+    `company_resolve_llm: true` asserts a feature is ON.
+
+    A refusal here would also forbid the two cases the split exists to serve -- staging a location
+    before turning recording on, and a shared config naming a path while each machine decides for
+    itself -- putting the two keys back in lockstep, which is the collapse this pair replaced."""
+    path = _write(tmp_path, "loc-only.yaml",
+                  f"vault_dir: ./v\nusage_jsonl: {tmp_path / 'chosen.jsonl'}\n")
+    cfg = load_config(path)          # must not raise
+    assert cfg.record_usage is False
+    assert cfg.usage_jsonl == str(tmp_path / "chosen.jsonl")
+
+
 def test_record_usage_is_off_when_the_key_is_absent_or_null(tmp_path):
     """Absent and explicitly `~` both mean OFF -- the shipped state.
 
@@ -826,18 +845,12 @@ def test_every_root_config_field_is_actually_read_from_the_yaml():
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
             and n.func.attr == "get" and n.args
             and isinstance(n.args[0], ast.Constant) and isinstance(n.args[0].value, str)}
-    # Not every field is read as `data.get("x")`. A field needing VALIDATION goes through a
-    # helper instead -- `_flag(data, "record_usage")`, which refuses a truthy non-bool -- and the
-    # `.get` arm alone reported such a field as DEAD, so the guard would have pushed the check
-    # back inline to satisfy itself. Second arm: any call handed `data` plus a string literal.
-    # Keyed on the ARGUMENT rather than on a roster of helper names, so the next validating
-    # helper is covered without being remembered; over-collecting is the safe direction here,
-    # since the only risk is missing a genuinely dead field and the anti-vacuity rows below
-    # bound that.
-    read |= {a.value for n in ast.walk(tree)
-             if isinstance(n, ast.Call)
-             and any(isinstance(x, ast.Name) and x.id == "data" for x in n.args)
-             for a in n.args if isinstance(a, ast.Constant) and isinstance(a.value, str)}
+    # ONE arm, deliberately. A validating helper is handed the VALUE (`_flag(data.get("x"), "x")`,
+    # matching `_str_list`), never the dict, so every field still reads as `data.get("x")` here.
+    # A second arm keyed on the `data` argument was added when `_flag` took the dict, and it
+    # over-collected: any string literal in a call touching `data` counted as a field being read,
+    # which is the wrong direction for THIS guard, whose success case is finding nothing. Fixing
+    # the helper's signature was the cheaper fix and left the sweep narrow.
     fields = set(Config.__dataclass_fields__)
 
     # ANTI-VACUITY: a walk that resolved nothing would report every field as read, or none
