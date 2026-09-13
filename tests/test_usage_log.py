@@ -357,3 +357,18 @@ def test_every_leg_that_billed_on_a_failed_call_gets_its_own_row(tmp_path):
     rows = _rows(p)
     assert [(r["provider"], r["input_tokens"], r["served"]) for r in rows] == [
         ("openai", 100, False), ("deepseek", 40, False)]
+
+
+def test_an_unreadable_log_raises_rather_than_reading_as_empty(tmp_path):
+    """The read-failure tier is **raise** (see `read_recent`'s docstring and the list in
+    docs/ARCHITECTURE.md): an empty read is rendered as "No calls recorded", which is a claim
+    about money the operator acts on.
+
+    Distinguishing absent from unreadable needs the specific `FileNotFoundError` rather than an
+    `os.path.exists` pre-check -- `exists()` swallows every OSError and answers False, so an
+    unreadable path reported as a first run. A directory is used as the unreadable path because
+    it raises for every user including root, unlike a chmod."""
+    d = tmp_path / "a-directory"
+    d.mkdir()
+    with pytest.raises(OSError):
+        UsageLog(str(d)).read_recent(30)

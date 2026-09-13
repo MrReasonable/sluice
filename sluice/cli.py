@@ -2361,7 +2361,16 @@ def cmd_usage(args, config) -> int:
             f"usage --days must be 0 or more, not {args.days}; 0 reports today only")
 
     log = Sluice(config).usage_log()
-    summary = summarize(log.read_recent(args.days))
+    try:
+        summary = summarize(log.read_recent(args.days))
+    except OSError as exc:
+        # The log exists and cannot be read. Reporting an empty window here would say "you
+        # spent nothing", which is a wrong answer about money that the operator acts on -- so
+        # this is the `raise` tier (see `UsageLog.read_recent`), surfaced as a named diagnosis
+        # rather than the traceback it was before. Exit 1, not 2: nothing is wrong with the
+        # command the user typed.
+        print(f"usage: cannot read the usage log at {log.path}: {exc}", file=sys.stderr)
+        return 1
     if args.json:
         print(json.dumps({
             "days": args.days,

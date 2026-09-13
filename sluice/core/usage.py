@@ -136,12 +136,33 @@ class UsageLog:
         Malformed lines are skipped and a row with no parseable `ts` is INCLUDED, both
         matching `AuditLog.read_recent`: a hand-edited or half-written file must not make the
         command that reads it fail, and an undated row is better reported than dropped.
+
+        READ-FAILURE TIER: **raise**, picked from the list in `docs/ARCHITECTURE.md` rather
+        than copied from a neighbour. A file that exists and cannot be read must not report as
+        an empty window, because "No calls recorded" is a claim the operator acts on -- the
+        same wrong answer `cmd_usage` refuses a negative `--days` to avoid, and one about
+        money. A MISSING file is different and returns `[]`: that is a real first-run state,
+        and the read creates nothing (a store that created a 0-byte file on read is how a
+        relocation notice was once disarmed for every later run -- `core/paths.py`).
+
+        `cli.py::cmd_usage` turns the OSError into exit 1 with a message naming the file, so
+        the tier costs a diagnosis rather than a traceback. This is the opposite decision from
+        `append` on the same file, deliberately: a failed WRITE must not fail a run whose work
+        is already done, while a failed READ is the whole of what the reader asked for.
         """
-        if not os.path.exists(self.path):
-            return []
         cutoff = clock().date()
         out = []
-        with open(self.path, encoding="utf-8") as f:
+        # `FileNotFoundError`, never an `os.path.exists` pre-check. `exists()` swallows every
+        # OSError and answers False, so an unreadable PARENT directory reported as "the file
+        # is not there" and the command printed "No calls recorded" -- measured, and the exact
+        # wrong answer this tier exists to refuse. Catching the specific error instead
+        # distinguishes absent from unreadable, and removes a check-then-open window as a side
+        # effect. Opening for READ still creates nothing.
+        try:
+            handle = open(self.path, encoding="utf-8")
+        except FileNotFoundError:
+            return []
+        with handle as f:
             for line in f:
                 line = line.strip()
                 if not line:

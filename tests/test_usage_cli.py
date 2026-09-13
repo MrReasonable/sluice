@@ -258,3 +258,35 @@ def test_the_json_reports_per_count_coverage(tmp_path, monkeypatch, capsys):
     assert (total["input_calls"], total["output_calls"], total["cache_calls"]) == (0, 1, 0)
     assert total["output_tokens"] == 30
     assert total["hit_rate"] is None
+
+
+def test_a_log_that_cannot_be_read_is_a_named_diagnosis_not_an_empty_report(
+        tmp_path, monkeypatch, capsys):
+    """The read-failure tier, picked from the list in docs/ARCHITECTURE.md: **raise**.
+
+    Reporting "No calls recorded" for a file that exists and cannot be read would say "you
+    spent nothing" -- a wrong answer about money that the operator acts on, and the same
+    failure a negative `--days` is refused to avoid. Measured before the fix: a raw
+    PermissionError traceback out of `read_recent`.
+
+    Made unreadable by pointing the path at a DIRECTORY, which raises `IsADirectoryError`
+    (an OSError) for every user -- root included. A `chmod` would not: root ignores file modes
+    and directory permissions alike, so the row would pass locally and go silently vacuous
+    wherever CI runs as root. It is also a real shape: a user setting `usage_jsonl` to a folder.
+    """
+    p = tmp_path / "a-directory"
+    p.mkdir()
+    monkeypatch.setenv("SLUICE_USAGE", str(p))
+    rc = main(["usage"])
+    out, err = capsys.readouterr()
+    assert rc == 1
+    assert "cannot read the usage log" in err and str(p) in err
+    assert "No calls recorded" not in out, "an unreadable log must not report as empty"
+
+
+def test_a_missing_log_is_still_an_empty_window_not_an_error(tmp_path, monkeypatch, capsys):
+    """The other arm of the same tier: absent is a real first-run state and must stay exit 0,
+    or a fresh install running this before its first LLM call looks broken."""
+    monkeypatch.setenv("SLUICE_USAGE", str(tmp_path / "never-written.jsonl"))
+    assert main(["usage"]) == 0
+    assert "No calls recorded" in capsys.readouterr().out
