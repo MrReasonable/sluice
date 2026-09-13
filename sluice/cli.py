@@ -2255,6 +2255,121 @@ def cmd_mcp_serve(args, config) -> int:
 
 
 # ── doctor ────────────────────────────────────────────────────────────────────
+def _thousands(n) -> str:
+    """`18,442`, or `-` for a count nothing reported.
+
+    A dash rather than `0`: a stage whose every call was unmeasured spent an unknown amount,
+    and printing zero there is the quiet wrong answer -- it reads as "this cost nothing".
+    Grouping is `format`'s own locale-independent `,`, deliberately: #311 established that
+    reading digit grouping from an assumed locale is a bug, and a report the user greps
+    should not change shape with LANG.
+    """
+    return "-" if n is None else f"{n:,}"
+
+
+def _pct(rate) -> str:
+    """A cache hit rate as a percentage, or `-` when there is nothing to divide by (see
+    `Totals.hit_rate`, which returns None rather than 0.0 for exactly this reason)."""
+    return "-" if rate is None else f"{rate * 100:.1f}"
+
+
+def _usage_rows(groups: dict) -> list:
+    """(label, Totals) sorted by spend, biggest first -- the question is "which stage is
+    expensive", so the answer belongs on the first line rather than in alphabetical order.
+    Ties break on the label so the output is stable run to run."""
+    return sorted(groups.items(), key=lambda kv: (-kv[1].total_tokens, kv[0]))
+
+
+def format_usage(summary, *, days: int, path: str) -> str:
+    """The human report. PURE over a `Summary`, so every number in it is testable without a
+    file on disk and the handler below is left with I/O only."""
+    header = f"usage over the last {days} day(s), from {path}"
+    if not summary.total.calls:
+        # Short-circuit rather than print two empty tables and a row of zeros. The zeros
+        # would be true (no calls really did spend nothing) and still worse than the
+        # sentence: a reader scanning for a number finds one, and it is not an answer to
+        # any question they asked.
+        return f"{header}\n\nNo calls recorded in this window."
+
+    # Width from the labels actually present, never a fixed truncation. A `provider/model`
+    # label is long and the model is the thing a reader is comparing, so clipping it to a
+    # tidy column turned `deepseek/deepseek-v4-flash` and `claude-max/claude-sonnet-4-5`
+    # into `deepseek/deepsee` and `claude-max/claud` -- the report's own subject, unreadable.
+    labels = [*summary.by_stage, *summary.by_model, "TOTAL"]
+    w = max(len("stage / model"), *(len(x) for x in labels)) + 2
+    head = f"{'':{w}}{'calls':>6}{'input':>12}{'output':>10}{'cached':>10}{'hit%':>7}"
+
+    def row(label, t):
+        # A group whose EVERY call reported nothing did not spend zero -- it spent an
+        # unknown amount. Rendering the accumulator (which is 0, since unmeasured rows add
+        # nothing to it) would state the one thing this report must never say: that a
+        # flat-rate provider's calls were free. Partial groups keep their measured sum,
+        # which is a genuine floor, and the footnote below says so.
+        blind = t.calls > 0 and t.calls == t.unmeasured
+        counts = (None, None, None) if blind else (t.input_tokens, t.output_tokens,
+                                                   t.cache_read_tokens)
+        return (f"{label:{w}}{t.calls:>6}{_thousands(counts[0]):>12}"
+                f"{_thousands(counts[1]):>10}{_thousands(counts[2]):>10}"
+                f"{_pct(t.hit_rate):>7}")
+
+    out = [header, "", "by stage", head]
+    out += [row(label, t) for label, t in _usage_rows(summary.by_stage)]
+    out += ["", "by model", head]
+    out += [row(label, t) for label, t in _usage_rows(summary.by_model)]
+    out += ["", row("TOTAL", summary.total)]
+
+    # The footnotes are the part that stops this report over-claiming. Each is printed only
+    # when it applies, so a clean run reads clean.
+    if summary.total.unmeasured:
+        out += ["",
+                f"{summary.total.unmeasured} of {summary.total.calls} call(s) reported no "
+                f"token counts, so the totals above are a FLOOR, not the whole bill. "
+                f"claude-max is flat-rate and reports none by design."]
+    if summary.unserved_calls:
+        out += ["",
+                f"{summary.unserved_calls} call(s) were billed without serving an answer "
+                f"(a primary backend that spent tokens and then failed). Their tokens ARE "
+                f"in the totals above, because they were billed."]
+    return "\n".join(out)
+
+
+def cmd_usage(args, config) -> int:
+    """What this install spent, by stage and by model (#308).
+
+    Read-only, and offline: it reads the JSONL the pipeline already wrote and never
+    constructs a backend. Exit 0 even with nothing recorded -- "no calls in this window" is a
+    true answer to the question asked, not a failure.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.usage import summarize
+
+    log = Sluice(config)._usage_log()
+    summary = summarize(log.read_recent(args.days))
+    if args.json:
+        print(json.dumps({
+            "days": args.days,
+            "path": log.path,
+            "total": _usage_json(summary.total),
+            "by_stage": {k: _usage_json(v) for k, v in summary.by_stage.items()},
+            "by_model": {k: _usage_json(v) for k, v in summary.by_model.items()},
+            "unserved_calls": summary.unserved_calls,
+        }))
+    else:
+        print(format_usage(summary, days=args.days, path=log.path))
+    return 0
+
+
+def _usage_json(t) -> dict:
+    """One group as JSON. `hit_rate` and `total_tokens` are DERIVED here rather than stored,
+    so a consumer cannot read a stale total that disagrees with its own parts -- and
+    `hit_rate` stays null where there was nothing to divide by, which is the distinction the
+    whole report turns on."""
+    return {"calls": t.calls, "input_tokens": t.input_tokens,
+            "output_tokens": t.output_tokens, "total_tokens": t.total_tokens,
+            "cache_read_tokens": t.cache_read_tokens, "unmeasured": t.unmeasured,
+            "hit_rate": t.hit_rate}
+
+
 def cmd_doctor(args, config) -> int:
     from sluice.core import doctor as _doctor_mod
     from sluice.core.app import Sluice
@@ -2821,6 +2936,16 @@ def _build_parser() -> argparse.ArgumentParser:
                       # --no-input would write it into a config nobody was asked about.
                       help="never prompt; answer only from flags")
     init.set_defaults(func=cmd_init)
+
+    usage_p = top.add_parser(
+        "usage", help="what this install spent on LLM calls, by stage and by model")
+    # 30 days matches `AuditLog.read_recent`'s window, so the two reports over one run's
+    # history default to talking about the same period.
+    usage_p.add_argument("--days", type=int, default=30, metavar="N",
+                         help="how far back to report (default 30)")
+    usage_p.add_argument("--json", action="store_true",
+                         help="machine-readable totals instead of the table")
+    usage_p.set_defaults(func=cmd_usage)
 
     doctor = top.add_parser(
         "doctor", help="preflight backends, renderer, store artefacts and gate posture")

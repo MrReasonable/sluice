@@ -330,6 +330,7 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice skills` | capture and verify skills evidence, shown to the composer as framing (`add`, `list`, `verify`) |
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
 | `job-sluice health` | per-source scrape baseline and retire state |
+| `job-sluice usage` | what this install spent on LLM calls, by stage and by model |
 | `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools) |
 
 The `leads` passes **report by default** and change nothing until told otherwise (`--merge`,
