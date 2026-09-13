@@ -717,8 +717,12 @@ guess. The footnote counts partially-reported calls as well as silent ones: a ca
 input count and no output count contributes to one total and not the other, so it makes the
 figures a floor without showing a single dash.
 
-`hit%` is likewise `-`, never `0.0`, when there was no measured input to divide by: 0% reports
-a cache that is working badly, which is a different claim from one that was never observed.
+`hit%` is likewise `-`, never `0.0`, when no call reported both terms of the ratio — which
+includes the ordinary case of a call with no prompt caching, where the input count is perfectly
+good and the `cached` column is itself a dash. 0% reports a cache that is working badly, which
+is a different claim from one that was never observed. The rate is computed over the calls that
+reported *both* counts, not by dividing the two column totals: a call reporting one and not the
+other would otherwise push it above 100%.
 
 A second footnote appears when a call was **billed without serving an answer** -- a primary
 backend that spent tokens and then failed, whose spend would otherwise vanish inside the

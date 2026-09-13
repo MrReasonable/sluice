@@ -235,8 +235,10 @@ def test_summarize_totals_and_groups():
         _row(stage="cv-compose", input_tokens=300, output_tokens=40, cache_read_tokens=0),
     ])
     assert s.total == Totals(calls=2, input_tokens=400, output_tokens=50,
-                             cache_read_tokens=50, unmeasured=0,
-                             input_calls=2, output_calls=2, cache_calls=2)
+                             cache_read_tokens=50, unmeasured=0, partial=0,
+                             input_calls=2, output_calls=2, cache_calls=2,
+                             paired_calls=2, paired_input_tokens=400,
+                             paired_cache_tokens=50)
     assert s.total.total_tokens == 450
     assert set(s.by_stage) == {"triage-judge", "cv-compose"}
     assert s.by_stage["cv-compose"].input_tokens == 300
@@ -444,3 +446,106 @@ def test_an_uncached_call_reports_no_hit_rate_rather_than_zero_percent():
 
     measured_zero = _row(input_tokens=100, output_tokens=10, cache_read_tokens=0)
     assert summarize([measured_zero]).total.hit_rate == 0.0
+
+
+# --------------------------------------------------- the report's arithmetic, exhaustively
+
+def _shape_row(i, o, c):
+    return {"stage": "s", "provider": "p", "model": "m",
+            "input_tokens": i, "output_tokens": o, "cache_read_tokens": c}
+
+
+# Every count absent, a reported zero, or one of two positives -- so a row can be internally
+# consistent OR contradict itself (more cached than total input), which is where the defect was.
+_COUNT_VALUES = (None, 0, 3, 7)
+_ROW_SHAPES = [(i, o, c) for i in _COUNT_VALUES for o in _COUNT_VALUES for c in _COUNT_VALUES]
+
+
+@pytest.mark.parametrize("first", _ROW_SHAPES, ids=[str(s) for s in _ROW_SHAPES])
+def test_the_totals_hold_their_invariants_over_every_row_shape(first):
+    """ENUMERATED, not sampled, because the defect this pins was not reachable by reasoning.
+
+    `hit_rate` summed the two columns independently, so a row contributing to the numerator and
+    not the denominator put the aggregate rate ABOVE 1.0 -- the exact number the whole feature
+    exists to report correctly, and the one three review rounds did not reach. Found by walking
+    every combination of (absent, zero, positive) across one- and two-row groups: 36 of 756
+    groups produced it.
+
+    Two shapes cause it and both are reachable. A cache read with NO input count comes straight
+    out of `openai_usage`'s fallback when `prompt_cache_hit_tokens` is present and both
+    `prompt_cache_miss_tokens` and `prompt_tokens` are absent. A cache read EXCEEDING its own
+    input contradicts `Usage.input_tokens`' definition and takes a nonconforming endpoint or a
+    hand-edited row. Both now stay out of the ratio's paired subset while still counting toward
+    the column totals, which report what was said.
+
+    Parametrized on the first row and looping the second inside, so a failure names the shape.
+    """
+    for second in _ROW_SHAPES:
+        rows = [_shape_row(*first), _shape_row(*second)]
+        t = summarize(rows).total
+        why = f"first={first} second={second} -> {t}"
+
+        assert t.calls == 2, why
+        assert t.incomplete <= t.calls, why
+        assert t.unmeasured + t.partial == t.incomplete, why
+        assert t.paired_calls <= min(t.input_calls, t.cache_calls), why
+        # THE property: a ratio's numerator can never exceed its denominator.
+        assert t.paired_cache_tokens <= t.paired_input_tokens, why
+        if t.hit_rate is not None:
+            assert 0.0 <= t.hit_rate <= 1.0, why
+        # And a rate is never stated where no cache count was reported at all.
+        if t.cache_calls == 0:
+            assert t.hit_rate is None, why
+
+
+def test_a_cache_read_without_an_input_count_cannot_skew_the_rate():
+    """The first reachable shape, named on its own so a failure says which one broke.
+
+    `openai_usage` produces exactly this row: hit present, miss absent, prompt_tokens absent."""
+    rows = [_shape_row(None, None, 7), _shape_row(7, None, 7)]
+    t = summarize(rows).total
+    assert t.cache_read_tokens == 14        # the COLUMN reports what was said
+    assert t.paired_calls == 1             # only one row supplied both terms
+    assert t.hit_rate == 1.0               # 7/7, not 14/7
+
+
+def test_a_row_claiming_more_cached_than_input_is_not_a_term_in_the_rate():
+    """The second shape: self-contradictory, since `input_tokens` is defined to INCLUDE the
+    cached tokens. It still counts toward the columns -- that is what the provider said."""
+    t = summarize([_shape_row(0, None, 7), _shape_row(7, None, 7)]).total
+    assert t.cache_read_tokens == 14 and t.cache_calls == 2
+    assert t.paired_calls == 1 and t.hit_rate == 1.0
+
+
+def test_a_row_with_no_cache_count_stays_out_of_the_rate_denominator_too():
+    """The mirror of the numerator case, and the one the exhaustive test above cannot catch:
+    that test asserts the rate's BOUNDS, and an inflated denominator understates the rate
+    without ever breaching them.
+
+    Found by mutation -- dropping the pairing condition from `paired_input_tokens` alone left
+    every other row green, because the shapes they use have `input_tokens=None` on the unpaired
+    row, where `or 0` contributes nothing either way. This row has a real input and no cache, so
+    the two readings disagree: 7/7 paired, against 7/14 if the unpaired input is counted."""
+    rows = [_shape_row(7, None, None), _shape_row(7, None, 7)]
+    t = summarize(rows).total
+    assert t.input_tokens == 14 and t.input_calls == 2      # the COLUMN totals both rows
+    assert t.paired_calls == 1 and t.paired_input_tokens == 7
+    assert t.hit_rate == 1.0, "an unpaired input inflated the denominator"
+
+
+def test_a_cache_only_row_is_partial_rather_than_silent():
+    """`unmeasured` is keyed on ALL THREE counts, not on the bill's two.
+
+    `openai_usage` produces this row from a lone `prompt_cache_hit_tokens`, and counting it as
+    silent made the report contradict itself: the `cached` column printed 50 while the footnote
+    said the call "reported none at all -- claude-max is flat-rate", about a deepseek row. It is
+    still `incomplete` (the bill is not accounted for), just not silent."""
+    t = summarize([_shape_row(None, None, 50)]).total
+    assert (t.unmeasured, t.partial, t.incomplete) == (0, 1, 1)
+    assert t.cache_read_tokens == 50
+
+
+def test_a_row_reporting_nothing_at_all_is_the_only_silent_one():
+    t = summarize([_shape_row(None, None, None)]).total
+    assert (t.unmeasured, t.partial, t.incomplete) == (1, 0, 1)
+    assert (t.input_calls, t.output_calls, t.cache_calls) == (0, 0, 0)
