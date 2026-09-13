@@ -40,6 +40,101 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.15.0](https://github.com/MrReasonable/sluice/compare/v2.14.1...v2.15.0) (2026-09-13)
+
+
+### Features
+
+* **backends:** return a Completion carrying token usage ([#308](https://github.com/MrReasonable/sluice/issues/308)) ([c32b631](https://github.com/MrReasonable/sluice/commit/c32b6312f399968eeffd8fab467c15945765dd82))
+* **cli:** add `job-sluice usage` ([#308](https://github.com/MrReasonable/sluice/issues/308)) ([7727af2](https://github.com/MrReasonable/sluice/commit/7727af28788edbaa7748f92243287c5ec244f4c1))
+* **core:** record token usage at every LLM call site ([#308](https://github.com/MrReasonable/sluice/issues/308)) ([7c96ebb](https://github.com/MrReasonable/sluice/commit/7c96ebb4e8f3e50bc2bb1de9fd6615245812dfb2))
+* **core:** split the usage switch from the usage location ([#308](https://github.com/MrReasonable/sluice/issues/308)) ([cb4fb74](https://github.com/MrReasonable/sluice/commit/cb4fb747302c67bb1d642f95e7f6599f3aeabd7e))
+
+#### What this changes for an existing install
+
+**Nothing, until you turn it on.** Token accounting is off by default and records nothing:
+
+```yaml
+record_usage: true          # the switch -- off unless you say so
+# usage_jsonl:              # optional; unset means ~/.local/state/sluice/sluice_usage.jsonl
+```
+
+Two keys, because turning a feature on and choosing where its file lives are two different
+questions. `record_usage` decides *whether*; `usage_jsonl` decides only *where*, and leaving it
+unset puts the log in the standard XDG state directory like every other file sluice keeps there.
+Setting a location **without** the switch records nothing — naming a path is not consent to write
+one — which is what lets you stage the location first, or share a config that names a path while
+each machine decides for itself. `SLUICE_USAGE` is the one variable that does both jobs: it names
+the location *and* switches recording on, since relocating a log that is off has nothing it could
+mean.
+
+It is off by default for a specific reason. The log's per-lead rows carry the lead's slug, which for
+the vault store is the note filename: the employer and the role. So the file names the companies you
+are applying to, and sluice does not create that uninvited. That is the same
+abstain-when-unconfigured rule every preference gate follows, applied to a write rather than a
+filter — and deliberately unlike `triage.audit_jsonl` and `sluice_health.json`, which are always on
+because they record what sluice *decided*, which you need in order to audit the tool.
+
+`job-sluice usage` tells you which state you are in rather than reporting an empty window: "not
+recording" and "nothing spent in this window" are different answers, and it gives the one that is
+true, naming both the switch and the path the file would take.
+
+Once recording, it reports what you spent, grouped by stage and by model:
+
+```console
+$ job-sluice usage --days 7
+usage over the last 7 day(s), from ~/.local/state/sluice/sluice_usage.jsonl
+
+by stage
+                               calls       input    output    cached   hit%
+triage-judge                      42     381,192    18,312   294,882   77.4
+cv-compose                        10     115,141    31,005         0    0.0
+cv-audit                           9      36,918     1,890         0    0.0
+track-classify                    18           -         -         -      -
+...
+```
+
+The real command's layout over a **synthetic** log seeded for the illustration — the figures are
+invented, not one install's history, and the path is abbreviated (the command prints the expanded
+absolute path). The report itself never prints a lead: it groups by stage and by model only, so a
+pasted report is safe even though the file behind it is not.
+
+**What the report will and will not tell you.** Tokens, never money: a shipped price table is a
+claim about the world that rots, and a stale one would report wrong figures in your own currency.
+It does show a cache hit rate, which is the most actionable number there — providers charge far
+less for an input token served from cache than for one they read.
+
+**A dash is not a zero.** `track-classify` above stands for calls to a flat-rate `claude-max`
+backend, which reports no token counts at all; printing `0` would say those calls were free. Any
+column no call reported shows `-`, per column rather than per row, and a footnote says how many
+calls did not report a full set and that the totals are therefore a **floor**. `hit%` is likewise
+`-` rather than `0.0%` when no call reported both terms of the ratio — which includes the
+ordinary case of a call with no prompt caching.
+
+**Nothing existing changes meaning.** No config key is removed or redefined, no default moves, no
+status transition or gate behaviour changes, and no path that already existed is read or written
+differently. Both `record_usage` and `usage_jsonl` are new in this release, so no 2.14.1 config can
+contain either. `job-sluice usage` is a new fourteenth top-level command; every other command
+behaves as it did in 2.14.1.
+
+### Bug Fixes
+
+Nothing user-visible. The `fix(...)` and `refactor(...)` commits in this release corrected defects
+in the feature above *before* it shipped — found across five local review rounds, three CodeRabbit
+rounds, and one exhaustive enumeration — so no released version ever carried them. They are in the
+commit history rather than listed here, because a "Bug Fixes" entry for a bug no release contained
+would tell you 2.14.1 had a problem it did not have.
+
+
+### Documentation
+
+* **specs:** correct [#308](https://github.com/MrReasonable/sluice/issues/308)'s guard shape after implementation ([b17bcdc](https://github.com/MrReasonable/sluice/commit/b17bcdc8866a39dbb0c2790df2c0263540e58b8f))
+* **specs:** design for recording backend token usage ([#308](https://github.com/MrReasonable/sluice/issues/308)) ([b11d7e1](https://github.com/MrReasonable/sluice/commit/b11d7e104d46e517ed98830f4ac7ad56102380cb))
+* **tests:** a comment of mine contradicted the docstring under it ([8fedc5a](https://github.com/MrReasonable/sluice/commit/8fedc5a86354eb80843417a5dfb11f944c4600f7))
+* **usage:** correct three false claims in my own comments ([0124e1e](https://github.com/MrReasonable/sluice/commit/0124e1ed17fc727d4bb39369c7896019d829378b))
+* **usage:** narrow a claim my own fix repeated in six places ([9e9c7a4](https://github.com/MrReasonable/sluice/commit/9e9c7a4e11c9e8ae143760d6bda346c65eb38707))
+* **usage:** the switch and the location, across every site that stated one key ([e8ed4eb](https://github.com/MrReasonable/sluice/commit/e8ed4ebd03eb9a6e64e4202863d9f9a75e8344fc))
+
 ## [2.14.1](https://github.com/MrReasonable/sluice/compare/v2.14.0...v2.14.1) (2026-09-12)
 
 
