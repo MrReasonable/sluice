@@ -710,9 +710,12 @@ counters separately, so `hit%` computed against its raw `input_tokens` can excee
 
 **A dash is not a zero.** `track-classify` above stands for calls against a flat-rate
 `claude-max` backend, which reports no token counts at all; printing `0` there would say those
-calls were free. Any group whose *every* call reported nothing shows `-`, and a footnote says
-how many calls that was and that the totals are therefore a **floor**. A group with only
-*some* counts keeps its measured sum, which is a genuine floor rather than a guess.
+calls were free. A column *no* call reported shows `-`, per column rather than per row, and a footnote says how
+many calls did not report a full set of counts and that the totals are therefore a **floor**.
+A column some calls reported keeps its measured sum, which is a genuine floor rather than a
+guess. The footnote counts partially-reported calls as well as silent ones: a call reporting an
+input count and no output count contributes to one total and not the other, so it makes the
+figures a floor without showing a single dash.
 
 `hit%` is likewise `-`, never `0.0`, when there was no measured input to divide by: 0% reports
 a cache that is working badly, which is a different claim from one that was never observed.

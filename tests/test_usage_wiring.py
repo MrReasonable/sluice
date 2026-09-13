@@ -163,12 +163,22 @@ def _meter_bindings(tree):
 
 
 def _callee_name(func):
-    """`meter` for a bare call, `usage.meter` for an attribute call, else None."""
-    if isinstance(func, ast.Name):
-        return func.id
-    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        return f"{func.value.id}.{func.attr}"
-    return None
+    """The dotted name being called: `meter`, `usage.meter`, `sluice.core.usage.meter`.
+
+    The full chain, not one level. `_meter_bindings` emits `sluice.core.usage.meter` for a bare
+    `import sluice.core.usage`, and a one-level reader could never return that string -- so that
+    binding matched nothing and the import shape it exists for was silently unrostered, which is
+    the same hole the aliased form had before round 1 closed it.
+    """
+    parts = []
+    node = func
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None            # a call on a subscript, a call result, self.something(), ...
+    parts.append(node.id)
+    return ".".join(reversed(parts))
 
 
 def _meter_stage_literals():
@@ -297,3 +307,66 @@ def test_every_stage_names_a_runtime_witness_that_exists(stage):
     if node:
         assert f"def {node}(" in f.read_text(encoding="utf-8"), (
             f"{stage} names witness {target}, but {path} defines no such test")
+
+
+# ----------------------------------------------------- the sweep's own extraction logic
+
+# (import line, call expression, the binding the call should match) for every shape that can
+# reach `core/usage.py::meter`. Exercised over SYNTHETIC source rather than over `sluice/`,
+# because the whole point of the roster is to cover shapes the tree does not use YET -- and a
+# branch only production code exercises is untested exactly while it is most needed. Measured:
+# narrowing `_callee_name` to one attribute level leaves every assertion over the real tree
+# green, because nothing in `sluice/` writes the dotted form.
+_METER_SHAPES = [
+    ("from sluice.core.usage import meter", 'meter(log, b, "s")'),
+    ("from sluice.core.usage import meter as _meter", '_meter(log, b, "s")'),
+    ("from sluice.core import usage", 'usage.meter(log, b, "s")'),
+    ("from sluice.core import usage as _u", '_u.meter(log, b, "s")'),
+    ("import sluice.core.usage", 'sluice.core.usage.meter(log, b, "s")'),
+]
+
+
+@pytest.mark.parametrize("imp,call", _METER_SHAPES,
+                         ids=[i.split()[-1] for i, _ in _METER_SHAPES])
+def test_every_import_shape_that_reaches_meter_is_recognised(imp, call):
+    """`_meter_bindings` and `_callee_name` have to agree, and a binding neither side can
+    produce a match for is worse than no binding: it looks like coverage.
+
+    That was live -- the `ast.Import` branch emitted `sluice.core.usage.meter` while
+    `_callee_name` read a single attribute level and could never return it, so the dotted shape
+    was silently unrostered and a whole stage could have gone undeclared with every roster guard
+    green."""
+    tree = ast.parse(f"{imp}\n\n\ndef f(log, b):\n    return {call}\n")
+    bindings = _meter_bindings(tree)
+    assert bindings, f"no binding derived for {imp!r}"
+    called = [_callee_name(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    assert any(c in bindings for c in called), (
+        f"{call!r} matches none of the bindings {sorted(bindings)} derived from {imp!r}")
+
+
+@pytest.mark.parametrize("src", [
+    "from sluice.core import status\nimport os\n",
+    # From the RIGHT module, but not `meter`: the name filter is what makes the binding set
+    # mean something, and dropping it would bind every symbol this module exports.
+    "from sluice.core.usage import UsageLog, summarize\n",
+    "from sluice.core import leads\n",
+    "import sluice.core.backends\n",
+])
+def test_an_import_that_does_not_reach_meter_derives_no_binding(src):
+    """The other direction, so the rows above cannot pass by deriving bindings for everything:
+    an import that does not reach `meter` must contribute none, or every call in the tree would
+    match something and the roster would accept any stage from anywhere."""
+    assert _meter_bindings(ast.parse(src)) == set()
+
+
+@pytest.mark.parametrize("expr,expected", [
+    ("meter(1)", "meter"),
+    ("usage.meter(1)", "usage.meter"),
+    ("sluice.core.usage.meter(1)", "sluice.core.usage.meter"),
+    ("self.meter(1)", "self.meter"),
+    ("d['k'].meter(1)", None),            # a call on a subscript has no dotted name
+    ("f().meter(1)", None),               # nor one on a call result
+])
+def test_callee_name_reads_the_whole_dotted_chain(expr, expected):
+    call = ast.parse(expr).body[0].value
+    assert _callee_name(call.func) == expected

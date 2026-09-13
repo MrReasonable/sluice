@@ -740,8 +740,14 @@ class Sluice:
         Public because `cli.py::cmd_usage` needs it and every other facade the CLI reaches is
         public (`health_report`, `doctor`, `triage`, ...). A private `_usage_log` was the first
         shape and made `cmd_usage` the one command in the file reaching through the facade
-        rather than at it. Same object the wrapping sites use -- there is one log per process
-        and no reason for a reader to get a different one.
+        rather than at it.
+
+        A NEW `UsageLog` each call, pointing at the same resolved path -- not a shared instance.
+        An earlier version of this docstring claimed "same object ... one log per process" and
+        was measured false. Nothing depends on identity: the class holds no state but its
+        warn-once flag, so the only consequence is that a broken path can warn once per sub-app
+        rather than once per process, which is still bounded and still not per call. Resolution
+        reads the environment per call, which is what keeps it patchable by tests.
         """
         return self._usage_log()
 

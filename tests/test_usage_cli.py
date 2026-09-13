@@ -82,7 +82,8 @@ def test_a_partially_measured_group_keeps_its_measured_sum():
                                              cache_read_tokens=None)])
     line, = [ln for ln in out.splitlines() if ln.startswith("triage-judge")]
     assert "100" in line
-    assert "reported no token counts" in out and "FLOOR" in out
+    assert "did not report a full set of token counts" in out and "FLOOR" in out
+    assert "reported none at all" in out          # the silent row is named separately
 
 
 def test_the_floor_footnote_is_absent_when_everything_was_measured():
@@ -269,13 +270,15 @@ def test_a_log_that_cannot_be_read_is_a_named_diagnosis_not_an_empty_report(
     failure a negative `--days` is refused to avoid. Measured before the fix: a raw
     PermissionError traceback out of `read_recent`.
 
-    Made unreadable by pointing the path at a DIRECTORY, which raises `IsADirectoryError`
-    (an OSError) for every user -- root included. A `chmod` would not: root ignores file modes
-    and directory permissions alike, so the row would pass locally and go silently vacuous
-    wherever CI runs as root. It is also a real shape: a user setting `usage_jsonl` to a folder.
+    The unreadable path has a regular FILE as its parent, which is the shape that witnesses
+    the fix: `os.path.exists` answers False there, so the pre-check `read_recent` used to do
+    would have reported an empty window instead. A directory AT the path would not witness it
+    (`exists()` is True, so the old pre-check raised too) and neither would a chmod, which root
+    ignores. It is a real shape as well: a stale file where a directory is expected.
     """
-    p = tmp_path / "a-directory"
-    p.mkdir()
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("", encoding="utf-8")
+    p = blocker / "usage.jsonl"
     monkeypatch.setenv("SLUICE_USAGE", str(p))
     rc = main(["usage"])
     out, err = capsys.readouterr()
@@ -290,3 +293,42 @@ def test_a_missing_log_is_still_an_empty_window_not_an_error(tmp_path, monkeypat
     monkeypatch.setenv("SLUICE_USAGE", str(tmp_path / "never-written.jsonl"))
     assert main(["usage"]) == 0
     assert "No calls recorded" in capsys.readouterr().out
+
+
+def test_a_partially_reported_call_still_earns_the_floor_caveat():
+    """A call reporting an input count and no OUTPUT count contributes a real number to one
+    total and nothing to the other, so the figures under-state the bill -- while showing no
+    dash at all, since both columns were reported by SOME row.
+
+    Keyed on `unmeasured` (silence alone) this printed a bare total with no caveat: measured at
+    three rows, one of them input-only, where `100` appeared as a total and `unmeasured` was 0.
+    The caveat is keyed on `Totals.incomplete` instead, which counts partial rows too."""
+    out = _fmt([_row(), _row(),
+                _row(input_tokens=100, output_tokens=None, cache_read_tokens=None)])
+    assert "did not report a full set of token counts" in out and "FLOOR" in out
+    # No row was wholly silent, so the claude-max sentence must NOT appear -- a caveat that
+    # always prints is one a reader learns to skip.
+    assert "reported none at all" not in out
+
+
+def test_a_fully_reported_run_earns_no_caveat_at_all():
+    assert "FLOOR" not in _fmt([_row(), _row()])
+
+
+def test_an_uncached_group_dashes_the_rate_beside_the_dashed_column():
+    """The two cells have to agree. Before the `cache_calls` gate this row printed `cached -`
+    next to `hit% 0.0` -- "never measured" and "measured at zero" side by side, on the ordinary
+    call that simply has no prompt caching."""
+    out = _fmt([_row(input_tokens=100, output_tokens=10, cache_read_tokens=None)])
+    line, = [ln for ln in out.splitlines() if ln.startswith("triage-judge")]
+    _label, _calls, _inp, _outp, cached, rate = line.split()
+    assert (cached, rate) == ("-", "-"), f"the cached column and its rate disagree: {line!r}"
+
+
+def test_a_reported_zero_cache_still_shows_a_real_rate():
+    """The other arm: a provider SAYING zero cached is a live cache that returned nothing, which
+    is a real and actionable number -- it must not be dashed away with the unmeasured case."""
+    out = _fmt([_row(input_tokens=100, output_tokens=10, cache_read_tokens=0)])
+    line, = [ln for ln in out.splitlines() if ln.startswith("triage-judge")]
+    _label, _calls, _inp, _outp, cached, rate = line.split()
+    assert (cached, rate) == ("0", "0.0")

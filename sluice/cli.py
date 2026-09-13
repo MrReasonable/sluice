@@ -2306,8 +2306,9 @@ def format_usage(summary, *, days: int, path: str) -> str:
         # A column no row reported did not total zero -- it spent an unknown amount. Rendering
         # the accumulator (which IS 0, since a missing count adds nothing to it) would state
         # the one thing this report must never say: that a flat-rate provider's calls were
-        # free. Where a column WAS reported by some rows, the sum stands as a genuine floor
-        # and the footnote below says so.
+        # free. Where a column WAS reported by some rows, the sum stands as a genuine floor,
+        # and the footnote below is keyed on `Totals.incomplete` so that it says so -- keying
+        # it on `unmeasured` left a partially-reported group printing a bare total.
         #
         # PER COLUMN, keyed on that column's own `*_calls`. Keying the whole row on the input
         # count was the first shape: a row reporting only `output_tokens` -- which both parsers
@@ -2328,11 +2329,18 @@ def format_usage(summary, *, days: int, path: str) -> str:
 
     # The footnotes are the part that stops this report over-claiming. Each is printed only
     # when it applies, so a clean run reads clean.
-    if summary.total.unmeasured:
-        out += ["",
-                f"{summary.total.unmeasured} of {summary.total.calls} call(s) reported no "
-                f"token counts at all, so the totals above are a FLOOR, not the whole bill. "
-                f"claude-max is flat-rate and reports none by design."]
+    if summary.total.incomplete:
+        # Keyed on `incomplete`, not on `unmeasured`: a call reporting an input count and no
+        # output count contributes a real number to one sum and nothing to the other, so it
+        # makes the totals a floor while being anything but silent. Measured before this: one
+        # such row among three printed its 100 as a total with no caveat at all.
+        line = (f"{summary.total.incomplete} of {summary.total.calls} call(s) did not report a "
+                f"full set of token counts, so the totals above are a FLOOR, not the whole "
+                f"bill.")
+        if summary.total.unmeasured:
+            line += (f" {summary.total.unmeasured} of those reported none at all -- claude-max "
+                     f"is flat-rate and reports none by design.")
+        out += ["", line]
     if summary.unserved_calls:
         out += ["",
                 f"{summary.unserved_calls} call(s) were billed without serving an answer "
@@ -2393,6 +2401,9 @@ def _usage_json(t) -> dict:
     return {"calls": t.calls, "input_tokens": t.input_tokens,
             "output_tokens": t.output_tokens, "total_tokens": t.total_tokens,
             "cache_read_tokens": t.cache_read_tokens, "unmeasured": t.unmeasured,
+            # `partial`/`incomplete` beside `unmeasured`: a consumer needs to know the totals
+            # are a floor, and silence is only one of the two ways they can be.
+            "partial": t.partial, "incomplete": t.incomplete,
             # How many rows contributed to each sum. Without these a consumer cannot tell a
             # measured zero from an unreported column -- the same distinction the table draws
             # with a dash, which JSON has no equivalent of.
