@@ -1960,10 +1960,18 @@ def _observe_over_declaration(tmp_path, *, declared, jd, salary):
     _note(v, "acme.md", _declared_note(declared, salary))
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
     # The re-verdict notice is about notes with NO provenance; these have one, so it
-    # never fires -- but acknowledging first keeps that fact out of the assertions.
-    reverdict.acknowledge(str(tmp_path / 'vault'))
+    # never fires -- but acknowledging first keeps that fact out of the assertions. That
+    # holds only when the acknowledgement names the SAME scope the run is handed. These
+    # rows used to acknowledge a path while `run()` defaulted to `""`, so the marker keyed
+    # a different store and suppressed nothing. Measured with the notice forced on: a row
+    # asserting something the run produced or reported went red, while a row asserting
+    # only an ABSENCE passed vacuously on a run that had already returned at the gate --
+    # so the run is asserted past the gate here, where every caller gets it.
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     report = run(v, _floors(), _Backend(), _JdCache(tmp_path, jd), audit,
-                 statuses=("new",))
+                 statuses=("new",), reverdict_scope=scope)
+    assert report.reverdict_deferred is False and report.reverdict_pending == []
     return report, v.read_leads()[0]
 
 
@@ -2097,9 +2105,16 @@ def test_a_dry_run_does_not_report_a_write_require_status_would_refuse(tmp_path,
     _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared",
                                    status=status))
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / 'vault'))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
-                 statuses=(status,), dry_run=True)
+                 statuses=(status,), dry_run=True, reverdict_scope=scope)
+    # Past the gate, asserted: both rows below are ABSENCES, which a run held at the
+    # re-verdict notice would satisfy without observing anything. The notice cannot hold
+    # this run today -- it scans only triage-owned leads, and these are application-owned
+    # -- so this is for the day that scan widens, when these rows would otherwise pass
+    # vacuously.
+    assert report.reverdict_deferred is False and report.reverdict_pending == []
     assert report.observed_role_types["conflicted"] == 0
     assert report.role_type_conflicts == []
 
@@ -2155,13 +2170,14 @@ def test_a_standing_conflict_is_recorded_once_not_once_per_run(tmp_path):
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", fm)
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / "vault"))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     # `new` AND `shortlist`: the judge moves the lead on the first run, so a selection of
     # `new` alone reads nothing on runs 2 and 3 and the assertion below would hold
     # vacuously -- the loop would prove the dedupe works by never reaching it.
     for _ in range(3):
         report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD),
-                     audit, statuses=("new", "shortlist"))
+                     audit, statuses=("new", "shortlist"), reverdict_scope=scope)
         assert len(report.role_type_conflicts) == 1        # said every run
     entries = [json.loads(line) for line
                in open(str(tmp_path / "audit.jsonl")).read().strip().splitlines()]
@@ -2181,9 +2197,10 @@ def test_a_conflict_that_CHANGES_is_recorded_again(tmp_path):
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"))
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / "vault"))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     first = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
-                statuses=("new",))
+                statuses=("new",), reverdict_scope=scope)
     assert len(first.role_type_conflicts) == 1        # observed contract vs declared permanent
 
     # The user edits their declaration, and the posting now reads the other way.
@@ -2197,7 +2214,7 @@ def test_a_conflict_that_CHANGES_is_recorded_again(tmp_path):
     # which made this row report `confirmed` instead of a conflict.
     second = run(v, TriageConfig(), _Backend(),
                  _JdCache(tmp_path / "second", _PERMANENT_JD), audit,
-                 statuses=("new", "shortlist"))
+                 statuses=("new", "shortlist"), reverdict_scope=scope)
     assert len(second.role_type_conflicts) == 1       # observed permanent vs declared contract
 
     entries = [json.loads(line) for line
@@ -2288,9 +2305,13 @@ def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
         return eng.TriageReport()
 
     monkeypatch.setattr(eng, "run", _fake_run)
-    Sluice(Config(vault_dir=str(tmp_path / "v"))).triage(no_llm=True)
+    # Named through VAULT_DIR, which the vault store's factory prefers over the config key.
+    # This row used to set only `Config(vault_dir=...)` and assert a SUBSTRING, so it read
+    # the vault conftest pins and passed because `<tmp>/v` is a prefix of `<tmp>/vault`.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path / "v"))
+    Sluice(Config()).triage(no_llm=True)
     assert seen.get("reverdict_scope"), "triage() passed no scope, so every store shares one"
-    assert str(tmp_path / "v") in seen["reverdict_scope"]
+    assert seen["reverdict_scope"] == "vault:" + os.path.realpath(str(tmp_path / "v"))
 
 
 def test_an_acknowledged_notice_stays_acknowledged_from_another_directory(
@@ -2355,9 +2376,10 @@ def test_two_notes_sharing_a_slug_each_get_their_own_conflict_row(tmp_path):
     _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"),
           subdir="one")
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / "vault"))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     first = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
-                statuses=("new",))
+                statuses=("new",), reverdict_scope=scope)
     assert len(first.role_type_conflicts) == 1
 
     # A DIFFERENT note, same filename, different folder -- and the first one removed, so
@@ -2366,7 +2388,8 @@ def test_two_notes_sharing_a_slug_each_get_their_own_conflict_row(tmp_path):
     _note(v, "acme.md", _rt_fields("Analyst", role_type="permanent", source="declared"),
           subdir="two")
     second = run(v, TriageConfig(), _Backend(),
-                 _JdCache(tmp_path / "second", _CONTRACT_JD), audit, statuses=("new",))
+                 _JdCache(tmp_path / "second", _CONTRACT_JD), audit, statuses=("new",),
+                 reverdict_scope=scope)
     assert len(second.role_type_conflicts) == 1
 
     rows = [json.loads(line) for line
@@ -2414,11 +2437,13 @@ def test_a_human_edit_during_the_dossier_fetch_is_not_clobbered(tmp_path):
     _note(v, "acme.md", _rt_fields("Analyst", role_type="", source=""))
     note_path = tmp_path / "vault" / "Job Applications" / "Job Leads" / "acme.md"
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / "vault"))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     cache = _RacingCache(tmp_path, str(note_path), _CONTRACT_JD,
                          [('role_type: ""', 'role_type: "permanent"'),
                           ('role_type_source: ""', 'role_type_source: "declared"')])
-    report = run(v, TriageConfig(), _Backend(), cache, audit, statuses=("new",))
+    report = run(v, TriageConfig(), _Backend(), cache, audit, statuses=("new",),
+                 reverdict_scope=scope)
 
     fresh = Vault(str(tmp_path / "vault")).read_leads()[0]
     assert fresh.fm["role_type"] == "permanent"        # the human's, not the posting's
@@ -2436,9 +2461,10 @@ def test_an_untouched_note_still_gets_its_observation(tmp_path):
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", _rt_fields("Analyst", role_type="", source=""))
     audit = AuditLog(str(tmp_path / "audit.jsonl"))
-    reverdict.acknowledge(str(tmp_path / "vault"))
+    scope = str(tmp_path / "vault")
+    reverdict.acknowledge(scope)
     report = run(v, TriageConfig(), _Backend(), _JdCache(tmp_path, _CONTRACT_JD), audit,
-                 statuses=("new",))
+                 statuses=("new",), reverdict_scope=scope)
     fresh = Vault(str(tmp_path / "vault")).read_leads()[0]
     assert fresh.fm["role_type"] == "contract"
     assert fresh.fm["role_type_source"] == "observed"
