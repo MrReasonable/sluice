@@ -114,7 +114,13 @@ def test_anthropic_usage_without_cache_counters_is_just_the_input():
 # leaves every junk row green.
 COUNT_ALPHABET = [
     (True, None), (False, None),        # bool subclasses int: a JSON `true` would total as 1
-    ("120", None), (12.5, None),        # a stringly-typed count, and a non-whole one
+    ("120", None),                      # a stringly-typed count
+    # BOTH float shapes, and the whole one is the load-bearing row. `12.5` alone left a
+    # one-sided widening invisible: relaxing either vetter to `isinstance(v, float) and
+    # v.is_integer()` -- the natural "but 100.0 IS a count" change -- kept every row green
+    # across the whole suite, and a float then entered a total reported as a token count.
+    # `_count`'s own docstring names `100.0` as the hazard, so the alphabet has to carry it.
+    (12.5, None), (100.0, None), (0.0, None),
     (None, None), ({}, None), ([1], None),
     (0, 0), (1, 1), (120, 120),
 ]

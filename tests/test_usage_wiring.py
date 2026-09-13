@@ -160,7 +160,17 @@ def _binding_for(imported: str, local: str) -> str | None:
     return None
 
 
-def _meter_bindings(tree):
+def _package_of(rel: str) -> str:
+    """The dotted package a file at `rel` (relative to `sluice/`) lives in.
+
+    `core/app.py` -> `sluice.core`; `cli.py` -> `sluice`. Needed to resolve a RELATIVE import,
+    which is meaningless without knowing where the importing file sits.
+    """
+    parts = pathlib.PurePosixPath(rel).parts[:-1]
+    return ".".join(("sluice",) + parts)
+
+
+def _meter_bindings(tree, package: str = "sluice.core"):
     """The names `core/usage.py::meter` is bound to IN THIS MODULE, read off its own imports.
 
     Derived, never assumed to be the bare word `meter`. A sweep keyed on `node.func.id ==
@@ -174,12 +184,35 @@ def _meter_bindings(tree):
     import core` + `core.usage.meter(...)`, which derived no binding at all and therefore made
     `_meter_stage_literals` skip the whole file -- is covered by the rule rather than by
     remembering to add a branch.
+
+    RELATIVE and STAR imports are resolved too, and neither is used in `sluice/` today -- which is
+    exactly why they are handled here. An unrecognised import shape does not make the sweep
+    complain; it yields no binding, and the caller's `if not bindings: continue` then skips the
+    whole FILE. So the failure mode for a shape nobody enumerated is silence over every metered
+    call in that module, which is the one direction this roster must not fail in. `package` is the
+    importing file's own package, without which `from .usage import meter` cannot be resolved at
+    all.
     """
     names = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module:
+        if isinstance(node, ast.ImportFrom):
+            # `level` is the number of leading dots: 1 is this package, 2 its parent.
+            if node.level:
+                base = package.split(".")
+                base = base[:len(base) - (node.level - 1)] if node.level > 1 else base
+                module = ".".join(base + ([node.module] if node.module else []))
+            else:
+                module = node.module
+            if not module:
+                continue
             for a in node.names:
-                b = _binding_for(f"{node.module}.{a.name}", a.asname or a.name)
+                if a.name == "*":
+                    # `from sluice.core.usage import *` binds `meter` bare. A star import cannot
+                    # carry an alias, so the local name is the symbol's own.
+                    if module == "sluice.core.usage":
+                        names.add("meter")
+                    continue
+                b = _binding_for(f"{module}.{a.name}", a.asname or a.name)
                 if b:
                     names.add(b)
         elif isinstance(node, ast.Import):
@@ -250,7 +283,7 @@ def _meter_stage_literals():
         rel = path.relative_to(_SLUICE).as_posix()
         src = path.read_text(encoding="utf-8")
         tree = ast.parse(src)
-        bindings = _meter_bindings(tree)
+        bindings = _meter_bindings(tree, _package_of(rel))
         if not bindings:
             continue
 
@@ -348,6 +381,33 @@ def test_each_declared_stage_covers_at_least_one_call_site():
         f"stage(s) {sorted(orphans)} are passed to meter(...) but cover no declared call site")
 
 
+def _code_only(src: str) -> str:
+    """`src` with every docstring blanked, so a substring search sees CODE and not prose.
+
+    The stage-name check below is satisfied by any occurrence, and a witness names its own stage in
+    its docstring as well as its assertion -- so gutting the assertion left the declaration
+    certified by the prose describing it (measured: replacing `cv-voice`'s assertion with a bare
+    length check kept every row in this file green). Prose is not a check, and this repo has been
+    bitten by a comment standing in for one before.
+
+    Blanks by LINE RANGE, never `src.replace(ast.get_docstring(n), "")`: `get_docstring` returns
+    `cleandoc`-ed text, which does not appear verbatim in the source, so the replace is a silent
+    no-op -- a fix that reads exactly like a working one.
+    """
+    lines = src.splitlines()
+    for node in ast.walk(ast.parse(src)):
+        body = getattr(node, "body", None)
+        if not isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) \
+                or not body:
+            continue
+        first = body[0]
+        if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) \
+                and isinstance(first.value.value, str):
+            for i in range(first.lineno - 1, first.end_lineno):
+                lines[i] = ""
+    return "\n".join(lines)
+
+
 @pytest.mark.parametrize("stage", sorted(_STAGES))
 def test_every_stage_names_a_runtime_witness_that_exists(stage):
     """`_STAGES` maps each stage to the test that proves it actually RECORDS, because this
@@ -366,13 +426,16 @@ def test_every_stage_names_a_runtime_witness_that_exists(stage):
     path, _, node = target.partition("::")
     f = pathlib.Path(__file__).resolve().parent.parent / path
     assert f.exists(), f"{stage} names witness {path}, which does not exist"
-    body = f.read_text(encoding="utf-8")
+    raw = f.read_text(encoding="utf-8")
     if node:
-        assert f"def {node}(" in body, (
+        assert f"def {node}(" in raw, (
             f"{stage} names witness {target}, but {path} defines no such test")
-    assert stage in body, (
-        f"{stage} names witness {target}, which never mentions the stage -- so either the "
-        f"witness stopped asserting it or the declaration is pointed at the wrong test")
+    # CODE only. A docstring naming the stage is the witness DESCRIBING itself, which stays true
+    # after its assertion is deleted -- see `_code_only`.
+    assert stage in _code_only(raw), (
+        f"{stage} names witness {target}, but {path} does not mention the stage outside its "
+        f"docstrings -- either the witness stopped asserting it or the declaration points at "
+        f"the wrong test")
 
 
 # ----------------------------------------------------- the sweep's own extraction logic
@@ -390,8 +453,15 @@ def test_every_stage_names_a_runtime_witness_that_exists(stage):
 # with no bindings -- so a stage wrapped that way was unrostered with every guard green. The
 # list makes no completeness claim on its own; `_binding_for`'s one prefix rule is what covers
 # a spelling nobody thought to add here.
+# Rows carrying a third element are RELATIVE, and the package they are resolved against is the
+# importing file's own -- `sluice.core` here, i.e. a file sitting beside `usage.py`.
 _METER_SHAPES = [
     ("from sluice.core.usage import meter", 'meter(log, b, "s")'),
+    ("from .usage import meter", 'meter(log, b, "s")'),
+    ("from .usage import meter as _m", '_m(log, b, "s")'),
+    ("from . import usage", 'usage.meter(log, b, "s")'),
+    ("from .. import core", 'core.usage.meter(log, b, "s")'),
+    ("from sluice.core.usage import *", 'meter(log, b, "s")'),
     ("from sluice.core.usage import meter as _meter", '_meter(log, b, "s")'),
     ("from sluice.core import usage", 'usage.meter(log, b, "s")'),
     ("from sluice.core import usage as _u", '_u.meter(log, b, "s")'),
@@ -414,7 +484,7 @@ def test_every_import_shape_that_reaches_meter_is_recognised(imp, call):
     was silently unrostered and a whole stage could have gone undeclared with every roster guard
     green."""
     tree = ast.parse(f"{imp}\n\n\ndef f(log, b):\n    return {call}\n")
-    bindings = _meter_bindings(tree)
+    bindings = _meter_bindings(tree, "sluice.core")
     assert bindings, f"no binding derived for {imp!r}"
     called = [_callee_name(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)]
     assert any(c in bindings for c in called), (
@@ -461,12 +531,18 @@ def test_the_stage_is_read_positionally_or_by_keyword(call, expected):
     "from sluice.core.usage import UsageLog, summarize\n",
     "from sluice.core import leads\n",
     "import sluice.core.backends\n",
+    # Relative and star forms that do NOT reach `meter`: the new arms must not bind for these.
+    "from .backends import make_backend\n",
+    "from .usage import UsageLog, summarize\n",
+    "from . import status\n",
+    "from sluice.core.backends import *\n",
+    "from .backends import *\n",
 ])
 def test_an_import_that_does_not_reach_meter_derives_no_binding(src):
     """The other direction, so the rows above cannot pass by deriving bindings for everything:
     an import that does not reach `meter` must contribute none, or every call in the tree would
     match something and the roster would accept any stage from anywhere."""
-    assert _meter_bindings(ast.parse(src)) == set()
+    assert _meter_bindings(ast.parse(src), "sluice.core") == set()
 
 
 @pytest.mark.parametrize("expr,expected", [
