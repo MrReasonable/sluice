@@ -23,9 +23,9 @@ log must not -- so the shared part would be the read half alone.
 
     The SWITCH and the LOCATION are separate keys (`record_usage`, `usage_jsonl`), and an empty
     location means the standard XDG state file exactly like every other relocatable path here.
-    They were one key first -- "naming a file is how you turn it on" -- which made this the only
-    relocatable path in the repo with no XDG default; see `core/app.py::_usage_log` for why that
-    reads tidier than it is. Nothing in THIS module sees the difference: it takes a log or a None.
+    They were one key first -- "naming a file is how you turn it on" -- which left this the one
+    `paths.resolve` caller that returned before reaching its own XDG rung; see
+    `core/app.py::_usage_log` for why that reads tidier than it is. Nothing in THIS module sees the difference: it takes a log or a None.
 
     When a log IS configured, `meter(...)` wraps a backend with it AT THE POINT A STAGE IS
     HANDED ONE. Almost all of those sites are in
