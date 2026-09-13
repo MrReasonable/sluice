@@ -241,7 +241,30 @@ class MeteredBackend:
         return c
 
     def _record(self, usage, *, served: bool = True):
-        self.log.record(usage, stage=self.stage, lead=self.lead, served=served)
+        """Record one row, and let NOTHING out of here.
+
+        Broader than `UsageLog.append`'s OSError swallow, deliberately, and this is the one
+        place in the metering path where a bare `except Exception` is right. Two failures it
+        has to absorb, the second measured:
+
+        - a call that SUCCEEDED must not be turned into a failure by its own bookkeeping. The
+          text is already earned and the tokens already spent.
+        - a call that FAILED must not have its diagnostic REPLACED. Measured before this: a
+          `BackendError("the real failure")` whose `unserved_usage` held a non-`Usage` raised
+          `AttributeError: 'str' object has no attribute 'provider'` out of the loop below, and
+          the original error was gone. Worse than losing the message -- an AttributeError does
+          not satisfy `except BackendError`, so `FallbackBackend` would not have fallen back and
+          every caller's error handling would have been bypassed by a telemetry bug.
+
+        Scoped to exactly one row, and loud in the log rather than silent. It cannot hide a
+        failed gate, write or transition, because it is downstream of all three and writes
+        nothing but telemetry.
+        """
+        try:
+            self.log.record(usage, stage=self.stage, lead=self.lead, served=served)
+        except Exception as e:   # noqa: BLE001 -- see the docstring: nothing may escape here
+            _log.warning("could not record usage for stage %s (%s); the call itself is "
+                         "unaffected", self.stage, e)
 
 
 def meter(log, backend, stage: str, *, lead=None):
