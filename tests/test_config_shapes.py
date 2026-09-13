@@ -866,6 +866,29 @@ def test_every_root_config_field_is_actually_read_from_the_yaml():
         "loader does not name is dead -- setting it in a config file does nothing and "
         "says nothing. Name it in `load_config`'s explicit Config(...) construction.")
 
+    # SECOND property, and it is a different one: reading a key off the YAML does not mean the
+    # value REACHES the dataclass. A field read into a local and then left out of the `Config(...)`
+    # construction is just as dead, and the sweep above stays green for it -- the `.get("x")` call
+    # is still right there. Measured on the real loader: all 20 fields are passed as keywords and
+    # there is no `**` splat, so this is an exact check rather than a heuristic.
+    passed = set()
+    splat = False
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "Config":
+            passed |= {k.arg for k in n.keywords if k.arg}
+            splat = splat or any(k.arg is None for k in n.keywords)
+    # A `**kwargs` splat would make the keyword set unknowable and this check silently weaker, so
+    # it fails rather than passing on an empty enumeration.
+    assert not splat, (
+        "load_config passes **kwargs to Config(...), so which fields actually arrive cannot be "
+        "read off the call -- this check would pass vacuously. Name the fields explicitly.")
+    assert passed, "the Config(...) construction sweep matched nothing at all"
+    unpassed = sorted(fields - passed)
+    assert not unpassed, (
+        f"these root Config fields are read from the YAML but never handed to Config(...): "
+        f"{unpassed}. The key parses, the loader touches it, and the value is dropped -- which "
+        f"looks exactly like a working knob.")
+
 
 def test_a_seam_name_set_in_yaml_actually_reaches_the_app(tmp_path):
     """The whole chain: YAML -> load_config -> Sluice -> the seam raising for a bad name.
