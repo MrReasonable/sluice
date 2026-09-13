@@ -386,7 +386,7 @@ def test_a_non_integer_count_is_treated_as_unreported_rather_than_crashing(junk)
     one float would turn every total that touches it into a float. The admissible set is
     deliberately the same as `core/backends.py::_int_or_none`'s -- the two vet a count at
     opposite ends of the same pipe and must not disagree about what one is, which
-    `test_the_two_count_vetters_agree_on_what_a_count_is` below is what actually pins.
+    `test_the_two_count_vetters_agree_on_what_a_count_is` is what actually pins.
 
     `unmeasured` stays 0 here because the row's OTHER counts are fine: it is the row that
     reported nothing at all, which this one is not. Its input COVERAGE is what drops to 0."""
