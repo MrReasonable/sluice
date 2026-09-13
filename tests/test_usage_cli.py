@@ -332,3 +332,15 @@ def test_a_reported_zero_cache_still_shows_a_real_rate():
     line, = [ln for ln in out.splitlines() if ln.startswith("triage-judge")]
     _label, _calls, _inp, _outp, cached, rate = line.split()
     assert (cached, rate) == ("0", "0.0")
+
+
+def test_the_none_at_all_sentence_only_describes_a_wholly_silent_call():
+    """It names claude-max and flat-rate billing, so printing it for a call that DID report
+    something is a wrong explanation as well as a wrong count. A cache-only row -- which
+    `openai_usage` produces from a lone `prompt_cache_hit_tokens` -- used to trigger it."""
+    cache_only = _fmt([_row(input_tokens=None, output_tokens=None, cache_read_tokens=50)])
+    assert "FLOOR" in cache_only                       # the bill is still unaccounted for
+    assert "reported none at all" not in cache_only
+
+    silent = _fmt([_row(input_tokens=None, output_tokens=None, cache_read_tokens=None)])
+    assert "reported none at all" in silent

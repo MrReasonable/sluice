@@ -2268,8 +2268,12 @@ def _thousands(n) -> str:
 
 
 def _pct(rate) -> str:
-    """A cache hit rate as a percentage, or `-` when there is nothing to divide by (see
-    `Totals.hit_rate`, which returns None rather than 0.0 for exactly this reason)."""
+    """A cache hit rate as a percentage, or `-` when no call reported both terms of the ratio.
+
+    "Both terms" rather than "a measured input": a call can report a perfectly good input count
+    and no cache count -- the ordinary case, with no prompt caching -- and then the `cached`
+    column is a dash and this must be one too. `Totals.hit_rate` returns None rather than 0.0
+    for exactly that reason."""
     return "-" if rate is None else f"{rate * 100:.1f}"
 
 
@@ -2404,6 +2408,12 @@ def _usage_json(t) -> dict:
             # `partial`/`incomplete` beside `unmeasured`: a consumer needs to know the totals
             # are a floor, and silence is only one of the two ways they can be.
             "partial": t.partial, "incomplete": t.incomplete,
+            # The ratio's own subset: `hit_rate` is over the calls that reported BOTH terms, so
+            # a consumer recomputing it from `cache_read_tokens / input_tokens` would get a
+            # different (and sometimes >1.0) number.
+            "paired_calls": t.paired_calls,
+            "paired_input_tokens": t.paired_input_tokens,
+            "paired_cache_tokens": t.paired_cache_tokens,
             # How many rows contributed to each sum. Without these a consumer cannot tell a
             # measured zero from an unreported column -- the same distinction the table draws
             # with a dash, which JSON has no equivalent of.

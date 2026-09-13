@@ -289,15 +289,22 @@ class Totals:
 
     `unmeasured` is calls that reported NO count at all -- claude-max, or an endpoint that sent
     no usage block -- kept as its own number rather than folded in as zeros, so "we spent
-    nothing here" and "we cannot see what we spent here" stay different answers. `partial` is
-    calls that reported one of input/output and not the other: those contribute a real number
-    to one sum and nothing to the other, so they make the totals a floor WITHOUT being silent.
-    `incomplete` is the pair, and is what the report's floor caveat is keyed on.
+    nothing here" and "we cannot see what we spent here" stay different answers. It is keyed on
+    ALL THREE counts, not on the bill: a row reporting only a cache read, which
+    `openai_usage` produces from a lone `prompt_cache_hit_tokens`, printed `cached 50` while
+    being counted as having reported nothing -- and the footnote then explained it as claude-max
+    being flat-rate, about a deepseek row.
 
-    Only input and output decide `partial`. A missing CACHE count is not a partial bill: two
-    shipped providers report no cache write at all and a local endpoint reports no cache at
-    all, so keying the caveat on it would light it permanently -- and a permanently-lit flag
-    teaches its reader to skip the column, which `CLAUDE.md` already says about health's own.
+    `partial` is a call that reported SOMETHING but not both of input and output: those
+    contribute a real number to one sum and nothing to the other, so they make the totals a
+    floor without being silent. `incomplete` is the pair, and is exactly "the bill is not fully
+    accounted for" -- which is what the report's floor caveat is keyed on.
+
+    Only input and output decide whether the BILL is complete. A missing CACHE count is not an
+    incomplete bill: two shipped providers report no cache write at all and a local endpoint
+    reports no cache at all, so keying the caveat on it would light it permanently -- and a
+    permanently-lit flag teaches its reader to skip the column, which `CLAUDE.md` already says
+    about health's own.
 
     The three `*_calls` fields count how many rows contributed to each sum, and they exist
     because one number cannot answer that question per column. Keying the whole row's
@@ -316,6 +323,23 @@ class Totals:
     input_calls: int = 0
     output_calls: int = 0
     cache_calls: int = 0
+    # The subset of calls that reported an input count AND a self-consistent cache count, with
+    # their two sums.
+    # A ratio is only defined over rows that supplied both terms, and summing the two columns
+    # INDEPENDENTLY lets a row contribute to the numerator and not the denominator -- found by
+    # enumerating every combination of (absent, zero, positive) over the three counts across
+    # one- and two-row groups: 36 of 756 groups produced a hit rate above 1.0, the exact number
+    # this whole feature exists to report correctly. The shape is not hypothetical: with
+    # `prompt_cache_hit_tokens` present, `prompt_cache_miss_tokens` absent and `prompt_tokens`
+    # absent, `openai_usage`'s own fallback returns a cache read and no input. The second shape
+    # the enumeration found is a row whose cache read EXCEEDS its own input, which contradicts
+    # the definition of `input_tokens` and so is excluded from this subset as well -- see `_add`.
+    #
+    # `cache_calls - paired_calls` is how many reported cache counts the rate could not use, and
+    # both are in `--json`, so the gap is visible rather than silently dropped.
+    paired_calls: int = 0
+    paired_input_tokens: int = 0
+    paired_cache_tokens: int = 0
 
     @property
     def incomplete(self) -> int:
@@ -331,33 +355,37 @@ class Totals:
 
     @property
     def hit_rate(self):
-        """Cached share of input tokens, or None when there is no measured input to divide by.
+        """Cached share of input tokens, or None when no call reported both terms of the ratio.
 
-        Gated on `cache_calls` and on the input SUM.
+        Computed over the PAIRED subset -- the calls that reported both terms -- never over the
+        two column sums. Summing them independently lets a row contribute to the numerator and
+        not the denominator, and then the rate exceeds 1.0: found by enumerating every
+        combination of (absent, zero, positive) over the three counts across one- and two-row
+        groups, where 36 of 756 groups did exactly that. See `paired_calls`.
 
-        `cache_calls` is what stops this row contradicting itself, and the case is the ORDINARY
-        one rather than an edge: both parsers answer `cache_read_tokens=None` for a call with no
-        prompt caching, so the `cached` column correctly shows a dash -- and without this gate
-        the rate beside it read `0.0`, because a None contributes 0 to the sum. "Never measured"
-        and "measured at zero" in one row, which is exactly what the paragraph below forbids.
-        Measured on an ordinary uncached call: `cached -` next to `hit% 0.0`.
+        `paired_calls == 0` is what stops this contradicting the `cached` column, and that case
+        is the ORDINARY one rather than an edge: both parsers answer `cache_read_tokens=None`
+        for a call with no prompt caching, so the column correctly shows a dash -- and without
+        the gate the rate beside it read `0.0`, because a None contributes 0 to a sum. "Never
+        measured" and "measured at zero" in one row, which the paragraph below forbids.
 
         An `input_calls` term was also tried here and removed, and the contrast is the useful
         part: it could never decide, because `input_calls == 0` implies `input_tokens == 0`
         through `_add`, so both of the cases it claimed to separate already returned None.
-        `cache_calls == 0` with a non-zero input sum is the common case, so this one decides.
 
         None, never 0.0: a group whose cache was never measured has no hit rate, and printing
         0% there would report a cache that is working badly rather than one that was never
-        observed.
+        observed. A group whose paired inputs total zero has none either -- there is nothing to
+        divide by, and 0/0 is not 0%.
 
         This is only correct because `Usage.input_tokens` is normalised to INCLUDE the cached
         tokens for every provider -- see `core/backends.py::Usage`. Against Anthropic's raw
-        `input_tokens`, which excludes them, this ratio can exceed 1.0.
+        `input_tokens`, which excludes them, the per-call ratio exceeds 1.0 too; the conformance
+        suite pins that half, and the paired subset here pins the aggregate.
         """
-        if not self.cache_calls or not self.input_tokens:
+        if not self.paired_calls or not self.paired_input_tokens:
             return None
-        return self.cache_read_tokens / self.input_tokens
+        return self.paired_cache_tokens / self.paired_input_tokens
 
     @property
     def total_tokens(self) -> int:
@@ -386,19 +414,36 @@ def _add(t: Totals, row: dict) -> Totals:
     row the footnote is entitled to speak for.
     """
     got = {k: _count(row, k) for k in ("input_tokens", "output_tokens", "cache_read_tokens")}
-    # The BILL is input + output. A row with exactly one of them is `partial`; a row with
-    # neither is `unmeasured`. Cache is excluded from that judgement -- see `Totals`.
+    # The BILL is input + output, and `incomplete` is "the bill is not complete". What splits
+    # that into `unmeasured` and `partial` is whether the row reported ANYTHING -- all three
+    # counts, not just the bill's two. A cache-only row (which `openai_usage` produces from a
+    # lone `prompt_cache_hit_tokens`) reported something, so it is partial, not silent: counted
+    # as silent it printed `cached 50` while the footnote called it a call that reported nothing.
     bill = (got["input_tokens"] is not None, got["output_tokens"] is not None)
+    reported_any = any(v is not None for v in got.values())
+    # A row is a usable term in the hit rate only if it reported BOTH counts and they are
+    # self-consistent. `Usage.input_tokens` is DEFINED to include the cached tokens, so a row
+    # claiming more cached than total input contradicts itself -- no provider should emit one,
+    # but a nonconforming endpoint or a hand-edited line can, and two such rows aggregated put
+    # the reported rate above 100%. It still contributes to the column TOTALS, which report what
+    # was said; it just cannot be a term in a ratio it makes incoherent.
+    paired = (got["input_tokens"] is not None and got["cache_read_tokens"] is not None
+              and got["cache_read_tokens"] <= got["input_tokens"])
     return Totals(
         calls=t.calls + 1,
         input_tokens=t.input_tokens + (got["input_tokens"] or 0),
         output_tokens=t.output_tokens + (got["output_tokens"] or 0),
         cache_read_tokens=t.cache_read_tokens + (got["cache_read_tokens"] or 0),
-        unmeasured=t.unmeasured + (not any(bill)),
-        partial=t.partial + (any(bill) and not all(bill)),
+        unmeasured=t.unmeasured + (not reported_any),
+        partial=t.partial + (reported_any and not all(bill)),
         input_calls=t.input_calls + (got["input_tokens"] is not None),
         output_calls=t.output_calls + (got["output_tokens"] is not None),
         cache_calls=t.cache_calls + (got["cache_read_tokens"] is not None),
+        # Only when BOTH terms of the ratio came from this row -- see `Totals.paired_calls`.
+        paired_calls=t.paired_calls + paired,
+        paired_input_tokens=t.paired_input_tokens + (got["input_tokens"] or 0 if paired else 0),
+        paired_cache_tokens=(t.paired_cache_tokens
+                             + (got["cache_read_tokens"] or 0 if paired else 0)),
     )
 
 

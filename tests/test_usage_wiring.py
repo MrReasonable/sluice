@@ -176,7 +176,9 @@ def _callee_name(func):
         parts.append(node.attr)
         node = node.value
     if not isinstance(node, ast.Name):
-        return None            # a call on a subscript, a call result, self.something(), ...
+        return None            # a call on a subscript or a call result: `d['k'].m()`, `f().m()`
+    # NB `self.meter(...)` DOES resolve, to "self.meter" -- `self` is an ast.Name. It simply
+    # matches no binding, which is the right outcome and not the same as being unreadable.
     parts.append(node.id)
     return ".".join(reversed(parts))
 
