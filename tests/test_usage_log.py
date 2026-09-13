@@ -289,11 +289,15 @@ def test_a_missing_served_key_means_served():
     assert summarize([_row()]).unserved_calls == 0
 
 
-@pytest.mark.parametrize("junk", ["120", True, None, {}, [1]])
-def test_a_non_numeric_count_is_treated_as_unreported_rather_than_crashing(junk):
-    """Rows come back off disk, where a hand edit can put anything in a field. `True` is in
-    this list on purpose: bool subclasses int, so a JSON `true` would otherwise total as 1.
-    The string "120" likewise must not be silently trusted as a number."""
+@pytest.mark.parametrize("junk", ["120", True, False, 12.5, None, {}, [1]])
+def test_a_non_integer_count_is_treated_as_unreported_rather_than_crashing(junk):
+    """Rows come back off disk, where a hand edit can put anything in a field.
+
+    `True`/`False` are here on purpose: bool subclasses int, so a JSON `true` would otherwise
+    total as 1 and a `false` as 0, silently. `12.5` is here because token counts are whole and
+    one float would turn every total that touches it into a float. The admissible set is
+    deliberately the same as `core/backends.py::_int_or_none`'s -- the two vet a count at
+    opposite ends of the same pipe and must not disagree about what one is."""
     s = summarize([_row(input_tokens=junk)])
     assert (s.total.input_tokens, s.total.unmeasured) == (0, 1)
 
