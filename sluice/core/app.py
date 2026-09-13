@@ -1644,12 +1644,42 @@ class Sluice:
         precedence `stores/vault.py`'s factory itself uses. Two dir-less stores of the
         same name under the same config ARE the same store and correctly share a key;
         two of different names do not.
+
+        RESOLVED in both branches, and HERE rather than in `reverdict._key` (#324). The scope
+        is hashed into a marker that outlives the process, which is the `docs/ARCHITECTURE.md`
+        rule for when a path is made absolute. `_key` used to `abspath` it, but `_key`
+        receives this SCOPE and not a path: `vault:<dir>` has no leading `/`, so `abspath`
+        prepended the process cwd and the acknowledgement was keyed per (vault, cwd). A
+        scheduled run and a hand-run one start in different directories, so each new cwd
+        re-showed the notice, wrote nothing and exited 0. Only here is the directory still a
+        path, so only here can it be resolved; `_key` hashes what it is given.
+
+        `realpath` rather than `abspath`, because this is an IDENTITY and the dangerous error
+        is two directories sharing one. `abspath` keeps a symlink's NAME, so a link
+        acknowledged for one vault and then pointed at another handed the second vault the
+        first one's acknowledgement, and its affected leads were dismissed unannounced.
+        Resolving the link errs the loud way instead: a vault that moves beneath an unchanged
+        link is shown the notice once more.
+
+        The fallback reads `VAULT_DIR` and the config file's `vault_dir`, and neither arrives
+        expanded (`load_config` stores the YAML value as written), which makes it an INGRESS
+        point, so it expands `~` as well -- `realpath` does not, and `~/v` resolved alone
+        lands under the cwd again. An EMPTY value stays empty, because `realpath("")` IS the
+        cwd. `Vault.dir` needs no expansion: `Vault` did that at construction.
+
+        That empty value is SHARED by every dir-less store of one kind, from any directory,
+        which is correct only because such a store's location cannot depend on the cwd. A
+        store that does locate itself relative to the cwd has to expose `dir` -- the `Store`
+        contract in `core/protocols.py` says so -- or every copy of it, run from a different
+        project directory, shares one acknowledgement.
         """
         named = getattr(store, "dir", "")
         if named:
-            return f"vault:{named}"
+            return f"vault:{os.path.realpath(named)}"
         kind = getattr(self.config, "store", "vault")
         configured = os.environ.get("VAULT_DIR") or getattr(self.config, "vault_dir", "")
+        if configured:
+            configured = os.path.realpath(os.path.expanduser(configured))
         return f"{kind}:{configured}"
 
     def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,

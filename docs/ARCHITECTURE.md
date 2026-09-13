@@ -119,7 +119,9 @@ Shared by every sub-app:
   there were five, five when a sixth landed) with nothing going red either
   time. `abspath` ONLY where the
   value outlives the cwd it was read in, whether by being written down
-  (`questions.py`, and the preset `cli.py` hands `job-sluice init`) or compared
+  (`questions.py`, the preset `cli.py` hands `job-sluice init`, and the
+  re-verdict scope `core/app.py` builds for `triage/reverdict.py` to hash into a
+  state marker, resolved with `realpath` because that value is an identity) or compared
   (`cli.py`'s `--vault` against `$VAULT_DIR`). Neither is true of what `resolve`
   returns, so it does not abspath, and a relative explicit value comes back
   exactly as written. At CONSUMPTION, neither -- except that a path becoming a

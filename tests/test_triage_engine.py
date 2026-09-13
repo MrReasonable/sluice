@@ -2293,6 +2293,54 @@ def test_sluice_triage_supplies_the_scope_it_computed(tmp_path, monkeypatch):
     assert str(tmp_path / "v") in seen["reverdict_scope"]
 
 
+def test_an_acknowledged_notice_stays_acknowledged_from_another_directory(
+        tmp_path, monkeypatch):
+    """#324: the acknowledgement survives a change of working directory.
+
+    `Sluice.triage` hands the engine `Sluice._reverdict_scope`'s output, which is a SCOPE
+    (`vault:<dir>`), not a path. `reverdict._key` used to `abspath` it, and a string with no
+    leading `/` gets the process cwd prepended -- so the key was per (vault, cwd). A
+    scheduled run and a hand-run one start in different directories, so each new cwd
+    re-showed the notice, wrote nothing and exited 0, reading like an ordinary notice.
+
+    Driven through `Sluice.triage` rather than by handing `reverdict` a string, because a
+    hand-written string is how this shipped: every row in `tests/test_reverdict_ack.py`
+    passed a bare path, where `abspath` is correct, and the row written to pin cwd-stability
+    passed with the bug live. Only the dossier fetch is replaced -- the real one drives a
+    browser -- so the scope, the engine and the marker are all the production ones.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+
+    vault_dir = tmp_path / "vault"
+    _note(Vault(str(vault_dir)), "acme.md", _legacy_fields())
+    # `_floors()`, as YAML: `Sluice.triage` loads its TriageConfig from the file, so the
+    # floors that make `_legacy_fields` an affected lead have to arrive that way.
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text("triage:\n  contract_floor_gbp_day: 480\n  perm_floor_gbp: 90000\n"
+                    "  accept_titles: []\n  reject_titles: []\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+    monkeypatch.setenv("VAULT_DIR", str(vault_dir))
+    monkeypatch.setattr(Sluice, "dossier_cache", lambda self, *a, **kw: _cache(tmp_path))
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+
+    monkeypatch.chdir(tmp_path / "one")
+    first = Sluice(Config()).triage(no_llm=True)
+    # The precondition, asserted: the notice fired AND its marker landed. Without it, a
+    # vault the notice never fired on would satisfy the rows below vacuously.
+    assert first.reverdict_pending and first.reverdict_deferred is True
+
+    monkeypatch.chdir(tmp_path / "two")
+    second = Sluice(Config()).triage(no_llm=True)
+    assert second.reverdict_pending == [], (
+        "the same vault re-showed the notice from a different working directory")
+    # ...and applied it. Not implied by the row above: when the marker cannot be written
+    # the engine proceeds too, with the notice still pending.
+    assert second.reverdict_deferred is False
+    assert Vault(str(vault_dir)).read_leads()[0].status == "dismiss"
+
+
 def test_two_notes_sharing_a_slug_each_get_their_own_conflict_row(tmp_path):
     """The de-duplication is keyed on the store's REF, not on the filename-derived slug.
 

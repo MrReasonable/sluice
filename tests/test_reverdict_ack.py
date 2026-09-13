@@ -10,6 +10,9 @@ import os
 import pytest
 
 from sluice.core import paths
+from sluice.core.app import Sluice
+from sluice.core.config import Config
+from sluice.core.vault import Vault
 from sluice.triage import reverdict
 
 _VAULT = "/vaults/alpha"
@@ -45,20 +48,106 @@ def test_acknowledging_a_second_vault_does_not_forget_the_first(tmp_path):
     assert reverdict.acknowledged(_OTHER, path) is True
 
 
-def test_the_same_vault_named_two_ways_is_one_key(tmp_path):
-    # `./vault` from inside a directory and its absolute spelling are one vault, so they
-    # must share one acknowledgement -- otherwise the notice re-shows on a `cd`.
+# ── what production actually hands the key (#324) ────────────────────────────
+# `acknowledged`/`acknowledge` receive `Sluice._reverdict_scope`'s output, never a bare
+# path. The rows above pass opaque strings, which is right for the marker mechanics they
+# test. The rows below DERIVE their input from that producer instead, because a
+# hand-written plausible value is how #324 shipped green: the cwd-stability row these
+# replace passed a bare path, where `abspath` was correct, while production passed
+# `vault:<dir>`, where `abspath` prepended the process cwd.
+#
+# Each row computes the scope AGAIN after changing directory, because that is what a new
+# process does: `_reverdict_scope` runs in whatever cwd and environment the run starts in.
+
+class _NoDir:
+    """A store that declares no `dir` -- `_reverdict_scope`'s fallback branch."""
+
+
+def _scope(store):
+    return Sluice(Config())._reverdict_scope(store)
+
+
+def _two_directories(tmp_path):
+    for name in ("a", "b"):
+        (tmp_path / name).mkdir()
+    return tmp_path / "a", tmp_path / "b"
+
+
+@pytest.mark.parametrize("spelling", ["v", "./v", "a/../v"])
+def test_a_relative_and_an_absolute_spelling_of_one_vault_share_one_acknowledgement(
+        tmp_path, monkeypatch, spelling):
+    # `./vault` -- the shipped default -- from inside its parent and the same directory
+    # named in full are one vault, so they must share one acknowledgement, or the notice
+    # re-shows on a `cd`. `./` and `..` are here because a scope that merely JOINED the cwd
+    # on would keep them and key each spelling apart. Read back from a DIFFERENT cwd than
+    # it was written in, so a key that still depended on the cwd cannot pass by coincidence.
     path = str(tmp_path / "ack.json")
-    vault = tmp_path / "v"
-    vault.mkdir()
-    reverdict.acknowledge(str(vault), path)
-    cwd = os.getcwd()
-    os.chdir(str(tmp_path))
-    try:
-        assert reverdict.acknowledged("v", path) is True
-        assert reverdict.acknowledged("./v", path) is True
-    finally:
-        os.chdir(cwd)
+    _, elsewhere = _two_directories(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    assert reverdict.acknowledge(_scope(Vault(spelling)), path) is True
+    monkeypatch.chdir(elsewhere)
+    assert reverdict.acknowledged(_scope(Vault(str(tmp_path / "v"))), path) is True
+
+
+@pytest.mark.parametrize("branch", ["named", "dir-less"])
+def test_one_relative_spelling_from_two_directories_is_two_vaults(
+        tmp_path, monkeypatch, branch):
+    # The SILENT direction. `v` from `a/` and `v` from `b/` are different directories, so
+    # acknowledging one must not silence the other -- the per-vault harm the key exists
+    # to prevent. A fix that simply stopped absolutising would give both the scope
+    # `vault:v` and one shared key.
+    monkeypatch.setenv("VAULT_DIR", "v")      # what the dir-less branch reads
+    store = (lambda: Vault("v")) if branch == "named" else _NoDir
+    path = str(tmp_path / "ack.json")
+    a, b = _two_directories(tmp_path)
+    monkeypatch.chdir(a)
+    assert reverdict.acknowledge(_scope(store()), path) is True
+    monkeypatch.chdir(b)
+    assert reverdict.acknowledged(_scope(store()), path) is False
+
+
+@pytest.mark.parametrize("branch", ["named", "dir-less"])
+def test_a_symlink_repointed_at_another_vault_does_not_inherit_its_acknowledgement(
+        tmp_path, monkeypatch, branch):
+    # The SILENT direction through a NAME rather than a cwd. A vault reached through a
+    # symlink is acknowledged, and the link is then pointed at a different vault. The
+    # spelling never changes, so a key built from the spelling alone hands the second vault
+    # the first one's acknowledgement -- and its affected leads are dismissed unannounced.
+    path = str(tmp_path / "ack.json")
+    a, b = _two_directories(tmp_path)
+    link = tmp_path / "vault"
+    monkeypatch.setenv("VAULT_DIR", str(link))      # what the dir-less branch reads
+    store = (lambda: Vault(str(link))) if branch == "named" else _NoDir
+    link.symlink_to(a, target_is_directory=True)
+    assert reverdict.acknowledge(_scope(store()), path) is True
+    link.unlink()
+    link.symlink_to(b, target_is_directory=True)
+    assert reverdict.acknowledged(_scope(store()), path) is False
+
+
+@pytest.mark.parametrize("configured", ["", "~/v", "{tmp}/v"],
+                         ids=["unset", "tilde", "absolute"])
+def test_a_dir_less_store_keeps_its_acknowledgement_across_directories(
+        tmp_path, monkeypatch, configured):
+    # The fallback branch reads `VAULT_DIR` raw, and each of these names ONE store
+    # whatever the cwd, so each must key identically from anywhere. Two of them are traps
+    # for the obvious fix of absolutising unconditionally: `abspath("")` IS the cwd, and
+    # `abspath` does not expand `~`, so `~/v` absolutised alone lands under the cwd too.
+    # `unset` sharing ONE key from every directory is correct only under the `Store`
+    # contract that a store locating itself relative to the cwd exposes `dir` -- see
+    # `Sluice._reverdict_scope` -- so this row pins that contract's consequence, not a fact
+    # about every possible store.
+    configured = configured.format(tmp=tmp_path)
+    if configured:
+        monkeypatch.setenv("VAULT_DIR", configured)
+    else:
+        monkeypatch.delenv("VAULT_DIR", raising=False)
+    path = str(tmp_path / "ack.json")
+    a, b = _two_directories(tmp_path)
+    monkeypatch.chdir(a)
+    assert reverdict.acknowledge(_scope(_NoDir()), path) is True
+    monkeypatch.chdir(b)
+    assert reverdict.acknowledged(_scope(_NoDir()), path) is True
 
 
 def test_a_corrupt_marker_reads_as_not_yet_told(tmp_path):
