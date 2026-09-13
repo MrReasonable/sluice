@@ -417,14 +417,16 @@ def test_a_genuine_scalar_typo_still_gets_the_diagnostic_repr(tmp_path):
         f"a genuine scalar typo lost its diagnostic repr: {e.value}")
 
 
-# The shipped switch is a BOOLEAN, and a truthy non-bool is the shape that fails towards ON.
-# Parametrized over the values PyYAML actually produces for the spellings a user reaches for:
-# every one of these is truthy, so `bool(...)` would enable token accounting -- including the
-# QUOTED "false" of someone switching it OFF.
-_TRUTHY_NON_BOOLS = ['"false"', '"true"', '"no"', "1", "0", "[]", '"off"']
+# Values PyYAML produces that are NOT bools, for spellings a user reaches for. Two groups, and the
+# name covers only the first: the quoted strings are TRUTHY, so `bool(...)` would enable token
+# accounting -- including the `"false"` of someone switching it OFF, which is the row that matters.
+# `0` and `[]` are falsy and refused for a different reason: neither is a statement about a switch,
+# and accepting an int invites `record_usage: 2`. The docstring below states both; an earlier
+# version of THIS comment claimed all of them were truthy and contradicted it.
+_NOT_BOOLS = ['"false"', '"true"', '"no"', "1", "0", "[]", '"off"']
 
 
-@pytest.mark.parametrize("literal", _TRUTHY_NON_BOOLS)
+@pytest.mark.parametrize("literal", _NOT_BOOLS)
 def test_record_usage_refuses_a_value_that_is_merely_truthy(tmp_path, literal):
     """`record_usage` gates a file that names the employers a user is applying to, so the
     quiet-wrong-state bug class costs more here than a traceback would.

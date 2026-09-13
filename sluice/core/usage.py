@@ -25,7 +25,8 @@ log must not -- so the shared part would be the read half alone.
     location means the standard XDG state file exactly like every other relocatable path here.
     They were one key first -- "naming a file is how you turn it on" -- which left this the one
     `paths.resolve` caller that returned before reaching its own XDG rung; see
-    `core/app.py::_usage_log` for why that reads tidier than it is. Nothing in THIS module sees the difference: it takes a log or a None.
+    `core/app.py::_usage_log` for why that reads tidier than it is. Nothing in THIS module sees
+    the difference: it takes a log or a None.
 
     When a log IS configured, `meter(...)` wraps a backend with it AT THE POINT A STAGE IS
     HANDED ONE. Almost all of those sites are in
@@ -282,8 +283,8 @@ def meter(log, backend, stage: str, *, lead=None):
 
     Returns `backend` UNCHANGED when `log` is None, which is the SHIPPED state: recording is off
     by default, so an install that has not set `record_usage` gets None from `Sluice._usage_log`
-    and every stage here is a no-op wrap. It also covers a caller that simply has no log to give -- a
-    sub-app function called directly, which is how most of this repo's tests reach `run_one`,
+    and every stage here is a no-op wrap. It also covers a caller that simply has no log to give
+    -- a sub-app function called directly, which is how most of this repo's tests reach `run_one`,
     `run_batch` and `judge`; those pass `usage=None` and must not be made to construct a
     telemetry sink to run.
 
