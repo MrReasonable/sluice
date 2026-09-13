@@ -372,3 +372,35 @@ def test_an_unreadable_log_raises_rather_than_reading_as_empty(tmp_path):
     d.mkdir()
     with pytest.raises(OSError):
         UsageLog(str(d)).read_recent(30)
+
+
+def test_a_broken_usage_row_cannot_replace_the_error_it_was_recording(tmp_path, caplog):
+    """THE inversion this guard exists for, measured before the fix.
+
+    A `BackendError` whose `unserved_usage` holds a non-`Usage` made the recording loop raise
+    `AttributeError` and the original error was GONE. That is worse than losing a message: an
+    AttributeError does not satisfy `except BackendError`, so `FallbackBackend` would not have
+    fallen back and every caller's error handling would have been bypassed -- by telemetry.
+    """
+    p = str(tmp_path / "u.jsonl")
+
+    class _Bad:
+        def complete(self, prompt):
+            raise BackendError("the real failure", unserved_usage=("not-a-usage",))
+
+    with pytest.raises(BackendError, match="the real failure"):
+        meter(UsageLog(p), _Bad(), "triage-judge").complete("x")
+    assert "could not record usage" in caplog.text
+
+
+def test_a_broken_usage_row_cannot_fail_a_successful_call(tmp_path, caplog):
+    """The other arm: the text is earned and the tokens are spent by the time a row is
+    written, so bookkeeping must not turn a success into a failure."""
+    p = str(tmp_path / "u.jsonl")
+
+    class _OddUsage:
+        def complete(self, prompt):
+            return Completion("text", usage="not-a-usage")
+
+    assert meter(UsageLog(p), _OddUsage(), "cv-compose").complete("x").text == "text"
+    assert "could not record usage" in caplog.text
