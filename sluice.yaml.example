@@ -101,23 +101,28 @@ baseline_rel: My CV/CV.md
 # browser profile. Only triage fetches in parallel today; a per-sub-app key would have to
 # be answered twice the moment cv does, for one profile.
 
-# Token accounting (#308). OFF unless you name a file here: sluice then appends one JSON line
-# per LLM call, holding the stage, the provider and model, the token counts the provider
-# reported -- and, for the per-lead stages (cv compose/audit/voice), THE LEAD'S SLUG, which is
-# the employer and the role. So this file names companies you are applying to, which is exactly
-# why it is opt-in: an unset key records nothing and creates no file. `job-sluice usage` reads
-# it back and never prints a lead -- it groups by stage and by model only -- so the REPORT is
-# safe to paste even though the file behind it is not.
-# `job-sluice usage` reads it back and reports what you spent, by stage and by model, with
-# the cache hit rate.
-# There is no per-system default location: naming the file is how you turn this on, and there
-# is no way to ask for "on, somewhere sensible". Append-only, never rotated; delete it if you
-# want to start the history over. Providers charge much less for an input token served from
-# cache than for one they have to read, so the hit rate is usually the most actionable number
-# in that report -- deliberately no ratio here, because a price is a claim about the world that
-# rots, which is the same reason sluice ships no price table and reports tokens rather than
-# money.
-# usage_jsonl:        # <- uncomment and set YOUR OWN to start recording
+# Token accounting (#308), in TWO keys: whether, and where.
+#
+# `record_usage` is the switch, and OFF is the shipped default. Turned on, sluice appends one
+# JSON line per LLM call holding the stage, the provider and model, the token counts the
+# provider reported -- and, for the per-lead stages (cv compose/audit/voice), THE LEAD'S SLUG,
+# which is the employer and the role. So the file names companies you are applying to, which is
+# why you have to ask for it: unset, nothing is recorded and no file is created. `job-sluice
+# usage` reads it back and reports what you spent by stage and by model with the cache hit
+# rate, and never prints a lead -- so the REPORT is safe to paste even though the file behind
+# it is not.
+# record_usage: true
+#
+# `usage_jsonl` is only WHERE. Leave it commented and the log lands in the standard XDG state
+# directory like every other file sluice keeps there (`~/.local/state/sluice/sluice_usage.jsonl`
+# on Linux and macOS unless XDG_STATE_HOME says otherwise); set it to move the file somewhere
+# else. Append-only, never rotated; delete it if you want to start the history over.
+#
+# Providers charge much less for an input token served from cache than for one they have to
+# read, so the hit rate is usually the most actionable number in that report -- deliberately no
+# ratio here, because a price is a claim about the world that rots, which is the same reason
+# sluice ships no price table and reports tokens rather than money.
+# usage_jsonl:
 
 # Hosts the dossier fetcher may reach even though they are not globally routable.
 # The fetcher follows lead urls scraped off job boards, so by default it refuses

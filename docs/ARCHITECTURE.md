@@ -30,14 +30,17 @@ Shared by every sub-app:
   endpoint; `FallbackBackend` tries the first and falls back to the second
   on error; `make_backend` builds any of them by name. `complete()` returns a
   `Completion` (text plus optional `Usage`), not a bare string, since #308.
-- `usage.py`: per-call token accounting (#308), OPT-IN. `MeteredBackend` decorates
+- `usage.py`: per-call token accounting (#308), OFF by default. `MeteredBackend` decorates
   the backend seam and appends one JSONL row per call -- stage, provider, model,
   and the counts the provider reported; `meter(log, backend, stage, lead=None)` is
   the wrap, and returns the backend UNCHANGED when there is no log, which is the
   DEFAULT state rather than an edge case -- `Sluice._usage_log` answers None until
-  `usage_jsonl` or `SLUICE_USAGE` names a file, so an install that never asked for
-  accounting constructs no wrapper on any LLM call. `summarize` is the pure aggregation `job-sluice usage`
-  renders. Separate from `backends.py` because the clients and the telemetry sink
+  `record_usage` is true (or `SLUICE_USAGE` names a path, which also switches it on),
+  so an install that never asked for accounting constructs no wrapper on any LLM call.
+  WHERE the file goes is the separate `usage_jsonl` key, empty meaning the ordinary XDG
+  state location: the two were one key first, which made this the only relocatable path
+  with no XDG default and left "recording on" with no answer to "written where".
+  `summarize` is the pure aggregation `job-sluice usage` renders. Separate from `backends.py` because the clients and the telemetry sink
   are different concerns, and deliberately a PARALLEL implementation of
   `triage/audit.py::AuditLog` rather than a shared one: that lives in a sub-app,
   and `core/` sits below every sub-app, so importing it would invert the layering
@@ -141,7 +144,7 @@ Shared by every sub-app:
   | source health | `SLUICE_HEALTH` | state | |
   | disabled sources | `SLUICE_DISABLED` | state | |
   | triage audit | `TRIAGE_AUDIT` | state | was a dead config key |
-  | token usage | `SLUICE_USAGE` | *(opt-in)* | #308; OFF unless the env var or the root `usage_jsonl` key names a file, so there is no XDG fallback and no `_LEGACY` row -- the per-lead rows name employers, so sluice does not create it uninvited |
+  | token usage | `SLUICE_USAGE` | state | #308; the key is `usage_jsonl`, but a SECOND key gates it -- `record_usage` is off by default, since the per-lead rows name employers, so an install that never asked resolves nothing and creates nothing. Switched on, the XDG fallback is ordinary. No `_LEGACY` row: new in 2.15.0, so losing it costs history only |
   | dossier cache | `DOSSIER_DIR` | cache | ONE root key; was two sub-app keys |
   | Google OAuth token | *none* | state | written `0600`, parent created |
   | vault | `VAULT_DIR` | **unmoved** | gains a config key; precedence in `stores/vault.py:_make` |
