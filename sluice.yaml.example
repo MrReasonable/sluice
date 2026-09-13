@@ -53,7 +53,8 @@ baseline_rel: My CV/CV.md
 # $XDG_CACHE_HOME (or ~/.cache) -- $DOSSIER_DIR still wins over this key. Everything
 # under it is re-fetchable, so losing it costs a refetch, not data. A leading `~` in a
 # value you set here (or in the variable) is expanded -- as it is for every key that
-# resolves per-system, which is this one, the two `track` paths and `triage.audit_jsonl`.
+# resolves per-system. No list of which those are: one was written here, gained a member
+# when `usage_jsonl` joined them, and went stale in the same commit.
 # The cv/apply working directories below do NOT expand one: they name a folder in the
 # directory you are standing in, so write those out in full.
 # dossier_dir:        # <- uncomment and set YOUR OWN
@@ -117,6 +118,11 @@ baseline_rel: My CV/CV.md
 # directory like every other file sluice keeps there (`~/.local/state/sluice/sluice_usage.jsonl`
 # on Linux and macOS unless XDG_STATE_HOME says otherwise); set it to move the file somewhere
 # else. Append-only, never rotated; delete it if you want to start the history over.
+#
+# $SLUICE_USAGE still wins over this key -- and unlike every other path variable here it ALSO
+# switches recording on by itself, without `record_usage`. Worth knowing before you export it:
+# relocating a log that is off has nothing it could mean, so naming a path there is taken as
+# asking for the file.
 #
 # Providers charge much less for an input token served from cache than for one they have to
 # read, so the hit rate is usually the most actionable number in that report -- deliberately no

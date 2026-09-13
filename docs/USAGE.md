@@ -698,9 +698,10 @@ are different answers and it gives the one that is true. Under `--json` that is
 `{"configured": false, "path": null, "days": N}` with **no** totals keys, so a consumer keying on
 `total` gets a `KeyError` rather than a silent zero.
 
-Real output of the real command, over a **synthetic** log seeded for the illustration — the
-figures are invented, not one install's history. The header shows the DEFAULT location, which is
-where `record_usage: true` alone puts the file; set `usage_jsonl` to move it:
+The real command's layout, over a **synthetic** log seeded for the illustration — the figures are
+invented, not one install's history, and the path is abbreviated: the command prints the expanded
+absolute path, which cannot be shown here without naming somebody's home directory. The location
+is the default one, where `record_usage: true` alone puts the file; `usage_jsonl` moves it:
 
 ```console
 $ job-sluice usage --days 7
