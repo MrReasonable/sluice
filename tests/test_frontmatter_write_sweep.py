@@ -21,6 +21,7 @@ import re
 import pytest
 
 import sluice
+from tests.conftest import FRAMING_FLAGS
 
 _PKG = pathlib.Path(sluice.__file__).resolve().parent
 
@@ -129,7 +130,9 @@ def test_the_triage_verdict_fields_cannot_inject_frontmatter(tmp_path, payload):
     """The defect this file's boundary change actually found, pinned end to end.
 
     `culture_flags` is the model's own verdict JSON and `glassdoor_rating` comes off the
-    fetched dossier. Both were written raw.
+    fetched dossier. Both were written raw. `triage_concerns` (#329) carries the same model
+    output, so the payload rides in `concerns` too. That half is a regression pin: before
+    #329 nothing wrote a concerns key, so it could not inject.
     """
     from sluice.core.vault import Vault
     from sluice.triage.apply import apply_verdict
@@ -143,7 +146,8 @@ def test_the_triage_verdict_fields_cannot_inject_frontmatter(tmp_path, payload):
     note = [n for n in v.read_leads() if n.slug == "Example Tidal - Analyst"][0]
 
     apply_verdict(v, note, {"verdict": "shortlist", "relevance_score": 5,
-                            "culture_flags": [payload], "fit_reasoning": "ok"},
+                            "culture_flags": [payload], "concerns": [payload],
+                            "fit_reasoning": "ok"},
                   {"glassdoor": {"rating": payload}})
     text = note_path.read_text()
     assert "status: rejected" not in text, "model output regressed the lead's status"
@@ -166,10 +170,11 @@ def test_an_ordinary_verdict_still_writes_both_fields(tmp_path):
     note = [n for n in v.read_leads() if n.slug == "Example Tidal - Analyst"][0]
 
     apply_verdict(v, note, {"verdict": "shortlist", "relevance_score": 5,
-                            "culture_flags": ["good wlb", "remote"], "fit_reasoning": "ok"},
+                            "culture_flags": list(FRAMING_FLAGS), "fit_reasoning": "ok"},
                   {"glassdoor": {"rating": "4.2"}})
     text = note_path.read_text()
-    assert 'culture_flags: "good wlb, remote"' in text
+    joined = ", ".join(FRAMING_FLAGS)
+    assert f'culture_flags: "{joined}"' in text
     assert 'glassdoor_rating: "4.2"' in text
 
 

@@ -144,8 +144,15 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # to the person reading the note.
     rating = (dossier.get("glassdoor") or {}).get("rating", "")
     flags = ", ".join(verdict.get("culture_flags") or [])
+    # #329: the concerns are ALSO written as their own key, replaced on every verdict, so the CV
+    # composer reads triage's latest judgement without parsing `relevance_notes`, which
+    # accumulates dated prose from triage, dismiss and expire alike. `triage_`-prefixed on
+    # purpose: `_set_fm` matches a key at ANY indentation and no earlier note carries a top-level
+    # concerns key, so a bare `concerns` would land on a user's nested `concerns:` line.
+    concerns = "; ".join(verdict.get("concerns") or [])
     fields = {"status": status, "score": str(score)}
-    for key, raw in (("glassdoor_rating", rating), ("culture_flags", flags)):
+    for key, raw in (("glassdoor_rating", rating), ("culture_flags", flags),
+                     ("triage_concerns", concerns)):
         safe = frontmatter_safe(str(raw)) if raw else ""
         if raw and not safe:
             _log.warning("triage: %s dropped for %s -- unsafe for frontmatter", key, note.slug)

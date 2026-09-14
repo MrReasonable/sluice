@@ -3503,6 +3503,7 @@ class Vault:
             f'url: "{url}"',
             'glassdoor_rating: ""',
             'culture_flags: ""',
+            'triage_concerns: ""',
             'relevance_notes: ""',
             f"first_seen: {first}",
             f"last_seen: {last}",
