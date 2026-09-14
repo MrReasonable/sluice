@@ -167,9 +167,13 @@ relevance_drop: ['sport and exercise psychologist']   # ...then drop any contain
 # sources:
 #   workinstartups: { enabled: false }
 #   linkedin:
+#     # A /jobs/search-results/ URL. `geoId` is the location: choose it in LinkedIn's own job
+#     # search and copy `geoId=` from the address bar (102257491 below is London). `f_TPR`
+#     # (date posted; r604800 = past week) survives only beside origin=JOB_SEARCH_PAGE_JOB_FILTER.
+#     # LinkedIn drops `location=`, `f_WT` (remote/hybrid/on-site) and `sortBy`, so there is no
+#     # URL filter for work type any more, and a retired /jobs/search/ URL warns on every run.
 #     searches:
-#       - ["Example role, city", "https://www.linkedin.com/jobs/search/?keywords=software%20developer&location=London", {job_type: perm}]
-#       - ["Example role, remote", "https://www.linkedin.com/jobs/search/?keywords=software%20developer&location=Remote", {job_type: perm}]
+#       - ["Example role, city", "https://www.linkedin.com/jobs/search-results/?keywords=software%20developer&geoId=102257491&origin=JOB_SEARCH_PAGE_JOB_FILTER&f_TPR=r604800", {job_type: perm}]
 #   reed:
 #     searches:
 #       - ["Example contract role", "https://www.reed.co.uk/jobs/contract-software-developer-jobs-in-london?sortby=datecreated"]

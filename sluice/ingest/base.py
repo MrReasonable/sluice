@@ -3,9 +3,11 @@
 A Source splits impure I/O (`fetch`, which drives the browser) from a pure
 transform (`parse`, raw dict -> list[Lead]) so parsers are tested offline against
 golden fixtures with no Camofox. `BrowserListSource` covers scroll-a-list boards.
-Anything weirder subclasses / duck-types `Source` directly -- `wellfound`,
-`naukrigulf`, `reed`, `linkedin` and `workinstartups` all do, by overriding one of
-the two sanctioned hooks rather than by needing a second base class.
+Anything weirder subclasses it -- `wellfound`, `naukrigulf`, `reed`, `linkedin` and
+`workinstartups` all do -- by overriding one of the two sanctioned hooks (`_scroll_step`,
+`parse`) or by WRAPPING `fetch` around `super().fetch` (`workinstartups`' rate-limit
+pre-check, `linkedin`'s page walk), rather than by needing a second base class. A wrap
+delegates; reimplementing `fetch` is the thing `_scroll_step`'s docstring warns against.
 
 There WAS a second one. `CarouselSource` read a one-job-at-a-time carousel by
 clicking an advance control, and was retired on 2026-08-28 when its only producer
@@ -513,11 +515,15 @@ class BrowserListSource:
         quieter failure that `_explained`'s docstring warns about. If the tab itself is
         broken, the extractor evaluate errors too and IS recorded.
 
-        A board that virtualizes its results (LinkedIn) must scroll the results PANEL rather
+        A board that fills its results lazily (LinkedIn) must scroll its results COLUMN rather
         than the window. That is its sole difference from this class on the SCROLL axis, so
-        it is the only thing it gets to change here. Overriding `fetch` wholesale is how the
-        LinkedIn subclass silently shipped without the auth probe: the registration declared
-        one, so everything READ as covered while the override never evaluated it.
+        it is the only thing it gets to change here. Its page walk is a different axis and
+        WRAPS `fetch` instead, calling `super().fetch` once per page -- so every page still
+        runs this method, the extractor, the landed read and the auth probe on one tab,
+        through this one implementation. What must not come back is overriding `fetch`
+        WHOLESALE: that is how the LinkedIn subclass once silently shipped without the auth
+        probe -- the registration declared one, so everything READ as covered while the
+        copied fetch never evaluated it.
 
         `parse` is the other axis, for row-level REPAIR rather than scroll mechanics --
         `_NaukrigulfSource.parse` (recovering a company mashed into the title via the listing
