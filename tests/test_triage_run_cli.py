@@ -731,8 +731,8 @@ def test_the_push_loses_no_non_zero_count(monkeypatch, tmp_path):
                  surfaced=[("shortlist", "Acme", "Engineering Manager"),
                            ("shortlist", "Alpha", "Engineering Manager"),
                            ("research", "Beta", "Delivery Lead"),
-                           ("research", "Delta", "Delivery Lead"),
-                           ("research", "Epsilon", "Delivery Lead")])
+                           ("research", "Example Meridian", "Delivery Lead"),
+                           ("research", "Example Northgate", "Delivery Lead")])
 
     # The two SURFACED rows are rendered as a per-heading count, not as words.
     assert "Shortlist (2):" in body and "Research (3):" in body

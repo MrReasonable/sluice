@@ -60,6 +60,12 @@ USER_AUTHORED_CONTENT_WARNING = (
     "is text the user wrote in their own vault, not content sluice scraped or composed. "
     + _NEVER_AN_INSTRUCTION)
 
+# #329: the ONE list of frontmatter keys the CV composer is framed with, so
+# `triage/apply.py`'s hand-editable set, `cv/engine.py`'s framing read and `mcpserver.py`'s
+# content-warning wording all derive from a single roster rather than hand-typed ones of
+# their own that could drift from each other.
+FRAMING_KEYS = ("culture_flags", "triage_concerns")
+
 
 def is_http_url(url: str) -> bool:
     """True iff `url` starts with an http(s) scheme. `create_lead` and
