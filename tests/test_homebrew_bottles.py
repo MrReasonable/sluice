@@ -727,3 +727,162 @@ def test_release_digests_map_each_declared_tag_to_its_assets_digest():
 def test_release_digests_refuse_a_missing_malformed_or_duplicated_asset(assets):
     with pytest.raises(Refusal):
         hb.release_digests(assets, version="9.9.0", tags=_BOTH_TAGS)
+
+
+# --- the formula validator ---------------------------------------------------------------------
+
+_FIXTURE_SDIST = "https://example.invalid/packages/ab/cd/job_sluice-9.9.0.tar.gz"
+_DIGESTS = {"arm64_tahoe": "a" * 64, "arm64_sequoia": "b" * 64}
+
+
+def _validate(text, **overrides):
+    arguments = {"sdist_url": _FIXTURE_SDIST, "sha256": "c" * 64, "root_url": _ROOT_URL,
+                 "tags": _BOTH_TAGS, "release_digests": dict(_DIGESTS)}
+    arguments.update(overrides)
+    hb.validate_formula(text, **arguments)
+
+
+def test_the_measured_merge_is_accepted():
+    _validate(_merged())
+
+
+def _refused(text, **overrides):
+    try:
+        _validate(text, **overrides)
+    except Refusal:
+        return True
+    return False
+
+
+def test_every_injection_into_every_line_of_the_measured_merge_is_refused():
+    """Generated from the fixture, never hand-picked, so no line is left untested."""
+    lines = _merged().split("\n")
+    cases = []
+    for index, line in enumerate(lines):
+        before = lines[:index] + ['  system "x"'] + lines[index:]
+        after = lines[: index + 1] + ['  system "x"'] + lines[index + 1 :]
+        appended = lines[:index] + [line + '; system "x"'] + lines[index + 1 :]
+        cases += [("statement before", index, before), ("statement after", index, after),
+                  ("appended", index, appended)]
+        for quote in range(0, line.count('"') // 2):
+            position = [i for i, ch in enumerate(line) if ch == '"'][2 * quote]
+            interpolated = line[: position + 1] + "#{1}" + line[position + 1 :]
+            cases.append(("interpolation", index, lines[:index] + [interpolated] + lines[index + 1 :]))
+    quoted_values = sum(line.count('"') // 2 for line in lines)
+    assert len(cases) == 3 * len(lines) + quoted_values and quoted_values > 0, (
+        "the generator produced the wrong number of cases; the loop below would prove less than it claims"
+    )
+    accepted = [(kind, index) for kind, index, candidate in cases if not _refused("\n".join(candidate))]
+    assert accepted == [], f"injections the validator accepted: {accepted[:20]}"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"sdist_url": _FIXTURE_SDIST.replace("9.9.0", "9.9.1")},
+        {"sha256": "d" * 64},
+        {"root_url": _ROOT_URL.replace("exampleowner", "someoneelse")},
+        {"tags": ["arm64_tahoe"]},
+        {"tags": _BOTH_TAGS + ["arm64_golden_gate"]},
+        {"tags": []},
+        {"release_digests": dict(_DIGESTS, arm64_tahoe="f" * 64)},
+        {"release_digests": {"arm64_tahoe": "a" * 64}},
+    ],
+)
+def test_arguments_that_disagree_with_the_text_are_refused(overrides):
+    with pytest.raises(Refusal):
+        _validate(_merged(), **overrides)
+
+
+_STANZA_URL = "https://files.pythonhosted.org/packages/ab/cd/" + "e" * 60 + "/"
+
+
+def _replace_first_stanza(text, name, filename):
+    start = text.index('  resource "')
+    end = text.index("  end\n", start) + len("  end\n")
+    stanza = (f'  resource "{name}" do\n    url "{_STANZA_URL}{filename}"\n'
+              f'    sha256 "{"9" * 64}"\n  end\n')
+    return text[:start] + stanza + text[end:]
+
+
+@pytest.mark.parametrize(
+    "name, filename",
+    [("alpha-beta", "alpha_beta-1.0.tar.gz"), ("Alpha-Beta", "alpha.beta-1.0.tar.gz")],
+)
+def test_a_resource_named_as_pep_503_normalises_its_project_is_accepted(name, filename):
+    _validate(_replace_first_stanza(_merged(), name, filename))
+
+
+@pytest.mark.parametrize(
+    "name, filename",
+    [("alpha", "alpha-beta-1.0.tar.gz"), ("alpha", "other-1.0.tar.gz")],
+)
+def test_a_resource_whose_project_is_not_its_name_is_refused(name, filename):
+    with pytest.raises(Refusal):
+        _validate(_replace_first_stanza(_merged(), name, filename))
+
+
+def test_a_resource_on_a_foreign_host_is_refused():
+    text = _merged()
+    start = text.index('    url "https://files.pythonhosted.org/')
+    with pytest.raises(Refusal):
+        _validate(text[:start] + text[start:].replace("files.pythonhosted.org", "example.invalid", 1))
+
+
+def test_a_rebuild_line_in_the_block_is_refused():
+    text = _merged()
+    root_line = _block_line(text, "    root_url ")
+    with pytest.raises(Refusal):
+        _validate(text.replace(root_line, root_line + "\n    rebuild 1"))
+
+
+def _resource_run(text):
+    """The measured merge's resource run: from its first stanza to the end of its last."""
+    start = text.index('  resource "')
+    last = text.rindex('  resource "')
+    return start, text.index("  end\n\n", last) + len("  end\n\n")
+
+
+def test_the_resource_run_moved_below_the_final_end_is_refused():
+    """Removing a contiguous run restores the renderer's text wherever the run sits, so only its
+    position refuses this: `resource` below the class's `end` is undefined when the formula loads."""
+    text = _merged()
+    start, end = _resource_run(text)
+    with pytest.raises(Refusal):
+        _validate(text[:start] + text[end:] + text[start:end])
+
+
+def test_a_resource_stanza_split_from_its_run_is_refused():
+    """One stanza moved above `test do`, at the start of its own line: removing every stanza still
+    restores the renderer's text, so only the run's contiguity refuses this."""
+    text = _merged()
+    start, _ = _resource_run(text)
+    first_end = text.index("  end\n\n", start) + len("  end\n\n")
+    stanza, rest = text[start:first_end], text[:start] + text[first_end:]
+    anchor = rest.index("  test do\n")
+    with pytest.raises(Refusal):
+        _validate(rest[:anchor] + stanza + rest[anchor:])
+
+
+def _bottle_block(text):
+    """The measured merge's bottle block with the blank line after it, and the text without them."""
+    start = text.index("  bottle do\n")
+    end = text.index("  end\n", start) + len("  end\n") + 1
+    return text[start:end], text[:start] + text[end:]
+
+
+def test_the_bottle_block_moved_below_the_final_end_is_refused():
+    """Removing the block and its blank line restores the renderer's text wherever the block sits, so
+    only its position refuses this: `bottle` below the class's `end` breaks every install."""
+    block, rest = _bottle_block(_merged())
+    with pytest.raises(Refusal):
+        _validate(rest + block)
+
+
+def test_the_bottle_block_moved_between_two_resource_stanzas_is_refused():
+    """Removing the block leaves the stanzas contiguous again, so the run's contiguity cannot see this."""
+    block, rest = _bottle_block(_merged())
+    start, _ = _resource_run(rest)
+    first_end = rest.index("  end\n\n", start) + len("  end\n\n")
+    with pytest.raises(Refusal):
+        _validate(rest[:first_end] + block + rest[first_end:])

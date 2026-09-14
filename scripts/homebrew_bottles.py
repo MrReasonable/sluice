@@ -19,11 +19,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
 FORMULA_NAME = "job-sluice"
 TAP_REPO = "homebrew-tap"
+
+# The repository root, so this file can import the renderer when run as `python3 -P <path>`: -P
+# removes the script's own directory from sys.path, and the renderer is the one thing the
+# validator must reproduce rather than restate.
+ROOT = Path(__file__).resolve().parent.parent
 
 # The (runner label, bottle tag) pairs, declared ONCE. `plan` emits them for the bottle matrix, and
 # tests/test_homebrew_bottles.py restates them by hand rather than importing them: an expectation
@@ -457,3 +463,119 @@ def release_digests(assets: list[dict], *, version: str, tags: list[str]) -> dic
             raise Refusal(f"asset {name!r} has no usable digest ({digest!r}).")
         digests[tag] = digest.removeprefix("sha256:")
     return digests
+
+
+# --- the pushed formula -------------------------------------------------------------------------
+
+# One resource stanza as `brew update-python-resources` writes it: four lines and a blank one.
+# `#`, `{`, `}`, `"`, `;` and spaces appear in no field's character set, so a quoted value cannot
+# carry Ruby interpolation or a second statement (spec, section 5). The pattern carries no `^`: the
+# run must be contiguous and sit directly above `_RESOURCES_PRECEDE`, and together with the comparison
+# against the renderer's text that puts every stanza at the start of a line.
+_STANZA_RE = re.compile(
+    r'  resource "(?P<name>[A-Za-z0-9._-]+)" do\n'
+    r'    url "https://files\.pythonhosted\.org/packages/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{60}/'
+    r'(?P<project>[A-Za-z0-9._-]+)-(?P<version>[0-9][A-Za-z0-9.+!]*)\.tar\.gz"\n'
+    r'    sha256 "[0-9a-f]{64}"\n'
+    r"  end\n"
+    r"\n"
+)
+
+# render() emits no resource, so `brew update-python-resources` takes
+# utils/ast.rb::replace_resource_stanzas' insert arm, which writes one contiguous run directly above
+# `def install`. (A formula that already had resources would have its group replaced in place
+# instead; this pipeline never produces one.)
+_RESOURCES_PRECEDE = "  def install\n"  # measured anchor
+
+# `brew bottle --merge --write` adds the block directly after the `license` line and a blank line
+# (utils/ast.rb::add_stanza). Anywhere else, removing it still restores the renderer's text, below the
+# class's closing `end` included, so its position is checked too.
+_BLOCK_FOLLOWS_RE = re.compile(r'\n  license "[^"\n]+"\n\n\Z')  # measured anchor
+
+
+def _normalise(name: str) -> str:
+    """PEP 503 name normalisation."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _render(sdist_url: str, sha256: str) -> str:
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from scripts.render_homebrew_formula import render
+
+    return render(sdist_url=sdist_url, sha256=sha256)
+
+
+def _first_difference(expected: str, actual: str) -> str:
+    expected_lines, actual_lines = expected.splitlines(), actual.splitlines()
+    for number, (want, got) in enumerate(zip(expected_lines, actual_lines), start=1):
+        if want != got:
+            return f"first difference at line {number}: expected {want!r}, found {got!r}."
+    return f"expected {len(expected_lines)} lines, found {len(actual_lines)}."
+
+
+def validate_formula(
+    text: str,
+    *,
+    sdist_url: str,
+    sha256: str,
+    root_url: str,
+    tags: list[str],
+    release_digests: dict[str, str],
+) -> None:
+    """The merged formula is exactly the renderer's text, plus strict resource stanzas, plus one
+    bottle block consistent with the published release, or the push is refused (spec, section 5).
+
+    Every expected value is an ARGUMENT, supplied from `plan`'s outputs and a releases API read,
+    never parsed out of the text under test: that would compare the artifact with itself.
+    """
+    if not tags:
+        raise Refusal("the declared tag set is empty.")
+    block_root_url, block_tags, block = parse_bottle_block(text)
+    if block_root_url != root_url:
+        raise Refusal(f"the bottle block's root_url is {block_root_url!r}, expected {root_url!r}.")
+    if set(block_tags) != set(tags):
+        raise Refusal(f"the bottle block carries {sorted(block_tags)}, but {sorted(tags)} are declared.")
+    for tag in tags:
+        if release_digests.get(tag) != block_tags[tag][1]:
+            raise Refusal(
+                f"the bottle block's {tag} digest {block_tags[tag][1]} is not the published "
+                f"asset's {release_digests.get(tag)!r}."
+            )
+    # measured separator: `brew bottle --merge --write` inserts the block after `license` and
+    # leaves one blank line after its `end` (utils/ast.rb::add_stanza, confirmed by the plan's
+    # first task). Removing the block and that one newline restores the pre-merge text.
+    after = block.end()
+    if text[after : after + 1] != "\n":  # measured separator
+        raise Refusal("the bottle block is not followed by the blank line brew bottle --merge writes.")
+    if not _BLOCK_FOLLOWS_RE.search(text[: block.start()]):  # measured anchor
+        raise Refusal(
+            "the bottle block does not directly follow the license line and its blank line, where "
+            "brew bottle --merge writes it."
+        )
+    remainder = text[: block.start()] + text[after + 1 :]
+    stanzas = list(_STANZA_RE.finditer(remainder))
+    if not stanzas:
+        raise Refusal("the formula carries no resource stanzas: brew update-python-resources filled none.")
+    for stanza in stanzas:
+        if _normalise(stanza.group("project")) != _normalise(stanza.group("name")):
+            raise Refusal(
+                f"resource {stanza.group('name')!r} points at an sdist for "
+                f"{stanza.group('project')!r}."
+            )
+    for previous, current in zip(stanzas, stanzas[1:]):
+        if current.start() != previous.end():
+            raise Refusal("the resource stanzas do not form one contiguous run.")
+    start = stanzas[0].start()
+    remainder = _STANZA_RE.sub("", remainder)
+    if not remainder[start:].startswith(_RESOURCES_PRECEDE):  # measured anchor
+        raise Refusal(
+            f"the resource stanzas are not directly above {_RESOURCES_PRECEDE.strip()!r}, where "
+            "brew update-python-resources writes them."
+        )
+    expected = _render(sdist_url, sha256)
+    if remainder != expected:
+        raise Refusal(
+            "the formula is not the renderer's text plus resource stanzas and one bottle block: "
+            + _first_difference(expected, remainder)
+        )
