@@ -208,7 +208,18 @@ class RunArtefacts:
         # `ensure_ascii` stays at its True default: the record quotes composed text and
         # backend errors, and escaping keeps a character UTF-8 cannot encode (a lone
         # surrogate) from costing the one file that says what else went wrong.
-        self._write(RUN_RECORD, json.dumps(record, indent=2) + "\n")
+        #
+        # Serialised INSIDE the artefact failure path, not ahead of it. `rendered_pdf` is
+        # whatever the injected renderer returned, and nothing checks that at runtime: the
+        # Renderer protocol says `str`, but a renderer returning anything JSON cannot encode
+        # made `json.dumps` raise TypeError out of `run_one`, reporting `error` for a CV that
+        # had already rendered. ValueError is json's circular-reference refusal.
+        try:
+            text = json.dumps(record, indent=2) + "\n"
+        except (TypeError, ValueError) as e:
+            self._report(os.path.join(self.out_dir, RUN_RECORD), "written", e)
+            return
+        self._write(RUN_RECORD, text)
 
     def _attempt(self, attempt):
         for entry in self._attempts:
