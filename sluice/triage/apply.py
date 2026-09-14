@@ -2,6 +2,7 @@
 a lead that has already entered the application lifecycle (applied, phone_screen,
 ...). Reject maps to the canonical `dismiss`; a plain-language reason and the
 judge's reasoning are appended (once) to relevance_notes."""
+import math
 from datetime import date
 
 from sluice.core import status as _status
@@ -46,6 +47,101 @@ def clamp_verdict(raw: str) -> str:
     """
     s = _status.normalize(raw or "")
     return s if s in _JUDGE_VERDICTS else "needs_review"
+
+
+# The fields the judge's schema declares as strings and as lists (triage/judge.py's prompt tail).
+# `verdict` is absent from the first tuple on purpose: an unusable verdict is REJECTED, never
+# repaired, because repairing it would write a status on no judgement at all (#329).
+_STRING_FIELDS = ("fit_reasoning", "recommended_next_action")
+_LIST_FIELDS = ("culture_flags", "concerns")
+
+
+def _normalise_list(field, value, slug):
+    """A verdict's list field as a list of frontmatter-safe strings.
+
+    One item at a time, never the joined value: a single unsafe item used to fail the joined
+    string, skip the whole key and leave the PREVIOUS verdict's value on the note, which the CV
+    composer now reads as framing (#329). A non-string item is dropped rather than `str()`-ed,
+    because `str({...})` writes a Python repr into a user's note. Logged by field and lead,
+    never by value: the value is model output that has just failed a safety check."""
+    if value is None or value == "" or value == [] or value == ():
+        return []
+    if isinstance(value, str):
+        items = [value]
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        _log.warning("triage: %s dropped for %s -- not a list of strings", field, slug)
+        return []
+    kept = []
+    for item in items:
+        safe = frontmatter_safe(item) if isinstance(item, str) else None
+        if safe is None:
+            _log.warning("triage: an item of %s dropped for %s -- not a safe string", field, slug)
+            continue
+        kept.append(safe)
+    return kept
+
+
+def _normalise_score(value, slug):
+    """`relevance_score` as an int, with `0` for anything unusable -- the value today's `or 0`
+    already gives a missing score. `bool` is checked FIRST: it subclasses `int`, so `True`
+    would otherwise score 1."""
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool):
+        _log.warning("triage: relevance_score for %s was not a number -- scored 0", slug)
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            pass
+    _log.warning("triage: relevance_score for %s was not a number -- scored 0", slug)
+    return 0
+
+
+def normalise_fields(raw, slug):
+    """Every field of a judge verdict except `lead_id`, repaired or rejected (#329).
+
+    Returns `(fields, "")`, or `(None, reason)` when `raw` is not a dict or its `verdict` is not
+    a non-blank string. Shared by `normalise_verdict` (the engine's entry point) and
+    `apply_verdict` (which is handed the note, so needs no `lead_id`). Idempotent: a second pass
+    over its own output returns an equal dict and logs nothing."""
+    if not isinstance(raw, dict):
+        return None, "not a JSON object"
+    verdict = raw.get("verdict")
+    if not isinstance(verdict, str) or not verdict.strip():
+        return None, "no usable verdict field"
+    out = dict(raw)
+    for field in _STRING_FIELDS:
+        value = raw.get(field)
+        if value is not None and not isinstance(value, str):
+            _log.warning("triage: %s dropped for %s -- not a string", field, slug)
+            value = ""
+        out[field] = value or ""
+    out["relevance_score"] = _normalise_score(raw.get("relevance_score"), slug)
+    for field in _LIST_FIELDS:
+        out[field] = _normalise_list(field, raw.get(field), slug)
+    return out, ""
+
+
+def normalise_verdict(raw):
+    """A judge verdict fit to apply, or `(None, reason)` (#329).
+
+    The engine needs `lead_id` to match a verdict to its note, so a verdict without a usable one
+    is rejected here; everything else is `normalise_fields`. One function decides the rejection
+    and names its reason, so the failure line that reports it cannot drift from the decision."""
+    if not isinstance(raw, dict):
+        return None, "not a JSON object"
+    lead_id = raw.get("lead_id")
+    if not isinstance(lead_id, str) or not lead_id.strip():
+        return None, "no usable lead_id"
+    return normalise_fields(raw, lead_id)
 
 
 def _guarded(note) -> bool:
@@ -126,8 +222,14 @@ def apply_classification(vault, note, decision, reason) -> str:
 def apply_verdict(vault, note, verdict, dossier) -> str:
     if _guarded(note):
         return "skipped"
-    status = clamp_verdict(verdict.get("verdict", ""))
-    score = int(verdict.get("relevance_score", 0) or 0)
+    # #329: repaired here as well as in the engine, so a direct caller gets the same behaviour.
+    # A second pass over the engine's already-normalised verdict changes nothing.
+    verdict, why = normalise_fields(verdict, note.slug)
+    if verdict is None:
+        _log.warning("triage: verdict for %s ignored -- %s", note.slug, why)
+        return "skipped"
+    status = clamp_verdict(verdict["verdict"])
+    score = verdict["relevance_score"]
     # BOTH untrusted, and both were written into quoted YAML scalars raw. `culture_flags` is
     # the model's verdict JSON; `glassdoor_rating` comes off the fetched dossier. A `"` closes
     # the scalar early and everything after it is parsed as frontmatter -- executed: a single
@@ -139,17 +241,20 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # because the sweep's boundary was the `track` package -- "a hand-list with extra steps",
     # in the words of the test that drew the boundary.
     #
-    # Abstain on the FIELD, never the write: losing a triage verdict because a culture flag
-    # contained a quote would be the worse failure. Logged, because a silent drop is invisible
-    # to the person reading the note.
+    # Abstain on the ITEM, never the write: `_normalise_list` has already dropped each unsafe
+    # list item on its own, so a verdict's other flags and concerns still land. The joined
+    # `frontmatter_safe` check below therefore cannot fire for `culture_flags` or
+    # `triage_concerns` (safe items, safe joiners) and stays live for `glassdoor_rating`, which
+    # comes off the dossier and is not normalised item by item. Logged, because a silent drop is
+    # invisible to the person reading the note.
     rating = (dossier.get("glassdoor") or {}).get("rating", "")
-    flags = ", ".join(verdict.get("culture_flags") or [])
+    flags = ", ".join(verdict["culture_flags"])
     # #329: the concerns are ALSO written as their own key, replaced on every verdict, so the CV
     # composer reads triage's latest judgement without parsing `relevance_notes`, which
     # accumulates dated prose from triage, dismiss and expire alike. `triage_`-prefixed on
     # purpose: `_set_fm` matches a key at ANY indentation and no earlier note carries a top-level
     # concerns key, so a bare `concerns` would land on a user's nested `concerns:` line.
-    concerns = "; ".join(verdict.get("concerns") or [])
+    concerns = "; ".join(verdict["concerns"])
     fields = {"status": status, "score": str(score)}
     for key, raw in (("glassdoor_rating", rating), ("culture_flags", flags),
                      ("triage_concerns", concerns)):
@@ -159,10 +264,10 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
             continue
         fields[key] = f'"{safe}"'
     tag = f"[triage {date.today().isoformat()}]"
-    parts = [verdict.get("fit_reasoning", "")]
-    if verdict.get("concerns"):
+    parts = [verdict["fit_reasoning"]]
+    if verdict["concerns"]:
         parts.append("Concerns: " + "; ".join(verdict["concerns"]))
-    if verdict.get("recommended_next_action"):
+    if verdict["recommended_next_action"]:
         parts.append("Next: " + verdict["recommended_next_action"])
     note_text = f"{tag} " + " ".join(p for p in parts if p)
     # require_status: same hardening as apply_classification above, closing the
