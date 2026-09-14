@@ -18,6 +18,7 @@ makes that fixture stale: recapture it on a Mac with a real `brew bottle --merge
 docs/superpowers/plans/2026-09-14-homebrew-bottles.md's first task did, never by hand.
 """
 import ast
+import hashlib
 import json
 import pathlib
 
@@ -278,3 +279,332 @@ def test_every_expected_constant_is_built_only_from_literals():
             f"`{name}` is not built purely from literals: {ast.dump(value)[:300]}. Restate it."
         )
         validated.add(name)
+
+
+# --- the measured fixtures -----------------------------------------------------------------------
+
+
+def test_the_fixture_directory_holds_exactly_the_three_measured_files():
+    """This directory sits outside tests/fixtures/, whose scope guard admits only captured board
+    payloads, so it carries its own closure: a file added here would sit in no pin below."""
+    found = sorted(path.relative_to(FIXTURES).as_posix() for path in FIXTURES.rglob("*"))
+    assert found == ["bottle.json", "info_poured.json", "merged_formula.rb"], found
+
+
+def test_the_json_fixtures_carry_only_the_sanitised_keys_and_values():
+    """Real `brew bottle --json` and `brew info` output also carry the build machine's OS, Xcode and
+    CLT versions, timestamps, and the tap's remote and revision. A verbatim recapture must fail here,
+    by name, rather than commit them."""
+    bottle = json.loads((FIXTURES / "bottle.json").read_text())
+    cellar = bottle.get("exampleowner/tap/job-sluice", {}).get("bottle", {}).pop("cellar", None)
+    assert cellar in ("any", "any_skip_relocation"), cellar
+    assert bottle == {
+        "exampleowner/tap/job-sluice": {
+            "formula": {"name": "job-sluice", "pkg_version": "9.9.0"},
+            "bottle": {
+                "root_url": "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1",
+                "rebuild": 0,
+                "tags": {
+                    "arm64_tahoe": {
+                        "filename": "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz",
+                        "local_filename": "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz",
+                        "sha256": "a" * 64,
+                    }
+                },
+            },
+        }
+    }
+    assert json.loads((FIXTURES / "info_poured.json").read_text()) == {
+        "formulae": [{"full_name": "exampleowner/tap/job-sluice",
+                      "installed": [{"version": "9.9.0", "poured_from_bottle": True}]}]
+    }
+
+
+# --- the pour check ---------------------------------------------------------------------------
+
+_FULL_NAME = "exampleowner/tap/job-sluice"
+
+
+def _info(*formulae):
+    return {"formulae": list(formulae)}
+
+
+def _formula(full_name=_FULL_NAME, *kegs):
+    return {"full_name": full_name, "installed": list(kegs)}
+
+
+def _keg(version="9.9.0", poured=True):
+    return {"version": version, "poured_from_bottle": poured}
+
+
+def test_the_measured_brew_info_passes_the_pour_check():
+    info = json.loads((FIXTURES / "info_poured.json").read_text())
+    hb.check_pour(info, full_name=_FULL_NAME, version="9.9.0")
+
+
+def test_one_poured_keg_at_the_version_passes():
+    hb.check_pour(_info(_formula(_FULL_NAME, _keg())), full_name=_FULL_NAME, version="9.9.0")
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        # job-sluice built from source while a dependency beside it was poured: the case an
+        # unscoped `--installed` check reads as success.
+        _info(_formula("pango", _keg("1.0.0", True)), _formula(_FULL_NAME, _keg(poured=False))),
+        _info(_formula(_FULL_NAME, _keg(poured=False))),
+        _info(_formula("pango", _keg("1.0.0", True))),
+        _info(_formula(_FULL_NAME)),
+        _info(_formula(_FULL_NAME, _keg("9.8.0", True))),
+        _info(_formula(_FULL_NAME, _keg(), _keg())),
+        _info(_formula(_FULL_NAME, {"version": "9.9.0"})),
+        # One poured keg at VERSION under another name: refused by the name check and nothing else.
+        _info(_formula("exampleowner/tap/other", _keg())),
+        _info(_formula("pango", _keg())),
+        _info(),
+        {},
+    ],
+)
+def test_the_pour_check_refuses_anything_but_one_poured_keg_of_this_formula(info):
+    with pytest.raises(Refusal):
+        hb.check_pour(info, full_name=_FULL_NAME, version="9.9.0")
+
+
+def test_expect_built_passes_a_built_keg():
+    hb.check_pour(_info(_formula(_FULL_NAME, _keg(poured=False))), full_name=_FULL_NAME,
+                  version="9.9.0", expect_built=True)
+
+
+@pytest.mark.parametrize("poured", [True, None])
+def test_expect_built_refuses_a_poured_or_unknown_keg(poured):
+    keg = {"version": "9.9.0"} if poured is None else _keg(poured=poured)
+    with pytest.raises(Refusal):
+        hb.check_pour(_info(_formula(_FULL_NAME, keg)), full_name=_FULL_NAME, version="9.9.0",
+                      expect_built=True)
+
+
+# --- the produced tag -------------------------------------------------------------------------
+
+
+def _fixture_bottle_json():
+    return json.loads((FIXTURES / "bottle.json").read_text())
+
+
+def test_the_measured_bottle_json_names_the_real_file_shapes():
+    """Task 1 measured these: single dash for the download name, double dash on disk."""
+    (entry,) = _fixture_bottle_json().values()
+    (tag_hash,) = entry["bottle"]["tags"].values()
+    assert (tag_hash["filename"], tag_hash["local_filename"]) == (
+        "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz",
+        "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz",
+    )
+
+
+def test_the_produced_tag_passes_when_it_is_the_declared_one():
+    hb.check_produced_tag(_fixture_bottle_json(), "arm64_tahoe")
+
+
+def _with_tags(tags):
+    data = _fixture_bottle_json()
+    (entry,) = data.values()
+    (tag_hash,) = entry["bottle"]["tags"].values()
+    entry["bottle"]["tags"] = {tag: tag_hash for tag in tags}
+    return data
+
+
+@pytest.mark.parametrize(
+    "data, declared",
+    [
+        (_with_tags(["arm64_tahoe"]), "arm64_sequoia"),
+        (_with_tags([]), "arm64_tahoe"),
+        (_with_tags(["arm64_tahoe", "arm64_sequoia"]), "arm64_tahoe"),
+        (_with_tags(["arm64_tahoe"]), ""),
+        ({}, "arm64_tahoe"),
+    ],
+)
+def test_the_produced_tag_refuses_a_mismatch_zero_two_or_an_empty_declaration(data, declared):
+    with pytest.raises(Refusal):
+        hb.check_produced_tag(data, declared)
+
+
+# --- bottle JSONs, as upload reads them --------------------------------------------------------
+
+_ROOT_URL = "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1"
+_BOTH_TAGS = ["arm64_sequoia", "arm64_tahoe"]
+
+
+def _bottle_dir(tmp_path, tags=("arm64_sequoia", "arm64_tahoe"), mutate=None):
+    """One JSON and one bottle file per tag, shaped like the measured fixture."""
+    (entry,) = _fixture_bottle_json().values()
+    (template,) = entry["bottle"]["tags"].values()
+    paths = []
+    for tag in tags:
+        payload = f"bottle bytes for {tag}".encode()
+        tag_hash = dict(
+            template,
+            filename=f"job-sluice-9.9.0.{tag}.bottle.tar.gz",
+            local_filename=f"job-sluice--9.9.0.{tag}.bottle.tar.gz",
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        doc = {_FULL_NAME: {"formula": dict(entry["formula"]),
+                            "bottle": dict(entry["bottle"], tags={tag: tag_hash})}}
+        if mutate is not None:
+            mutate(tag, doc)
+        (tmp_path / f"job-sluice--9.9.0.{tag}.bottle.tar.gz").write_bytes(payload)
+        path = tmp_path / f"job-sluice--9.9.0.{tag}.bottle.json"
+        path.write_text(json.dumps(doc))
+        paths.append(path)
+    return paths
+
+
+def test_two_valid_bottle_jsons_yield_their_assets_in_declared_order(tmp_path):
+    paths = _bottle_dir(tmp_path)
+    assets = hb.validate_bottle_jsons(paths, version="9.9.0", root_url=_ROOT_URL, tags=_BOTH_TAGS)
+    assert [(a.tag, a.remote_name, a.local_path.name) for a in assets] == [
+        ("arm64_sequoia", "job-sluice-9.9.0.arm64_sequoia.bottle.tar.gz",
+         "job-sluice--9.9.0.arm64_sequoia.bottle.tar.gz"),
+        ("arm64_tahoe", "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz",
+         "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz"),
+    ]
+    assert assets[0].sha256 == hashlib.sha256(b"bottle bytes for arm64_sequoia").hexdigest()
+
+
+def _bottle(doc):
+    (entry,) = doc.values()
+    return entry["bottle"]
+
+
+def _only_tag_hash(doc):
+    (tag_hash,) = _bottle(doc)["tags"].values()
+    return tag_hash
+
+
+_JSON_MUTANTS = {
+    "wrong root url": lambda tag, doc: _bottle(doc).update(root_url=_ROOT_URL + "x"),
+    "non-zero rebuild": lambda tag, doc: _bottle(doc).update(rebuild=1),
+    "path-valued cellar": lambda tag, doc: _bottle(doc).update(cellar="/opt/homebrew/Cellar"),
+    "missing cellar": lambda tag, doc: _bottle(doc).pop("cellar"),
+    "download name with double dash": lambda tag, doc: _only_tag_hash(doc).update(
+        filename=f"job-sluice--9.9.0.{tag}.bottle.tar.gz"),
+    "path component in local name": lambda tag, doc: _only_tag_hash(doc).update(
+        local_filename=f"../job-sluice--9.9.0.{tag}.bottle.tar.gz"),
+    "digest mismatch": lambda tag, doc: _only_tag_hash(doc).update(sha256="0" * 64),
+    "malformed digest": lambda tag, doc: _only_tag_hash(doc).update(sha256="Z" * 64),
+    "second formula": lambda tag, doc: doc.update({"other/tap/x": {}}),
+}
+
+
+@pytest.mark.parametrize("mutant", sorted(_JSON_MUTANTS))
+def test_a_bottle_json_off_contract_is_refused(tmp_path, mutant):
+    paths = _bottle_dir(tmp_path, mutate=_JSON_MUTANTS[mutant])
+    with pytest.raises(Refusal):
+        hb.validate_bottle_jsons(paths, version="9.9.0", root_url=_ROOT_URL, tags=_BOTH_TAGS)
+
+
+def test_a_json_whose_bottle_is_absent_is_refused(tmp_path):
+    paths = _bottle_dir(tmp_path)
+    (tmp_path / "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz").unlink()
+    with pytest.raises(Refusal):
+        hb.validate_bottle_jsons(paths, version="9.9.0", root_url=_ROOT_URL, tags=_BOTH_TAGS)
+
+
+@pytest.mark.parametrize(
+    "made, declared",
+    [
+        (("arm64_tahoe",), _BOTH_TAGS),
+        (("arm64_sequoia", "arm64_tahoe"), ["arm64_tahoe"]),
+        (("arm64_sequoia", "arm64_tahoe"), []),
+    ],
+)
+def test_the_json_set_must_equal_the_declared_tags(tmp_path, made, declared):
+    paths = _bottle_dir(tmp_path, tags=made)
+    with pytest.raises(Refusal):
+        hb.validate_bottle_jsons(paths, version="9.9.0", root_url=_ROOT_URL, tags=declared)
+
+
+def test_two_jsons_for_one_tag_are_refused(tmp_path):
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    paths = _bottle_dir(tmp_path / "a", tags=("arm64_tahoe",)) + _bottle_dir(
+        tmp_path / "b", tags=("arm64_tahoe",))
+    with pytest.raises(Refusal):
+        hb.validate_bottle_jsons(paths, version="9.9.0", root_url=_ROOT_URL, tags=["arm64_tahoe"])
+
+
+def test_an_undeclared_tag_is_refused_before_any_file_is_read(tmp_path):
+    """The tag is the JSON's own key, and the names and the bottle's path are built from it, so an
+    undeclared tag must refuse before either exists: a tag with path components would otherwise read,
+    and report the digest of, a file outside the bottles directory."""
+    bottles = tmp_path / "bottles"
+    bottles.mkdir()
+    outside = tmp_path / "outside.bottle.tar.gz"
+    outside.write_bytes(b"outside the bottles directory")
+    tag = "/../../outside"
+    (bottles / "job-sluice--9.9.0.").mkdir()
+    (entry,) = _fixture_bottle_json().values()
+    doc = {_FULL_NAME: {"formula": dict(entry["formula"]), "bottle": dict(entry["bottle"], tags={tag: {
+        "filename": f"job-sluice-9.9.0.{tag}.bottle.tar.gz",
+        "local_filename": f"job-sluice--9.9.0.{tag}.bottle.tar.gz",
+        "sha256": "0" * 64}})}}
+    path = bottles / "crafted.bottle.json"
+    path.write_text(json.dumps(doc))
+    with pytest.raises(Refusal) as err:
+        hb.validate_bottle_jsons([path], version="9.9.0", root_url=_ROOT_URL, tags=_BOTH_TAGS)
+    assert hashlib.sha256(outside.read_bytes()).hexdigest() not in str(err.value)
+    assert "undeclared tag" in str(err.value)
+
+
+# --- the merged bottle block -------------------------------------------------------------------
+
+
+def _merged():
+    return (FIXTURES / "merged_formula.rb").read_text()
+
+
+def test_the_measured_merge_parses_to_both_tags():
+    root_url, tags, _ = hb.parse_bottle_block(_merged())
+    assert root_url == _ROOT_URL
+    assert {tag: sha for tag, (_cellar, sha) in tags.items()} == {
+        "arm64_tahoe": "a" * 64,
+        "arm64_sequoia": "b" * 64,
+    }
+
+
+def test_the_merged_tag_set_passes_when_it_equals_the_declared_one():
+    hb.check_merged_tags(_merged(), _BOTH_TAGS)
+
+
+@pytest.mark.parametrize("declared", [["arm64_tahoe"], _BOTH_TAGS + ["arm64_golden_gate"], []])
+def test_the_merged_tag_set_refuses_a_missing_extra_or_empty_declaration(declared):
+    with pytest.raises(Refusal):
+        hb.check_merged_tags(_merged(), declared)
+
+
+def _block_line(text, startswith):
+    return next(line for line in text.splitlines() if line.startswith(startswith))
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda t: t.replace(_block_line(t, "    root_url "), _block_line(t, "    root_url ") + "\n    rebuild 1"),
+        lambda t: t + "\n  bottle do\n  end\n",
+        lambda t: t.replace("  bottle do\n", "  bottle_block do\n"),
+        lambda t: t.replace(_block_line(t, "    sha256 cellar:"), _block_line(t, "    sha256 cellar:") + '; system "x"'),
+    ],
+)
+def test_a_bottle_block_off_shape_is_refused(mutate):
+    with pytest.raises(Refusal):
+        hb.parse_bottle_block(mutate(_merged()))
+
+
+def test_the_cache_file_passes_when_its_digest_is_the_blocks():
+    formula = _merged().replace("a" * 64, hashlib.sha256(b"payload").hexdigest())
+    hb.check_cache_file(b"payload", formula, "arm64_tahoe")
+
+
+@pytest.mark.parametrize("tag, data", [("arm64_tahoe", b"other"), ("arm64_golden_gate", b"payload")])
+def test_the_cache_file_refuses_other_bytes_or_an_undeclared_tag(tag, data):
+    formula = _merged().replace("a" * 64, hashlib.sha256(b"payload").hexdigest())
+    with pytest.raises(Refusal):
+        hb.check_cache_file(data, formula, tag)
