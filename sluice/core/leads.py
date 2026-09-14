@@ -33,7 +33,7 @@ UNTRUSTED_SCRAPED_CONTENT_WARNING = (
 
 # #131 decision 16: the same threat class, one step removed -- a composed CV's
 # violations/audit_flags/claims all quote or paraphrase the scraped job description
-# rather than reproducing it verbatim. mcpserver.py's cv_run/cv_signoff consume this.
+# rather than reproducing it verbatim. mcpserver.py's cv_run/cv_signoff/get_lead consume this.
 # A hold's #329 framing entries are NOT covered by it; they carry TRIAGE_FRAMING_CONTENT_WARNING
 # below.
 # #167 Task 16 widened cv_run's own use to also cover `slop`/`voice_flags`: `voice_flags`
@@ -67,7 +67,7 @@ USER_AUTHORED_CONTENT_WARNING = (
 # model's reading of the job page against the user's OWN Judging Profile (so DERIVED's "from a
 # third-party web page" understates how private they are), or text the user typed into the note
 # (so they are not always model output either). The obligation is unchanged, so the shared tail is
-# reused verbatim. mcpserver.py's cv_signoff consumes this.
+# reused verbatim. mcpserver.py's cv_signoff and get_lead consume this.
 TRIAGE_FRAMING_CONTENT_WARNING = (
     "is text from a lead's triage notes: a triage model's reading of the job page against the "
     "user's own Judging Profile, or text the user typed into the note. " + _NEVER_AN_INSTRUCTION)
@@ -79,6 +79,12 @@ TRIAGE_FRAMING_CONTENT_WARNING = (
 # its readers include mcpserver.py, whose imports from `sluice.` are confined to `core.app`,
 # `core.leads` and `core.status` (tests/test_mcpserver.py's isolation sweep).
 FRAMING_TAG = "framing"
+
+# #329: the ONE list of frontmatter keys the CV composer is framed with, so
+# `triage/apply.py`'s hand-editable set, `cv/engine.py`'s framing read and `mcpserver.py`'s
+# content-warning wording all derive from a single roster rather than hand-typed ones of
+# their own that could drift from each other.
+FRAMING_KEYS = ("culture_flags", "triage_concerns")
 
 
 def framing_entries(lines):

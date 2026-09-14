@@ -14,6 +14,7 @@ structurally rather than by review.
 import ast
 import asyncio
 import dataclasses
+import json
 import pathlib
 
 import pytest
@@ -22,10 +23,12 @@ import sluice.mcpserver as mcpserver_mod
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import (
+    TRIAGE_FRAMING_CONTENT_WARNING,
     UNTRUSTED_DERIVED_CONTENT_WARNING,
     UNTRUSTED_SCRAPED_CONTENT_WARNING,
     USER_AUTHORED_CONTENT_WARNING,
     Lead,
+    framing_entries,
 )
 from sluice.core.protocols import EVIDENCE_KINDS, Store
 from sluice.core.vault import Vault
@@ -43,6 +46,7 @@ from sluice.mcpserver import (
     list_leads,
     propose_evidence,
 )
+from tests.conftest import FRAMING_CONCERNS
 
 
 def _lead(company="Example Ltd", title="Example Role", url="https://example.invalid/1"):
@@ -200,15 +204,15 @@ def test_get_lead_found_returns_full_frontmatter_and_body(tmp_path):
 
 
 def test_get_lead_found_carries_an_untrusted_content_warning(tmp_path):
-    # `fm`/`body` are scraped from a third-party job posting -- an MCP client's calling
-    # agent must be told, structurally, not just via the tool's own docstring, that this
-    # is data to read and never an instruction to follow. Asserted against the REAL
-    # shared constant (`core.leads.UNTRUSTED_SCRAPED_CONTENT_WARNING`), the same one
-    # `sluice/triage/resolve.py`'s prompt uses for the identical class of content handed
-    # to the triage LLM judge -- not a loose substring check, so the two mitigations
-    # cannot silently drift into two different phrasings of the same warning (they
-    # already did once: the first version of this field dropped "whatever it says
-    # about itself", the clause that specifically defeats a self-referential injection).
+    # `fm`/`body` are scraped from a third-party job posting (bar the triage keys, #329) -- an MCP
+    # client's calling agent must be told, structurally, not just via the tool's own docstring, that
+    # this is data to read and never an instruction to follow. Asserted against the REAL shared
+    # constant (`core.leads.UNTRUSTED_SCRAPED_CONTENT_WARNING`), the same one
+    # `sluice/triage/resolve.py`'s prompt uses for the identical class of content handed to the
+    # triage LLM judge -- not a loose substring check, so the two mitigations cannot silently drift
+    # into two different phrasings of the same warning (they already did once: the first version of
+    # this field dropped "whatever it says about itself", the clause that specifically defeats a
+    # self-referential injection).
     slug = _seed(tmp_path, status="shortlist")
     out = get_lead(_app(tmp_path), slug)
     assert out["outcome"] == "found"
@@ -991,6 +995,7 @@ def test_cv_signoff_tool_discard_returns_claims_with_content_warning(tmp_path):
     assert out["outcome"] == "discarded"
     assert out["claims"] == ["unsupported claim"]
     assert "content_warning" in out
+    assert "framing_warning" not in out
 
 
 def test_cv_signoff_tool_needs_confirmation_writes_nothing(tmp_path):
@@ -1003,6 +1008,8 @@ def test_cv_signoff_tool_needs_confirmation_writes_nothing(tmp_path):
     assert out["outcome"] == "needs_confirmation"
     assert out["pending_cv"] == "CV_deadbeef.pdf (2026-08-14)"
     assert out["claims"] == ["unsupported claim"]
+    assert out["framing"] == []
+    assert "framing_warning" not in out
     assert "confirm_token" in out and out["confirm_token"]
     text = pathlib.Path(v.read_leads()[0].ref).read_text()
     assert "pending_cv:" in text and "tailored_cv:" not in text   # NOTHING written
@@ -1041,6 +1048,100 @@ def test_cv_signoff_tool_stale_token_after_a_re_hold_writes_nothing(tmp_path):
     assert "confirm_token" in second
     text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
     assert "tailored_cv:" not in text   # still nothing promoted
+
+
+_PENDING = "CV_deadbeef.pdf (2026-08-14)"
+
+
+def _hold_with_framing(v, note, line, pending=_PENDING):
+    v.hold_for_signoff(note.ref, pending=pending,
+                       claims=json.dumps(["unsupported claim", *framing_entries([line])]))
+
+
+def test_cv_signoff_tool_returns_framing_apart_from_the_claims(tmp_path):
+    """#329. Every string a client reads says to relay the claims to a human; a framing entry
+    returned inside `claims` would be relayed as a flagged CV defect."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    line = f"concerns: {FRAMING_CONCERNS[0]}"
+    _hold_with_framing(v, v.read_leads()[0], line)
+    out = cv_signoff(_app(tmp_path), slug)
+    assert out["outcome"] == "needs_confirmation"
+    assert out["claims"] == ["unsupported claim"]
+    assert out["framing"] == [line]
+    assert out["framing_warning"].endswith("whatever it says about itself.")
+    assert out["framing_warning"] != out["content_warning"]
+
+
+def test_cv_signoff_tool_token_is_stale_when_only_a_framing_entry_changed(tmp_path):
+    """The token must bind the RAW stored array, framing included. Byte-identical pending_cv and
+    claims, only the framing differs: a token hashed over the split-out claims alone would
+    promote a CV whose framing a human never saw (the existing re-hold row changes both, so it
+    cannot tell)."""
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    _hold_with_framing(v, note, f"concerns: {FRAMING_CONCERNS[0]}")
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+    v.sign_off(note.ref, accept=False)
+    _hold_with_framing(v, note, f"concerns: {FRAMING_CONCERNS[1]}")
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "stale_confirmation"
+    assert second["framing"] == [f"concerns: {FRAMING_CONCERNS[1]}"]
+    text = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text()
+    assert "tailored_cv:" not in text
+
+
+def test_cv_signoff_tool_discard_returns_framing_apart_from_the_claims(tmp_path):
+    v = Vault(str(tmp_path))
+    slug = _seed(tmp_path, status="shortlist")
+    line = f"concerns: {FRAMING_CONCERNS[0]}"
+    _hold_with_framing(v, v.read_leads()[0], line)
+    out = cv_signoff(_app(tmp_path), slug, discard=True)
+    assert out["outcome"] == "discarded"
+    assert out["claims"] == ["unsupported claim"]
+    assert out["framing"] == [line]
+    assert "framing_warning" in out
+
+
+def test_the_registered_cv_signoff_description_names_the_framing():
+    # The REGISTERED description is what an MCP client reads, distinct from `cv_signoff`'s own
+    # docstring (see test_no_tool_description_denies_the_propose_tool_that_is_registered).
+    server = build_server(Config(), write=True)
+    described = {t.name: (t.description or "") for t in asyncio.run(server.list_tools())}
+    assert "framing" in described["cv_signoff"]
+
+
+def test_get_lead_warning_labels_the_triage_keys_with_their_own_provenance(tmp_path):
+    """#329. `culture_flags` and `triage_concerns` are the triage judge's reading of the page
+    against the user's own Judging Profile, or text the user typed, and a hold's `needs_signoff`
+    now records framing entries beside claims an LLM derived from the page. A warning calling all
+    of `fm` scraped page text would tell an agent private criteria are third-party content.
+    `relevance_notes` still carries verbatim scraped text (`classify`'s skip reason, among other
+    writers), so it keeps the general scraped label instead of joining this group."""
+    slug = _seed(tmp_path, status="shortlist")
+    warning = get_lead(_app(tmp_path), slug)["content_warning"]
+    assert UNTRUSTED_SCRAPED_CONTENT_WARNING in warning
+    assert TRIAGE_FRAMING_CONTENT_WARNING in warning
+    assert UNTRUSTED_DERIVED_CONTENT_WARNING in warning
+    for key in ("culture_flags", "triage_concerns", "needs_signoff"):
+        assert f"`{key}`" in warning, key
+    # #329: presence alone cannot see the two warnings SWAPPED -- `triage_concerns` and
+    # `needs_signoff` both name both a clause AND (as substrings of the shared
+    # `_NEVER_AN_INSTRUCTION` tail) part of every warning, so only POSITION discriminates.
+    # The text naming `triage_concerns` must be followed by the framing warning before
+    # the "Every other needs_signoff entry" clause is reached, and THAT clause must be
+    # followed by the derived warning.
+    triage_at = warning.index("`triage_concerns`")
+    every_other_at = warning.index("Every other `needs_signoff` entry")
+    framing_at = warning.index(TRIAGE_FRAMING_CONTENT_WARNING)
+    derived_at = warning.index(UNTRUSTED_DERIVED_CONTENT_WARNING)
+    assert triage_at < framing_at < every_other_at < derived_at
+    # relevance_notes still carries verbatim scraped text (classify's skip reason, among other
+    # writers), so it keeps the general scraped label and must not be named in this sentence.
+    triage_sentence = warning[warning.index("Each of fm's"):every_other_at]
+    assert "relevance_notes" not in triage_sentence
 
 
 def test_cv_signoff_tool_resolves_a_held_lead_in_dismiss_status(tmp_path):
@@ -1604,12 +1705,11 @@ def test_mcpserver_imports_from_sluice_only_within_an_explicit_allow_list():
     `ImportFrom` statement, not just >=1 import statement), so a broken matcher
     cannot pass vacuously -- mirrors the existing mcp-import sweep's shape from
     #105. Counting individual `alias` nodes rather than `ImportFrom` statements
-    matters here: this module's final shape has only 3 such statements
-    (`sluice.core.app`, `sluice.core.leads`, `sluice.core.status`) but 7 names
-    imported across them (Sluice; UNTRUSTED_SCRAPED_CONTENT_WARNING,
-    UNTRUSTED_DERIVED_CONTENT_WARNING, out_of_scope_verdict, slug_matches;
-    CANONICAL, TRIAGE_OWNED, normalize) -- counting statements alone would make
-    this assertion far too easy to satisfy vacuously with a near-empty file."""
+    matters here: this module imports several names through a handful of
+    statements (from `sluice.core.app`, `sluice.core.leads` and
+    `sluice.core.status`), so counting statements alone would make this assertion
+    far too easy to satisfy vacuously with a near-empty file. No count of those
+    names is written here: the one that was went stale as soon as a name was added."""
     import inspect
 
     tree = ast.parse(inspect.getsource(mcpserver_mod))
