@@ -35,7 +35,8 @@ from functools import partial
 
 from sluice.core import status as _status
 from sluice.core.candidate import contact_block, full_name
-from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by_slug
+from sluice.core.leads import (FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
+                               framing_entries, index_by_slug)
 from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.log import get_logger
 from sluice.core.usage import meter
@@ -301,8 +302,10 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
     company, role = fm.get("company", ""), fm.get("role", "")
     # #329: triage's judgement of this role, as framing for the composer. Read HERE, beside the
     # other lead keys cv reads, and formatted ONCE: the same tuple goes to the compose call and to
-    # the sign-off snapshot, so a reviewer is shown exactly what the composer was given.
-    framing = _compose.framing_lines(fm.get("culture_flags", ""), fm.get("triage_concerns", ""))
+    # the sign-off snapshot, so a reviewer is shown exactly what the composer was given. The
+    # roster of framing keys lives in `sluice.core.leads.FRAMING_KEYS`; read from there rather
+    # than hand-typed again here, so the roster and the read cannot drift apart.
+    framing = _compose.framing_lines(*(fm.get(key, "") for key in FRAMING_KEYS))
     jd, dossier_failed = "", False
     try:
         d = dossier_cache.get_or_build(fm)
@@ -864,11 +867,17 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # core/app.py reads it back as `parsed if isinstance(parsed, list) else
         # [str(parsed)]`. A wrapped `{"kind": ..., "claims": [...]}` object would
         # therefore collapse into ONE bogus claim string -- the kind has to live on each
-        # ENTRY instead, as a "style\t" prefix. An entry with NO such prefix is exactly
-        # the shape every hold stamped before this change used (a raw audit verdict
-        # line, e.g. "unsupported\t..."), and sluice/cli.py's sign-off prompt keeps
-        # today's wording for it unchanged -- a pre-existing hold must not be
-        # re-described by this upgrade.
+        # ENTRY instead, as a "style\t" prefix. An entry with NEITHER that prefix nor
+        # #329's "framing\t" tag is exactly the shape every hold stamped before this
+        # change used (a raw audit verdict line, e.g. "unsupported\t..."), and
+        # sluice/cli.py's sign-off prompt keeps today's wording for it unchanged -- a
+        # pre-existing hold must not be re-described by this upgrade.
+        #
+        # #329's `framing\t` entries (core/leads.py::framing_entries) are the triage notes
+        # the composer was given, appended AFTER the blockers. They come from the same
+        # `framing` tuple the compose call received, never a re-read of `fm`, so the
+        # reviewer is shown what the composer saw. They never cause a hold: the condition
+        # stays `blockers`.
         style_blockers = ([f"style\t{msg}" for msg in style_msgs + voice_flags]
                           if cvcfg.style_hold else [])
         blockers = (
@@ -884,7 +893,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             # must not latch the lead behind a redundant hold -- it reports skipped-has-cv instead.
             held = vault.hold_for_signoff(
                 note.ref, pending=f"{served} ({date.today().isoformat()})",
-                claims=json.dumps(blockers))
+                claims=json.dumps(blockers + framing_entries(framing)))
             if not held:
                 return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
                                 voice_flags=voice_flags, audit_flags=audit_flags,
