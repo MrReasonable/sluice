@@ -2,16 +2,17 @@
 """Decisions, and the thin I/O around them, for publishing the Homebrew bottles (#279).
 
 Design: docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md. Every decision the release
-channel makes lives here as a pure function over plain data, so its refuse branches are proven
+channel makes lives here as a pure function over plain data, so its refuse branches are tested
 offline (tests/test_homebrew_bottles.py) rather than by a dry run that only ever takes the accept
 branch. The CLI at the bottom is the layer the workflow steps call.
 
 THE TRUST RULE THIS FILE SERVES. A job either runs third-party code and references no secret, or
-holds the tap token and runs only this file's code, which runs `git` itself. The token jobs invoke it as
+holds the tap token and runs only this file and scripts/render_homebrew_formula.py, which it imports
+to compare the formula with, and `git`, which it runs itself. The token jobs invoke it as
 `python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"`: `-P` keeps the working directory off
 `sys.path`, and every artifact they read is untrusted data this file validates before anything is
-published. Standard library only, for that reason: a dependency would be third-party code running
-beside the token.
+published. Both files are standard library only, for that reason: a dependency would be third-party
+code running beside the token.
 """
 
 from __future__ import annotations
@@ -45,9 +46,11 @@ PLATFORMS = (("macos-15", "arm64_sequoia"), ("macos-26", "arm64_tahoe"))
 
 PUSH_TARGETS = ("default", "auto")
 
-_VERSION_RE = re.compile(r"\d+\.\d+\.\d+")
+_VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+")
 _HEX64_RE = re.compile(r"[0-9a-f]{64}")
 _POSITIVE_INT_RE = re.compile(r"[1-9][0-9]*")
+_HEX40_RE = re.compile(r"[0-9a-f]{40}")
+_DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
 # GitHub account names: alphanumerics and hyphens, not starting with a hyphen, at most 39 chars.
 _OWNER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,38}")
 _SDIST_URL_RE = re.compile(
@@ -177,7 +180,7 @@ def resolve_target(push_target: str, formula_state: str, default_branch: str, ve
 
 
 def caller_for(push_target: str) -> str:
-    return {"default": "release", "auto": "dry run"}[validate_push_target(push_target)]
+    return {"default": "release", "auto": DRY_RUN_CALLER}[validate_push_target(push_target)]
 
 
 # --- platforms ----------------------------------------------------------------------------------
@@ -341,8 +344,12 @@ _BLOCK_RE = re.compile(
     r"  end\n",
     re.MULTILINE,
 )
+# The cellar alternation is built from ALLOWED_CELLARS, so the JSON check and the block grammar name one
+# vocabulary and cannot drift apart.
 _SHA_LINE_RE = re.compile(
-    r"    sha256 cellar: :(?P<cellar>any|any_skip_relocation), +"
+    r"    sha256 cellar: :(?P<cellar>"
+    + "|".join(re.escape(cellar) for cellar in ALLOWED_CELLARS)
+    + r"), +"
     r'(?P<tag>[a-z0-9_]+): +"(?P<sha256>[0-9a-f]{64})"'
 )
 
@@ -395,9 +402,10 @@ def check_cache_file(data: bytes, formula_text: str, tag: str) -> None:
 
 # --- the release on the tap ---------------------------------------------------------------------
 
-_TAG_RE = re.compile(rf"{FORMULA_NAME}-\d+\.\d+\.\d+-[1-9][0-9]*-[1-9][0-9]*")
+_TAG_RE = re.compile(rf"{FORMULA_NAME}-[0-9]+\.[0-9]+\.[0-9]+-[1-9][0-9]*-[1-9][0-9]*")
 _RUN_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/actions/runs/[1-9][0-9]*")
-CALLERS = ("release", "dry run")
+DRY_RUN_CALLER = "dry run"
+CALLERS = ("release", DRY_RUN_CALLER)
 
 
 def release_templates(*, version: str, tag: str, caller: str, run_url: str) -> tuple[str, str]:
@@ -445,8 +453,12 @@ def asset_decision(assets: list[dict], *, name: str, sha256: str) -> str:
     if not existing:
         return "upload"
     digest = existing[0].get("digest")
-    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
-        raise Refusal(f"asset {name!r} already exists with no usable digest ({digest!r}).")
+    if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
+        # A re-run refuses this asset every time, so the refusal names the one step that clears it.
+        raise Refusal(
+            f"release asset {name!r} has no usable digest ({digest!r}); an interrupted upload can "
+            f"leave one. Delete that asset from the draft release, then re-run the failed jobs."
+        )
     if digest.removeprefix("sha256:") != sha256:
         raise Refusal(
             f"asset {name!r} already exists with digest {digest}, but this run's bottle is "
@@ -465,7 +477,7 @@ def release_digests(assets: list[dict], *, version: str, tags: list[str]) -> dic
         if len(matches) != 1:
             raise Refusal(f"the release must hold exactly one {name!r}, found {len(matches)}.")
         digest = matches[0].get("digest")
-        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        if not isinstance(digest, str) or not _DIGEST_RE.fullmatch(digest):
             raise Refusal(f"asset {name!r} has no usable digest ({digest!r}).")
         digests[tag] = digest.removeprefix("sha256:")
     return digests
@@ -592,7 +604,7 @@ def validate_formula(
 # The renderer writes no `version` stanza, so the version lives only in the top-level url line: two
 # spaces of indent, where a resource's url line has four.
 _TOP_URL_RE = re.compile(
-    r'^  url "https://[^"\n]+/job_sluice-(?P<version>\d+\.\d+\.\d+)\.tar\.gz"$', re.MULTILINE
+    r'^  url "https://[^"\n]+/job_sluice-(?P<version>[0-9]+\.[0-9]+\.[0-9]+)\.tar\.gz"$', re.MULTILINE
 )
 
 
@@ -614,11 +626,15 @@ def push_decision(
     target_is_default: bool,
     base_formula: bytes | None,
     version: str,
+    dry_run: bool,
 ) -> str:
     """'noop' or 'push', or a refusal (spec, section 6c).
 
     - An absent default branch is refused; an absent scratch branch is the first dry run of a
       version.
+    - A dry run on the default branch with a formula at BASE_SHA is refused: `plan` sends a dry run
+      there only when the contents API reads the formula as absent, and git, read here in the token
+      job, is the cross-check on that observable.
     - Identical bytes at the target are a re-run after this release's push already landed.
     - On the default branch, the formula at BASE_SHA must not be newer than VERSION: the re-run of
       an older release must not roll the tap back. A base with no formula is the bootstrap.
@@ -628,6 +644,12 @@ def push_decision(
         raise Refusal(f"the target branch's state is {target_state!r}, not present or absent.")
     if target_state == "absent" and target_is_default:
         raise Refusal("the tap's default branch does not exist; refusing to create it from a publish.")
+    if dry_run and target_is_default and base_formula is not None:
+        raise Refusal(
+            f"a dry run is targeting the tap's default branch, but Formula/{FORMULA_NAME}.rb exists at "
+            "the base commit, and plan sends a dry run there only while it does not (the bootstrap). "
+            "Refusing rather than making a dry run the tree of record."
+        )
     if target_state == "present" and remote_formula is not None and remote_formula == ours:
         return "noop"
     if target_is_default and base_formula is not None:
@@ -701,7 +723,13 @@ def _git_ok(*args: str, cwd: Path | None = None, redact: str = "") -> bytes:
         message = proc.stderr.decode("utf-8", "replace").strip()
         if redact:
             message = message.replace(redact, "***")
-        raise Refusal(f"git {args[0]} failed with exit {proc.returncode}: {message[:500]}")
+        # Named past any `-c key=value` pairs: `args[0]` reads `git -c failed` for a commit run with
+        # config pairs, which names no command at all.
+        position = 0
+        while position < len(args) and args[position] == "-c":
+            position += 2
+        subcommand = args[position] if position < len(args) else ""
+        raise Refusal(f"git {subcommand} failed with exit {proc.returncode}: {message[:500]}")
     return proc.stdout
 
 
@@ -865,14 +893,345 @@ def cmd_cache_check(args, env: dict, http) -> None:
     check_cache_file(bottle.read_bytes(), Path(args.formula).read_text(), args.tag)
 
 
+# --- the release upload (a token job) -----------------------------------------------------------
+
+
+def list_releases(http, token: str | None, owner: str) -> list[dict]:
+    """Every release, drafts included when the token has push access (spec, section 3)."""
+    releases: list[dict] = []
+    page = 1
+    while True:
+        status, body = github_request(
+            http, "GET", f"{API}/repos/{owner}/{TAP_REPO}/releases?per_page=100&page={page}", token
+        )
+        if status != 200 or not isinstance(body, list):
+            raise Refusal(f"listing the tap's releases failed with HTTP {status}.")
+        if not body:
+            return releases
+        releases.extend(body)
+        page += 1
+
+
+def list_assets(http, token: str | None, owner: str, release_id: int) -> list[dict]:
+    assets: list[dict] = []
+    page = 1
+    while True:
+        status, body = github_request(
+            http,
+            "GET",
+            f"{API}/repos/{owner}/{TAP_REPO}/releases/{release_id}/assets?per_page=100&page={page}",
+            token,
+        )
+        if status != 200 or not isinstance(body, list):
+            raise Refusal(f"listing release {release_id}'s assets failed with HTTP {status}.")
+        if not body:
+            return assets
+        assets.extend(body)
+        page += 1
+
+
+def _create_draft_release(http, token, owner, *, tag, base_sha, title, notes) -> dict:
+    status, body = github_request(
+        http,
+        "POST",
+        f"{API}/repos/{owner}/{TAP_REPO}/releases",
+        token,
+        body={"tag_name": tag, "target_commitish": base_sha, "name": title, "body": notes,
+              "draft": True},
+    )
+    if status != 201 or not isinstance(body, dict) or "id" not in body:
+        raise Refusal(f"creating the draft release {tag} failed with HTTP {status}.")
+    return body
+
+
+def _upload_asset(http, token, owner, release_id: int, asset: Asset) -> None:
+    status, _ = github_request(
+        http,
+        "POST",
+        f"https://uploads.github.com/repos/{owner}/{TAP_REPO}/releases/{release_id}/assets"
+        f"?name={urllib.parse.quote(asset.remote_name)}",
+        token,
+        data=asset.local_path.read_bytes(),
+        content_type="application/octet-stream",
+    )
+    if status != 201:
+        raise Refusal(f"uploading {asset.remote_name} failed with HTTP {status}.")
+
+
+def _publish_release(http, token, owner, release_id: int) -> None:
+    status, _ = github_request(
+        http, "PATCH", f"{API}/repos/{owner}/{TAP_REPO}/releases/{release_id}", token,
+        body={"draft": False},
+    )
+    if status != 200:
+        raise Refusal(f"publishing release {release_id} failed with HTTP {status}.")
+
+
+def upload_bottles(
+    *, http, token: str, owner: str, tag: str, base_sha: str, title: str, notes: str,
+    assets: list[Asset],
+) -> None:
+    """Find or create the draft, decide every asset before uploading any, upload, publish last.
+
+    Deciding first means a digest clash refuses with nothing written, and publishing last means
+    `prove` only ever fetches from a complete release.
+    """
+    if not _HEX40_RE.fullmatch(base_sha or ""):
+        raise Refusal(f"BASE_SHA {base_sha!r} is not a commit id.")
+    release = release_decision(
+        list_releases(http, token, owner), tag=tag, base_sha=base_sha, title=title, notes=notes
+    )
+    existing = list_assets(http, token, owner, release["id"]) if release is not None else []
+    decisions = [(asset, asset_decision(existing, name=asset.remote_name, sha256=asset.sha256))
+                 for asset in assets]
+    print(f"release {tag}: {'absent, creating a draft' if release is None else 'found'}")
+    if release is None:
+        release = _create_draft_release(
+            http, token, owner, tag=tag, base_sha=base_sha, title=title, notes=notes
+        )
+    for asset, decision in decisions:
+        print(f"{asset.remote_name}: {decision}")
+        if decision == "upload":
+            _upload_asset(http, token, owner, release["id"], asset)
+    if release.get("draft"):
+        _publish_release(http, token, owner, release["id"])
+        print(f"published release {tag}")
+
+
+def _validated_assets(env: dict) -> list[Asset]:
+    directory = Path(_require(env, "BOTTLES_DIR"))
+    return validate_bottle_jsons(
+        sorted(directory.glob("*.bottle.json")),
+        version=validate_version(env.get("VERSION")),
+        root_url=_require(env, "ROOT_URL"),
+        tags=declared_tags(_require(env, "PLATFORMS")),
+    )
+
+
+def cmd_validate_bottles(args, env: dict, http) -> None:
+    _validated_assets(env)
+
+
+def cmd_upload_bottles(args, env: dict, http) -> None:
+    assets = _validated_assets(env)
+    tag = _require(env, "TAG")
+    title, notes = release_templates(
+        version=validate_version(env.get("VERSION")), tag=tag, caller=_require(env, "CALLER"),
+        run_url=_require(env, "RUN_URL"),
+    )
+    upload_bottles(
+        http=http, token=_require(env, "TAP_TOKEN"), owner=tap_owner(_require(env, "TAP_OWNER")),
+        tag=tag, base_sha=_require(env, "BASE_SHA"), title=title, notes=notes, assets=assets,
+    )
+
+
+# --- the tap push (a token job) -----------------------------------------------------------------
+
+_BOT_NAME = "sluice-release-please[bot]"
+_BOT_EMAIL = "sluice-release-please[bot]@users.noreply.github.com"
+
+
+def _read_formula(path: str) -> bytes:
+    """The merged formula's exact bytes, which validate-formula and push-prepare both use.
+
+    Never `read_text()`: universal newlines turn a lone CR into LF, so the text validated would not be
+    the bytes pushed, and Ruby does not end a line at a lone CR. A CR anywhere is refused.
+    """
+    data = Path(path).read_bytes()
+    if b"\r" in data:
+        raise Refusal(f"{path} contains a carriage return; the formula must use LF line endings only.")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise Refusal(f"{path} is not UTF-8 text.") from err
+    return data
+
+
+def cmd_validate_formula(args, env: dict, http) -> None:
+    owner = tap_owner(_require(env, "TAP_OWNER"))
+    tag = _require(env, "TAG")
+    version = validate_version(env.get("VERSION"))
+    tags = declared_tags(_require(env, "PLATFORMS"))
+    token = env.get("GITHUB_TOKEN")
+    published = [r for r in list_releases(http, token, owner)
+                 if r.get("tag_name") == tag and not r.get("draft")]
+    if len(published) != 1:
+        raise Refusal(f"expected one published release tagged {tag!r}, found {len(published)}.")
+    digests = release_digests(list_assets(http, token, owner, published[0]["id"]), version=version,
+                              tags=tags)
+    validate_formula(
+        _read_formula(_require(env, "MERGED_FORMULA")).decode("utf-8"),
+        sdist_url=_require(env, "SDIST_URL"),
+        sha256=_require(env, "SDIST_SHA256"),
+        root_url=_require(env, "ROOT_URL"),
+        tags=tags,
+        release_digests=digests,
+    )
+
+
+def _formula_at_commit(clone: Path, commit: str) -> bytes | None:
+    """The formula's bytes at `commit`, or None only when git lists no such file there.
+
+    Three-valued on purpose, like `formula_state_from_status`: a failed read taken as "absent" would
+    reach the bootstrap arm and skip the default branch's version refusal (spec, section 6c).
+    """
+    path = f"Formula/{FORMULA_NAME}.rb"
+    listed = _git_ok("ls-tree", "--name-only", commit, "--", path, cwd=clone).decode("utf-8", "replace")
+    if listed == "":
+        return None
+    if listed != f"{path}\n":
+        raise Refusal(f"git listed {listed!r} for {path} at {commit}.")
+    return _git_ok("show", f"{commit}:{path}", cwd=clone)
+
+
+def prepare_push(
+    *, remote_url: str, workdir: Path, target_branch: str, default_branch: str, base_sha: str,
+    version: str, formula: bytes, dry_run: bool,
+) -> str:
+    """Clone the tap, decide (spec, section 6c), and commit on BASE_SHA when the decision is push.
+
+    Writes `push-state.json` for `publish_push`. Runs no token: the push is a later step.
+    """
+    if not _HEX40_RE.fullmatch(base_sha or ""):
+        raise Refusal(f"BASE_SHA {base_sha!r} is not a commit id.")
+    workdir = Path(workdir)
+    clone = workdir / "tap"
+    if clone.exists():
+        raise Refusal(f"{clone} already exists; push-prepare expects a fresh working directory.")
+    workdir.mkdir(parents=True, exist_ok=True)
+    _git_ok("clone", "--no-checkout", remote_url, str(clone))
+    probe = git("ls-remote", "--exit-code", "origin", f"refs/heads/{target_branch}", cwd=clone)
+    if probe.returncode == 0:
+        # `ls-remote` matches its pattern against the TAIL of every ref name, so a tag stored as
+        # refs/tags/refs/heads/<branch> is listed here too, and a push to the branch's name would move
+        # that tag. Present means exactly one line, for exactly this branch.
+        listed = probe.stdout.decode("utf-8", "replace")
+        match = re.fullmatch(rf"([0-9a-f]{{40}})\trefs/heads/{re.escape(target_branch)}\n", listed)
+        if match is None:
+            raise Refusal(
+                f"the tap lists {listed!r} for refs/heads/{target_branch}; expected exactly that one "
+                "branch."
+            )
+        target_state, remote_sha = "present", match.group(1)
+    elif probe.returncode == 2:
+        target_state, remote_sha = "absent", ""
+    else:
+        raise Refusal(f"could not tell whether {target_branch} exists (git exit {probe.returncode}).")
+    remote_formula = None
+    if target_state == "present":
+        _git_ok("fetch", "origin", f"+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}",
+                cwd=clone)
+        remote_formula = _formula_at_commit(clone, f"refs/remotes/origin/{target_branch}")
+    if git("cat-file", "-e", f"{base_sha}^{{commit}}", cwd=clone).returncode != 0:
+        raise Refusal(f"the base commit {base_sha} is not in the tap's history.")
+    base_formula = _formula_at_commit(clone, base_sha)
+    target_is_default = target_branch == default_branch
+    decision = push_decision(
+        target_state=target_state, remote_formula=remote_formula, ours=formula,
+        target_is_default=target_is_default, base_formula=base_formula, version=version,
+        dry_run=dry_run,
+    )
+    if decision == "push":
+        # Built with plumbing, never through a checked-out tree of BASE_SHA: a work tree lets the tap's
+        # own content decide what is stored (a `.gitattributes` working-tree-encoding re-encodes the
+        # bytes) or where they land (a symlink committed at the formula's path is followed out of the
+        # clone). The index starts as BASE_SHA's tree, and only this channel's formula entry changes,
+        # to a regular-file blob of exactly the validated bytes.
+        path = f"Formula/{FORMULA_NAME}.rb"
+        staged = workdir / "formula-to-commit.rb"
+        staged.write_bytes(formula)
+        # The bytes are hashed from a file outside the clone, which no tap attribute can match, so no
+        # filter applies to them; `--no-filters` is a defence that keeps that true if the staged path
+        # ever moves inside the clone.
+        # Absolute: hash-object runs inside the clone, where a relative PUSH_WORKDIR names nothing.
+        blob = _git_ok("hash-object", "-w", "--no-filters", "--", str(staged.absolute()),
+                       cwd=clone).decode().strip()
+        _git_ok("read-tree", base_sha, cwd=clone)
+        _git_ok("update-index", "--add", "--cacheinfo", f"100644,{blob},{path}", cwd=clone)
+        tree = _git_ok("write-tree", cwd=clone).decode().strip()
+        if tree == _git_ok("rev-parse", f"{base_sha}^{{tree}}", cwd=clone).decode().strip():
+            # Compared with the BASE, never the target: push_decision already found the target does not
+            # hold these bytes, so a no-op reported here would leave the formula unpublished behind a
+            # green step. Raised before push-state.json is written, so publish has nothing to push.
+            raise Refusal(
+                f"the formula is already byte-identical at the base commit {base_sha}, yet "
+                f"{target_branch} does not hold it; refusing rather than reporting a push that did not "
+                "happen."
+            )
+        else:
+            commit = _git_ok(
+                "-c", f"user.name={_BOT_NAME}", "-c", f"user.email={_BOT_EMAIL}",
+                "-c", "commit.gpgsign=false", "commit-tree", tree, "-p", base_sha,
+                "-m", f"{FORMULA_NAME} {version}", cwd=clone,
+            ).decode().strip()
+            # A detached HEAD at the new commit, which is what publish_push pushes.
+            _git_ok("update-ref", "--no-deref", "HEAD", commit, cwd=clone)
+    (workdir / "push-state.json").write_text(json.dumps({
+        "decision": decision, "target_branch": target_branch,
+        "target_is_default": target_is_default, "remote_sha": remote_sha,
+    }))
+    return decision
+
+
+def publish_push(*, workdir: Path, push_url: str, target_branch: str, redact: str = "") -> None:
+    """Push what `prepare_push` committed: fast-forward only to the default branch, and to a scratch
+    branch only under a lease on the tip `prepare_push` observed."""
+    state = json.loads((Path(workdir) / "push-state.json").read_text())
+    if state.get("target_branch") != target_branch:
+        raise Refusal(f"push-state.json was prepared for {state.get('target_branch')!r}, not {target_branch!r}.")
+    if state.get("decision") == "noop":
+        print(f"{target_branch} already holds this formula; nothing to push.")
+        return
+    if state.get("decision") != "push":
+        raise Refusal(f"push-state.json holds an unknown decision {state.get('decision')!r}.")
+    clone = Path(workdir) / "tap"
+    refspec = f"HEAD:refs/heads/{target_branch}"
+    if state["target_is_default"]:
+        _git_ok("push", push_url, refspec, cwd=clone, redact=redact)
+    else:
+        lease = f"--force-with-lease=refs/heads/{target_branch}:{state['remote_sha']}"
+        _git_ok("push", lease, push_url, refspec, cwd=clone, redact=redact)
+
+
+def cmd_push_prepare(args, env: dict, http) -> None:
+    owner = tap_owner(_require(env, "TAP_OWNER"))
+    # Refused before the clone: a caller this file does not know could not be read as either one.
+    caller = _require(env, "CALLER")
+    if caller not in CALLERS:
+        raise Refusal(f"CALLER must be one of {list(CALLERS)}, got {caller!r}.")
+    decision = prepare_push(
+        remote_url=f"https://github.com/{owner}/{TAP_REPO}.git",
+        workdir=Path(_require(env, "PUSH_WORKDIR")),
+        target_branch=_require(env, "TARGET_BRANCH"),
+        default_branch=_require(env, "DEFAULT_BRANCH"),
+        base_sha=_require(env, "BASE_SHA"),
+        version=validate_version(env.get("VERSION")),
+        formula=_read_formula(_require(env, "MERGED_FORMULA")),
+        dry_run=caller == DRY_RUN_CALLER,
+    )
+    print(f"push-prepare decided: {decision}")
+
+
+def cmd_push_publish(args, env: dict, http) -> None:
+    owner = tap_owner(_require(env, "TAP_OWNER"))
+    token = _require(env, "TAP_TOKEN")
+    publish_push(
+        workdir=Path(_require(env, "PUSH_WORKDIR")),
+        push_url=f"https://x-access-token:{token}@github.com/{owner}/{TAP_REPO}.git",
+        target_branch=_require(env, "TARGET_BRANCH"),
+        redact=token,
+    )
+
+
 # --- main ---------------------------------------------------------------------------------------
 
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="homebrew_bottles.py", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("plan")
-    sub.add_parser("tags")
+    for name in ("plan", "tags", "validate-bottles", "upload-bottles", "validate-formula",
+                 "push-prepare", "push-publish"):
+        sub.add_parser(name)
     render = sub.add_parser("render")
     render.add_argument("--out", required=True)
     produced = sub.add_parser("produced-tag")
@@ -897,6 +1256,11 @@ _COMMANDS = {
     "pour-check": cmd_pour_check,
     "merged-tags": cmd_merged_tags,
     "cache-check": cmd_cache_check,
+    "validate-bottles": cmd_validate_bottles,
+    "upload-bottles": cmd_upload_bottles,
+    "validate-formula": cmd_validate_formula,
+    "push-prepare": cmd_push_prepare,
+    "push-publish": cmd_push_publish,
 }
 
 
