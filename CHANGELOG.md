@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.16.1](https://github.com/MrReasonable/sluice/compare/v2.16.0...v2.16.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **ingest:** rebind linkedin to the search-results page ([78e437d](https://github.com/MrReasonable/sluice/commit/78e437d431c95246f1e406642f1b374ae0e46965))
+
 ## [2.16.0](https://github.com/MrReasonable/sluice/compare/v2.15.1...v2.16.0) (2026-09-14)
 
 
