@@ -1,6 +1,7 @@
 import os
 from sluice.core.vault import Vault
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
+from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
 
 
 def _note(vault, name, fm_lines):
@@ -28,8 +29,8 @@ def test_apply_verdict_writes_all_fields(tmp_path):
                       'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     verdict = {"verdict": "shortlist", "relevance_score": 82,
-               "fit_reasoning": "Strong single-team fit.",
-               "concerns": ["remote-only"], "culture_flags": ["fast-paced"],
+               "fit_reasoning": "SYNTHETIC-FIT",
+               "concerns": list(FRAMING_CONCERNS), "culture_flags": list(FRAMING_FLAGS),
                "recommended_next_action": "apply"}
     dossier = {"glassdoor": {"rating": "4.1"}}
     assert apply_verdict(v, note, verdict, dossier) == "applied"
@@ -37,8 +38,22 @@ def test_apply_verdict_writes_all_fields(tmp_path):
     assert after.status == "shortlist"
     assert after.fm["score"] == "82"
     assert after.fm["glassdoor_rating"] == "4.1"
-    assert "fast-paced" in after.fm["culture_flags"]
-    assert "Strong single-team fit." in after.fm["relevance_notes"]
+    # Exact equality, not `in`: the key is what the CV composer reads, so its whole value matters.
+    assert after.fm["culture_flags"] == ", ".join(FRAMING_FLAGS)
+    assert after.fm["triage_concerns"] == "; ".join(FRAMING_CONCERNS)
+    assert "SYNTHETIC-FIT" in after.fm["relevance_notes"]
+
+
+def test_a_later_verdict_with_no_concerns_clears_triage_concerns(tmp_path):
+    # The key holds the LATEST judgement. A verdict with no concerns must clear an earlier value,
+    # or the CV composer is framed by a judgement triage has since withdrawn.
+    v = Vault(str(tmp_path))
+    _note(v, "C.md", ['company: "Gamma"', "status: new", "score: 0",
+                      f'triage_concerns: "{FRAMING_CONCERNS[0]}"', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 60,
+                                   "concerns": []}, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_concerns"] == ""
 
 
 def test_never_clobbers_application_status(tmp_path):

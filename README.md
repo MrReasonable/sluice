@@ -88,6 +88,7 @@ role_type_source: "declared"
 url: "https://example.invalid/jobs/1234"
 glassdoor_rating: ""
 culture_flags: ""
+triage_concerns: ""
 relevance_notes: ""
 first_seen: 2026-08-29
 last_seen: 2026-08-29
@@ -100,7 +101,7 @@ last_seen: 2026-08-29
 **URL:** https://example.invalid/jobs/1234
 ```
 
-The three blank keys are enrichment slots triage fills in and then owns. `role_type_source` records
+The blank keys are enrichment slots triage fills in and then owns. `role_type_source` records
 where the pay basis came from: `declared` because it was typed at `leads add` below, `observed`
 when the advert's own text stated it, `assumed` otherwise.
 
