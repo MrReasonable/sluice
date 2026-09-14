@@ -9,6 +9,7 @@ from datetime import datetime
 
 import pytest
 
+from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
 from sluice.core import status as _status
 from sluice.core.protocols import VaultConflict
 from sluice.core.vault import Vault
@@ -974,6 +975,262 @@ class _CompanyKeyedBackend:
             out.append({"lead_id": lead_id, "verdict": self.by_company[company],
                         "relevance_score": 70})
         return Completion(json.dumps(out))
+
+
+_DROP = object()   # an override value meaning "leave this key out of the verdict entirely"
+
+
+class _OverrideBackend:
+    """Company-keyed like `_CompanyKeyedBackend`, but one company's verdict can be REPLACED
+    wholesale or have single fields overridden, so one lead's verdict is malformed while its
+    neighbour's stays well-formed (#329). Keyed on the company text for the same reason that
+    class gives: `lead_id` is itself one of the fields under test."""
+    last_backend = "primary"
+
+    def __init__(self, by_company):
+        self.by_company = by_company
+
+    def complete(self, prompt):
+        out = []
+        for lead_id, blob in re.findall(
+                _DOSSIER_ID + r"\n```json\n(.*?)\n```", prompt, re.S):
+            spec = self.by_company.get(json.loads(blob).get("company", ""), {})
+            if "replace" in spec:
+                out.append(spec["replace"])
+                continue
+            verdict = {"lead_id": lead_id, "verdict": "shortlist", "relevance_score": 70,
+                       "fit_reasoning": "ok"}
+            for key, value in spec.get("override", {}).items():
+                if value is _DROP:
+                    verdict.pop(key, None)
+                else:
+                    verdict[key] = value
+            out.append(verdict)
+            if "then" in spec:
+                # A SECOND verdict for the same lead, after the first -- the shape the engine's
+                # first-verdict-wins rule exists for.
+                out.append({"lead_id": lead_id, "verdict": "shortlist", "relevance_score": 70,
+                            "fit_reasoning": "ok", **spec["then"]})
+        return Completion(json.dumps(out))
+
+
+def _two_lead_run(tmp_path, titles, by_company):
+    """Alpha Co and Beta Co at DISTINCT urls (so neither shares a dossier), both past the
+    pre-gate, judged by `_OverrideBackend`. Returns the report, the notes by company, and the
+    triage audit rows."""
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "alpha.md", _fields("Alpha Co", accept[0].title(), url="https://x/alpha"))
+    _note(v, "beta.md", _fields("Beta Co", accept[0].title(), url="https://x/beta"))
+    cfg = TriageConfig()
+    cfg.accept_titles = list(accept)
+    audit_path = tmp_path / "audit.jsonl"
+    report = eng.run(v, cfg, _OverrideBackend(by_company), _cache(tmp_path),
+                     AuditLog(str(audit_path)), statuses=("new",))
+    notes = {n.fm["company"]: n for n in v.read_leads()}
+    audit = ([json.loads(line) for line in audit_path.read_text().splitlines() if line.strip()]
+             if audit_path.exists() else [])
+    return report, notes, audit
+
+
+@pytest.mark.parametrize("field,value,expect", [
+    ("relevance_score", "high", {"score": "0"}),
+    ("fit_reasoning", 7, {}),
+    ("recommended_next_action", 5, {}),
+    ("concerns", [1], {"triage_concerns": ""}),
+    ("culture_flags", [{"k": 1}], {"culture_flags": ""}),
+])
+def test_a_field_that_used_to_raise_no_longer_costs_the_run_or_the_neighbour(
+        tmp_path, titles, field, value, expect):
+    """Each of these raised out of `apply_verdict` before #329 and ended `triage run` with a
+    traceback (or, for the score, a `job-sluice:` usage error), leaving every later verdict in
+    the batch unapplied."""
+    report, notes, audit = _two_lead_run(tmp_path, titles,
+                                         {"Alpha Co": {"override": {field: value}}})
+    assert notes["Alpha Co"].status == "shortlist"
+    assert notes["Beta Co"].status == "shortlist"
+    for key, want in expect.items():
+        assert notes["Alpha Co"].fm[key] == want
+    alpha = next(e for e in audit if e["company"] == "Alpha Co")
+    # The audit entry is written OUTSIDE apply_verdict, off the engine's own verdict dict, so it
+    # is what shows the engine applied the normalised verdict and not the raw one.
+    assert isinstance(alpha["score"], int) and isinstance(alpha["reason"], str)
+    assert report.failures == []
+
+
+@pytest.mark.parametrize("field,value,key,want", [
+    ("relevance_score", True, "score", "0"),
+    ("concerns", FRAMING_CONCERNS[0], "triage_concerns", FRAMING_CONCERNS[0]),
+    ("culture_flags", {FRAMING_FLAGS[0]: 1}, "culture_flags", ""),
+    ("concerns", [FRAMING_CONCERNS[0], 2], "triage_concerns", FRAMING_CONCERNS[0]),
+    ("concerns", [FRAMING_CONCERNS[0], 'UN"SAFE'], "triage_concerns", FRAMING_CONCERNS[0]),
+    ("relevance_score", "80", "score", "80"),     # pin: accepted before #329 too
+    ("relevance_score", 80.0, "score", "80"),     # pin: accepted before #329 too
+    ("relevance_score", float("nan"), "score", "0"),
+    ("relevance_score", float("inf"), "score", "0"),
+    ("relevance_score", float("-inf"), "score", "0"),
+])
+def test_a_coerced_field_is_written_exactly(tmp_path, titles, field, value, key, want):
+    report, notes, _ = _two_lead_run(tmp_path, titles,
+                                     {"Alpha Co": {"override": {field: value}}})
+    alpha = notes["Alpha Co"]
+    assert alpha.fm[key] == want
+    assert alpha.status == "shortlist"
+    if key != "score":
+        assert alpha.fm["score"] == "70"
+    if key == "triage_concerns" and want:
+        assert f"Concerns: {want}" in alpha.fm["relevance_notes"]
+    assert notes["Beta Co"].status == "shortlist"
+    assert report.failures == []
+
+
+def test_a_bare_string_concern_reaches_relevance_notes_whole(tmp_path, titles):
+    # Before #329 a bare string was joined character by character: `S; Y; N; ...`.
+    _, notes, _ = _two_lead_run(tmp_path, titles,
+                                {"Alpha Co": {"override": {"concerns": FRAMING_CONCERNS[0]}}})
+    assert f"Concerns: {FRAMING_CONCERNS[0]}" in notes["Alpha Co"].fm["relevance_notes"]
+
+
+def test_a_lead_id_padded_with_whitespace_still_reaches_its_own_lead(tmp_path, titles):
+    # #329: Alpha's REAL lead_id is `note.slug` -- the "alpha.md" filename `_two_lead_run`
+    # seeds, minus its extension (`Vault._slug_for`) -- padded the way a model's echoed id
+    # can come back. `normalise_verdict` checks the stripped id but used to carry the
+    # unstripped one forward, so this verdict was reported as matching no note.
+    spec = {"override": {"lead_id": "  alpha  "}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "shortlist"
+    assert report.failures == []
+
+
+@pytest.mark.parametrize("spec,reason,named", [
+    ({"replace": "SYNTHETIC-NOT-A-VERDICT"}, "not a JSON object", False),
+    ({"replace": 5}, "not a JSON object", False),
+    ({"override": {"lead_id": _DROP}}, "no usable lead_id", False),
+    ({"override": {"lead_id": ""}}, "no usable lead_id", False),
+    ({"override": {"lead_id": "   "}}, "no usable lead_id", False),
+    ({"override": {"lead_id": 5}}, "no usable lead_id", False),
+    ({"override": {"lead_id": [1]}}, "no usable lead_id", False),
+    ({"override": {"verdict": _DROP}}, "no usable verdict field", True),
+    ({"override": {"verdict": None}}, "no usable verdict field", True),
+    ({"override": {"verdict": 5}}, "no usable verdict field", True),
+    ({"override": {"verdict": ["shortlist"]}}, "no usable verdict field", True),
+    ({"override": {"verdict": ""}}, "no usable verdict field", True),
+])
+def test_an_unusable_verdict_is_reported_and_leaves_its_lead_for_the_next_run(
+        tmp_path, titles, caplog, spec, reason, named):
+    with caplog.at_level("WARNING"):
+        report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "new"
+    assert notes["Alpha Co"].fm["score"] == "0"
+    assert notes["Alpha Co"].fm["relevance_notes"] == ""
+    assert "triage_concerns" not in notes["Alpha Co"].fm
+    # Counted BEFORE normalisation, so a rejected verdict still counts as one the judge returned.
+    assert report.sent_to_judge == 2 and report.judged == 2
+    assert notes["Beta Co"].status == "shortlist"
+    if named:
+        expect = (f"judge {notes['Alpha Co'].slug!r}: {reason} -- ignored, and its lead left "
+                  "as it was for the next run")
+    else:
+        # No usable lead_id means this verdict names no lead, so it cannot promise ANY
+        # lead was left alone (#329).
+        expect = f"judge a verdict: {reason} -- ignored"
+    assert report.failures[0] == expect
+    assert len(report.failures) == 2 and "came back with no verdict" in report.failures[1]
+    assert not any("no note matches" in f for f in report.failures)
+    assert not any("SYNTHETIC-NOT-A-VERDICT" in f for f in report.failures)
+    assert not any("SYNTHETIC-NOT-A-VERDICT" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.parametrize("spec", [
+    {"override": {"verdict": None}, "then": {"verdict": "dismiss"}},   # unusable first
+    {"then": {"verdict": None}},                                       # usable first
+], ids=["unusable-first", "usable-first"])
+def test_a_lead_with_an_unusable_verdict_gets_none_applied(tmp_path, titles, spec):
+    """The rejection line promises the lead was 'left as it was for the next run'. That is true
+    only if NO verdict for the lead is applied, in either order: a rejected verdict never enters
+    the first-verdict-wins set, so a usable one after it would land, and a usable one before it
+    would already have landed."""
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "new"
+    assert notes["Alpha Co"].fm["score"] == "0"
+    assert notes["Beta Co"].status == "shortlist"
+    slug = repr(notes["Alpha Co"].slug)
+    assert report.failures == [
+        f"judge {slug}: no usable verdict field -- ignored, and its lead left as it was for the "
+        "next run",
+        f"judge {slug}: another verdict for this lead was unusable, so this one is ignored too "
+        "-- the lead is left as it was for the next run",
+    ]
+
+
+def test_a_padded_rejected_lead_id_is_still_named(tmp_path, titles):
+    # #329: `normalise_verdict` strips a padded ACCEPTED verdict's `lead_id` before
+    # matching it to a note, so a padded REJECTED verdict's id must be stripped the same
+    # way before `named` is decided -- otherwise the rejection reads as unnamed, its
+    # `then` usable sibling (normalised to the stripped id) slips past `rejected_ids`,
+    # and Alpha ends up wrongly applied.
+    spec = {"override": {"lead_id": "  alpha  ", "verdict": None},
+            "then": {"lead_id": "  alpha  "}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "new"
+    assert notes["Beta Co"].status == "shortlist"
+    slug = repr(notes["Alpha Co"].slug)
+    assert report.failures == [
+        f"judge {slug}: no usable verdict field -- ignored, and its lead left as it was for the "
+        "next run",
+        f"judge {slug}: another verdict for this lead was unusable, so this one is ignored too "
+        "-- the lead is left as it was for the next run",
+    ]
+
+
+def test_an_unnamed_rejected_verdict_promises_nothing_about_a_lead_another_verdict_moved(
+        tmp_path, titles):
+    """An unnamed rejected verdict (no usable lead_id) cannot be matched to any note, so it
+    is never added to `rejected_ids` -- unlike the named case in
+    `test_a_lead_with_an_unusable_verdict_gets_none_applied`, a later usable verdict for
+    Alpha's real lead_id still lands (#329)."""
+    spec = {"override": {"lead_id": _DROP}, "then": {}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "shortlist"
+    assert notes["Beta Co"].status == "shortlist"
+    assert report.failures == ["judge a verdict: no usable lead_id -- ignored"]
+
+
+def test_a_rejected_verdict_with_an_unmatched_lead_id_is_unnamed(tmp_path, titles):
+    """A paraphrased lead_id is a non-blank string, but matches no note in `note_by_id` -- named
+    wording would promise a specific lead was left as it was, which this verdict never
+    identified (#329). The dossier it never judged is still counted by the "no verdict" line."""
+    spec = {"override": {"lead_id": "SYNTHETIC-PARAPHRASED-ID", "verdict": None}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "new"
+    assert notes["Beta Co"].status == "shortlist"
+    assert report.failures[0] == "judge a verdict: no usable verdict field -- ignored"
+    assert any("came back with no verdict" in f for f in report.failures)
+
+
+def test_an_unmatched_lead_ids_usable_sibling_reports_no_note_matches(tmp_path, titles):
+    """#329: the rejected verdict's `lead_id` matches no note, so it is unnamed and
+    must not be remembered in `rejected_ids` -- a USABLE verdict sharing that same unmatched id
+    (the `then` clause) has to reach the ordinary unmatched-id path and report "no note
+    matches", not the "another verdict for this lead was unusable" line, which would promise
+    something about a lead this id never identified."""
+    spec = {"override": {"lead_id": "SYNTHETIC-PARAPHRASED-ID", "verdict": None},
+            "then": {"lead_id": "SYNTHETIC-PARAPHRASED-ID"}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec})
+    assert notes["Alpha Co"].status == "new"
+    assert notes["Beta Co"].status == "shortlist"
+    assert any("no note matches" in f for f in report.failures)
+    assert not any("left as it was" in f for f in report.failures)
+
+
+def test_a_reply_made_only_of_unusable_verdicts_still_counts_as_judged(tmp_path, titles):
+    # `cli.py`'s triage digest reads `judged == 0` beside a non-zero `sent_to_judge` as the judge
+    # returning NOTHING -- a backend outage -- which is not what a malformed reply is.
+    spec = {"override": {"verdict": None}}
+    report, notes, _ = _two_lead_run(tmp_path, titles, {"Alpha Co": spec, "Beta Co": spec})
+    assert report.sent_to_judge == 2
+    assert report.judged == 2
+    assert {n.status for n in notes.values()} == {"new"}
 
 
 def test_two_leads_sharing_one_url_each_get_their_own_verdict(tmp_path, titles):
