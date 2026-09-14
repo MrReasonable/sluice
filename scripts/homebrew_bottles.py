@@ -16,10 +16,16 @@ beside the token.
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
+import os
 import re
+import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import NamedTuple
 
@@ -636,3 +642,275 @@ def push_decision(
                 f"than {version}. Refusing to roll the tap back."
             )
     return "push"
+
+
+# --- I/O ----------------------------------------------------------------------------------------
+
+API = "https://api.github.com"
+_USER_AGENT = f"sluice-{FORMULA_NAME}-bottles"
+
+
+def http_request(request: urllib.request.Request) -> tuple[int, bytes]:
+    """The one network call. Injected as `http` everywhere else, so tests never touch a network."""
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read()
+
+
+def github_request(
+    http,
+    method: str,
+    url: str,
+    token: str | None,
+    *,
+    body: dict | None = None,
+    data: bytes | None = None,
+    content_type: str = "application/json",
+) -> tuple[int, object]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": _USER_AGENT,
+    }
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    payload = json.dumps(body).encode() if body is not None else data
+    if payload is not None:
+        headers["Content-Type"] = content_type
+    status, raw = http(urllib.request.Request(url, data=payload, method=method, headers=headers))
+    try:
+        parsed = json.loads(raw) if raw else None
+    except ValueError:
+        parsed = None
+    return status, parsed
+
+
+def git(*args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
+    """Every git command this file runs, with hooks disabled: a hook left in a clone by an artifact
+    would otherwise run beside the token (spec, section 2)."""
+    return subprocess.run(
+        ["git", "-c", "core.hooksPath=/dev/null", *args], cwd=cwd, capture_output=True, check=False
+    )
+
+
+def _git_ok(*args: str, cwd: Path | None = None, redact: str = "") -> bytes:
+    proc = git(*args, cwd=cwd)
+    if proc.returncode != 0:
+        message = proc.stderr.decode("utf-8", "replace").strip()
+        if redact:
+            message = message.replace(redact, "***")
+        raise Refusal(f"git {args[0]} failed with exit {proc.returncode}: {message[:500]}")
+    return proc.stdout
+
+
+def _require(env: dict, name: str) -> str:
+    value = env.get(name)
+    if not value:
+        raise Refusal(f"the environment variable {name} is required.")
+    return value
+
+
+def _read_json(path: str) -> object:
+    try:
+        return json.loads(Path(path).read_text())
+    except (OSError, ValueError) as err:
+        raise Refusal(f"{path} is not readable JSON: {err}.") from err
+
+
+# A `$GITHUB_OUTPUT` name: every key `build_plan` emits has this shape, and nothing else can open a
+# second entry or a `name<<DELIMITER` block.
+_OUTPUT_KEY_RE = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def write_outputs(outputs: dict[str, str], path: str) -> None:
+    """Append `key=value` lines to $GITHUB_OUTPUT, one per output.
+
+    GitHub reads a line as `name=value`, or as `name<<DELIMITER` opening a multi-line value, so a
+    name that is not an identifier, or a value with a newline, would let one output write another.
+    Both are refused before anything is written.
+    """
+    for key, value in outputs.items():
+        if not _OUTPUT_KEY_RE.fullmatch(key):
+            raise Refusal(f"the output name {key!r} is not a lower-case identifier.")
+        if "\n" in value or "\r" in value:
+            raise Refusal(f"the output {key} contains a newline.")
+    with open(path, "a", encoding="utf-8") as handle:
+        for key, value in outputs.items():
+            handle.write(f"{key}={value}\n")
+
+
+# --- plan ---------------------------------------------------------------------------------------
+
+
+def build_plan(
+    *,
+    push_target: str,
+    version: str,
+    repository_owner: str,
+    run_id: str,
+    run_attempt: str,
+    run_url: str,
+    ls_remote_output: str,
+    pypi_json: dict,
+    contents_status: int | None,
+) -> dict[str, str]:
+    """Every value more than one job reads, derived once (spec, section 2)."""
+    validate_push_target(push_target)
+    validate_version(version)
+    owner = tap_owner(repository_owner)
+    if not _RUN_URL_RE.fullmatch(run_url or ""):
+        raise Refusal(f"run URL {run_url!r} is not a GitHub Actions run URL.")
+    default_branch, base_sha = parse_symref(ls_remote_output)
+    sdist_url, sdist_sha256 = pick_sdist(pypi_json, version)
+    formula_state = (
+        formula_state_from_status(contents_status) if push_target == "auto" else "not consulted"
+    )
+    target_branch = resolve_target(push_target, formula_state, default_branch, version)
+    tag = compose_tag(version, run_id, run_attempt)
+    return {
+        "tap_owner": owner,
+        "default_branch": default_branch,
+        "base_sha": base_sha,
+        "target_branch": target_branch,
+        "sdist_url": sdist_url,
+        "sdist_sha256": sdist_sha256,
+        "tag": tag,
+        "root_url": compose_root_url(repository_owner, tag),
+        "run_url": run_url,
+        "caller": caller_for(push_target),
+        "platforms": platforms_json(),
+    }
+
+
+def cmd_plan(args, env: dict, http) -> None:
+    # Validated before any external command: a wrong PUSH_TARGET must be the first thing that fails.
+    push_target = validate_push_target(env.get("PUSH_TARGET"))
+    version = validate_version(env.get("VERSION"))
+    repository_owner = _require(env, "REPOSITORY_OWNER")
+    owner = tap_owner(repository_owner)
+    ls_remote = _git_ok(
+        "ls-remote", "--symref", f"https://github.com/{owner}/{TAP_REPO}.git", "HEAD"
+    ).decode("utf-8", "replace")
+    status, raw = http(
+        urllib.request.Request(
+            f"https://pypi.org/pypi/{FORMULA_NAME}/{version}/json",
+            headers={"User-Agent": _USER_AGENT},
+        )
+    )
+    if status != 200:
+        raise Refusal(f"PyPI answered HTTP {status} for {FORMULA_NAME} {version}.")
+    try:
+        pypi_json = json.loads(raw)
+    except ValueError as err:
+        raise Refusal(f"PyPI's answer for {FORMULA_NAME} {version} is not JSON.") from err
+    contents_status = None
+    if push_target == "auto":
+        _, base_sha = parse_symref(ls_remote)
+        contents_status, _ = github_request(
+            http,
+            "GET",
+            f"{API}/repos/{owner}/{TAP_REPO}/contents/Formula/{FORMULA_NAME}.rb?ref={base_sha}",
+            env.get("GITHUB_TOKEN"),
+        )
+    outputs = build_plan(
+        push_target=push_target,
+        version=version,
+        repository_owner=repository_owner,
+        run_id=_require(env, "RUN_ID"),
+        run_attempt=_require(env, "RUN_ATTEMPT"),
+        run_url=_require(env, "RUN_URL"),
+        ls_remote_output=ls_remote,
+        pypi_json=pypi_json,
+        contents_status=contents_status,
+    )
+    write_outputs(outputs, _require(env, "GITHUB_OUTPUT"))
+
+
+# --- the untrusted jobs' checks -----------------------------------------------------------------
+
+
+def cmd_render(args, env: dict, http) -> None:
+    Path(args.out).write_text(_render(_require(env, "SDIST_URL"), _require(env, "SDIST_SHA256")))
+
+
+def cmd_tags(args, env: dict, http) -> None:
+    for tag in declared_tags(_require(env, "PLATFORMS")):
+        print(tag)
+
+
+def cmd_produced_tag(args, env: dict, http) -> None:
+    check_produced_tag(_read_json(args.json), _require(env, "DECLARED_TAG"))
+
+
+def cmd_pour_check(args, env: dict, http) -> None:
+    owner = tap_owner(_require(env, "TAP_OWNER"))
+    check_pour(
+        _read_json(args.info),
+        full_name=f"{owner}/tap/{FORMULA_NAME}",
+        version=validate_version(env.get("VERSION")),
+        expect_built=args.expect_built,
+    )
+
+
+def cmd_merged_tags(args, env: dict, http) -> None:
+    check_merged_tags(Path(args.formula).read_text(), declared_tags(_require(env, "PLATFORMS")))
+
+
+def cmd_cache_check(args, env: dict, http) -> None:
+    bottle = Path(args.file)
+    if not bottle.is_file():
+        raise Refusal(f"no fetched bottle at {bottle}: brew fetch downloaded nothing for {args.tag}.")
+    check_cache_file(bottle.read_bytes(), Path(args.formula).read_text(), args.tag)
+
+
+# --- main ---------------------------------------------------------------------------------------
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="homebrew_bottles.py", description=__doc__.splitlines()[0])
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("plan")
+    sub.add_parser("tags")
+    render = sub.add_parser("render")
+    render.add_argument("--out", required=True)
+    produced = sub.add_parser("produced-tag")
+    produced.add_argument("--json", required=True)
+    pour = sub.add_parser("pour-check")
+    pour.add_argument("--info", required=True)
+    pour.add_argument("--expect-built", action="store_true")
+    merged = sub.add_parser("merged-tags")
+    merged.add_argument("--formula", required=True)
+    cache = sub.add_parser("cache-check")
+    cache.add_argument("--formula", required=True)
+    cache.add_argument("--tag", required=True)
+    cache.add_argument("--file", required=True)
+    return parser
+
+
+_COMMANDS = {
+    "plan": cmd_plan,
+    "render": cmd_render,
+    "tags": cmd_tags,
+    "produced-tag": cmd_produced_tag,
+    "pour-check": cmd_pour_check,
+    "merged-tags": cmd_merged_tags,
+    "cache-check": cmd_cache_check,
+}
+
+
+def main(argv: list[str] | None = None, *, env: dict | None = None, http=http_request) -> int:
+    args = _parser().parse_args(argv)
+    environment = dict(os.environ) if env is None else env
+    try:
+        _COMMANDS[args.command](args, environment, http)
+    except Refusal as err:
+        # stdout, where GitHub Actions reads workflow commands.
+        print(f"::error::{err}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
