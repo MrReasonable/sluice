@@ -497,10 +497,16 @@ whichever neighbour it was written next to:
    -- so "for free" no longer describes the WHOLE classify pass
    unconditionally: a blank/placeholder-company lead can trigger a real page visit when
    `triage.company_resolve_fetch` is on, and an LLM call when
-   `triage.company_resolve_llm` is also on. `apply.py` writes verdicts
-   back, skipping any lead already in the application lifecycle (its own
-   writes, and the new resolution write, are all `require_status`-guarded
-   against a lead entering that lifecycle mid-run); `audit.py` logs every
+   `triage.company_resolve_llm` is also on. `apply.py` repairs or
+   rejects each verdict's fields first (#329: a wrong-typed field is
+   repaired, and a verdict whose `lead_id` or `verdict` is unusable is
+   dropped and reported in the run's failures; one whose `verdict` is
+   unusable leaves its lead for the next run, and one with no usable
+   `lead_id` names no lead and promises nothing about one), then writes
+   verdicts back, skipping any lead already in the application lifecycle
+   (its own writes, and the new resolution write, are all
+   `require_status`-guarded against a lead entering that lifecycle
+   mid-run); `audit.py` logs every
    decision that actually landed -- a lead whose write was refused (already
    application-owned, or a status change mid-run) is logged nowhere, so the
    audit never claims a decision that was not applied.
@@ -669,6 +675,13 @@ whichever neighbour it was written next to:
    `\d+` sweep with no positional or shape parse at all, which is also
    exactly what removes the three holes above.
 
+   Beside the bundle, not inside it, `compose.py` adds a TRIAGE NOTES
+   section after the JD when the lead carries `culture_flags` or
+   `triage_concerns` (#329): framing for which entries to lead with, which
+   the composer may neither cite nor mention. It sits outside the bundle
+   because lead data is not evidence, so neither `bundle_sources` nor
+   `render_bundle` (the audit's input) can reach it.
+
    Since #168 a fifth field, `Skills:`, on an Experience Library entry licenses
    skills RELATIONALLY: it names, per entry, which skills that entry evidences,
    so a CV bullet citing the entry may use those names without tripping the
@@ -820,8 +833,12 @@ whichever neighbour it was written next to:
    promote it by luck. (`needs-signoff` and `skipped-needs-signoff` are
    `CvResult` run-report labels, not `status`-key values.) `job-sluice cv
    signoff --lead X` promotes the held CV after the candidate reviews the
-   flagged claims; `--discard` rejects it and frees a fresh compose. The
-   default is on for fabrication (`cv.require_signoff`); neither signoff
+   flagged claims; `--discard` rejects it and frees a fresh compose.
+   A hold also records the triage notes the composer was
+   given, as `framing\t` entries after the blockers
+   (`core/leads.py::framing_entries`); they never cause a hold, and
+   `cv signoff` and MCP `cv_signoff` show them apart from the claims.
+   The default is on for fabrication (`cv.require_signoff`); neither signoff
    flag touches the pure hard gate.
 4. **apply** (`sluice/apply/`): select eligible leads, stage the rendered
    CV file and a prep packet, and record the applied transition
@@ -1328,6 +1345,17 @@ scraped page could silently overwrite a company a human typed into the note
 during the multi-second resolution fetch. Like `require_status`, it is now
 part of the `Store` protocol contract, so any future second Store
 implementation must honor it too.
+
+Another guard on the same write, `preserve_block_values` (#329), leaves a
+named key unwritten when its fresh stored value spans several lines -- a
+block list or block scalar a person typed by hand -- because `_set_fm`
+replaces a key's own line only, which orphans the item lines and leaves a
+note a YAML reader refuses. Triage passes it for `culture_flags` and
+`triage_concerns`, and it is part of the `Store` protocol contract. The
+`append_note` write to `relevance_notes` abstains the same way when the
+fresh stored value is itself spread over several lines: it is its own write
+path, not a `fields` key, so `preserve_block_values` does not cover it, but
+the corruption it would cause is identical.
 
 A fourth property sits beside the write contract, but a deliberately weaker one:
 **read-path dedup** (#23) is human-gated, not automatic. `job-sluice leads dedupe`

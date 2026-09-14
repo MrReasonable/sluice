@@ -211,10 +211,14 @@ orphaned lines in place.
 So `update_fields` gains a keyword, `preserve_block_values: frozenset | None`. For each named key
 that is also in `fields`, the FRESH stored frontmatter is checked inside the CAS transform, once,
 before any named field is written (`_set_fm` matches at any indentation, so an earlier write can move a
-nested child line and change what a later check reads). A key whose next line is indented deeper than
-the key's own line, or starts with `-` at the key's own indentation, holds a value spread over several
-lines: a block list, a nested mapping, or a `|` or `>` block scalar. The key's own line is not
-consulted, since a trailing `# comment` there is not a value. Such a key is left unwritten and logged, naming the note and the key, never the
+nested child line and change what a later check reads). A key whose next line (past blank lines and
+comment lines not indented deeper than the key) is indented deeper than the key's own line, or starts
+with `-` at the key's own indentation, is treated as holding a value spread over several lines: a
+block list, a nested mapping, or a `|` or `>` block scalar. The key's own line is not consulted, since
+a trailing `# comment` there is not a value. Any deeper line counts, a comment included, so a one-line
+value with an indented comment under it is left alone too. That is the safe direction: telling such a
+comment apart would mean parsing the key's own line, and a block scalar whose header carries a tag or
+an anchor, or a quoted scalar spanning lines, would then be written over. Such a key is left unwritten and logged, naming the note and the key, never the
 value; the other fields still land. A key whose next line is another key at its own indentation is
 written normally, whatever its value. `apply_verdict` passes
 `frozenset({"culture_flags", "triage_concerns"})`. The user's value survives and the note stays

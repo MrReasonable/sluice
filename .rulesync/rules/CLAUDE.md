@@ -452,6 +452,12 @@ mismatch. That check CANNOT be hoisted into the caller — probed against a real
 enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot is stale by
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
+`update_fields` also takes `preserve_block_values` (#329): a named key whose fresh stored
+value spans several lines -- a hand-typed block list or block scalar -- is left unwritten rather
+than corrupted by `_set_fm`'s single-line replace, while the other fields still land. Its
+`append_note` write to `relevance_notes` is a separate write path, not a `fields` key, and
+abstains the same way when the fresh stored value itself spans several lines, rather than
+corrupting it.
 
 `job-sluice leads reconcile` (#1) is the one pass that MOVES a note, and a move writes no note bytes —
 only a directory entry, via the `O_EXCL`-reserve + `os.replace` primitive `merge_cluster` shares. It
@@ -636,7 +642,10 @@ also carries, and never the SKILLS INVENTORY framing section #165 added — `bun
 tell the model so) is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
 beside it in `cv/engine.py`, since `validate` returns `[]` rather than complaining — a composed
 CV missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed
-checks would otherwise silently not run. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
+checks would otherwise silently not run. The TRIAGE NOTES section #329 added sits outside the
+bundle entirely; a figure present only in it, echoed into PROFILE prose or a WORK bullet, is
+refused; CERTIFICATES, EDUCATION and a WORK company or `dates | location | role` line carry no
+figure check at all. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
 guards beside it (the header checks just named, plus the three name/contact-block anchors described
 below), `cv/slop.py`'s unscoped HARD tier (an em dash or a literal `--`), and the renderer's own
 optional `precheck`, form the HARD gate: a non-empty finding list blocks rendering, and a lead with no

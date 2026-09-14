@@ -157,8 +157,8 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     assert run["run_id"]
 
     # Never published: served_dir holds the served copy of the PDF and nothing else. The
-    # prompt carries the whole bundle and the contact block, which is not something to
-    # put wherever the served PDFs are exposed from.
+    # prompt carries the whole bundle, the contact block and the lead's triage notes
+    # (#329), which is not something to put wherever the served PDFs are exposed from.
     assert os.listdir(cfg.served_dir) == [r.served]
 
 
