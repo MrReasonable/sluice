@@ -214,7 +214,8 @@ the retry prompt and ends with the first attempt's findings verbatim, `cv.attemp
 entry ids the composer was given (see `cv run` in `docs/USAGE.md`). Repetition **across
 runs** still says something one run's artefacts cannot: a category that keeps coming back on
 fresh invocations points upstream of the model — the composer prompt, the evidence corpus,
-or the Candidate Profile note — rather than at a one-off bad draft.
+the Candidate Profile note, or the lead's own `culture_flags`/`triage_concerns` (fixed by editing the
+note) — rather than at a one-off bad draft.
 
 ## A gate-clean CV is still refused (a renderer `precheck` violation)
 

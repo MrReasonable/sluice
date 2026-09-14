@@ -22,7 +22,7 @@ WHAT. Into the per-lead working directory the renderer already writes its PDF in
                         identifiably not this run's.
 
 Never into `cv.served_dir`. That holds what `apply` stages and what a user may publish, and
-the prompt carries the whole bundle and the contact block.
+the prompt carries the whole bundle, the contact block and the lead's triage notes (#329).
 
 LIFECYCLE. Nothing is written until the engine reaches composition (`RunArtefacts.begin`), so
 a lead refused earlier -- not shortlisted, held for sign-off, stale, identity unset -- leaves an
