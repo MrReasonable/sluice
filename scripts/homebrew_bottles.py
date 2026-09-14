@@ -16,8 +16,11 @@ beside the token.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from pathlib import Path
+from typing import NamedTuple
 
 FORMULA_NAME = "job-sluice"
 TAP_REPO = "homebrew-tap"
@@ -188,3 +191,191 @@ def declared_tags(platforms: str) -> list[str]:
     ):
         raise Refusal(f"the declared platform set is malformed: {platforms!r}.")
     return tags
+
+
+# --- the bottle jobs ----------------------------------------------------------------------------
+
+# The only cellars a relocatable libexec venv bottles as. A path-valued cellar would be written
+# into the formula unescaped by `brew bottle --merge` (BOTTLE_ERB), so anything else is refused.
+ALLOWED_CELLARS = ("any", "any_skip_relocation")
+
+
+def check_pour(info: dict, *, full_name: str, version: str, expect_built: bool = False) -> None:
+    """One installed keg of THIS formula, at VERSION, poured (or, with `expect_built`, built).
+
+    Scoped to the named formula on purpose: `brew info --json=v2 --installed` lists every installed
+    formula whatever name is given, and every dependency on the runner was poured, so an unscoped
+    check passes when job-sluice itself built from source (spec, section 6a). `expect_built` is the
+    negative control's own mode: a `!`-inverted command never fails a `bash -e` step.
+    """
+    formulae = info.get("formulae") if isinstance(info, dict) else None
+    if not isinstance(formulae, list) or len(formulae) != 1 or not isinstance(formulae[0], dict):
+        raise Refusal(f"brew info must describe exactly one formula, got {formulae!r:.300}.")
+    formula = formulae[0]
+    if formula.get("full_name") != full_name:
+        raise Refusal(f"brew info describes {formula.get('full_name')!r}, expected {full_name!r}.")
+    installed = formula.get("installed")
+    if not isinstance(installed, list) or len(installed) != 1 or not isinstance(installed[0], dict):
+        raise Refusal(f"{full_name} must have exactly one installed keg, found {installed!r:.300}.")
+    keg = installed[0]
+    if keg.get("version") != version:
+        raise Refusal(f"{full_name}'s installed keg is {keg.get('version')!r}, expected {version!r}.")
+    poured = keg.get("poured_from_bottle")
+    wanted = not expect_built
+    if poured is not wanted:
+        raise Refusal(
+            f"{full_name} {version} reports poured_from_bottle={poured!r}, expected {wanted!r}. "
+            + ("It was built from source: no bottle tag matched, or the bottle was not selected."
+               if wanted else "The negative control expected the --build-bottle keg.")
+        )
+
+
+def check_produced_tag(bottle_json: dict, declared_tag: str) -> None:
+    """The tag `brew bottle` produced must be the matrix entry's, never a runner-side value."""
+    if not declared_tag:
+        raise Refusal("the declared bottle tag is empty.")
+    entries = list(bottle_json.values()) if isinstance(bottle_json, dict) else []
+    if len(entries) != 1 or not isinstance(entries[0], dict):
+        raise Refusal(f"a bottle JSON must describe exactly one formula, found {len(entries)}.")
+    bottle = entries[0].get("bottle")
+    tags = bottle.get("tags") if isinstance(bottle, dict) else None
+    tags = tags if isinstance(tags, dict) else {}
+    if list(tags) != [declared_tag]:
+        raise Refusal(
+            f"this runner produced bottle tag(s) {sorted(tags)}, but its matrix entry declares "
+            f"{declared_tag!r}. The runner image's macOS no longer matches its label."
+        )
+
+
+class Asset(NamedTuple):
+    tag: str
+    remote_name: str
+    local_path: Path
+    sha256: str
+
+
+def validate_bottle_jsons(
+    json_paths: list[Path], *, version: str, root_url: str, tags: list[str]
+) -> list[Asset]:
+    """Every bottle JSON and bottle file, checked as data before the token exists (spec, section 3).
+
+    The names are built here from trusted values and compared with Homebrew's, never uploaded on
+    assumption: the 2026-09-07 `curl: (37)` came from an assumed name.
+    """
+    validate_version(version)
+    if not tags:
+        raise Refusal("the declared tag set is empty.")
+    found: dict[str, Asset] = {}
+    for path in json_paths:
+        path = Path(path)
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError) as err:
+            raise Refusal(f"{path.name} is not readable JSON: {err}.") from err
+        entries = list(data.values()) if isinstance(data, dict) else []
+        if len(entries) != 1 or not isinstance(entries[0], dict):
+            raise Refusal(f"{path.name} must describe exactly one formula.")
+        bottle = entries[0].get("bottle")
+        bottle = bottle if isinstance(bottle, dict) else {}
+        tag_hashes = bottle.get("tags") if isinstance(bottle.get("tags"), dict) else {}
+        if len(tag_hashes) != 1:
+            raise Refusal(f"{path.name} must carry exactly one tag, found {sorted(tag_hashes)}.")
+        ((tag, tag_hash),) = tag_hashes.items()
+        if tag not in tags:
+            raise Refusal(f"{path.name} carries the undeclared tag {tag!r}; declared: {sorted(tags)}.")
+        if tag in found:
+            raise Refusal(f"two bottle JSONs carry the tag {tag!r}.")
+        if bottle.get("root_url") != root_url:
+            raise Refusal(
+                f"{path.name}'s root_url is {bottle.get('root_url')!r}, expected {root_url!r}."
+            )
+        rebuild = bottle.get("rebuild", 0)
+        if type(rebuild) is not int or rebuild != 0:
+            raise Refusal(f"{path.name}'s rebuild is {rebuild!r}; brew bottle must run --no-rebuild.")
+        if bottle.get("cellar") not in ALLOWED_CELLARS:
+            raise Refusal(
+                f"{path.name}'s cellar is {bottle.get('cellar')!r}, not one of {list(ALLOWED_CELLARS)}."
+            )
+        remote = f"{FORMULA_NAME}-{version}.{tag}.bottle.tar.gz"
+        local = f"{FORMULA_NAME}--{version}.{tag}.bottle.tar.gz"
+        if not isinstance(tag_hash, dict) or (tag_hash.get("filename"), tag_hash.get("local_filename")) != (remote, local):
+            raise Refusal(
+                f"{path.name}'s names are not ({remote!r}, {local!r}): "
+                f"{tag_hash.get('filename') if isinstance(tag_hash, dict) else tag_hash!r}."
+            )
+        sha256 = tag_hash.get("sha256")
+        if not isinstance(sha256, str) or not _HEX64_RE.fullmatch(sha256):
+            raise Refusal(f"{path.name}'s sha256 is not 64 hex digits: {sha256!r}.")
+        bottle_file = path.parent / local
+        if not bottle_file.is_file():
+            raise Refusal(f"{local} is missing beside {path.name}.")
+        actual = hashlib.sha256(bottle_file.read_bytes()).hexdigest()
+        if actual != sha256:
+            raise Refusal(f"{local} hashes to {actual}, but {path.name} declares {sha256}.")
+        found[tag] = Asset(tag, remote, bottle_file, sha256)
+    missing = sorted(set(tags) - set(found))
+    if missing:
+        raise Refusal(f"the bottle JSONs do not match the declared tags: missing {missing}.")
+    return [found[tag] for tag in tags]
+
+
+# The block `brew bottle --merge --write` writes (dev-cmd/bottle.rb, BOTTLE_ERB): a root_url line,
+# then one sha256 line per tag and nothing else, anchored at both ends. A `rebuild` line, a second
+# block or any extra token fails the match.
+_BLOCK_RE = re.compile(
+    r"^  bottle do\n"
+    r'    root_url "(?P<root_url>[^"\n]*)"\n'
+    r"(?P<lines>(?:    sha256 [^\n]*\n)+)"
+    r"  end\n",
+    re.MULTILINE,
+)
+_SHA_LINE_RE = re.compile(
+    r"    sha256 cellar: :(?P<cellar>any|any_skip_relocation), +"
+    r'(?P<tag>[a-z0-9_]+): +"(?P<sha256>[0-9a-f]{64})"'
+)
+
+
+def parse_bottle_block(text: str) -> tuple[str, dict[str, tuple[str, str]], re.Match]:
+    """(root_url, {tag: (cellar, sha256)}, the block's match) for the formula's one bottle block."""
+    blocks = text.count("bottle do")
+    if blocks != 1:
+        raise Refusal(f"the formula must contain exactly one `bottle do` block, found {blocks}.")
+    match = _BLOCK_RE.search(text)
+    if match is None:
+        raise Refusal(
+            "the formula's bottle block is not in the shape brew bottle --merge writes: a root_url "
+            "line, then only sha256 lines."
+        )
+    tags: dict[str, tuple[str, str]] = {}
+    for line in match.group("lines").splitlines():
+        line_match = _SHA_LINE_RE.fullmatch(line)
+        if line_match is None:
+            raise Refusal(f"unexpected line in the bottle block: {line!r}.")
+        if line_match.group("tag") in tags:
+            raise Refusal(f"the bottle block names {line_match.group('tag')!r} twice.")
+        tags[line_match.group("tag")] = (line_match.group("cellar"), line_match.group("sha256"))
+    return match.group("root_url"), tags, match
+
+
+def check_merged_tags(formula_text: str, tags: list[str]) -> None:
+    """The merged block's tags equal the declared set, which comes from `plan`, never from the
+    block being checked (spec, section 6b)."""
+    if not tags:
+        raise Refusal("the declared tag set is empty.")
+    _, block_tags, _ = parse_bottle_block(formula_text)
+    if set(block_tags) != set(tags):
+        raise Refusal(
+            f"the merged bottle block carries {sorted(block_tags)}, but {sorted(tags)} are declared."
+        )
+
+
+def check_cache_file(data: bytes, formula_text: str, tag: str) -> None:
+    """The file `brew fetch` left for TAG hashes to the block's digest. Required because `brew
+    fetch --bottle-tag` exits 0 for a tag the formula does not carry (spec, section 6b)."""
+    _, block_tags, _ = parse_bottle_block(formula_text)
+    if tag not in block_tags:
+        raise Refusal(f"the formula's bottle block carries no {tag!r} bottle.")
+    actual = hashlib.sha256(data).hexdigest()
+    expected = block_tags[tag][1]
+    if actual != expected:
+        raise Refusal(f"the fetched {tag} bottle hashes to {actual}; the formula declares {expected}.")
