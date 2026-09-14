@@ -1,0 +1,13 @@
+{
+  "formulae": [
+    {
+      "full_name": "exampleowner/tap/job-sluice",
+      "installed": [
+        {
+          "version": "9.9.0",
+          "poured_from_bottle": true
+        }
+      ]
+    }
+  ]
+}

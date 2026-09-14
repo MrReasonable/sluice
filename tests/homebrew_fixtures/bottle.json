@@ -1,0 +1,20 @@
+{
+  "exampleowner/tap/job-sluice": {
+    "formula": {
+      "name": "job-sluice",
+      "pkg_version": "9.9.0"
+    },
+    "bottle": {
+      "root_url": "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1",
+      "cellar": "any",
+      "rebuild": 0,
+      "tags": {
+        "arm64_tahoe": {
+          "filename": "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz",
+          "local_filename": "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz",
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      }
+    }
+  }
+}
