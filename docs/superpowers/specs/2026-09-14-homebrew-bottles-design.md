@@ -321,7 +321,9 @@ jobs, which reuses earlier jobs' outputs and artifacts, the behaviour that workf
 checks out against `plan`'s outputs:
 
 - the set of JSON files is one per declared tag, and each carries exactly one formula and exactly
-  that one tag;
+  that one tag, refused unless declared before any name is built from it or any file is read: the
+  tag is the JSON's own key, so a name composed from it and compared with the same JSON's
+  `local_filename` would have the JSON on both sides of the comparison;
 - `root_url` is byte-equal to `plan`'s root URL, and `rebuild` is 0;
 - `cellar` is `any` or `any_skip_relocation` (the measured value is `any`); a path-valued cellar is
   refused;
@@ -527,19 +529,25 @@ In `push`, in order:
 1. **Validate** the merged formula (§5).
 2. **Clone** the tap with plain `git` into `$RUNNER_TEMP`, hooks disabled.
 3. **Target presence:** `git ls-remote --exit-code origin refs/heads/<TARGET_BRANCH>`. Exit 0 is
-   present; exit 2 is absent, which is normal for the first dry run of a version and refused for the
-   default branch; any other exit refuses.
+   present only when it lists exactly that one branch, whose commit is the scratch push's lease; any
+   other listing refuses. `ls-remote` matches a pattern against the tail of every ref name, so a tag
+   stored as `refs/tags/refs/heads/<TARGET_BRANCH>` would otherwise read as the branch, and the push
+   would move the tag. Exit 2 is absent, which is normal for the first dry run of a version and
+   refused for the default branch; any other exit refuses.
 4. **No-op:** if the target is present and its formula is byte-identical to ours, finish with nothing
    to do. That is a re-run after this release's push already landed. The comparison reads the remote
-   tip, never the work tree step 6 writes.
+   tip, never what step 6 builds.
 5. **Version (default branch only):** read `git show <BASE_SHA>:Formula/job-sluice.rb`. A present
    commit without the file is the bootstrap and passes. Otherwise parse the version from the `url`
    line's `job_sluice-<version>.tar.gz` (the renderer writes no `version` stanza) into a tuple of
    integers; an unparseable file refuses; a version newer than VERSION refuses. Integers, because this
    project's releases cross 2.9.x to 2.10.0, where string order is backwards.
-6. `checkout -B <TARGET_BRANCH> <BASE_SHA>` with BASE_SHA from `plan`, write the formula, and commit as
-   `sluice-release-please[bot]` with the message `job-sluice <VERSION>`, as `homebrew_push.sh` does
-   today.
+6. **Commit on BASE_SHA, with no work tree:** hash the validated bytes with `--no-filters`, read
+   BASE_SHA (from `plan`) into the index, set `Formula/job-sluice.rb` to that blob as a regular file,
+   and `commit-tree` the result with BASE_SHA as its parent, as `sluice-release-please[bot]` with the
+   message `job-sluice <VERSION>`. A tree equal to BASE_SHA's is a no-op. A checked-out tree would let
+   the tap's own content decide what is stored (a `.gitattributes` working-tree encoding) or where
+   the bytes land (a symlink committed at the formula's path, followed out of the clone).
 7. **Mint** the token and **push**: fast-forward only for the default branch, `--force-with-lease` for
    a scratch branch.
 
@@ -640,7 +648,8 @@ own expected constants.
 
 - **Inputs (`plan`):** refuses an invalid or differently-cased `push_target`, naming both valid
   values, as the first failure when executed with an empty `PATH`; refuses a non-`X.Y.Z` VERSION; a
-  sdist URL off-grammar or for another file; a non-hex or short sha256.
+  sdist URL off-grammar or for another file; a non-hex or short sha256; an output value with a
+  newline, and an output name that is not a lower-case identifier.
 - **Target:** `default` gives DEFAULT_BRANCH whatever the observable says; `auto` with the formula
   present gives `bump-<VERSION>`; `auto` absent gives DEFAULT_BRANCH; `auto` with a failed lookup
   refuses.
@@ -656,8 +665,8 @@ own expected constants.
   tags, and an empty declared tag.
 - **Bottle JSON:** accepts two valid JSONs with their bottles; refuses a wrong root URL, a non-zero
   rebuild, a disallowed cellar, either name wrong, a path component in either name, a digest
-  mismatch, a JSON whose bottle is absent, a declared tag missing, an extra tag, and an empty
-  declared set.
+  mismatch, a JSON whose bottle is absent, a declared tag missing, an extra tag, a path-shaped
+  undeclared tag (refused before any file is read), and an empty declared set.
 - **Release lifecycle:** absent creates a draft; present and matching is accepted, draft or
   published; present with another target, title or notes refuses; a failed lookup refuses.
 - **Digest rule:** no asset uploads; a matching `sha256:` digest skips; a different digest refuses; a
@@ -678,6 +687,11 @@ own expected constants.
   push; an absent remote pushes; tap `9.10.0` against VERSION `9.9.0` on the default branch refuses;
   equal and older push; a newer version on a scratch target pushes; the file absent at BASE_SHA
   passes as the bootstrap; an unparseable `url` refuses; an absent default branch refuses.
+- **Push, against local repositories:** a tag whose name tail-matches the target branch refuses; a
+  `.gitattributes` working-tree encoding in the tap leaves the pushed bytes unchanged; a symlink at
+  the formula's path is replaced, never followed; a symlinked `Formula` directory refuses with
+  nothing written outside the clone; the pushed commit's parent is BASE_SHA and its only change is
+  the formula.
 
 ### 9b. Workflow wiring
 
@@ -723,8 +737,8 @@ own expected constants.
 - **`prove`:** its downloads name the formula and the JSONs only; nothing writes under `brew --cache`
   but the fetch; per tag, removal < `fetch --force` < cache-file check; merge < style < tag-set check
   < fetch loop.
-- **`push`'s order:** validate < clone < target presence < no-op < version < `checkout -B` from
-  `plan`'s BASE_SHA < write < commit < mint < push; exactly two push arms, fast-forward for the default
+- **`push`'s order:** validate < clone < target presence < no-op < version < commit built on
+  `plan`'s BASE_SHA without a work tree < mint < push; exactly two push arms, fast-forward for the default
   branch and `--force-with-lease` for a scratch branch; the commit's identity and message are the
   fixed ones.
 - **Releases:** the release is created, edited, uploaded to and published only from `upload`'s
@@ -750,7 +764,7 @@ today, and the constants they use:
 | `test_the_homebrew_job_waits_for_the_pypi_upload` | unchanged: the caller keeps `needs: pypi` |
 | `test_the_homebrew_release_job_verifies_before_minting_a_token_before_pushing`, `test_the_homebrew_dry_run_verifies_before_minting_a_token_before_pushing` | the `needs:` edges plus `upload`'s and `push`'s in-job orders |
 | `test_the_homebrew_verify_script_updates_audits_installs_and_tests_in_order` | `formula`'s order and `bottle`'s sequence |
-| `test_the_homebrew_verify_script_reseats_the_tap_checkout_before_rendering` | retired: replaced by tap at BASE_SHA < render in `formula`, and `push`'s `checkout -B` from `plan`'s BASE_SHA |
+| `test_the_homebrew_verify_script_reseats_the_tap_checkout_before_rendering` | retired: replaced by tap at BASE_SHA < render in `formula`, and `push`'s commit built on `plan`'s BASE_SHA |
 | `test_the_homebrew_push_script_actually_pushes` | `push`'s two push arms |
 | `test_the_homebrew_release_verify_step_carries_no_token_and_targets_the_default_branch`, `test_the_homebrew_dry_run_verify_step_carries_no_token_and_targets_auto` | the callers' `push_target` pins and the secrets-context pin |
 | `test_the_homebrew_release_push_step_carries_the_token`, `test_the_homebrew_dry_run_push_step_carries_the_token` | the secrets-context pin |
@@ -882,3 +896,19 @@ The implementation plan's first review added these, each argued in the plan wher
   `scripts/homebrew_bottles.py`, which runs `git`; `plan` reads the contents API through `urllib`;
   `preflight`'s two run bodies are pinned whole; untrusted jobs reference no secret but hold a
   `contents: read` token and the artifact token; and secret delivery is recorded as read, not measured.
+
+## 14. Execution: what changed in the design
+
+Task reviews during execution found these, and sections 3, 6c, 9a and 9b were edited in place to
+match:
+
+- `upload`'s validator refuses a bottle JSON whose one tag is undeclared before it builds a file name
+  from that tag or reads a file (§3). Reproduced first: a path-shaped tag with a matching
+  `local_filename` made the token job read and hash a file outside the downloaded artifacts.
+- `plan` refuses an output name that is not a lower-case identifier, beside an output value with a
+  newline: GitHub reads both `name=value` and `name<<DELIMITER`. Not reachable before the change,
+  since every name is a literal in `build_plan`, but closed in the one function that exists for it.
+- `push` reads its target as present only when `ls-remote` lists exactly that branch, and builds its
+  commit without a work tree (§6c). Reproduced first, each with content already in a tap: a tag named
+  `refs/heads/<branch>` read as the branch and was moved by the push; a `.gitattributes` encoding
+  re-encoded the pushed bytes; and a symlink at the formula's path sent the write outside the clone.
