@@ -1,13 +1,16 @@
 """The composer's framing-only TRIAGE NOTES section (#329): its shape, where it sits, and that an
 empty framing leaves the prompt exactly as it was."""
+import json
+
 import pytest
 
 from sluice.core.backends import Completion
+from sluice.core.leads import framing_entries, split_framing
 from sluice.cv import compose as C
 from sluice.cv.engine import run_one
 from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
-from tests.test_cv_engine import (CLEAN_CV, ENTRIES, FakeCache, FakeRenderer, FakeVault, Note,
-                                  RecordingBackend, _cfg, _served)
+from tests.test_cv_engine import (CLEAN_CV, ENTRIES, FakeBackend, FakeCache, FakeRenderer,
+                                  FakeVault, Note, RecordingBackend, _cfg, _served)
 
 _NAME = "Example Candidate"
 _FLAGS = ", ".join(FRAMING_FLAGS)
@@ -211,3 +214,73 @@ def test_a_hand_edited_note_frames_only_a_one_line_value(tmp_path, monkeypatch, 
         assert framed in be.prompts[0]
     else:
         assert C._TRIAGE_FRAMING_PROMPT_HEADER not in be.prompts[0]
+
+
+_UNSUPPORTED = "unsupported\tMotivated by placeholder\tNONE"
+
+
+def test_framing_entries_round_trip_through_split_framing():
+    lines = C.framing_lines(_FLAGS, _CONCERNS)
+    stored = [_UNSUPPORTED, "style\tSLOP leverage: x", *framing_entries(lines)]
+    assert split_framing(stored) == (list(lines), [_UNSUPPORTED, "style\tSLOP leverage: x"])
+
+
+def test_split_framing_leaves_everything_else_alone_and_never_raises():
+    # `needs_signoff` is hand-editable, so an entry can be anything JSON holds.
+    assert split_framing([]) == ([], [])
+    assert split_framing([_UNSUPPORTED]) == ([], [_UNSUPPORTED])
+    assert split_framing([1, None, "framing"]) == ([], [1, None, "framing"])
+
+
+def test_a_hold_records_the_framing_after_the_blockers(monkeypatch):
+    _served(monkeypatch)
+    note = _framed_note()
+    v = FakeVault(ENTRIES, notes=[note])
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV, audit_out=_UNSUPPORTED), FakeCache(),
+                renderer=FakeRenderer())
+    assert r.status == "needs-signoff"
+    assert json.loads(note.fm["needs_signoff"]) == [
+        _UNSUPPORTED, *framing_entries(C.framing_lines(_FLAGS, _CONCERNS))]
+
+
+class _ChangesConcernsMidCompose:
+    """Composes CLEAN_CV and, DURING that compose call, changes the lead's `triage_concerns` in
+    place. `_run_one` binds `fm = note.fm`, so the change is visible to anything re-reading the
+    frontmatter at the hold site -- which is exactly the drift this row exists to catch. Audits
+    `unsupported`, so the CV is held. Routes compose from audit like the CV engine's doubles."""
+    last_backend = "primary"
+
+    def __init__(self, note):
+        self.note, self.prompts = note, []
+
+    def complete(self, prompt):
+        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            self.prompts.append(prompt)
+            self.note.fm["triage_concerns"] = FRAMING_CONCERNS[1]
+            return Completion(CLEAN_CV)
+        return Completion(_UNSUPPORTED)
+
+
+def test_the_hold_records_what_the_composer_was_given_not_a_later_edit(monkeypatch):
+    _served(monkeypatch)
+    note = _framed_note(triage_concerns=FRAMING_CONCERNS[0])
+    v = FakeVault(ENTRIES, notes=[note])
+    be = _ChangesConcernsMidCompose(note)
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "needs-signoff"
+    held, _ = split_framing(json.loads(note.fm["needs_signoff"]))
+    assert held == list(C.framing_lines(_FLAGS, FRAMING_CONCERNS[0]))
+    assert all(f"- {line}" in be.prompts[0] for line in held)
+
+
+def test_framing_alone_never_holds_a_cv(monkeypatch):
+    _served(monkeypatch)
+    note = _framed_note()
+    v = FakeVault(ENTRIES, notes=[note])
+    be = RecordingBackend()                     # audits `supported`: no blocker at all
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert C._TRIAGE_FRAMING_PROMPT_HEADER in be.prompts[0], (
+        "vacuous unless the composer was actually given framing")
+    assert r.status == "rendered"
+    assert note.fm.get("tailored_cv")
+    assert "needs_signoff" not in note.fm
