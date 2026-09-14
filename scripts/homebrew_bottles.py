@@ -379,3 +379,81 @@ def check_cache_file(data: bytes, formula_text: str, tag: str) -> None:
     expected = block_tags[tag][1]
     if actual != expected:
         raise Refusal(f"the fetched {tag} bottle hashes to {actual}; the formula declares {expected}.")
+
+
+# --- the release on the tap ---------------------------------------------------------------------
+
+_TAG_RE = re.compile(rf"{FORMULA_NAME}-\d+\.\d+\.\d+-[1-9][0-9]*-[1-9][0-9]*")
+_RUN_URL_RE = re.compile(r"https://github\.com/[A-Za-z0-9-]+/[A-Za-z0-9._-]+/actions/runs/[1-9][0-9]*")
+CALLERS = ("release", "dry run")
+
+
+def release_templates(*, version: str, tag: str, caller: str, run_url: str) -> tuple[str, str]:
+    """The release's title and notes: fixed text from trusted values, never command output or
+    generated notes. The caller is in the title so a human can tell a release's bottles from a dry
+    run's before deleting anything (spec, Out of scope)."""
+    validate_version(version)
+    if not _TAG_RE.fullmatch(tag or ""):
+        raise Refusal(f"release tag {tag!r} is not a composed bottle tag.")
+    if caller not in CALLERS:
+        raise Refusal(f"caller must be one of {list(CALLERS)}, got {caller!r}.")
+    if not _RUN_URL_RE.fullmatch(run_url or ""):
+        raise Refusal(f"run URL {run_url!r} is not a GitHub Actions run URL.")
+    title = f"{FORMULA_NAME} {version} bottles ({caller})"
+    notes = f"Bottles for {FORMULA_NAME} {version}, published by {run_url} ({caller}).\nRelease tag: {tag}\n"
+    return title, notes
+
+
+def release_decision(
+    releases: list[dict], *, tag: str, base_sha: str, title: str, notes: str
+) -> dict | None:
+    """None when the release is absent (create it as a draft); the release when it matches; a
+    refusal naming what differs otherwise. Drafts count: a partial upload leaves one behind for a
+    re-run to complete (spec, section 3)."""
+    matches = [r for r in releases if isinstance(r, dict) and r.get("tag_name") == tag]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise Refusal(f"{len(matches)} releases carry the tag {tag!r}.")
+    release = matches[0]
+    wanted = {"target_commitish": base_sha, "name": title, "body": notes}
+    differs = sorted(key for key, value in wanted.items() if release.get(key) != value)
+    if differs:
+        raise Refusal(
+            f"a release already carries the tag {tag!r} but its {', '.join(differs)} differ from "
+            f"this run's. Refusing to publish into a release this run did not create."
+        )
+    return release
+
+
+def asset_decision(assets: list[dict], *, name: str, sha256: str) -> str:
+    """'upload' when absent, 'skip' when the same bytes are already there; a refusal otherwise, so
+    no asset a pushed formula might reference is ever replaced."""
+    existing = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
+    if not existing:
+        return "upload"
+    digest = existing[0].get("digest")
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise Refusal(f"asset {name!r} already exists with no usable digest ({digest!r}).")
+    if digest.removeprefix("sha256:") != sha256:
+        raise Refusal(
+            f"asset {name!r} already exists with digest {digest}, but this run's bottle is "
+            f"sha256:{sha256}. Refusing to replace it."
+        )
+    return "skip"
+
+
+def release_digests(assets: list[dict], *, version: str, tags: list[str]) -> dict[str, str]:
+    """{tag: sha256} read from a published release's assets, for the formula validator."""
+    validate_version(version)
+    digests: dict[str, str] = {}
+    for tag in tags:
+        name = f"{FORMULA_NAME}-{version}.{tag}.bottle.tar.gz"
+        matches = [a for a in assets if isinstance(a, dict) and a.get("name") == name]
+        if len(matches) != 1:
+            raise Refusal(f"the release must hold exactly one {name!r}, found {len(matches)}.")
+        digest = matches[0].get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+            raise Refusal(f"asset {name!r} has no usable digest ({digest!r}).")
+        digests[tag] = digest.removeprefix("sha256:")
+    return digests
