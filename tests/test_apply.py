@@ -1,4 +1,8 @@
 import os
+
+import pytest
+
+from sluice.core.leads import FRAMING_KEYS
 from sluice.core.vault import Vault
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
 from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
@@ -44,6 +48,24 @@ def test_apply_verdict_writes_all_fields(tmp_path):
     assert "SYNTHETIC-FIT" in after.fm["relevance_notes"]
 
 
+def test_every_framing_key_gets_a_non_blank_value_from_a_verdict_carrying_both(tmp_path):
+    # #329: `apply_verdict`'s write loop hand-types `("culture_flags", flags),
+    # ("triage_concerns", concerns)` by field name rather than iterating `FRAMING_KEYS`. This
+    # guards the roster against the write loop drifting from it: a key added to `FRAMING_KEYS`
+    # with no matching entry in the loop would read blank forever, and this row would catch it.
+    v = Vault(str(tmp_path))
+    _note(v, "D.md", ['company: "Example Meridian"', "status: new", "score: 0",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'triage_concerns: ""',
+                      'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    verdict = {"verdict": "shortlist", "relevance_score": 82,
+               "concerns": list(FRAMING_CONCERNS), "culture_flags": list(FRAMING_FLAGS)}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    after = v.read_leads()[0]
+    for key in FRAMING_KEYS:
+        assert after.fm.get(key, "") != "", f"{key} was not written by a verdict carrying both"
+
+
 def test_a_later_verdict_with_no_concerns_clears_triage_concerns(tmp_path):
     # The key holds the LATEST judgement. A verdict with no concerns must clear an earlier value,
     # or the CV composer is framed by a judgement triage has since withdrawn.
@@ -73,7 +95,7 @@ def test_apply_classification_returns_unchanged_on_a_status_change_between_read_
     the lead simply already left TRIAGE_OWNED by the time the write was attempted, and
     nothing was lost. `"skipped-race"` was a misnomer for exactly this outcome."""
     v = Vault(str(tmp_path))
-    _note(v, "D.md", ['company: "Delta"', "status: new", "score: 0",
+    _note(v, "D.md", ['company: "Example Meridian"', "status: new", "score: 0",
                       'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     # Simulate a receipt/manual `apply record` landing between read_leads() and
@@ -86,7 +108,7 @@ def test_apply_classification_returns_unchanged_on_a_status_change_between_read_
 
 def test_apply_verdict_returns_unchanged_on_a_status_change_between_read_and_write(tmp_path):
     v = Vault(str(tmp_path))
-    _note(v, "E.md", ['company: "Epsilon"', "status: new", "score: 0",
+    _note(v, "E.md", ['company: "Example Northgate"', "status: new", "score: 0",
                       'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     v.update_fields(note.ref, {"status": "applied"})
@@ -142,7 +164,7 @@ def test_a_judge_returned_unjudgeable_lands_on_a_new_lead(tmp_path):
     # reaches `research` at all. `unjudgeable` is in DEFAULT_TRIAGE_STATUSES, so the lead
     # is refetched next run instead of waiting on a human who can add nothing to it.
     v = Vault(str(tmp_path))
-    _note(v, "R.md", ['company: "Epsilon"', "status: new", "score: 0",
+    _note(v, "R.md", ['company: "Example Northgate"', "status: new", "score: 0",
                       'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     verdict = {"verdict": "unjudgeable", "relevance_score": 0,
@@ -163,7 +185,7 @@ def test_a_judge_returned_unjudgeable_must_not_overwrite_a_research_lead(tmp_pat
     # `research` by the old behaviour stay there, and clearing them is a migration a human
     # opts into, not something a nightly cron does to their queue behind them.
     v = Vault(str(tmp_path))
-    _note(v, "R2.md", ['company: "Epsilon"', "status: research", "score: 60",
+    _note(v, "R2.md", ['company: "Example Northgate"', "status: research", "score: 60",
                        'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
     note = v.read_leads({"research"})[0]
     verdict = {"verdict": "unjudgeable", "relevance_score": 0,
@@ -195,7 +217,7 @@ def test_a_judge_returned_unjudgeable_must_not_erase_a_dismissal(tmp_path):
     # put the lead back into DEFAULT_TRIAGE_STATUSES to be refetched and re-judged
     # nightly forever -- the exact treadmill this issue exists to stop.
     v = Vault(str(tmp_path))
-    _note(v, "D.md", ['company: "Delta"', "status: dismiss", "score: 20",
+    _note(v, "D.md", ['company: "Example Meridian"', "status: dismiss", "score: 20",
                       'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
     note = v.read_leads({"dismiss"})[0]
     verdict = {"verdict": "unjudgeable", "relevance_score": 0,
@@ -217,3 +239,32 @@ def test_an_ordinary_verdict_may_still_rewrite_a_shortlisted_lead(tmp_path):
                "fit_reasoning": "Scope is above the target shape on a full re-read."}
     assert apply_verdict(v, note, verdict, {}) == "applied"
     assert v.read_leads()[0].status == "dismiss"
+
+
+@pytest.mark.parametrize("field,key,values", [
+    ("concerns", "triage_concerns", FRAMING_CONCERNS),
+    ("culture_flags", "culture_flags", FRAMING_FLAGS),
+])
+def test_one_unsafe_item_drops_only_itself_and_replaces_the_earlier_value(tmp_path, field, key,
+                                                                          values):
+    # Before #329 one unsafe item failed the JOINED value, the key was skipped, and the PREVIOUS
+    # verdict's value stayed on the note -- where the CV composer would now read it as framing.
+    v = Vault(str(tmp_path))
+    _note(v, "K.md", ['company: "Example Meridian"', "status: new", "score: 0",
+                      f'{key}: "EARLIER-VALUE"', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    verdict = {"verdict": "research", "relevance_score": 60, field: [values[0], 'UN"SAFE']}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].fm[key] == values[0]
+
+
+def test_a_verdict_with_no_usable_verdict_field_writes_nothing(tmp_path):
+    # Before #329 a null verdict clamped to `needs_review`, moving the lead out of the default
+    # run's selection with no failure reported anywhere.
+    v = Vault(str(tmp_path))
+    _note(v, "L.md", ['company: "Example Northgate"', "status: research", "score: 72",
+                      'relevance_notes: ""'])
+    note = v.read_leads({"research"})[0]
+    before = open(note.ref, encoding="utf-8").read()
+    assert apply_verdict(v, note, {"verdict": None, "relevance_score": 80}, {}) == "skipped"
+    assert open(note.ref, encoding="utf-8").read() == before

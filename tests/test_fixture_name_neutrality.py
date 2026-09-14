@@ -21,7 +21,7 @@ pasted in front of a real firm's name passes for ever, and the admitted set stop
 enumerable. The pool relieves the friction #303 correctly identified without giving that up.
 
 A shape rule is also not the convention this repo actually has: `Acme` (17 uses),
-`A`/`B`/`C`, `Beta`/`Gamma`/`Delta`, `Human Typed Co` and the
+`A`/`B`/`C`, `Alpha`/`Beta`/`Gamma`, `Human Typed Co` and the
 deliberately-malformed `Foo\\Bar Ltd` injection fixtures are all legitimate and all fail such
 a rule. A guard that fires on ~40 good fixtures gets suppressed, and a suppressed guard
 guards nothing.
@@ -245,7 +245,7 @@ _SELF = Path(__file__).name
 # branch -- widening a neutrality gate is not a side effect worth taking silently.
 _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
-    "D", "Delta", "E", "Epsilon", "Example", "Example Alpha", "Example Analytics",
+    "D", "E", "Example", "Example Alpha", "Example Analytics",
     "Example Beta",
     "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
     "Example Co", "EXAMPLE CO", "example co",
