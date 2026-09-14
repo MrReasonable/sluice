@@ -156,7 +156,16 @@ ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "del
 
 def _cfg():
     from sluice.cv.config import CvConfig
-    c = CvConfig(); c.output_dir = "/tmp/cvout"; c.served_dir = "/tmp/cvserved"
+    c = CvConfig(); c.served_dir = "/tmp/cvserved"
+    # INSIDE the per-test sandbox, because every run that reaches composition writes its
+    # diagnostic artefacts under output_dir/<slug>/ (cv/artefacts.py). It was a fixed
+    # /tmp/cvout, harmless while nothing but FakeRenderer ever "wrote" there, and then one
+    # directory shared by every test in the session. HOME is what conftest's autouse
+    # `_pin_paths` points at a fresh tmp_path for each test, and this helper takes no
+    # fixture of its own because several other test files import and call it.
+    # test_cv_run_artefacts.py::test_the_shared_engine_config_writes_inside_the_test_sandbox
+    # pins it.
+    c.output_dir = os.path.join(os.environ["HOME"], "cvout")
     # prefix_map now defaults to {}; CLEAN_CV's citations are hardcoded to [EF1],
     # so the single ENTRIES company must still code to "EF1" (the 2-letter
     # fallback for "Example Foundry" would yield "EX1").

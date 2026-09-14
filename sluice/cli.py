@@ -1364,7 +1364,8 @@ def cmd_cv_run(args, config) -> int:
               f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
               f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} "
               f"dossier_failed={r.dossier_failed} "
-              f"skills_unreadable={r.skills_unreadable}",
+              f"skills_unreadable={r.skills_unreadable} "
+              f"artefacts_failed={r.artefacts_failed}",
               file=sys.stderr)
         # Every finding the summary line COUNTS also prints in full, in that line's own
         # field order so a reader never matches a block to a count by guessing. #167
@@ -1443,6 +1444,14 @@ def cmd_cv_run(args, config) -> int:
     if unframed:
         print(f"cv: {unframed} CV(s) composed without the Skills Inventory "
               f"(corpus unreadable -- run `job-sluice doctor`)", file=sys.stderr)
+    # The same shape again, for the per-lead diagnostic artefacts (the prompt, each attempt's
+    # composed text, run.json -- cv/artefacts.py). Failing to write them never fails the CV,
+    # so without a count a batch that lost them reads exactly like one that kept them. The
+    # engine's WARNING names each path and its error; this says how many runs it touched.
+    unkept = sum(1 for r in results if r.artefacts_failed)
+    if unkept:
+        print(f"cv: {unkept} run(s) whose diagnostic artefacts could not be written "
+              f"(the WARNING above names the path and the error)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
         _notify_reporting("job-sluice cv: " + "; ".join(

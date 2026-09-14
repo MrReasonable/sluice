@@ -386,6 +386,9 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
         # dossier_failed onto the exception, then let it propagate.
         e = VaultConflict("lost the write race")
         e.dossier_failed = True
+        # run_one stamps `artefacts_failed` the same way, for the same reason: this catch
+        # builds the result from the exception alone.
+        e.artefacts_failed = True
         raise e
 
     monkeypatch.setattr(cv_engine, "run_one", _boom)
@@ -400,6 +403,9 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
         "a dossier blocked by the SSRF guard, followed by a lost write race, must "
         "still surface in the 'N CV(s) composed blind' summary -- not be silently "
         "counted as a plain error")
+    assert results[0].artefacts_failed is True, (
+        "a run whose diagnostic artefacts could not be written, followed by a lost write "
+        "race, must still say so rather than read as a run with its artefacts on disk")
 
 
 class _PrecheckStore:

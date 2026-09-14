@@ -63,6 +63,26 @@ def test_cmd_cv_run_prints_the_style_and_voice_findings(monkeypatch, tmp_path, c
     assert "VOICE: flag\tThis reads like a press release." in err
 
 
+def test_cmd_cv_run_says_when_a_runs_diagnostic_artefacts_could_not_be_written(
+        monkeypatch, tmp_path, capsys):
+    """A run whose per-lead artefacts (prompt, composed drafts, run.json) failed to write
+    must not read as one that has them on disk. Surfaced the way `dossier_failed` is: a
+    field on the per-result line, and a count line under the results, so a batch that
+    lost them all is one line to notice rather than N fields to scan. The WARNING naming
+    the path and the error is the engine's (see tests/test_cv_run_artefacts.py); this pins
+    the CLI's own half."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf", artefacts_failed=True)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    assert cmd_cv_run(_args(), Config()) == 0   # a diagnostic failure never fails the CV
+    err = capsys.readouterr().err
+    assert "artefacts_failed=True" in err
+    assert "cv: 1 run(s) whose diagnostic artefacts could not be written" in err
+
+
 def test_cmd_cv_run_prints_nothing_extra_when_every_finding_list_is_empty(
         monkeypatch, tmp_path, capsys):
     # The other half of the populated-case discipline: a genuinely clean run must not
@@ -80,6 +100,8 @@ def test_cmd_cv_run_prints_nothing_extra_when_every_finding_list_is_empty(
     assert "AUDIT" not in err
     assert "slop=0" in err and "voice_flags=0" in err
     assert "violations=0" in err and "audit_flags=0" in err
+    assert "artefacts_failed=False" in err
+    assert "artefacts could not be written" not in err
     # The general form of the three label assertions above, which #258 is the reason to
     # add: `violations` entries carry no single label to name (every producer prefixes
     # its own category -- see the skipped-gate test), so an absence check keyed on

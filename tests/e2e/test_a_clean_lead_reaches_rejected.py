@@ -9,6 +9,7 @@ gate, so the recording renderer can witness that no CV was ever rendered for it
 (the gate's whole point), while a second, clean lead completes the walk to a
 `rejected` terminal.
 """
+import json
 import os
 
 from sluice.cv.engine import _slug
@@ -98,8 +99,21 @@ def test_a_clean_lead_reaches_rejected(tmp_path, monkeypatch):
     # never did. (A global "output dir empty" check would be wrong -- the clean
     # lead renders a real PDF there.)
     cv_out = h.paths["cv_output"]
-    assert os.path.isdir(os.path.join(cv_out, _slug("Example Foundry", "Staff Engineer")))
-    assert not os.path.exists(os.path.join(cv_out, _slug("Example Telemetry", "Senior Engineer")))
+    clean_dir = os.path.join(cv_out, _slug("Example Foundry", "Staff Engineer"))
+    gated_dir = os.path.join(cv_out, _slug("Example Telemetry", "Senior Engineer"))
+    assert any(name.lower().endswith(".pdf") for name in os.listdir(clean_dir))
+    # The gate-failing lead's directory EXISTS: every run that reaches composition keeps
+    # its diagnostic artefacts there (cv/artefacts.py), and a gate failure is the run most
+    # in need of them. So "absent" can no longer stand in for "never rendered", and this
+    # asserts the thing itself -- no PDF under any name, and no text handed to a renderer.
+    # `run.json` is read, not merely listed, so the absence checks cannot pass against an
+    # empty or unrelated directory.
+    gated = os.listdir(gated_dir)
+    assert "run.json" in gated, gated
+    assert not [name for name in gated if name.lower().endswith(".pdf")], gated
+    assert "cv.rendered.md" not in gated, gated
+    with open(os.path.join(gated_dir, "run.json"), encoding="utf-8") as f:
+        assert json.load(f)["status"] == "skipped-gate"
     # The rendered lead now carries a tailored_cv marker; the gate-failing one does not.
     tailored = {n.fm["company"]: n.fm.get("tailored_cv", "") for n in h.vault.read_leads()}
     assert tailored["Example Foundry"] and not tailored["Example Telemetry"]
