@@ -53,6 +53,18 @@ def test_a_hold_carrying_both_kinds_names_both(capsys):
     assert "SLOP leverage" in err
 
 
+def test_a_hold_with_no_framing_prints_exactly_what_it_printed_before_329(capsys):
+    """Whole-output equality, recorded from the code BEFORE #329 changed the printer: a hold
+    stamped before that change must not be re-described by it."""
+    _print_signoff_claims("slug", ["unsupported\tMotivated by placeholder\tNONE",
+                                   "style\tSLOP leverage: x"])
+    assert capsys.readouterr().err == (
+        "cv signoff: slug has 1 unsupported claim(s):\n"
+        "  - unsupported\tMotivated by placeholder\tNONE\n"
+        "cv signoff: slug has 1 style/voice concern(s):\n"
+        "  - SLOP leverage: x\n")
+
+
 def test_a_non_string_claim_is_printed_rather_than_crashing_the_prompt(capsys):
     # `needs_signoff` is hand-editable YAML in a lead note, and Sluice.sign_off_cv passes
     # a parsed JSON array through element-wise (`parsed if isinstance(parsed, list) else
