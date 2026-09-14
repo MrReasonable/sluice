@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.16.0](https://github.com/MrReasonable/sluice/compare/v2.15.1...v2.16.0) (2026-09-14)
+
+
+### Features
+
+* **cv:** keep prompt, composed text and gate findings next to each rendered CV ([15909ea](https://github.com/MrReasonable/sluice/commit/15909ea630e9e995958ac67a2fa8e7fcdc8b1c99))
+
+
+### Bug Fixes
+
+* **cv:** keep run-record serialisation and cleanup failures inside the artefact boundary ([e455811](https://github.com/MrReasonable/sluice/commit/e455811199b1e77da7ad857b08a38071f486df60))
+
 ## [2.15.1](https://github.com/MrReasonable/sluice/compare/v2.15.0...v2.15.1) (2026-09-14)
 
 
