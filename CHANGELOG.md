@@ -40,6 +40,62 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.15.1](https://github.com/MrReasonable/sluice/compare/v2.15.0...v2.15.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **triage:** key the [#223](https://github.com/MrReasonable/sluice/issues/223) re-verdict acknowledgement on the vault, not the cwd ([03cc73d](https://github.com/MrReasonable/sluice/commit/03cc73d0f62e37b04375172bba5cba5c621dfc91))
+* **triage:** list only dismissed leads the [#223](https://github.com/MrReasonable/sluice/issues/223) re-verdict would keep ([4da2fe4](https://github.com/MrReasonable/sluice/commit/4da2fe484642bf3c0531d329cb5d96ec8d948648))
+* **triage:** stop before changing any lead when the audit log cannot be written ([f842fbb](https://github.com/MrReasonable/sluice/commit/f842fbbfe9acb1d02f13a203232956af4689c4e3))
+
+#### What this changes for an existing install
+
+**The re-verdict notice shows again after upgrading.** The #223 re-verdict acknowledgement is
+now keyed on the vault itself, so an acknowledgement recorded by an earlier release no longer
+matches. If your vault still holds any lead the notice would list, the first `triage run`
+after upgrading shows the notice again, changes no lead and exits 0, as it did the first time;
+the run after that applies the change. A `--dry-run` shows the notice without recording it, so
+it does not count as that first run. This assumes the triage audit log passes the pre-write
+check described below and that sluice can record the acknowledgement. If the audit log fails
+the check, the run stops instead; if only the acknowledgement cannot be recorded, the first run
+is not held and goes ahead.
+
+The notice no longer lists a lead already at `dismiss` whose new verdict is a reject, since it
+stays at `dismiss` either way, so a vault whose affected leads are all dismissed that way is
+not held at all. A dismissed lead the new verdict would keep is still listed. To re-judge one,
+move it back to `new` by hand. `job-sluice triage run --status dismiss` without `--no-llm`
+also re-judges it, but that run takes every lead at `dismiss`, including ones you dismissed
+yourself.
+
+Once a run has recorded the acknowledgement, it holds for the vault whatever directory triage
+starts in.
+Before this release, each directory a run started from that had not yet acknowledged showed
+the notice again and changed no lead, so a scheduled run and a hand-run one started in
+different places each lost a run to it. If you worked around that by always starting triage
+from one fixed directory, that is no longer needed. The vault is also identified through
+symlinks: a vault reached through a link is keyed on the directory the link points at.
+
+The held run's message now reads CHANGED NO LEADS rather than WROTE NOTHING -- it records the
+acknowledgement, which is what lets the next run apply the change.
+
+**Triage stops before changing any lead when its audit log fails the pre-write check.** Before
+this release, on a state directory sluice could read but not write, `triage run` changed a lead
+and then failed with a traceback, and a pending #223 notice was never printed. Now the run checks
+the triage audit log before it changes any lead; if the check fails, it prints STOPPED with the
+reason and any pending notice, changes no lead and exits 1. A run that selected a lead, or had
+the #223 notice to record, but wrote no audit line used to exit 0 even on such a log; it now
+stops with exit 1 as well, so a scheduled run on a log that cannot be written can fail where it
+used to pass. The check also refuses an audit log path
+(`TRIAGE_AUDIT` or `triage.audit_jsonl`) with `..` after a directory that does not exist yet,
+even where that path could be written: give the path without the `..`, or create the directory
+first.
+
+**Docker:** one compose project serves one vault. The project's state volume holds, among other
+state, `seen.db`, track's seen messages and the re-verdict acknowledgement, so pointing
+`SLUICE_VAULT` at a different vault under the same project carries all of it over. Give another
+vault a project of its own with `docker compose -p <name>`.
+
 ## [2.15.0](https://github.com/MrReasonable/sluice/compare/v2.14.1...v2.15.0) (2026-09-13)
 
 
