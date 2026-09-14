@@ -21,6 +21,8 @@ import ast
 import hashlib
 import json
 import pathlib
+import subprocess
+import sys
 
 import pytest
 
@@ -969,3 +971,196 @@ def test_the_bootstrap_with_no_formula_at_the_base_pushes():
 def test_an_unparseable_base_an_absent_default_or_a_bad_state_is_refused(overrides):
     with pytest.raises(Refusal):
         _push(**overrides)
+
+
+# --- the CLI: plan -------------------------------------------------------------------------------
+
+
+def test_the_plan_subcommand_refuses_a_bad_push_target_before_any_external_command():
+    """Executed with an empty PATH: the refusal must come before git or the network, so a caller
+    passing a bad push target fails before anything reads the tap. Every other variable `plan`
+    requires before its first git call is set, so only statement order stands between the bad value
+    and git."""
+    proc = subprocess.run(
+        [sys.executable, "-P", str(SCRIPT), "plan"],
+        env={"PATH": "", "PUSH_TARGET": "bogus", "VERSION": "1.2.3", "REPOSITORY_OWNER": "ExampleOwner"},
+        capture_output=True, text=True, timeout=60,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 1, output
+    assert proc.stdout.startswith("::error::"), output
+    assert "'default'" in output and "'auto'" in output
+
+
+_SYMREF = "ref: refs/heads/main\tHEAD\n" + "f" * 40 + "\tHEAD\n"
+_PYPI = {"urls": [{"packagetype": "sdist", "url": _PYPI_URL, "digests": {"sha256": "d" * 64}}]}
+
+# Restated by hand; built with string repetition, so deliberately not an `_EXPECTED*` name.
+_PLAN_FOR_DEFAULT = {
+    "tap_owner": "exampleowner",
+    "default_branch": "main",
+    "base_sha": "f" * 40,
+    "target_branch": "main",
+    "sdist_url": "https://files.pythonhosted.org/packages/ab/cd/" + "e" * 60 + "/job_sluice-9.9.0.tar.gz",
+    "sdist_sha256": "d" * 64,
+    "tag": "job-sluice-9.9.0-123-1",
+    "root_url": "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-123-1",
+    "run_url": "https://github.com/ExampleOwner/sluice/actions/runs/123",
+    "caller": "release",
+    "platforms": '[{"runner": "macos-15", "tag": "arm64_sequoia"}, '
+                 '{"runner": "macos-26", "tag": "arm64_tahoe"}]',
+}
+
+
+def _plan(**overrides):
+    arguments = {"push_target": "default", "version": "9.9.0", "repository_owner": "ExampleOwner",
+                 "run_id": "123", "run_attempt": "1", "run_url": _RUN_URL,
+                 "ls_remote_output": _SYMREF, "pypi_json": _PYPI, "contents_status": None}
+    arguments.update(overrides)
+    return hb.build_plan(**arguments)
+
+
+def test_the_default_plan_emits_every_output():
+    assert _plan() == _PLAN_FOR_DEFAULT
+
+
+@pytest.mark.parametrize("status, target", [(200, "bump-9.9.0"), (404, "main")])
+def test_the_auto_plan_targets_by_the_observable(status, target):
+    plan = _plan(push_target="auto", contents_status=status)
+    assert (plan["target_branch"], plan["caller"]) == (target, "dry run")
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"push_target": "auto", "contents_status": 403},
+        {"push_target": "auto", "contents_status": None},
+        {"run_url": "https://example.invalid/runs/1"},
+        {"version": "9.9"},
+        {"repository_owner": "has space"},
+        {"ls_remote_output": ""},
+        {"pypi_json": {"urls": []}},
+    ],
+)
+def test_a_plan_with_a_bad_input_or_an_unknown_observable_is_refused(overrides):
+    with pytest.raises(Refusal):
+        _plan(**overrides)
+
+
+def test_outputs_are_written_one_per_line(tmp_path):
+    path = tmp_path / "output"
+    hb.write_outputs({"a": "1", "b": "two"}, str(path))
+    assert path.read_text() == "a=1\nb=two\n"
+
+
+def test_an_output_with_a_newline_is_refused(tmp_path):
+    with pytest.raises(Refusal):
+        hb.write_outputs({"a": "1\nb=2"}, str(tmp_path / "output"))
+
+
+@pytest.mark.parametrize("key", ["a\nb", "a<<EOF", "a=b", ""])
+def test_an_output_name_that_is_not_an_identifier_is_refused(tmp_path, key):
+    """GitHub reads `name=value` and `name<<DELIMITER`, so a name is as much an injection surface as
+    a value. Nothing is written when any name is refused."""
+    path = tmp_path / "output"
+    with pytest.raises(Refusal):
+        hb.write_outputs({"first": "1", key: "2"}, str(path))
+    assert not path.exists()
+
+
+class _FakeHttp:
+    def __init__(self, routes):
+        self.routes = routes
+        self.calls = []
+
+    def __call__(self, request):
+        self.calls.append((request.get_method(), request.full_url, dict(request.header_items())))
+        response = self.routes.get((request.get_method(), request.full_url))
+        if response is None:
+            raise AssertionError(f"unexpected request {request.get_method()} {request.full_url}")
+        return response
+
+
+def _fake_git(stdout):
+    def fake(*args, cwd=None):
+        return subprocess.CompletedProcess(["git", *args], 0, stdout.encode(), b"")
+    return fake
+
+
+@pytest.mark.parametrize(
+    "push_target, status, target", [("default", None, "main"), ("auto", 200, "bump-9.9.0"),
+                                    ("auto", 404, "main")],
+)
+def test_plan_writes_its_outputs_and_reads_the_contents_api_only_for_auto(
+    tmp_path, monkeypatch, push_target, status, target
+):
+    monkeypatch.setattr(hb, "git", _fake_git(_SYMREF))
+    routes = {("GET", "https://pypi.org/pypi/job-sluice/9.9.0/json"): (200, json.dumps(_PYPI).encode())}
+    contents = ("https://api.github.com/repos/exampleowner/homebrew-tap/contents/Formula/"
+                "job-sluice.rb?ref=" + "f" * 40)
+    if status is not None:
+        routes[("GET", contents)] = (status, b"{}")
+    http = _FakeHttp(routes)
+    output = tmp_path / "output"
+    env = {"PUSH_TARGET": push_target, "VERSION": "9.9.0", "REPOSITORY_OWNER": "ExampleOwner",
+           "RUN_ID": "123", "RUN_ATTEMPT": "1", "RUN_URL": _RUN_URL,
+           "GITHUB_TOKEN": "workflow-token", "GITHUB_OUTPUT": str(output)}
+    assert hb.main(["plan"], env=env, http=http) == 0
+    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    assert outputs["target_branch"] == target
+    contents_calls = [call for call in http.calls if call[1] == contents]
+    assert len(contents_calls) == (0 if push_target == "default" else 1)
+    if contents_calls:
+        assert contents_calls[0][2]["Authorization"] == "Bearer workflow-token"
+
+
+# --- the CLI: the untrusted jobs' checks ------------------------------------------------------------
+
+
+def test_render_writes_the_renderers_text(tmp_path):
+    from scripts.render_homebrew_formula import render
+
+    out = tmp_path / "job-sluice.rb"
+    env = {"SDIST_URL": _FIXTURE_SDIST, "SDIST_SHA256": "c" * 64}
+    assert hb.main(["render", "--out", str(out)], env=env) == 0
+    assert out.read_text() == render(sdist_url=_FIXTURE_SDIST, sha256="c" * 64)
+
+
+def test_tags_prints_one_declared_tag_per_line(capsys):
+    assert hb.main(["tags"], env={"PLATFORMS": hb.platforms_json()}) == 0
+    assert capsys.readouterr().out.split() == ["arm64_sequoia", "arm64_tahoe"]
+
+
+def test_a_missing_environment_variable_is_a_refusal(capsys):
+    assert hb.main(["tags"], env={}) == 1
+    assert "PLATFORMS" in capsys.readouterr().out
+
+
+def test_produced_tag_exits_by_the_check(tmp_path, capsys):
+    path = tmp_path / "bottle.json"
+    path.write_text((FIXTURES / "bottle.json").read_text())
+    assert hb.main(["produced-tag", "--json", str(path)], env={"DECLARED_TAG": "arm64_tahoe"}) == 0
+    assert hb.main(["produced-tag", "--json", str(path)], env={"DECLARED_TAG": "arm64_sequoia"}) == 1
+    assert "::error::" in capsys.readouterr().out
+
+
+def test_pour_check_scopes_to_the_tap_formula_and_has_an_expect_built_mode(tmp_path):
+    path = tmp_path / "info.json"
+    path.write_text((FIXTURES / "info_poured.json").read_text())
+    env = {"TAP_OWNER": "exampleowner", "VERSION": "9.9.0"}
+    assert hb.main(["pour-check", "--info", str(path)], env=env) == 0
+    assert hb.main(["pour-check", "--info", str(path), "--expect-built"], env=env) == 1
+    other_owner = {"TAP_OWNER": "otherowner", "VERSION": "9.9.0"}
+    assert hb.main(["pour-check", "--info", str(path)], env=other_owner) == 1
+
+
+def test_merged_tags_and_cache_check_exit_by_their_checks(tmp_path):
+    formula = tmp_path / "job-sluice.rb"
+    formula.write_text(_merged().replace("a" * 64, hashlib.sha256(b"payload").hexdigest()))
+    bottle = tmp_path / "bottle"
+    bottle.write_bytes(b"payload")
+    platforms = {"PLATFORMS": hb.platforms_json()}
+    assert hb.main(["merged-tags", "--formula", str(formula)], env=platforms) == 0
+    check = ["cache-check", "--formula", str(formula), "--tag", "arm64_tahoe", "--file"]
+    assert hb.main(check + [str(bottle)], env={}) == 0
+    assert hb.main(check + [str(tmp_path / "missing")], env={}) == 1
