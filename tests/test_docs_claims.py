@@ -1948,7 +1948,7 @@ def test_the_cv_summary_key_extraction_is_not_vacuous():
     floor would let one key silently replace another."""
     assert _printed_cv_summary_keys() == {
         "served", "violations", "audit_flags", "slop", "voice_flags", "dossier_failed",
-        "skills_unreadable"}, (
+        "skills_unreadable", "artefacts_failed"}, (
         "the cv per-result line changed. Update this set AND the `Per-result line to stderr` "
         "paragraph in docs/USAGE.md that it guards.")
 

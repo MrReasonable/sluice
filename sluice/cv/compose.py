@@ -395,10 +395,19 @@ def _unwrap_agent_envelope(text):
 # to), so a reader arriving at the real call site is exactly who that comment exists to reach.
 def compose(backend, bundle_text, jd, company, role, *, name, contact="",
             employers=None, prior_violations=None, slop_allow=None,
-            skills_requested=False):
-    raw = backend.complete(build_prompt(bundle_text, jd, company, role, name=name,
-                                        contact=contact, employers=employers,
-                                        prior_violations=prior_violations,
-                                        slop_allow=slop_allow,
-                                        skills_requested=skills_requested)).text
+            skills_requested=False, on_prompt=None):
+    prompt = build_prompt(bundle_text, jd, company, role, name=name,
+                          contact=contact, employers=employers,
+                          prior_violations=prior_violations,
+                          slop_allow=slop_allow,
+                          skills_requested=skills_requested)
+    # `on_prompt` receives the prompt exactly as it is about to be sent, so a caller can keep
+    # it (cv/engine.py writes it into the run's diagnostic artefacts, cv/artefacts.py). A
+    # callback rather than the caller running `build_prompt` a second time: that would need
+    # its own copy of the argument list above, and a kept prompt that has drifted from the one
+    # actually sent is worse than none. Called BEFORE `complete`, so a backend that hangs,
+    # times out or raises still leaves behind the prompt that caused it.
+    if on_prompt is not None:
+        on_prompt(prompt)
+    raw = backend.complete(prompt).text
     return _unwrap_agent_envelope(raw)

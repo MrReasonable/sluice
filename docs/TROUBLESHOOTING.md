@@ -207,11 +207,14 @@ These are the **last** attempt's findings and only those. The engine composes at
 twice, feeding the first attempt's findings into the second, but it re-derives the list
 from scratch against each draft rather than accumulating — so a line here may be one the
 model was already shown and did not fix, or one the retry introduced while fixing
-something else. The first attempt's findings are neither printed nor logged, so a single
-run cannot tell you which. What does distinguish them is repetition **across runs**: a
-category that keeps coming back on fresh invocations points upstream of the model — the
-composer prompt, the evidence corpus, or the Candidate Profile note — rather than at a
-one-off bad draft.
+something else. The result line cannot tell you which, but the run's diagnostic artefacts
+can. In the lead's working directory, `<cv.output_dir>/<slug>/`, `prompt.attempt-2.txt` is
+the retry prompt and ends with the first attempt's findings verbatim, `cv.attempt-1.md` and
+`cv.attempt-2.md` are the two drafts they were found in, and `run.json` lists the bundle
+entry ids the composer was given (see `cv run` in `docs/USAGE.md`). Repetition **across
+runs** still says something one run's artefacts cannot: a category that keeps coming back on
+fresh invocations points upstream of the model — the composer prompt, the evidence corpus,
+or the Candidate Profile note — rather than at a one-off bad draft.
 
 ## A gate-clean CV is still refused (a renderer `precheck` violation)
 

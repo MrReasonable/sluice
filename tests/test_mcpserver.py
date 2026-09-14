@@ -929,6 +929,25 @@ def test_cv_run_tool_carries_slop_and_voice_flags_under_the_untrusted_warning(
     assert UNTRUSTED_DERIVED_CONTENT_WARNING in out["content_warning"]
 
 
+@pytest.mark.parametrize("failed", [True, False])
+def test_cv_run_tool_reports_whether_the_runs_artefacts_were_written(
+        monkeypatch, tmp_path, failed):
+    """The MCP projection of `CvResult.artefacts_failed`, beside `dossier_failed`: a client
+    told nothing would assume the per-lead diagnostic files exist. ALWAYS present, like the
+    other two booleans -- it is a verdict, not a finding list, so the sparse-key rule for
+    lists does not apply. Both values, because a projection hard-coding either one passes
+    a single-valued test."""
+    from sluice.cv.engine import CvResult
+
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf", artefacts_failed=failed)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    out = cv_run(_cv_app(Vault(str(tmp_path))), "Example Foundry - Analyst")
+    assert out["artefacts_failed"] is failed
+
+
 def test_cv_run_tool_bad_backend_raises_value_error_naming_valid_choices(tmp_path):
     """decision 14: `backend` is unvalidated a SECOND time in this module (no
     duplicate copy of the choice set), but the resulting `BackendError` from

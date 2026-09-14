@@ -586,6 +586,26 @@ whichever neighbour it was written next to:
    WeasyPrint; `script` shells out to an external render script instead), and
    serve under an opaque, cache-busted filename.
 
+   Every run that reaches composition also leaves its diagnostic artefacts
+   (`cv/artefacts.py`) in the lead's working directory,
+   `output_dir/<slug(company, role)>/`, the one the PDF is rendered into and
+   never `served_dir`: the exact prompt each attempt sent, each attempt's
+   composed text, the text handed to the renderer, and `run.json` (status,
+   attempts, the retained attempt, backend, bundle entry ids, every finding
+   list, and a manifest of the files the run wrote). Runs that render nothing,
+   a gate failure or a dry run, write them too, because those most need
+   diagnosing. `run_one` is a thin wrapper that finishes the record on every
+   way out of the real body (`_run_one`), an exception included, so a return
+   added later cannot skip it. The record stays inert until composition
+   starts, so a lead refused earlier (notably one held for sign-off) leaves
+   the previous run's set untouched. A later run deletes the set by name
+   before writing its own, so an earlier run's extra attempt cannot pass for
+   this run's. Writing is best-effort but loud: a failure logs a WARNING
+   naming the path and sets `CvResult.artefacts_failed`, which `cv run`
+   prints, and it never costs the CV. The prompt reaches the file through
+   `compose()`'s `on_prompt` callback, called just before the backend, rather
+   than by rebuilding it, so what is kept cannot drift from what was sent.
+
    Before any of that, `Sluice.compose_cv` refuses ONCE for the whole run if the vault
    cannot compose at all (#242): no baseline CV at `baseline_rel` (missing, empty or
    unreadable), or no verified entries in a `cited_by_gate` corpus. It is a property of

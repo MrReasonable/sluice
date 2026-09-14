@@ -1856,8 +1856,11 @@ class Sluice:
             # catch-all was fixed against one commit ago; this is its second call site.
             # `getattr(..., False)` also covers a VaultConflict raised by code that
             # predates #18 and so never carries the attribute.
+            # `artefacts_failed` is stamped onto the exception the same way (run_one's
+            # wrapper) and read back here for the same reason.
             return [CvResult(notes[0].ref, "error",
-                             dossier_failed=getattr(e, "dossier_failed", False))]
+                             dossier_failed=getattr(e, "dossier_failed", False),
+                             artefacts_failed=getattr(e, "artefacts_failed", False))]
 
     def sign_off_cv(self, *, lead, accept=True, confirm=None, require_pending=None):
         """Resolve a shortlisted lead by slug ONCE and resolve its #60 sign-off hold via

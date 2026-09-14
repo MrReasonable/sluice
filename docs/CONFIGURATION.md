@@ -139,7 +139,7 @@ the Candidate Profile section that follows this table.
 | `render_script` | `"./scripts/cv_render_v2.py"` | `script` renderer only; no script ships — point it at your own or it fails at construction |
 | `render_python` | `"/usr/bin/python3"` | |
 | `render_home` | `"./cv-home"` | cwd-relative by design, no `~` expansion |
-| `output_dir` | `"./cv-output"` | cwd-relative |
+| `output_dir` | `"./cv-output"` | cwd-relative. Each lead gets `<output_dir>/<slug>/`, holding its rendered PDF and its latest run's diagnostic artefacts: the full composer prompt, each attempt's draft and `run.json` (see `cv run` in `docs/USAGE.md`). The prompt carries your evidence and contact block, so keep this outside anything you publish |
 | `served_dir` | `"./cv-served"` | cwd-relative |
 | `vault_cv_dir` | `"My CV/tailored"` | inside the vault |
 | `neutral_filename` | `"CV.pdf"` | |

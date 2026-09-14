@@ -6,7 +6,14 @@ precheck, em dashes) and a SCOPED STYLE one (#167: AI-slop phrases, in PROFILE p
 WORK bullets only). Either triggers exactly one retry with the findings fed back, and the
 loop RETAINS the last HARD-clean draft -- so the lead is skipped (never rendered ungated)
 when no attempt ever cleared the hard tier, and never merely over a phrase. dry_run
-computes and reports but writes nothing.
+computes and reports, and writes nothing to the store, the renderer or served_dir.
+
+It DOES write the run's diagnostic artefacts (cv/artefacts.py), and that is decided rather
+than inherited. A dry run already spends a composition and an audit call per lead; the
+composed text is the part of that spend worth keeping, since the result line shows findings
+but never the draft they were found in; and `output_dir` is a scratch workspace nothing
+downstream reads, so no pipeline state moves. run.json records `dry_run: true`, and a dry run
+clears and replaces an earlier real run's artefacts for the same slug like any later run.
 
 An OPT-IN third signal (`cv.voice_check`, cv/voice.py) rides the same retry once the HARD
 tier is clean: a model judgment of the draft's VOICE, for the AI-tell phrasing a fixed
@@ -24,6 +31,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import date
+from functools import partial
 
 from sluice.core import status as _status
 from sluice.core.candidate import contact_block, full_name
@@ -31,6 +39,7 @@ from sluice.core.leads import StalenessPolicy, ambiguous_slug_warnings, index_by
 from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.log import get_logger
 from sluice.core.usage import meter
+from sluice.cv import artefacts as _artefacts
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
@@ -117,6 +126,15 @@ class CvResult:
     # that RAISED, and the only raise this flag could survive happens after it is already
     # set, at which point the lead is reported `error` and the framing is not the story.
     skills_unreadable: bool = False
+    # The run's diagnostic artefacts (cv/artefacts.py: the prompt, each attempt's composed
+    # text, run.json) could not all be written, or the previous run's could not all be
+    # cleared. Visibility, never control flow -- `dossier_failed`'s shape for the same
+    # reason: an artefact exists to diagnose a CV, and failing to keep one must never cost
+    # the CV. Set by `run_one` on every way out, including stamped onto the exception for the
+    # `error` result a caller builds. Read by cli.py's per-result line and summary count and
+    # by mcpserver.py's cv_run. Always False for a lead refused before composition, which
+    # writes nothing and so has nothing to fail.
+    artefacts_failed: bool = False
 
 
 def _slug(company: str, role: str) -> str:
@@ -188,6 +206,33 @@ def _contact_rewording(found, expected) -> str:
 
 def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=False,
            guard_existing_cv=False, policy=StalenessPolicy(), usage=None) -> CvResult:
+    # The run's diagnostic artefacts (cv/artefacts.py) are FINISHED here, around the real
+    # body, rather than beside each of its returns. `_run_one` leaves through several
+    # `return CvResult(...)` statements and any exception, and a record written at each of
+    # them is one that a return added later can silently skip; wrapping sends every way out
+    # through this one place. `record` stays inert until `_run_one` reaches composition, so
+    # the early refusals (not shortlisted, held for sign-off, stale, identity unset) write
+    # nothing and leave an earlier run's artefacts as they were -- for a held lead, those
+    # are what explain the hold.
+    record = _artefacts.RunArtefacts(dry_run=dry_run)
+    try:
+        result = _run_one(note, vault, cvcfg, backend, dossier_cache, renderer=renderer,
+                          dry_run=dry_run, guard_existing_cv=guard_existing_cv,
+                          policy=policy, usage=usage, record=record)
+    except Exception as e:
+        # The `error` result is built by the CALLER (run_batch, or `Sluice.compose_cv`'s
+        # write-race catch) from the exception alone, so the flag rides on the exception --
+        # the channel `dossier_failed` already uses, stamped by `_run_one`'s own handler.
+        record.finish_error(e)
+        e.artefacts_failed = record.failed
+        raise
+    record.finish(result)
+    result.artefacts_failed = record.failed
+    return result
+
+
+def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
+             guard_existing_cv, policy, usage, record) -> CvResult:
     # The OPTIONAL half of the Renderer seam (see core/protocols.py). `getattr`, not a
     # required protocol member: a renderer that imposes no grammar of its own must not be
     # made to declare one. Resolved ONCE here rather than inside the retry loop, and the
@@ -331,6 +376,21 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # fault knowable here must not cost an LLM compose first.
         sources = _bundle.bundle_sources(b)
 
+        # Composition starts here, and so do the run's diagnostic artefacts. The working
+        # directory is bound NOW rather than beside the render call, because the runs that
+        # never render -- a gate failure, a dry run -- are the ones most in need of them.
+        # What is known before composition goes in here; what the loop and the render learn
+        # is recorded as they learn it, so a run that raises part-way still leaves what it
+        # had. Placed AFTER every step that can fail before a compose (the evidence reads,
+        # the bundle build, `bundle_sources`): a run that dies there composed nothing, and
+        # clearing an earlier run's artefacts on its way to failing would destroy the last
+        # diagnosis this lead had in exchange for nothing.
+        # tests/test_cv_run_artefacts.py::test_a_run_that_fails_before_composing_leaves_the_last_diagnosis_alone
+        # pins it.
+        out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
+        record.begin(out_dir, lead=note.slug, entry_ids=[e["id"] for e in b["entries"]],
+                     dossier_failed=dossier_failed, skills_unreadable=skills_unreadable)
+
         retry_msgs, cv_text, violations, slop_err = None, "", [], []
         # The last attempt that cleared the HARD gate, as `(cv_text, style_msgs,
         # voice_flags)`, or None if no attempt ever did. Retaining it is what lets a
@@ -348,7 +408,10 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
         # fabrication and nothing else -- prefixing would make Task 16 parse a string
         # back into a verdict, which is the fragile direction).
         best = None
-        for _ in range(2):
+        # Numbered from 1 because the number is user-facing: it names the attempt's
+        # artefact files (prompt.attempt-1.txt, cv.attempt-1.md) and run.json's
+        # `retained_attempt`.
+        for attempt in range(1, 3):
             # Only the COMPOSE call is wrapped, never the loop body. The body raises a
             # deliberate TypeError when a renderer breaks the `precheck` contract below,
             # and that must keep propagating: `precheck` runs on attempt 1 too, so a
@@ -396,8 +459,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                                            prior_violations=retry_msgs,
                                            slop_allow=cvcfg.slop_allow,
                                            skills_requested=any(
-                                               es.skills for es in sources.entries.values()))
+                                               es.skills for es in sources.entries.values()),
+                                           # The exact prompt this attempt sends, kept
+                                           # before the backend call -- see compose()'s
+                                           # own comment on `on_prompt`.
+                                           on_prompt=partial(record.prompt, attempt))
             except Exception as e:
+                # Recorded against its attempt BEFORE either arm below: on the `raise` arm
+                # it becomes run.json's `error` too, but on the `break` arm the log line is
+                # otherwise the only trace that attempt 2 ever ran.
+                record.compose_failed(attempt, e)
                 # A retry that never RETURNS must not bin a lead attempt 1 already
                 # earned. compose() catches nothing, so a BackendError -- a timeout,
                 # every fallback leg down, a reply truncated at max_tokens -- would
@@ -418,6 +489,9 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                 _log.warning("cv retry compose for %s failed (%s); shipping the retained "
                              "hard-clean draft", note.ref, e)
                 break
+            # Kept as COMPOSED, before any gate reads it: this is the text a diagnosis has
+            # to start from, whichever way the gates below then rule on it.
+            record.composed(attempt, cv_text)
             violations = _validate(cv_text, sources, employers=cvcfg.employers,
                                    fabrication_decoys=cvcfg.fabrication_decoys)
             # Fail-closed: validate()'s per-bullet citation checks only run inside the
@@ -667,14 +741,16 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                                      "clean", note.ref, e)
                         voice_flags = []
                 best = (cv_text, style_msgs, voice_flags)
+                # Beside `best`, so the two cannot disagree about which attempt was kept.
+                record.retained(attempt)
                 if not style_msgs and not voice_flags:
                     break
             # ALL THREE tiers reach the composer. A style or voice finding is worth one
             # retry -- it is the whole of #167's complaint that these matches were
             # computed and thrown away -- and the retry is bounded at one either way:
-            # `range(2)`. The VOICE prefix mirrors the SLOP one immediately above:
-            # both are read by the same model, in the same retry prompt, and need to
-            # look like the same kind of instruction to it.
+            # `range(1, 3)` is two attempts. The VOICE prefix mirrors the SLOP one
+            # immediately above: both are read by the same model, in the same retry
+            # prompt, and need to look like the same kind of instruction to it.
             retry_msgs = hard_msgs + style_msgs + [f"VOICE: {f}" for f in voice_flags]
 
         backend_used = getattr(backend, "last_backend", None)
@@ -744,12 +820,17 @@ def run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run=Fal
                             skills_unreadable=skills_unreadable)
 
         from sluice.cv import render as _render
-        out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
         # The renderer is INJECTED, never built here. An engine that constructs its own
         # adapter breaks both the seam and the offline tests. It is reached only past the
         # HARD gate above: a renderer never validates, and is never handed a CV with
-        # outstanding violations.
+        # outstanding violations. `out_dir` was bound where the artefacts began, so the PDF
+        # and the artefacts that explain it share one directory by construction.
+        #
+        # The text is kept BEFORE the call rather than after it, so a renderer that raises
+        # still leaves behind exactly what it was handed.
+        record.rendering(cv_text)
         pdf = renderer.render(cv_text, out_dir, neutral_name=cvcfg.neutral_filename)
+        record.rendered(pdf)
         served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
                   if cvcfg.served_dir else None)
         # An `unsupported` audit flag WITHHOLDS the send-ready pointer until a human signs off
@@ -957,8 +1038,10 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
             # dossier WAS blocked but which then also failed downstream for an
             # unrelated reason. `getattr(..., False)` also covers an exception raised
             # by code that predates #18 and so never carries the attribute.
+            # `artefacts_failed` crosses the same way, stamped by run_one's wrapper.
             results.append(CvResult(note.ref, "error",
-                                    dossier_failed=getattr(e, "dossier_failed", False)))
+                                    dossier_failed=getattr(e, "dossier_failed", False),
+                                    artefacts_failed=getattr(e, "artefacts_failed", False)))
         # needs-signoff counts toward --limit alongside rendered/dry-run: a held lead did
         # the full (expensive) compose + render + serve; only the pointer was withheld, so
         # it consumed a unit of the requested work just as a rendered one did.

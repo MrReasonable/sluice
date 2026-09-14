@@ -433,7 +433,8 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
     the ONLY route past cv/engine.py's fabrication gate (decision 2). Always a REAL
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
     (decision 14). The composed CV text itself is never returned in the response,
-    only violations/audit_flags/slop/voice_flags/served/dossier_failed -- it's an LLM
+    only violations/audit_flags/slop/voice_flags/served/dossier_failed/skills_unreadable/
+    artefacts_failed -- it's an LLM
     document derived from an attacker-controlled job description, and echoing it back
     would be a large, unnecessary step past what the response needs to convey. Write
     tool.
@@ -469,8 +470,11 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
         notes = [n for n in sluice.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
         return {"outcome": "ambiguous", "candidates": sorted(n.slug for n in notes)}
     r = results[0]
+    # `artefacts_failed` joins the other two booleans rather than the sparse finding lists
+    # below: it is a verdict about this run, and a client told nothing would assume the
+    # per-lead diagnostic files (cv/artefacts.py) exist.
     out = {"outcome": r.status, "served": r.served, "dossier_failed": r.dossier_failed,
-           "skills_unreadable": r.skills_unreadable}
+           "skills_unreadable": r.skills_unreadable, "artefacts_failed": r.artefacts_failed}
     if r.violations:
         out["violations"] = r.violations
     if r.audit_flags:
@@ -836,7 +840,7 @@ def build_server(config, write: bool = False):
         def cv_run_tool(lead: str, backend: _BackendRole = "auto") -> dict:
             """Compose and render a CV for one shortlisted lead. The composed text
             itself is never returned, only violations/audit_flags/slop/voice_flags/
-            served/dossier_failed."""
+            served/dossier_failed/skills_unreadable/artefacts_failed."""
             return cv_run(sluice, lead, backend=backend)
 
         @mcp_server.tool(name="cv_signoff")

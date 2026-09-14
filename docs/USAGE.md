@@ -237,9 +237,11 @@ Compose, gate, render and sign off a tailored CV.
 | `--all-shortlist` | compose for every shortlist lead without a `tailored_cv` yet |
 | `--include-stale` | compose even for a lead older than `lead_ttl_days` (see #9 in `docs/CONFIGURATION.md`) |
 | `--no-serve` | skip staging the rendered PDF for `apply` |
+| `--dry-run` | compose, gate and audit (so the backend calls are still spent) and write the diagnostic artefacts below, but render nothing, serve nothing and change nothing in the vault |
 
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
-slop=<N> voice_flags=<N> dossier_failed=<bool> skills_unreadable=<bool>`, followed by one
+slop=<N> voice_flags=<N> dossier_failed=<bool> skills_unreadable=<bool>
+artefacts_failed=<bool>`, followed by one
 indented line per finding, in that line's own field order and empty on a clean run (so
 nothing extra prints):
 
@@ -250,9 +252,10 @@ nothing extra prints):
 | `slop` | `SLOP <label>: <snippet>` | the deterministic slop linter, already prefixed |
 | `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
 
-A summary line follows when any dossier fetch failed and composition proceeded blind, and
-a second when any CV was composed without the Skills Inventory because the corpus could
-not be read. **Exit 1**
+A summary line follows when any dossier fetch failed and composition proceeded blind, a
+second when any CV was composed without the Skills Inventory because the corpus could
+not be read, and a third when any run's diagnostic artefacts (below) could not be written.
+**Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
 Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).
@@ -266,12 +269,38 @@ and it reports through `main`'s usage-error path like a malformed config key. Ot
 including when a result is `needs-signoff` (the advisory audit withheld the send-ready pointer
 — see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
 
+**Diagnostic artefacts.** Every run that reaches composition leaves what it needs to be
+diagnosed later in the lead's working directory, `<cv.output_dir>/<slug>/`, beside the PDF and
+never in `served_dir`. That includes a `--dry-run` and a run that renders nothing
+(`skipped-gate`), which are the runs most in need of it. `<slug>` is the lead's company and
+role, lowercased, with each run of characters other than `a-z` and `0-9` turned into one `-`
+(`Example Co` / `Example Role` is `example-co-example-role`).
+
+| File | Holds |
+|---|---|
+| `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: the rules, the job description and the source bundle. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
+| `cv.attempt-N.md` | the text attempt N's compose returned, before any gate ruled on it |
+| `cv.rendered.md` | the text handed to the renderer; absent when nothing was rendered |
+| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
+
+There is no history: a later run for the same lead deletes this set (by name, leaving the PDF
+and any other file alone) and writes its own. `run.json`'s `files` lists every other file the
+run wrote, so anything else in the directory, such as an earlier run's PDF, is not from it. A
+lead refused before composition (not shortlisted, held for sign-off, stale, or `skipped-config`)
+writes nothing and leaves the previous set as it was. A file that cannot be written never fails
+the CV: a WARNING names the path and the error, and the result line says
+`artefacts_failed=True`. The prompt carries your verified evidence and your contact block, so
+keep `output_dir` outside anything you publish.
+
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 
 Releases or discards a CV that composed clean against the hard fabrication gate but was held
 back by the softer advisory audit (`cv.require_signoff`, on by default). Without `--yes`,
 prompts interactively: lists the unsupported claims, prints the served path, then
 `sign off <slug>? [y/N] `. `--discard` rejects the held CV instead, freeing a fresh compose.
+The held run's diagnostic artefacts (see `cv run` above) stay in place for as long as the
+hold does: `cv signoff` never touches them, and `cv run` refuses a held lead before composing,
+so it does not replace them either. The next compose after a `--discard` does.
 Exit 0 on `promoted`/`discarded`/`collision`/`aborted`; exit 1 on `no-match`/`ambiguous`/
 `nothing`/`conflict`.
 
