@@ -202,15 +202,44 @@ class SignOffResult:
 class DismissResult:
     """#131 decisions 5/6: outcome is one of dismissed | unchanged | refused_status |
     refused_signoff_hold | not_found | ambiguous | conflict. note_appended is True
-    ONLY when the write actually committed AND the pre-write snapshot showed the tag
-    absent -- neither signal alone distinguishes 'I appended it' from 'it was already
-    there' (a plain post-write re-read) or from 'a race loser predicted an append its
-    own write never committed' (a plain pre-write snapshot alone)."""
+    ONLY when the write actually committed, the pre-write snapshot showed the tag
+    absent, AND a re-read of the note after the write finds the tag in its
+    relevance_notes. Each rules out a different false True: the snapshot, a tag that
+    was already there before this call, which a post-write re-read alone cannot tell
+    from one this call appended; the committed write, a race loser that predicted an
+    append its own write never committed; the re-read, a write whose status landed
+    while the store left the append undone rather than corrupt the note (#329). A note
+    the re-read cannot find claims nothing."""
     outcome: str
     slug: str = ""
     status: str = ""            # the FRESH status behind a refusal/unchanged
     candidates: list = field(default_factory=list)
     note_appended: bool = False
+
+
+def _reread_lead(store, note):
+    """`note` as the store holds it after a write attempt, or None when it cannot be found.
+    `Sluice.dismiss_lead` calls it after a refused write, to report the fresh status behind the
+    refusal, and after a committed write, to read whether the append landed (#329).
+
+    UNFILTERED: a status filter would drop a note whose status drifted to a
+    non-canonical value (`normalize` passes an unknown value through unchanged), making
+    a genuine refused_status report as the benign `unchanged` -- the same mislabelling
+    the ref-then-slug fallback below exists to prevent, arriving by a different route.
+
+    `ref` is a path, and it can have moved (e.g. a concurrent `leads reconcile --apply`
+    relocated the note to its status-implied folder) in the window between the write
+    attempt and this re-read. Without a fallback, a refused write falls back to the STALE
+    pre-write snapshot, so a genuine refused_status could incorrectly report as the more
+    benign `unchanged`; and a committed write finds no note, so `note_appended` reads False
+    for a reason that did land. So the lookup re-resolves by slug (the basename, unaffected
+    by a folder move) before giving up, reusing the SAME read rather than scanning the
+    store again, so the lookups can never disagree about WHEN they saw the vault."""
+    fresh_notes = store.read_leads()
+    fresh = next((n for n in fresh_notes if n.ref == note.ref), None)
+    if fresh is None:
+        fresh = next((n for n in fresh_notes if n.slug == note.slug), None)
+    return fresh
 
 
 @dataclass
@@ -2027,31 +2056,17 @@ class Sluice:
         except VaultConflict as e:
             _log.warning("dismiss_lead: %s lost the write race: %s", note.ref, e)
             return DismissResult(slug=note.slug, outcome="conflict")
-        note_appended = tag_absent_at_snapshot and wrote
         if wrote:
+            # #329: a committed write no longer proves the append. The store leaves the
+            # append undone over a `relevance_notes` spread over several lines while the
+            # status still lands, so the flag is read off the note as written. A note the
+            # re-read cannot find claims nothing.
+            fresh = _reread_lead(store, note) if tag_absent_at_snapshot else None
+            note_appended = (fresh is not None
+                             and tag in (fresh.fm.get("relevance_notes", "") or ""))
             return DismissResult(slug=note.slug, status="dismiss", outcome="dismissed",
                                  note_appended=note_appended)
-        # UNFILTERED: this read only DIAGNOSES a refusal, and a status filter would
-        # drop a note whose status drifted to a non-canonical value (`normalize`
-        # passes an unknown value through unchanged), making a genuine refused_status
-        # report as the benign `unchanged` -- the same mislabelling the ref-then-slug
-        # fallback below exists to prevent, arriving by a different route.
-        fresh_notes = store.read_leads()
-        fresh = next((n for n in fresh_notes if n.ref == note.ref), None)
-        if fresh is None:
-            # `ref` is a path, and it can have moved (e.g. a concurrent `leads
-            # reconcile --apply` relocated the note to its status-implied
-            # folder) in the window between this write attempt and this
-            # re-read -- without a fallback, that makes `fresh` None and the
-            # code below fall back to the STALE pre-write snapshot's status,
-            # so a genuine refused_status could incorrectly report as the
-            # more benign `unchanged` (Minor #11, final whole-branch review).
-            # ONE fallback re-resolution by slug (the basename, unaffected by
-            # a folder move) before giving up and using the stale snapshot --
-            # reusing the SAME `fresh_notes` read rather than a second store
-            # scan, so the two lookups can never disagree about WHEN they saw
-            # the vault.
-            fresh = next((n for n in fresh_notes if n.slug == note.slug), None)
+        fresh = _reread_lead(store, note)
         fresh_status = fresh.status if fresh is not None else note.status
         if fresh_status not in _DISMISSABLE_FROM:
             return DismissResult(slug=note.slug, status=fresh_status,
