@@ -1,0 +1,308 @@
+name: Homebrew publish
+
+# Builds, bottles and publishes the job-sluice formula to the tap (#279). Called by
+# release-please.yml's `homebrew` job (push_target: default) and by homebrew-dry-run.yml
+# (push_target: auto); nothing else triggers it.
+#
+# THE TRUST RULE. This header is its maintained statement; the design that led to it is
+# docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md, section 2. Step order inside one job
+# is not a boundary: a step can write GITHUB_ENV, GITHUB_PATH, a git hook or an action bundle that a
+# later step of the same job uses. So a job either runs third-party code and references no secret,
+# or holds the tap token and runs none:
+#   - plan, upload and push are trusted. They run on ubuntu-latest, their `run:` lines call only
+#     scripts/homebrew_bottles.py through `python3 -P`, and their actions come from an exact roster.
+#     Only upload and push mint the token, and they read job outputs from plan alone. The dry run's
+#     `preflight` is trusted too, since its `version` output reaches them; it has no checkout, so its
+#     two `run:` bodies are pinned whole instead.
+#   - formula, bottle and prove run Homebrew, PyPI resolution and Homebrew's gems. They run on macOS
+#     because a bottle is built for the macOS it runs on, and because the channel's payoff, Homebrew's
+#     CPython finding cairo and pango with no DYLD_FALLBACK_LIBRARY_PATH, is a macOS mechanism. They
+#     reference no secret, but they still hold a contents: read GITHUB_TOKEN and the run's artifact
+#     token, which can create an artifact under any name. That is why a token job validates every
+#     artifact it reads as data, and reads no output of theirs. The same token can save an Actions
+#     cache entry that a later run on this branch could restore, which is why no workflow in this
+#     repository restores a cache.
+#
+# No job or step carries `if:` or `continue-on-error`, and no `${{ }}` appears inside `run:`: every
+# value reaches a script through `env:`. tests/test_release_publish_wiring.py pins each of these.
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      ref:
+        type: string
+        required: true
+      push_target:
+        type: string
+        required: true
+    secrets:
+      RELEASE_PLEASE_CLIENT_ID:
+        required: true
+      RELEASE_PLEASE_PRIVATE_KEY:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tap_owner: ${{ steps.plan.outputs.tap_owner }}
+      default_branch: ${{ steps.plan.outputs.default_branch }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      target_branch: ${{ steps.plan.outputs.target_branch }}
+      sdist_url: ${{ steps.plan.outputs.sdist_url }}
+      sdist_sha256: ${{ steps.plan.outputs.sdist_sha256 }}
+      tag: ${{ steps.plan.outputs.tag }}
+      root_url: ${{ steps.plan.outputs.root_url }}
+      run_url: ${{ steps.plan.outputs.run_url }}
+      caller: ${{ steps.plan.outputs.caller }}
+      platforms: ${{ steps.plan.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Plan the publish
+        id: plan
+        env:
+          PUSH_TARGET: ${{ inputs.push_target }}
+          VERSION: ${{ inputs.version }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" plan
+
+  formula:
+    needs: [plan]
+    runs-on: macos-26
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Check out the tap at the planned commit
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+        run: bash .github/scripts/homebrew_tap_checkout.sh
+      - name: Render, resource-fill and audit the formula
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          VERSION: ${{ inputs.version }}
+          SDIST_URL: ${{ needs.plan.outputs.sdist_url }}
+          SDIST_SHA256: ${{ needs.plan.outputs.sdist_sha256 }}
+          FORMULA_OUT: ${{ runner.temp }}/homebrew-formula
+        run: bash .github/scripts/homebrew_formula.sh
+      # `overwrite: true` on every upload in this file: a re-run of a failed job uploads under the
+      # name an earlier attempt may already have used. The run's artifact token can replace an
+      # artifact whatever this input says, which is why token jobs validate every artifact they read.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-formula
+          path: ${{ runner.temp }}/homebrew-formula/job-sluice.rb
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  bottle:
+    needs: [plan, formula]
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-formula
+          path: ${{ runner.temp }}/homebrew-formula
+      - name: Check out the tap at the planned commit
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+        run: bash .github/scripts/homebrew_tap_checkout.sh
+      - name: Build, bottle and pour the formula
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          VERSION: ${{ inputs.version }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+          DECLARED_TAG: ${{ matrix.tag }}
+          FORMULA_IN: ${{ runner.temp }}/homebrew-formula/job-sluice.rb
+          BOTTLE_OUT: ${{ runner.temp }}/homebrew-bottle
+        run: bash .github/scripts/homebrew_bottle.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-bottle-json-${{ matrix.tag }}
+          path: ${{ runner.temp }}/homebrew-bottle/*.bottle.json
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-bottle-tar-${{ matrix.tag }}
+          path: ${{ runner.temp }}/homebrew-bottle/*.bottle.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  upload:
+    needs: [plan, bottle]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: homebrew-bottle-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/homebrew-bottles
+      - name: Validate the bottles as data
+        env:
+          BOTTLES_DIR: ${{ runner.temp }}/homebrew-bottles
+          VERSION: ${{ inputs.version }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+          PLATFORMS: ${{ needs.plan.outputs.platforms }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" validate-bottles
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+      - name: Publish the bottles to the tap's release
+        env:
+          TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
+          BOTTLES_DIR: ${{ runner.temp }}/homebrew-bottles
+          VERSION: ${{ inputs.version }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+          PLATFORMS: ${{ needs.plan.outputs.platforms }}
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          CALLER: ${{ needs.plan.outputs.caller }}
+          RUN_URL: ${{ needs.plan.outputs.run_url }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" upload-bottles
+
+  prove:
+    needs: [plan, formula, bottle, upload]
+    runs-on: macos-26
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-formula
+          path: ${{ runner.temp }}/homebrew-formula
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: homebrew-bottle-json-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/homebrew-bottle-json
+      - name: Check out the tap at the planned commit
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+        run: bash .github/scripts/homebrew_tap_checkout.sh
+      - name: Merge the bottles and fetch every one from its release
+        env:
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          PLATFORMS: ${{ needs.plan.outputs.platforms }}
+          FORMULA_IN: ${{ runner.temp }}/homebrew-formula/job-sluice.rb
+          JSON_DIR: ${{ runner.temp }}/homebrew-bottle-json
+          MERGED_OUT: ${{ runner.temp }}/homebrew-merged
+        run: bash .github/scripts/homebrew_prove.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-merged-formula
+          path: ${{ runner.temp }}/homebrew-merged/job-sluice.rb
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  push:
+    needs: [plan, upload, prove]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-merged-formula
+          path: ${{ runner.temp }}/homebrew-merged
+      - name: Validate the merged formula as data
+        env:
+          MERGED_FORMULA: ${{ runner.temp }}/homebrew-merged/job-sluice.rb
+          SDIST_URL: ${{ needs.plan.outputs.sdist_url }}
+          SDIST_SHA256: ${{ needs.plan.outputs.sdist_sha256 }}
+          ROOT_URL: ${{ needs.plan.outputs.root_url }}
+          PLATFORMS: ${{ needs.plan.outputs.platforms }}
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          TAG: ${{ needs.plan.outputs.tag }}
+          VERSION: ${{ inputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" validate-formula
+      - name: Prepare the tap commit
+        env:
+          MERGED_FORMULA: ${{ runner.temp }}/homebrew-merged/job-sluice.rb
+          PUSH_WORKDIR: ${{ runner.temp }}/homebrew-push
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
+          DEFAULT_BRANCH: ${{ needs.plan.outputs.default_branch }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          VERSION: ${{ inputs.version }}
+          CALLER: ${{ needs.plan.outputs.caller }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" push-prepare
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+      - name: Push the tap commit
+        env:
+          TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
+          PUSH_WORKDIR: ${{ runner.temp }}/homebrew-push
+          TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}
+          TARGET_BRANCH: ${{ needs.plan.outputs.target_branch }}
+        run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" push-publish

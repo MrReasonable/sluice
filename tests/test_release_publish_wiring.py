@@ -29,12 +29,15 @@ truthiness, why the top-level-permissions check is position-anchored on `jobs:` 
 the TestPyPI dry run's own design -- the branch guard, the version stamp, the drift pin) for the
 full design reasoning.
 """
+import ast
 import inspect
+import json
 import re
 import shutil
 import subprocess
 
 import yaml
+from scripts import homebrew_bottles
 from pathlib import Path
 
 ROOT = Path(__file__).parent.parent
@@ -1615,6 +1618,7 @@ _MODULE_HELPER_NAMES = {
     "_artifact_retention_days", "_roster_failure", "_run_block_scalar", "_channel_table_rows",
     "_artifact_names", "_workflow_files", "_post_release_dispatch_step",
     "_script_lines", "_assert_in_order",
+    "_workflow", "_triggers", "_steps", "_step_position", "_env_reads", "_subcommand_function",
 }
 
 # Helpers that take NO parameters at all, and so are outside the hazard the rule guards. The
@@ -2517,3 +2521,419 @@ def test_the_tap_new_ban_moves_to_the_tap_checkout_script():
     of a machine-owned formula, and an App token scoped `contents: write` cannot push workflows."""
     for name in _MACOS_SHELL_SCRIPTS:
         assert "tap-new" not in "\n".join(_script_lines(_CI_SCRIPTS / name)), f"{name} must never call brew tap-new"
+
+
+# --- #279: the reusable workflow ----------------------------------------------------------------
+
+HOMEBREW = ROOT / ".github" / "workflows" / "homebrew.yml"
+_HOMEBREW_JOBS = ["plan", "formula", "bottle", "upload", "prove", "push"]
+_HOMEBREW_NEEDS = {
+    "plan": None,
+    "formula": ["plan"],
+    "bottle": ["plan", "formula"],
+    "upload": ["plan", "bottle"],
+    "prove": ["plan", "formula", "bottle", "upload"],
+    "push": ["plan", "upload", "prove"],
+}
+_HOMEBREW_RUNS_ON = {"plan": "ubuntu-latest", "formula": "macos-26",
+                     "bottle": "${{ matrix.runner }}", "upload": "ubuntu-latest",
+                     "prove": "macos-26", "push": "ubuntu-latest"}
+_TRUSTED_USES = {
+    "plan": ["actions/checkout"],
+    "upload": ["actions/checkout", "actions/download-artifact", "actions/create-github-app-token"],
+    "push": ["actions/checkout", "actions/download-artifact", "actions/create-github-app-token"],
+}
+_ACTION_PINS = {
+    "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
+    "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
+    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
+}
+_BOTTLES_RUN = 'python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"'
+_TRUSTED_RUN = re.compile(re.escape(_BOTTLES_RUN) + r" [a-z-]+")
+_JOB_KEYS = {"needs", "runs-on", "permissions", "outputs", "strategy", "steps"}
+_RUN_STEP_KEYS = {"name", "id", "env", "run"}
+_USES_STEP_KEYS = {"name", "id", "uses", "with"}
+_APP_SECRETS = {"RELEASE_PLEASE_CLIENT_ID": "${{ secrets.RELEASE_PLEASE_CLIENT_ID }}",
+                "RELEASE_PLEASE_PRIVATE_KEY": "${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}"}
+_BOTTLES_SCRIPT = ROOT / "scripts" / "homebrew_bottles.py"
+# Set by the runner for every step, so no step's `env:` names them.
+_RUNNER_PROVIDED = {"GITHUB_WORKSPACE", "RUNNER_TEMP", "GITHUB_OUTPUT"}
+
+
+def _workflow(path: Path) -> dict:
+    """The workflow at `path`, parsed. This section pins structure (keys, lists, exact mappings),
+    which a parse pins exactly and text matching would only approximate."""
+    return yaml.safe_load(_text(path))
+
+
+def _triggers(path: Path) -> dict:
+    """The workflow's `on:` mapping. PyYAML reads a bare `on` key as the boolean True."""
+    doc = _workflow(path)
+    return doc["on"] if "on" in doc else doc[True]
+
+
+def _steps(path: Path, job: str) -> list[dict]:
+    return _workflow(path)["jobs"][job]["steps"]
+
+
+def _step_position(path: Path, job: str, *, run: str | None = None, uses: str | None = None) -> int:
+    """The index of the ONE step in `job` whose whole `run:` body is `run`, or whose action is `uses`.
+
+    Exactly one: a second copy of a step must not be able to satisfy an order pin in the first
+    copy's place.
+    """
+    assert (run is None) != (uses is None), "pass exactly one of run= or uses="
+    matches = [index for index, step in enumerate(_steps(path, job))
+               if (run is not None and step.get("run", "").strip() == run)
+               or (uses is not None and step.get("uses", "").split("@")[0] == uses)]
+    assert len(matches) == 1, f"{path.name} {job}: expected one step for {run or uses}, found {len(matches)}"
+    return matches[0]
+
+
+def _subcommand_function(path: Path, subcommand: str) -> str:
+    """The name of the function the script at `path` maps `subcommand` to in its `_COMMANDS` table."""
+    tree = ast.parse(_text(path))
+    tables = [node for node in tree.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "_COMMANDS" for target in node.targets)]
+    assert len(tables) == 1, f"{path.name}: expected one _COMMANDS table, found {len(tables)}"
+    for key, value in zip(tables[0].value.keys, tables[0].value.values):
+        if isinstance(key, ast.Constant) and key.value == subcommand:
+            return value.id
+    raise AssertionError(f"{path.name}: {subcommand!r} is not in _COMMANDS")
+
+
+def _env_reads(path: Path, function: str) -> set[str]:
+    """Every environment name `function` in the script at `path` reads through `_require(env, "X")`,
+    `env.get("X")` or `env["X"]`, following calls into that script's own top-level functions.
+
+    Fails closed: any other use of `env` in a followed function, and any `os.environ` outside `main`,
+    is an assertion, because a read this sweep cannot see would otherwise leave it green."""
+    tree = ast.parse(_text(path))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    assert "_require" in functions, f"{path.name} has no top-level _require; this sweep would read nothing"
+    environ = sorted({name for name, fn in functions.items() if name != "main"
+                      for node in ast.walk(fn)
+                      if isinstance(node, ast.Attribute) and node.attr in ("environ", "getenv")})
+    assert not environ, (
+        f"{path.name}: os.environ or os.getenv is read in {environ}, where this sweep cannot see it")
+    names, seen, pending = set(), set(), [function]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        understood = set()
+        for node in ast.walk(functions[current]):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "_require" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant):
+                    names.add(node.args[1].value)
+                    understood.add(id(node.args[0]))
+                elif node.func.id in functions:
+                    pending.append(node.func.id)
+                    understood.update(id(argument) for argument in node.args)
+                    # The callee is read for `env.get` and `env[...]` by that literal name, so an `env`
+                    # passed under another parameter name would be followed and read as nothing.
+                    parameters = [arg.arg for arg in functions[node.func.id].args.args]
+                    for position, argument in enumerate(node.args):
+                        if isinstance(argument, ast.Name) and argument.id == "env":
+                            received = parameters[position] if position < len(parameters) else None
+                            assert received == "env", (
+                                f"{path.name}::{current} passes env to {node.func.id}, which receives "
+                                f"it as {received!r}; this sweep reads only a parameter named env")
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "get" and isinstance(node.func.value, ast.Name)
+                  and node.func.value.id == "env" and node.args and isinstance(node.args[0], ast.Constant)):
+                names.add(node.args[0].value)
+                understood.add(id(node.func.value))
+            elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                  and node.value.id == "env" and isinstance(node.slice, ast.Constant)):
+                names.add(node.slice.value)
+                understood.add(id(node.value))
+        unexplained = [node.lineno for node in ast.walk(functions[current])
+                       if isinstance(node, ast.Name) and node.id == "env" and isinstance(node.ctx, ast.Load)
+                       and id(node) not in understood]
+        assert not unexplained, (
+            f"{path.name}::{current} uses env on lines {unexplained} in a way this sweep cannot read")
+    return names
+
+
+def test_the_homebrew_workflow_declares_exactly_its_jobs():
+    found = _job_names(HOMEBREW)
+    assert found == _HOMEBREW_JOBS, _roster_failure(HOMEBREW, _HOMEBREW_JOBS, found)
+
+
+def test_the_homebrew_workflow_is_only_ever_called():
+    """A `workflow_dispatch:` here would run the whole graph with no branch refusal, and with a
+    push_target chosen by whoever dispatched it."""
+    triggers = _triggers(HOMEBREW)
+    assert list(triggers) == ["workflow_call"]
+    call = triggers["workflow_call"]
+    assert set(call) == {"inputs", "secrets"}
+    assert call["inputs"] == {name: {"type": "string", "required": True}
+                              for name in ("version", "ref", "push_target")}
+    assert call["secrets"] == {name: {"required": True} for name in _APP_SECRETS}
+
+
+def test_every_homebrew_job_reads_the_repository_and_nothing_more():
+    doc = _workflow(HOMEBREW)
+    assert doc["permissions"] == {"contents": "read"}
+    for job in _HOMEBREW_JOBS:
+        assert doc["jobs"][job].get("permissions") == {"contents": "read"}, job
+
+
+def test_each_homebrew_job_needs_exactly_what_it_reads():
+    jobs = _workflow(HOMEBREW)["jobs"]
+    assert {job: jobs[job].get("needs") for job in _HOMEBREW_JOBS} == _HOMEBREW_NEEDS
+
+
+def test_no_homebrew_job_or_step_can_run_after_a_failure():
+    """Allow-lists of keys, not a probe for `if: always()`: any job- or step-level `if:` or
+    `continue-on-error` lets a later step or job run past a failed check, whatever its spelling."""
+    for job, body in _workflow(HOMEBREW)["jobs"].items():
+        assert set(body) <= _JOB_KEYS, f"{job} carries {sorted(set(body) - _JOB_KEYS)}"
+        for step in body["steps"]:
+            assert ("run" in step) != ("uses" in step), f"{job}: {step}"
+            allowed = _RUN_STEP_KEYS if "run" in step else _USES_STEP_KEYS
+            assert set(step) <= allowed, f"{job}: {step.get('name')} carries {sorted(set(step) - allowed)}"
+
+
+def test_the_homebrew_runners_are_pinned_and_the_matrix_comes_from_plan():
+    """A runner label decides the bottle tag a job produces, so no job may float on `macos-latest`,
+    and `bottle` reads both keys under the names `plan` actually emits."""
+    jobs = _workflow(HOMEBREW)["jobs"]
+    assert {job: jobs[job]["runs-on"] for job in _HOMEBREW_JOBS} == _HOMEBREW_RUNS_ON
+    assert jobs["bottle"]["strategy"] == {
+        "fail-fast": False, "matrix": {"include": "${{ fromJSON(needs.plan.outputs.platforms) }}"}}
+    emitted = json.loads(homebrew_bottles.platforms_json())
+    assert emitted and all(set(entry) == {"runner", "tag"} for entry in emitted), emitted
+    body = jobs["bottle"]["steps"][_step_position(HOMEBREW, "bottle", run="bash .github/scripts/homebrew_bottle.sh")]
+    assert body["env"].get("DECLARED_TAG") == "${{ matrix.tag }}", body["env"]
+
+
+def test_the_trusted_jobs_run_only_the_bottles_script_and_every_action_is_pinned():
+    jobs = _workflow(HOMEBREW)["jobs"]
+    for job, expected in _TRUSTED_USES.items():
+        steps = jobs[job]["steps"]
+        assert [s["uses"].split("@")[0] for s in steps if "uses" in s] == expected, job
+        for step in steps:
+            if "run" in step:
+                assert _TRUSTED_RUN.fullmatch(step["run"].strip()), f"{job}: {step['run']!r}"
+    for job, body in jobs.items():
+        for step in body["steps"]:
+            if "uses" in step:
+                action, _, sha = step["uses"].partition("@")
+                assert _ACTION_PINS.get(action) == sha, f"{job}: {step['uses']}"
+
+
+def test_the_untrusted_jobs_run_only_the_rostered_scripts():
+    """Every command an untrusted job runs is one of the scripts the bash 3.2 sweep and the order pins
+    read, so nothing runs there that those checks cannot see."""
+    jobs = _workflow(HOMEBREW)["jobs"]
+    for job in ("formula", "bottle", "prove"):
+        runs = [step["run"].strip() for step in jobs[job]["steps"] if "run" in step]
+        assert runs, job
+        for run in runs:
+            assert re.fullmatch(r"bash \.github/scripts/homebrew_[a-z_]+\.sh", run), f"{job}: {run!r}"
+
+
+def test_no_workflow_restores_an_actions_cache():
+    """The untrusted Homebrew jobs hold the run's Actions runtime token, which can save a cache entry,
+    and GitHub scopes caches by branch rather than by workflow, so a later run on the same branch could
+    restore it. No workflow in this repository restores a cache, so nothing reads what they could
+    save; `actions/cache`, or a setup action's `cache:` input, anywhere would reopen that."""
+    workflows = _workflow_files(ROOT / ".github" / "workflows")
+    assert HOMEBREW in workflows, "the sweep does not reach homebrew.yml, so it proves nothing"
+    for workflow in workflows:
+        for job, body in (_workflow(workflow).get("jobs") or {}).items():
+            for step in body.get("steps") or []:
+                action = step.get("uses", "").split("@")[0]
+                assert action.split("/")[:2] != ["actions", "cache"], f"{workflow.name} {job}: {step}"
+                assert "cache" not in (step.get("with") or {}), f"{workflow.name} {job}: {step}"
+
+
+def test_every_homebrew_step_supplies_every_variable_its_command_reads():
+    """Deleting a variable from a step's `env:` otherwise stays green and fails mid-release, possibly
+    after `upload` has published the tap release. The names a command requires are read from the
+    script's own `: "${NAME:?}"` line or from the subcommand's own environment reads, never restated
+    here."""
+    checked = []
+    for job, body in _workflow(HOMEBREW)["jobs"].items():
+        for step in body["steps"]:
+            if "run" not in step:
+                continue
+            run = step["run"].strip()
+            script = re.fullmatch(r"bash \.github/scripts/([\w.-]+\.sh)", run)
+            if script:
+                source = "\n".join(_script_lines(_CI_SCRIPTS / script[1]))
+                required = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?\}", source))
+                # The guard line is the script's contract, so check that it covers what the script
+                # reads: every upper-case variable it references and never assigns, and every variable
+                # the subcommands it invokes read.
+                assigned = set(re.findall(r"(?<![\w$])([A-Z][A-Z0-9_]*)=", source))
+                referenced = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]*)", source))
+                invoked = re.findall(r'python3 -P "\$BOTTLES" ([a-z-]+)', source)
+                reads = set().union(*(_env_reads(_BOTTLES_SCRIPT, _subcommand_function(_BOTTLES_SCRIPT, sub))
+                                      for sub in invoked))
+                unguarded = ((referenced - assigned) | reads) - required - _RUNNER_PROVIDED
+                assert not unguarded, f"{script[1]} reads {sorted(unguarded)} without naming them on its guard line"
+            else:
+                assert _TRUSTED_RUN.fullmatch(run), f"{job}: {run!r}"
+                subcommand = run[len(_BOTTLES_RUN) + 1:]
+                required = _env_reads(_BOTTLES_SCRIPT, _subcommand_function(_BOTTLES_SCRIPT, subcommand))
+            required -= _RUNNER_PROVIDED
+            assert required, f"{job}: {run!r} resolved no required variable; the check below proves nothing"
+            missing = required - set(step.get("env") or {})
+            assert not missing, f"{job}: {run!r} reads {sorted(missing)}, which its step env does not set"
+            checked.append(run)
+    assert checked, "found no run step; the sweep above proves nothing"
+
+
+def test_only_the_token_jobs_touch_secrets():
+    """Any mention of the `secrets` context, in any spelling: GitHub expression names are
+    case-insensitive, and `toJson(secrets)` hands every secret to whatever reads it."""
+    secret = re.compile(r"\bsecrets\b", re.IGNORECASE)
+    assert {job for job in _HOMEBREW_JOBS
+            if secret.search(_job_directives(HOMEBREW, job))} == {"upload", "push"}
+    assert {job for job in _HOMEBREW_JOBS
+            if "actions/create-github-app-token" in _job_directives(HOMEBREW, job)} == {"upload", "push"}
+
+
+def test_the_token_jobs_keep_artifacts_in_runner_temp_and_read_only_plans_outputs():
+    """An artifact downloaded into the workspace could replace a file the next step executes."""
+    jobs = _workflow(HOMEBREW)["jobs"]
+    for job in ("upload", "push"):
+        downloads = [s for s in jobs[job]["steps"] if s.get("uses", "").startswith("actions/download-artifact@")]
+        assert downloads, job
+        for step in downloads:
+            # One plain directory name under runner.temp: `startswith` alone admits `/../`.
+            assert re.fullmatch(r"\$\{\{ runner\.temp \}\}/[\w-]+", step["with"].get("path", "")), (
+                f"{job}: {step['with']}")
+        directives = _job_directives(HOMEBREW, job)
+        assert set(re.findall(r"needs\.([\w-]+)\.outputs", directives)) == {"plan"}
+        # Every other mention of `needs` must be the job's own `needs:` key: `toJSON(needs)` would hand
+        # the token job every job's outputs while the search above reads only `plan`.
+        mentions = len(re.findall(r"\bneeds\b", directives, re.IGNORECASE))
+        assert mentions == 1 + len(re.findall(r"needs\.plan\.outputs\.[\w-]+", directives)), directives
+
+
+def test_every_output_reference_names_a_declared_output_and_every_output_a_real_step():
+    jobs = _workflow(HOMEBREW)["jobs"]
+    references = set(re.findall(r"needs\.([\w-]+)\.outputs\.([\w-]+)", _text(HOMEBREW)))
+    assert references, "no needs.*.outputs reference found; the sweep below proves nothing"
+    for job, key in references:
+        assert key in jobs[job].get("outputs", {}), f"needs.{job}.outputs.{key} is not declared"
+    for job, body in jobs.items():
+        ids = {step.get("id") for step in body["steps"]}
+        for key, value in body.get("outputs", {}).items():
+            match = re.fullmatch(r"\$\{\{ steps\.([\w-]+)\.outputs\.([\w-]+) \}\}", value)
+            # The step's output key must be the job output's own name: a swapped pair (target_branch
+            # reading the default branch) still names a real step and a real output.
+            assert match and match.group(1) in ids and match.group(2) == key, (
+                f"{job}.outputs.{key} = {value!r}")
+
+
+def test_no_expression_is_pasted_into_a_run_body():
+    """`${{ }}` inside `run:` is substituted as text before bash parses it; values go through `env:`."""
+    for job, body in _workflow(HOMEBREW)["jobs"].items():
+        for step in body["steps"]:
+            assert "${{" not in step.get("run", ""), f"{job}: {step.get('run')!r}"
+
+
+def test_the_run_attempt_is_read_only_in_plan():
+    """The tag carries the run attempt. Any other job reading it would compose a different tag on a
+    re-run of failed jobs than the one `plan` published."""
+    assert {job for job in _HOMEBREW_JOBS
+            if "github.run_attempt" in _job_directives(HOMEBREW, job)} == {"plan"}
+
+
+def test_the_mints_and_plan_take_the_owner_from_one_expression():
+    jobs = _workflow(HOMEBREW)["jobs"]
+    plan_step = jobs["plan"]["steps"][_step_position(HOMEBREW, "plan", run=f"{_BOTTLES_RUN} plan")]
+    assert plan_step["env"].get("REPOSITORY_OWNER") == "${{ github.repository_owner }}"
+    for job in ("upload", "push"):
+        mint = jobs[job]["steps"][_step_position(HOMEBREW, job, uses="actions/create-github-app-token")]
+        assert mint["with"] == {"client-id": "${{ secrets.RELEASE_PLEASE_CLIENT_ID }}",
+                                "private-key": "${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}",
+                                "owner": "${{ github.repository_owner }}",
+                                "repositories": "homebrew-tap", "permission-contents": "write"}
+
+
+def test_upload_validates_before_minting_and_publishes_after():
+    order = [_step_position(HOMEBREW, "upload", run=f"{_BOTTLES_RUN} validate-bottles"),
+             _step_position(HOMEBREW, "upload", uses="actions/create-github-app-token"),
+             _step_position(HOMEBREW, "upload", run=f"{_BOTTLES_RUN} upload-bottles")]
+    assert order == sorted(order), order
+
+
+def test_push_validates_and_prepares_before_minting_and_pushes_after():
+    order = [_step_position(HOMEBREW, "push", run=f"{_BOTTLES_RUN} validate-formula"),
+             _step_position(HOMEBREW, "push", run=f"{_BOTTLES_RUN} push-prepare"),
+             _step_position(HOMEBREW, "push", uses="actions/create-github-app-token"),
+             _step_position(HOMEBREW, "push", run=f"{_BOTTLES_RUN} push-publish")]
+    assert order == sorted(order), order
+    holders = [index for index, step in enumerate(_steps(HOMEBREW, "push")) if "TAP_TOKEN" in json.dumps(step)]
+    assert holders == [order[3]], f"TAP_TOKEN reaches steps {holders}; only push-publish may hold it"
+
+
+def test_the_untrusted_jobs_check_out_the_tap_before_their_bodies():
+    for job, script in (("formula", "homebrew_formula.sh"), ("bottle", "homebrew_bottle.sh"),
+                        ("prove", "homebrew_prove.sh")):
+        checkout = _step_position(HOMEBREW, job, run="bash .github/scripts/homebrew_tap_checkout.sh")
+        body = _step_position(HOMEBREW, job, run=f"bash .github/scripts/{script}")
+        assert checkout < body, job
+
+
+def test_prove_downloads_the_formula_and_the_jsons_but_never_a_bottle():
+    downloads = [s["with"] for s in _steps(HOMEBREW, "prove")
+                 if s.get("uses", "").startswith("actions/download-artifact@")]
+    assert [(d.get("name"), d.get("pattern")) for d in downloads] == [
+        ("homebrew-formula", None), (None, "homebrew-bottle-json-*")]
+
+
+def test_every_upload_fails_on_no_files_and_can_be_replaced_by_a_rerun():
+    uploads = [(job, s["with"]) for job, body in _workflow(HOMEBREW)["jobs"].items()
+               for s in body["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
+    assert uploads, "found no upload-artifact step; the sweep below proves nothing"
+    for job, arguments in uploads:
+        assert arguments.get("if-no-files-found") == "error", f"{job}: {arguments}"
+        assert arguments.get("overwrite") is True, f"{job}: {arguments}"
+
+
+def test_the_homebrew_workflow_carries_only_its_name_trigger_permissions_and_jobs():
+    """A workflow-level `env:` may read the `secrets` context, and every step of every job inherits it,
+    so a secret placed there reaches formula, bottle and prove while every per-job pin reads clean.
+    PyYAML reads a bare `on` key as the boolean True."""
+    assert set(_workflow(HOMEBREW)) == {"name", True, "permissions", "jobs"}
+
+
+def test_plan_declares_exactly_the_outputs_build_plan_emits():
+    """Read from build_plan's own return statement, so an output added on one side only fails here."""
+    tree = ast.parse(_text(_BOTTLES_SCRIPT))
+    (function,) = [node for node in tree.body
+                   if isinstance(node, ast.FunctionDef) and node.name == "build_plan"]
+    returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+    assert len(returns) == 1 and isinstance(returns[0].value, ast.Dict), "build_plan must return one dict literal"
+    emitted = {key.value for key in returns[0].value.keys}
+    assert emitted, "build_plan's return dict has no keys; this pin proves nothing"
+    assert set(_workflow(HOMEBREW)["jobs"]["plan"]["outputs"]) == emitted
+
+
+def test_every_homebrew_checkout_persists_no_credentials():
+    """A persisted checkout credential stays in `.git/config` for every later step of its job, which in
+    formula, bottle and prove means third-party code."""
+    checkouts = [(job, step) for job, body in _workflow(HOMEBREW)["jobs"].items() for step in body["steps"]
+                 if step.get("uses", "").split("@")[0] == "actions/checkout"]
+    assert checkouts, "found no checkout step; the sweep below proves nothing"
+    for job, step in checkouts:
+        assert (step.get("with") or {}).get("persist-credentials") is False, f"{job}: {step}"
+
+
+def test_push_prepares_the_same_formula_file_it_validated():
+    """push-prepare reads the merged formula again in its own process and does not validate it again, so
+    the bytes pushed are the bytes validated only while both steps name the same file."""
+    steps = _steps(HOMEBREW, "push")
+    validate = steps[_step_position(HOMEBREW, "push", run=f"{_BOTTLES_RUN} validate-formula")]
+    prepare = steps[_step_position(HOMEBREW, "push", run=f"{_BOTTLES_RUN} push-prepare")]
+    assert validate["env"]["MERGED_FORMULA"] == prepare["env"]["MERGED_FORMULA"]
