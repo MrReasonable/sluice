@@ -1614,6 +1614,7 @@ _MODULE_HELPER_NAMES = {
     "_run_commands", "_publish_action_ref", "_python_version", "_job_names",
     "_artifact_retention_days", "_roster_failure", "_run_block_scalar", "_channel_table_rows",
     "_artifact_names", "_workflow_files", "_post_release_dispatch_step",
+    "_script_lines", "_assert_in_order",
 }
 
 # Helpers that take NO parameters at all, and so are outside the hazard the rule guards. The
@@ -2182,7 +2183,8 @@ _BASH4_ONLY = (
     (r"\bcoproc\b", "coproc", "a fifo, or restructure"),
 )
 
-_MACOS_SHELL_SCRIPTS = ("homebrew_push.sh", "homebrew_verify.sh")
+_MACOS_SHELL_SCRIPTS = ("homebrew_bottle.sh", "homebrew_formula.sh", "homebrew_prove.sh",
+                        "homebrew_push.sh", "homebrew_tap_checkout.sh", "homebrew_verify.sh")
 
 
 def test_the_homebrew_scripts_use_no_bash_4_only_constructs():
@@ -2408,3 +2410,110 @@ def test_post_release_job_dispatches_with_the_flag_that_cannot_read_a_file():
         f"post-release's dispatch step must bind EXACTLY GH_TOKEN, VERSION and REPO. "
         f"Got: {step.get('env')}"
     )
+
+
+# --- #279: the untrusted jobs' scripts ----------------------------------------------------------
+
+_CI_SCRIPTS = ROOT / ".github" / "scripts"
+
+
+def _script_lines(path: Path) -> list[str]:
+    """A script's commands, whitespace-trimmed, with blank and comment lines dropped."""
+    return [line.strip() for line in path.read_text().splitlines()
+            if line.strip() and not line.strip().startswith("#")]
+
+
+def _assert_in_order(path: Path, sequence: list[tuple[str, str]]) -> None:
+    """Each pattern must FULL-match a whole command of the script at `path`, strictly after the
+    previous match.
+
+    Whole lines and occurrence-aware, because a command can appear twice (`brew test` does in the
+    bottle job) and `str.index` only ever finds the first.
+    """
+    lines = _script_lines(path)
+    position = -1
+    for label, pattern in sequence:
+        for index in range(position + 1, len(lines)):
+            if re.fullmatch(pattern, lines[index]):
+                position = index
+                break
+        else:
+            raise AssertionError(
+                f"{path.name}: {label} is missing after command {position} (pattern {pattern!r}). "
+                f"Commands:\n" + "\n".join(lines)
+            )
+
+
+def test_the_tap_checkout_script_clones_at_the_planned_commit_and_derives_nothing():
+    script = _CI_SCRIPTS / "homebrew_tap_checkout.sh"
+    _assert_in_order(script, [
+        ("clone", r'git clone --no-checkout "https://github\.com/\$\{TAP_OWNER\}/homebrew-tap\.git" "\$TAP_DIR"'),
+        ("checkout at BASE_SHA", r'git -C "\$TAP_DIR" checkout --detach "\$BASE_SHA"'),
+    ])
+    body = "\n".join(_script_lines(script))
+    for forbidden in ("ls-remote", "symbolic-ref", "set-head", "tap-new"):
+        assert forbidden not in body, f"homebrew_tap_checkout.sh must not run {forbidden}"
+
+
+def test_the_formula_script_renders_fills_and_audits_in_order():
+    script = _CI_SCRIPTS / "homebrew_formula.sh"
+    _assert_in_order(script, [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
+        ("render", r'python3 -P "\$BOTTLES" render --out "\$TAP_FORMULA"'),
+        ("resource fill with the cooldown bypass",
+         r'if ! brew update-python-resources --version "\$VERSION" --ignore-main-package-cooldown "\$FORMULA_REF"; then'),
+        ("audit", r'brew audit --strict --online "\$FORMULA_REF"'),
+        ("hand-off", r'cp "\$TAP_FORMULA" "\$FORMULA_OUT/job-sluice\.rb"'),
+    ])
+    assert "pypi.org" not in "\n".join(_script_lines(script)), (
+        "homebrew_formula.sh must use plan's SDIST_URL, never query PyPI a second time")
+
+
+def test_the_bottle_script_builds_bottles_and_pours_in_order():
+    _assert_in_order(_CI_SCRIPTS / "homebrew_bottle.sh", [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
+        ("formula in", r'cp "\$FORMULA_IN" "\$TAP_FORMULA"'),
+        ("build", r'brew install --build-bottle "\$FORMULA_REF"'),
+        ("first test", r'brew test "\$FORMULA_REF"'),
+        ("bottle", r'brew bottle --json --no-rebuild --root-url="\$ROOT_URL" "\$FORMULA_REF"'),
+        ("produced tag", r'python3 -P "\$BOTTLES" produced-tag --json "\$BOTTLE_JSON"'),
+        ("single-tag merge", r'brew bottle --merge --write --no-commit "\$BOTTLE_JSON"'),
+        ("negative control",
+         r'python3 -P "\$BOTTLES" pour-check --info "\$RUNNER_TEMP/info-built\.json" --expect-built'),
+        ("uninstall", r"brew uninstall job-sluice"),
+        ("cache seed", r'cp "\$BOTTLE_TAR" "\$CACHE_PATH"'),
+        ("pour", r'brew install "\$FORMULA_REF"'),
+        ("pour check", r'python3 -P "\$BOTTLES" pour-check --info "\$RUNNER_TEMP/info-poured\.json"'),
+        ("second test", r'brew test "\$FORMULA_REF"'),
+        ("linkage", r"brew linkage --test job-sluice"),
+    ])
+
+
+def test_the_prove_script_merges_checks_and_fetches_every_tag_in_order():
+    script = _CI_SCRIPTS / "homebrew_prove.sh"
+    _assert_in_order(script, [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
+        ("formula in", r'cp "\$FORMULA_IN" "\$TAP_FORMULA"'),
+        ("merge", r'\(cd "\$JSON_DIR" && brew bottle --merge --write --no-commit \./\*\.bottle\.json\)'),
+        ("style", r'brew style --formula "\$FORMULA_REF"'),
+        ("tag set", r'python3 -P "\$BOTTLES" merged-tags --formula "\$TAP_FORMULA"'),
+        ("declared tags", r'TAGS="\$\(python3 -P "\$BOTTLES" tags\)"'),
+        ("loop", r"for tag in \$TAGS; do"),
+        ("cache path", r'cache_path="\$\(brew --cache --bottle-tag="\$tag" "\$FORMULA_REF"\)"'),
+        ("removal", r'rm -f "\$cache_path"'),
+        ("forced fetch", r'brew fetch --force --bottle-tag="\$tag" "\$FORMULA_REF"'),
+        ("file check",
+         r'python3 -P "\$BOTTLES" cache-check --formula "\$TAP_FORMULA" --tag "\$tag" --file "\$cache_path"'),
+        ("loop end", r"done"),
+        ("hand-off", r'cp "\$TAP_FORMULA" "\$MERGED_OUT/job-sluice\.rb"'),
+    ])
+    body = "\n".join(_script_lines(script))
+    assert "brew install" not in body and ".bottle.tar.gz" not in body, (
+        "prove fetches bottles from their URLs; it installs nothing and handles no bottle file")
+
+
+def test_the_tap_new_ban_moves_to_the_tap_checkout_script():
+    """`brew tap-new` writes workflows and a daily `brew bump --open-pr`: a second automated writer
+    of a machine-owned formula, and an App token scoped `contents: write` cannot push workflows."""
+    for name in _MACOS_SHELL_SCRIPTS:
+        assert "tap-new" not in "\n".join(_script_lines(_CI_SCRIPTS / name)), f"{name} must never call brew tap-new"
