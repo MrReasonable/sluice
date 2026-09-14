@@ -144,12 +144,16 @@ persistently compromise this environment." Within that:
   them, only `upload` and `push` hold the tap token. Homebrew itself, its runtime gem groups, PyPI
   resolution, sdist build backends, evaluating the formula, and any action outside the roster below
   all count as third-party code.
-- **A job that runs third-party code holds no secret.** `formula`, `bottle` and `prove`. Nothing they
+- **A job that runs third-party code holds no secret.** `formula`, `bottle` and `prove`. They still
+  hold a `contents: read` `GITHUB_TOKEN` and the run's artifact token, which can create an artifact
+  under any name. Nothing they
   produce reaches a token job except as an artifact that job validates as data, and token jobs read
   no output of theirs: a step can append to `GITHUB_OUTPUT` as easily as to `GITHUB_ENV`.
 
-**What a trusted job may run.** Its `run:` lines invoke only `python3 -P` on a script under this
-repository's `scripts/` by absolute path, `gh`, and `git`. Its `uses:` steps come from an exact
+**What a trusted job may run.** In `homebrew.yml`, every `run:` line is `python3 -P` on a script under
+this repository's `scripts/` by absolute path, and that script runs `git` itself. The dry run's
+`preflight` has no checkout and so no such script: its two `run:` bodies, the branch refusal and a
+standard-library PyPI lookup, are pinned whole instead. A trusted job's `uses:` steps come from an exact
 roster at pinned SHAs: `actions/checkout` of this repository at the release ref (all three
 `homebrew.yml` trusted jobs), `actions/download-artifact` (`upload`, `push`), and
 `actions/create-github-app-token` (`upload`, `push` only). `actions/cache` or a `setup-*` action with
@@ -214,7 +218,8 @@ into a Ruby string unescaped, so an unchecked value would pass straight through 
 
 **The bootstrap observable for `auto`.** `auto` pushes the default branch only when
 `Formula/job-sluice.rb` does not exist yet. `git ls-remote` lists refs and cannot see a file. `plan`
-reads it with `gh api repos/<TAP_OWNER>/homebrew-tap/contents/Formula/job-sluice.rb?ref=<BASE_SHA>`,
+reads it from the contents API through `urllib`,
+`GET /repos/<TAP_OWNER>/homebrew-tap/contents/Formula/job-sluice.rb?ref=<BASE_SHA>`,
 authenticated with the workflow's own `GITHUB_TOKEN`, at BASE_SHA so the observable and the base
 commit cannot disagree. The answer has three values: `200` is present, so TARGET_BRANCH is
 `bump-<VERSION>`; `404` is absent, so it is DEFAULT_BRANCH; anything else refuses. A rate-limit `403`
@@ -442,6 +447,14 @@ bytes. It cannot tell a correct resource *set* from a tampered one: the set come
 pass. A change Homebrew makes to `update-python-resources`' output format fails the push loudly,
 which is the intended direction.
 
+**Where the stanzas sit, and how the text is read (plan review).** The stanzas must form one
+contiguous run directly above `def install`. Homebrew inserts a new resource group there
+(`utils/ast.rb::replace_resource_stanzas`) and refuses a formula whose resources form more than one
+group; without a position, a run moved below the class's closing `end` would still reduce to the
+renderer's text. The formula is read as bytes, and a carriage return anywhere refuses: `read_text()`
+turns a lone CR into LF, so the text validated would not be the bytes pushed, and Ruby does not end a
+line at a lone CR.
+
 ## 6. Proof before the release is public
 
 The publication point is the push of `Formula/job-sluice.rb` to the tap's default branch. An
@@ -596,7 +609,12 @@ to fix where the block lands relative to the renderer's text (§5).
 **Read, not measured: re-run semantics inside a called workflow.** That re-running failed jobs reuses
 the outputs and artifacts of jobs that succeeded holds for `release-please.yml`'s own jobs; that it
 holds for jobs inside `homebrew.yml` is assumed. BASE_SHA's rollback protection and the §3 recovery
-cases depend on it. A deliberate partial re-run of a dry run exercises it.
+cases depend on it. A deliberate job-level re-run of a dry run's `upload` exercises it; re-running
+failed jobs, the operation the recovery comments name, stays read, not measured.
+
+**Read, not measured: secret delivery.** That a called workflow's secrets reach only the jobs whose
+steps reference them is assumed. The wiring tests pin that no untrusted job references one; no dry
+run can show a secret absent from a runner.
 
 **Reached by no dry run, proven only offline (§9a):** the version refusal, the byte-identical no-op,
 a non-fast-forward on a moved tip, `auto`'s absent arm once the tap holds a formula, an existing
@@ -675,8 +693,9 @@ own expected constants.
   `continue-on-error`: step keys are an allow-list, `{name, id, env, run}` and `{name, id, uses, with}`.
 - **Runners:** `bottle`'s `runs-on` is the matrix runner key and its tag check reads the matrix tag
   key, both named as in `plan`'s emitted JSON; every other job's `runs-on` equals an exact map.
-- **Trusted jobs:** `plan`, `upload`, `push` and `preflight` have exact `uses:` rosters at pinned SHAs,
-  and every `run:` command head is `python3 -P <absolute scripts/ path>`, `gh` or `git`.
+- **Trusted jobs:** `plan`, `upload`, `push` and `preflight` have exact `uses:` rosters at pinned SHAs;
+  every `run:` in `plan`, `upload` and `push` is `python3 -P <absolute scripts/ path> <subcommand>`, and
+  `preflight`'s two `run:` bodies are pinned whole.
 - **Secrets:** any reference to the `secrets` context (`secrets.`, `secrets[`, `toJSON(secrets)`)
   appears only in `upload` and `push`, and `create-github-app-token` only there.
 - **Artifacts in token jobs:** every `download-artifact` in `upload` and `push` has an explicit path
@@ -837,3 +856,21 @@ All findings were accepted.
   an older formula names, and a failed bottle download does not fall back. The release title records
   whether a release or a dry run created it.
 - Proving the resource set itself is the correct closure (§5).
+
+## 13. Plan review round 1: what changed in the design
+
+The implementation plan's first review added these, each argued in the plan where it lands:
+
+- The Homebrew fixtures live in `tests/homebrew_fixtures/`, with their own closure and content pins:
+  `tests/test_fixture_name_neutrality.py` admits only captured board payloads under `tests/fixtures/`.
+- `formula`, `bottle` and `prove` export `HOMEBREW_NO_AUTO_UPDATE=1`. Auto-update can rebase a tap
+  checkout off BASE_SHA and leave the formula copied into it stashed (`cmd/update.sh::merge_or_rebase`).
+- Every `upload-artifact` step carries `overwrite: true`: a re-run of a failed job uploads under a
+  name an earlier attempt may already have used, and token jobs validate whatever they read.
+- Each step's `env:` is pinned against the variables its command reads, the §9b successor for the
+  retired owner-pin test; the untrusted jobs' `run:` lines are pinned to the rostered scripts; each
+  script's first command is pinned to `set -euo pipefail`, and the swallow ban covers `|| :`,
+  `|| exit 0`, `|| echo`, `set +e` and `shopt -u`.
+- A failed tree read in `push` refuses rather than reading as an absent formula (§6c), and the
+  resource run's contiguity and position are checked (§5).
+- Accept rows are witnessed by an always-refuse mutant (§9a).
