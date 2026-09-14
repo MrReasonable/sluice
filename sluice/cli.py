@@ -1466,14 +1466,15 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     """The `cv signoff` prompt's claim listing, split by KIND (#167 Task 15).
 
     `claims` (sluice/cv/engine.py's `hold_for_signoff` call) is a flat JSON array
-    carrying two shapes of entry: a raw audit verdict line ("unsupported\\t<claim>\\t
+    whose entries come in tagged kinds: a raw audit verdict line ("unsupported\\t<claim>\\t
     <cited-id>", the ONLY shape every hold stamped before this change ever wrote) and a
     "style\\t<finding>"-tagged one (a `cv.style_hold` consequence -- a slop phrase match
     or a model-judged voice finding that survived the retry). Splitting on the literal
     "style" tab-field, not on the presence of a tab at all, is what keeps a raw audit
     line's own internal tabs from being mistaken for the new tag.
 
-    An entry with NO "style\\t" prefix keeps EXACTLY today's "unsupported claim(s)"
+    A `framing\\t` entry (#329, `core/leads.py::split_framing`) is printed apart under its
+    own heading. An entry with NEITHER tag keeps EXACTLY today's "unsupported claim(s)"
     wording -- a hold stamped before this change must not be re-described by this
     upgrade, and a style/voice finding must not be announced as a fabrication risk it
     is not. Each group prints only when non-empty (sparse, mirroring _print_report's own
@@ -1489,6 +1490,16 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     released) but unclearable. A stringified entry carries no "style" tab-field, so it
     lands in the fabrication group with today's unprefixed entries.
     """
+    from sluice.core.leads import split_framing
+    # #329: the triage notes the composer was given, recorded at hold time. Shown FIRST, as the
+    # context the claims below were composed in, and never counted as a claim: a reviewer shown
+    # a claim count that includes a triage note would be signing off the wrong number.
+    framing, claims = split_framing(claims)
+    if framing:
+        print(f"cv signoff: {slug}: triage notes the composer was given (context, not claims):",
+              file=sys.stderr)
+        for line in framing:
+            print(f"  - {line}", file=sys.stderr)
     fabrication, style = [], []
     for c in claims:
         text = str(c)

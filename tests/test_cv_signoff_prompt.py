@@ -5,8 +5,9 @@ tested directly with capsys rather than through the full cmd_cv_signoff CLI plum
 (interactive input(), a seeded Vault hold, argparse) that would otherwise be needed just
 to observe two lines of stderr.
 
-hold_for_signoff's `claims` array (sluice/cv/engine.py) now carries TWO shapes of entry:
-a raw audit verdict line ("unsupported\\t<claim>\\t<cited-id>", exactly what every hold
+hold_for_signoff's `claims` array (sluice/cv/engine.py) carries tagged kinds of entry, and
+#329 added a `framing\\t` kind this prompt prints apart from both: a raw audit verdict
+line ("unsupported\\t<claim>\\t<cited-id>", exactly what every hold
 stamped before this change wrote) and a "style\\t<finding>"-tagged one (cv.style_hold,
 #167 Task 15). The prompt must announce them differently -- a style/voice finding is not
 a fabrication risk -- and an UNPREFIXED entry must keep TODAY'S wording exactly, so a
@@ -79,3 +80,20 @@ def test_a_non_string_claim_is_printed_rather_than_crashing_the_prompt(capsys):
     err = capsys.readouterr().err
     assert "2 unsupported claim(s)" in err
     assert "- 1" in err
+
+
+def test_framing_prints_under_its_own_heading_and_is_never_counted_as_a_claim(capsys):
+    from sluice.core.leads import framing_entries
+    from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
+    # A real hold carries both flags and concerns (#329); a row with only one line could
+    # not catch the two being printed out of order or one being dropped.
+    flags_line = f"culture flags: {FRAMING_FLAGS[0]}"
+    concerns_line = f"concerns: {FRAMING_CONCERNS[0]}"
+    _print_signoff_claims("slug", ["unsupported\tMotivated by placeholder\tNONE",
+                                   *framing_entries([flags_line, concerns_line])])
+    assert capsys.readouterr().err == (
+        "cv signoff: slug: triage notes the composer was given (context, not claims):\n"
+        f"  - {flags_line}\n"
+        f"  - {concerns_line}\n"
+        "cv signoff: slug has 1 unsupported claim(s):\n"
+        "  - unsupported\tMotivated by placeholder\tNONE\n")
