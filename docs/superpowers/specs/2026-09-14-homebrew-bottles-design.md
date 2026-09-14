@@ -27,7 +27,7 @@ takes the accept branch of what it reaches.
 | Scope | one PR: bottles and the channel's trust boundary together | owner, 2026-09-14 |
 | Intel and macOS 14 | not bottled | §1 |
 | Runner labels | tag-producing jobs pinned; never `macos-latest` | §1 |
-| Trust rule | a job whose secrets or outputs a token job consumes runs no third-party code; a job that runs third-party code holds no secret | §2 |
+| Trust rule | a job whose secrets or outputs a token job consumes runs no third-party code; a job that runs third-party code references no secret | §2 |
 | Trusted values | derived once, by `plan` | §2 |
 | Workflow shape | one reusable workflow, called by the release and the dry run | §2 |
 | Resource fill | once, in `formula` | §2 |
@@ -103,7 +103,7 @@ the entry's runner key and the expected tag from its tag key. Each bottle job ch
 which would compare the runner's answer to itself. A relabelled image then fails the release.
 
 `formula` and `prove` also run Homebrew and pin `macos-26`. `plan`, `upload` and `push` run on
-`ubuntu-latest`: they produce no bottle tag and run only stdlib Python, `gh` and `git`, so a moving
+`ubuntu-latest`: they produce no bottle tag and run only stdlib Python, which runs `git` itself, so a moving
 image changes nothing this design depends on, and every other job in this repository's workflows
 already runs there.
 
@@ -144,7 +144,7 @@ persistently compromise this environment." Within that:
   them, only `upload` and `push` hold the tap token. Homebrew itself, its runtime gem groups, PyPI
   resolution, sdist build backends, evaluating the formula, and any action outside the roster below
   all count as third-party code.
-- **A job that runs third-party code holds no secret.** `formula`, `bottle` and `prove`. They still
+- **A job that runs third-party code references no secret.** `formula`, `bottle` and `prove`. They still
   hold a `contents: read` `GITHUB_TOKEN` and the run's artifact token, which can create an artifact
   under any name. Nothing they
   produce reaches a token job except as an artifact that job validates as data, and token jobs read
@@ -157,7 +157,7 @@ standard-library PyPI lookup, are pinned whole instead. A trusted job's `uses:` 
 roster at pinned SHAs: `actions/checkout` of this repository at the release ref (all three
 `homebrew.yml` trusted jobs), `actions/download-artifact` (`upload`, `push`), and
 `actions/create-github-app-token` (`upload`, `push` only). `actions/cache` or a `setup-*` action with
-caching would restore an entry a third-party job in the same run can write, which is why the roster
+caching would restore an entry a third-party job can write, in this run or in an earlier run on the same branch (GitHub scopes caches by branch, not by workflow), which is why the roster
 is exact. `python3 -P` keeps the working directory off `sys.path` (measured: `sys.flags.safe_path`
 is true and the current directory is no longer the first entry).
 
@@ -447,11 +447,12 @@ bytes. It cannot tell a correct resource *set* from a tampered one: the set come
 pass. A change Homebrew makes to `update-python-resources`' output format fails the push loudly,
 which is the intended direction.
 
-**Where the stanzas sit, and how the text is read (plan review).** The stanzas must form one
-contiguous run directly above `def install`. Homebrew inserts a new resource group there
-(`utils/ast.rb::replace_resource_stanzas`) and refuses a formula whose resources form more than one
-group; without a position, a run moved below the class's closing `end` would still reduce to the
-renderer's text. The formula is read as bytes, and a carriage return anywhere refuses: `read_text()`
+**Where the stanzas and the block sit, and how the text is read (plan review).** The stanzas must
+form one contiguous run directly above `def install`: `render()` emits no resource, so
+`update-python-resources` takes `utils/ast.rb::replace_resource_stanzas`' insert arm, which writes the
+group there. The bottle block must directly follow the `license` line and its blank line, where
+`brew bottle --merge` adds it. Without a position, a run or a block moved below the class's closing
+`end` would still reduce to the renderer's text. The formula is read as bytes, and a carriage return anywhere refuses: `read_text()`
 turns a lone CR into LF, so the text validated would not be the bytes pushed, and Ruby does not end a
 line at a lone CR.
 
@@ -515,7 +516,7 @@ exit status alone proves nothing for a missing tag. `--force` is what clears a c
 that is present, a wrong asset name, a wrong release, a disagreeing root URL and a byte mismatch all
 fail here.
 
-`prove` evaluates the merged formula, which is why it holds no secret. A formula tampered with to
+`prove` evaluates the merged formula, which is why it references no secret. A formula tampered with to
 fake this job's success still meets `push`'s validation: `prove` answers whether Homebrew builds URLs
 that serve these bytes, and `push` answers whether the text is the expected text.
 
@@ -867,10 +868,17 @@ The implementation plan's first review added these, each argued in the plan wher
   checkout off BASE_SHA and leave the formula copied into it stashed (`cmd/update.sh::merge_or_rebase`).
 - Every `upload-artifact` step carries `overwrite: true`: a re-run of a failed job uploads under a
   name an earlier attempt may already have used, and token jobs validate whatever they read.
-- Each step's `env:` is pinned against the variables its command reads, the §9b successor for the
-  retired owner-pin test; the untrusted jobs' `run:` lines are pinned to the rostered scripts; each
-  script's first command is pinned to `set -euo pipefail`, and the swallow ban covers `|| :`,
-  `|| exit 0`, `|| echo`, `set +e` and `shopt -u`.
+- Each step's `env:` is pinned against the variables its command and its script read, beside §9b's
+  `owner:` expression pin for what the retired owner-pin test guarded; the untrusted jobs' `run:` lines
+  are pinned to the rostered scripts; each script's first command is pinned to `set -euo pipefail`,
+  and the swallow ban covers `|| :`, `|| exit 0`, `|| echo`, `set +e`, `shopt -u` and `trap`.
 - A failed tree read in `push` refuses rather than reading as an absent formula (§6c), and the
-  resource run's contiguity and position are checked (§5).
-- Accept rows are witnessed by an always-refuse mutant (§9a).
+  resource run's contiguity and position, and the bottle block's position, are checked (§5).
+- Accept rows are witnessed by an always-refuse mutant (§9a), and the `push-prepare` and
+  `push-publish` subcommands by CLI rows that record every argument they pass.
+- No workflow in the repository restores an Actions cache, pinned by a test: the untrusted jobs' token
+  can save an entry that a later run on the same branch could restore (§2).
+- Sections 1, 2, 5, 8 and 9b were edited in place to match: trusted jobs run only `python3 -P` on
+  `scripts/homebrew_bottles.py`, which runs `git`; `plan` reads the contents API through `urllib`;
+  `preflight`'s two run bodies are pinned whole; untrusted jobs reference no secret but hold a
+  `contents: read` token and the artifact token; and secret delivery is recorded as read, not measured.

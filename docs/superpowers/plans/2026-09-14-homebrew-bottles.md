@@ -4,11 +4,11 @@
 
 **Goal:** Publish `arm64_sequoia` and `arm64_tahoe` bottles for `job-sluice` from the tap, through a release channel in which no job both runs third-party code and holds the tap's write token.
 
-**Architecture:** One reusable workflow, `.github/workflows/homebrew.yml`, with six jobs. `plan`, `upload` and `push` are trusted: `ubuntu-latest`, stdlib Python, `gh` and `git` only, and only `upload` and `push` mint the tap token. `formula`, `bottle` (a matrix) and `prove` run Homebrew on macOS and hold no secret. Every decision is a pure function in `scripts/homebrew_bottles.py`, proven offline in `tests/test_homebrew_bottles.py`; the untrusted jobs' bodies are bash 3.2 scripts under `.github/scripts/`; both callers (`release-please.yml`, `homebrew-dry-run.yml`) invoke the one workflow.
+**Architecture:** One reusable workflow, `.github/workflows/homebrew.yml`, with six jobs. `plan`, `upload` and `push` are trusted: `ubuntu-latest`, and only `python3 -P scripts/homebrew_bottles.py`, which runs `git` itself; only `upload` and `push` mint the tap token. `formula`, `bottle` (a matrix) and `prove` run Homebrew on macOS and reference no secret. Every decision is a pure function in `scripts/homebrew_bottles.py`, proven offline in `tests/test_homebrew_bottles.py`; the untrusted jobs' bodies are bash 3.2 scripts under `.github/scripts/`; both callers (`release-please.yml`, `homebrew-dry-run.yml`) invoke the one workflow.
 
 **Tech Stack:** GitHub Actions (reusable workflows, matrix, artifacts), Homebrew 6 (`brew bottle`, `brew fetch`), Python 3.12 standard library, bash 3.2, pytest, PyYAML (already a test-time dependency).
 
-**Spec:** `docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md` (commit `6f097296`). Read it before any task: every "why" in this plan is argued there, section by section.
+**Spec:** `docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md`, read at this plan's own commit: the spec was revised alongside the plan, and its §13 lists what the plan's reviews changed. Read it before any task: every "why" in this plan is argued there, section by section.
 
 ## Global Constraints
 
@@ -30,8 +30,8 @@
 - Test fixtures are synthetic: `example.invalid` URLs, fake digests, owner `ExampleOwner` / `exampleowner`. Resource-stanza URLs keep the `files.pythonhosted.org` host, because that host is what the formula grammar checks. One exception: `tests/homebrew_fixtures/merged_formula.rb` keeps the renderer's `homepage` line verbatim, which names the upstream project's real owner, because the validator compares that text with `render()`.
 - Mutation witnesses (`.rulesync/rules/CLAUDE.md`, mutation-testing section): commit before each witness; mutate by DELETING or MOVING a line, never by adding one; back the file up with `cp` and restore with `cp`, never `git checkout`; run `.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts` once before the first witness.
 - A witness must leave a Python file parseable. After applying a mutant to one, run `.venv/bin/python -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' <file>` before its tests: a mutant that fails to parse turns every test red for the wrong reason. Confirm the named test fails on its own assertion.
-- Two kinds of mutant ADD text, and only these. A property that is the ABSENCE of something (no `|| :`, no owner literal, no `if:`) can only be violated by adding it; such rows are marked "(adds)". And the always-refuse mutant, `/tmp/always_refuse.py` (Task 2, Step 6), inserts `raise Refusal("always-refuse mutant")` as a function's first statement to witness its accept rows (spec, §9a). Neither can be an equivalent mutant: nothing else in the file adds that text.
-- Before each task's commit, run the whole suite, `.venv/bin/python -m pytest -q`, not only the files the task names. Guards in other files (the fixture-tree scope in `tests/test_fixture_name_neutrality.py`, the helper signatures in `tests/test_release_publish_wiring.py`, the home-path gate in `tests/test_no_leaked_files.py`) are exactly what a narrow run misses.
+- Three kinds of mutant are not a plain delete or move, and each is named. A property that is the ABSENCE of something (no `|| :`, no owner literal, no `if:`) can only be violated by adding it: such rows are marked "(adds)". A row that swaps a value or call for the exact regression its test exists to catch (the old `read_text()`, a lenient `git(...)` in place of `_git_ok(...)`, a changed pin) is marked "(replaces)": the original is gone, so it cannot be an equivalent mutant. And the always-refuse mutant, `/tmp/always_refuse.py` (Task 2, Step 6), inserts `raise Refusal("always-refuse mutant")` as a function's first statement to witness its accept rows (spec, §9a); nothing else in the file adds that text.
+- In each task's commit step, stage the task's files, run the whole suite, `.venv/bin/python -m pytest -q`, and only then commit; every commit block below is written in that order. Staging comes first because `tests/test_no_leaked_files.py` reads tracked files through `git ls-files` and `git grep`, which do not see an unstaged file. Run the whole suite, not only the files the task names: guards in other files (the fixture-tree scope in `tests/test_fixture_name_neutrality.py`, the helper signatures in `tests/test_release_publish_wiring.py`, the home-path gate in `tests/test_no_leaked_files.py`) are exactly what a narrow run misses.
 - Use `.venv/bin/python`. The worktree venv has no pip: install a tool with `uv pip install --python .venv/bin/python <package>`.
 - Conventional Commits. End every commit message with these two lines:
 
@@ -148,9 +148,11 @@ every file under `tests/fixtures/` to be a captured board payload (`*/raw.json`)
 
 Every block below starts by exporting `HOMEBREW_NO_AUTO_UPDATE=1`, `HOMEBREW_NO_INSTALL_UPGRADE=1` and
 `HOMEBREW_NO_INSTALL_CLEANUP=1` (each defined in Homebrew's `env_config.rb`), and where it needs the
-worktree, setting `WT`: shell variables do not survive between separate command runs. Without the
-three, `brew install` may update Homebrew, upgrade a dependency the machine already has, or prune an
-old keg, none of which Step 8 can undo. Run every block from the worktree root.
+worktree, setting `WT`: shell variables do not survive between separate command runs. They stop
+`brew install` updating Homebrew and pruning old kegs. They do NOT stop a source build upgrading an
+installed dependency that is outdated (`HOMEBREW_NO_INSTALL_UPGRADE` covers only the formula named),
+which is why Step 2 stops before any build when a dependency is outdated. Run every block from the
+worktree root.
 
 **Files:**
 - Create: `tests/homebrew_fixtures/merged_formula.rb`
@@ -186,28 +188,52 @@ and report: this task uninstalls `job-sluice` at the end, and the owner must dec
 ```bash
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 WT="$(git rev-parse --show-toplevel)"
+M=/tmp/sluice-279-measure
 brew tap mrreasonable/tap
-cp "$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap/Formula/job-sluice.rb" /tmp/sluice-279-measure/pristine.rb
-grep -c '^  resource "' /tmp/sluice-279-measure/pristine.rb
-"$WT/.venv/bin/python" -P - "$WT" /tmp/sluice-279-measure/pristine.rb <<'PY'
+TAP="$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap"
+git -C "$TAP" rev-parse HEAD
+git ls-remote https://github.com/mrreasonable/homebrew-tap.git HEAD
+cp "$TAP/Formula/job-sluice.rb" "$M/pristine.rb"
+grep -c '^  resource "' "$M/pristine.rb"
+brew deps --include-build --formula mrreasonable/tap/job-sluice | sort > "$M/deps.txt"
+brew outdated --formula --quiet | sort > "$M/outdated.txt"
+comm -12 "$M/deps.txt" "$M/outdated.txt"
+"$WT/.venv/bin/python" -P - "$WT" "$M/pristine.rb" <<'PY'
 import re, sys
 sys.path.insert(0, sys.argv[1])
 from scripts.render_homebrew_formula import render
 text = open(sys.argv[2]).read()
 url = re.search(r'^  url "([^"]+)"$', text, re.M).group(1)
 sha = re.search(r'^  sha256 "([0-9a-f]{64})"$', text, re.M).group(1)
-stanza = (r'  resource "[A-Za-z0-9._-]+" do\n    url "https://files\.pythonhosted\.org/[^"\n]+"\n'
-          r'    sha256 "[0-9a-f]{64}"\n  end\n\n')
-stripped = re.sub(stanza, "", text)
-assert 'resource "' not in stripped, "a resource stanza outside the grammar survived the strip"
+# The grammar Task 5's _STANZA_RE applies, copied exactly, so both steps strip the same stanzas.
+stanza = re.compile(
+    r'  resource "(?P<name>[A-Za-z0-9._-]+)" do\n'
+    r'    url "https://files\.pythonhosted\.org/packages/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{60}/'
+    r'(?P<project>[A-Za-z0-9._-]+)-(?P<version>[0-9][A-Za-z0-9.+!]*)\.tar\.gz"\n'
+    r'    sha256 "[0-9a-f]{64}"\n'
+    r"  end\n"
+    r"\n"
+)
+stripped = stanza.sub("", text)
+# Once this channel has published a release, the tap's formula carries a bottle block too. Strip it
+# and say so, so that its presence is reported rather than read as renderer drift.
+stripped, blocks = re.subn(r"  bottle do\n(?:    .*\n)+  end\n\n", "", stripped)
+print(f"bottle blocks stripped: {blocks}")
+assert 'resource "' not in stripped, "a resource stanza outside Task 5's grammar survived the strip"
 print("skeleton matches the renderer" if stripped == render(sdist_url=url, sha256=sha) else "SKELETON DIFFERS")
 PY
 ```
 
-Expected: a resource count well above zero, then `skeleton matches the renderer`. If it prints
-`SKELETON DIFFERS`, or the assertion reports a stanza outside the grammar, STOP and report: the tap was
-last pushed by a different renderer than this branch's, so a fixture captured from it would not be this
-branch's text, and Task 5's accept row could never pass.
+Expected: the two commit ids are identical; a resource count well above zero; `comm` prints nothing;
+`bottle blocks stripped: 0` (or `1` once this channel has published a release); then
+`skeleton matches the renderer`. STOP and report, before Step 3, if:
+- the two commit ids differ: the tap pre-existed and its checkout is stale (auto-update is off), so
+  `pristine.rb` is not the live formula. The owner decides whether to update it;
+- `comm` prints any name: building would upgrade that installed dependency, and nothing here can put
+  the old version back;
+- the assertion reports a stanza outside the grammar: Task 5's accept row could never pass on this
+  fixture;
+- it prints `SKELETON DIFFERS`: the tap was last pushed by a different renderer than this branch's.
 
 - [ ] **Step 3: Build a bottle-ready keg**
 
@@ -307,6 +333,10 @@ tahoe = json.loads(next(pathlib.Path(".").glob("*.arm64_tahoe.bottle.json")).rea
 (full_name, entry), = tahoe.items()
 real_version = entry["formula"]["pkg_version"]
 (real_tag_hash,) = entry["bottle"]["tags"].values()
+# Checked before anything is written: a path-valued cellar (Homebrew writes a non-default prefix's
+# absolute path there) or a rebuild must never reach a fixture.
+assert entry["bottle"]["cellar"] in ("any", "any_skip_relocation"), entry["bottle"]["cellar"]
+assert entry["bottle"].get("rebuild", 0) == 0, entry["bottle"].get("rebuild")
 
 # Top-level url and sha256: the only two-space-indented lines of each kind.
 text, n_url = re.subn(r'^  url "[^"]+"$', '  url "https://example.invalid/packages/ab/cd/job_sluice-9.9.0.tar.gz"', text, flags=re.M)
@@ -319,9 +349,6 @@ assert text.count("job-sluice-9.9.0-1-1") == 1
 
 # Homebrew writes the cellar at the BOTTLE level (dev-cmd/bottle.rb: "cellar" => bottle_cellar.to_s).
 cellar = entry["bottle"]["cellar"]
-# Checked before anything is written: a path-valued cellar or a rebuild must never reach a fixture.
-assert cellar in ("any", "any_skip_relocation"), cellar
-assert entry["bottle"].get("rebuild", 0) == 0, entry["bottle"].get("rebuild")
 bottle = {
     "exampleowner/tap/job-sluice": {
         "formula": {"name": "job-sluice", "pkg_version": "9.9.0"},
@@ -399,8 +426,8 @@ else report the leftover trust entry.
 - [ ] **Step 9: Commit the fixtures**
 
 ```bash
-.venv/bin/python -m pytest -q
 git add tests/homebrew_fixtures/merged_formula.rb tests/homebrew_fixtures/bottle.json tests/homebrew_fixtures/info_poured.json
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 test(packaging): capture a real two-tag bottle merge as fixtures (#279)
 
@@ -413,8 +440,8 @@ Claude-Session: https://claude.ai/code/session_017tWDbFbL5fUG7ofXqJxomL
 EOF
 ```
 
-Expected: the whole suite passes before the commit, including `tests/test_fixture_name_neutrality.py`
-and `tests/test_no_leaked_files.py`, which sweep every tracked file.
+Expected: the whole suite passes after staging and before the commit. The fixtures are staged first so
+that `tests/test_no_leaked_files.py`, which reads tracked files only, sweeps them.
 
 - [ ] **Step 10: Report the measurements**
 
@@ -739,8 +766,8 @@ channel makes lives here as a pure function over plain data, so its refuse branc
 offline (tests/test_homebrew_bottles.py) rather than by a dry run that only ever takes the accept
 branch. The CLI at the bottom is the layer the workflow steps call.
 
-THE TRUST RULE THIS FILE SERVES. A job either runs third-party code and holds no secret, or holds
-the tap token and runs only this file's code, `gh` and `git`. The token jobs invoke it as
+THE TRUST RULE THIS FILE SERVES. A job either runs third-party code and references no secret, or
+holds the tap token and runs only this file's code, which runs `git` itself. The token jobs invoke it as
 `python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"`: `-P` keeps the working directory off
 `sys.path`, and every artifact they read is untrusted data this file validates before anything is
 published. Standard library only, for that reason: a dependency would be third-party code running
@@ -932,6 +959,7 @@ Expected: all pass.
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): add the Homebrew bottle channel's input and target decisions (#279)
 
@@ -974,15 +1002,19 @@ SCRIPT = pathlib.Path("scripts/homebrew_bottles.py")
 BACKUP = pathlib.Path("/tmp/homebrew_bottles.py.always-refuse")
 
 
-def passes(test: str) -> bool:
-    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-               f"tests/test_homebrew_bottles.py::{test}"]
-    return subprocess.run(command, capture_output=True).returncode == 0
+def run(test: str) -> subprocess.CompletedProcess:
+    # --tb and --show-capture are explicit, so the output carries the mutant's message whatever the
+    # repository's own pytest options say.
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--tb=short",
+               "--show-capture=all", f"tests/test_homebrew_bottles.py::{test}"]
+    return subprocess.run(command, capture_output=True, text=True)
 
 
 function, tests = sys.argv[1], sys.argv[2:]
 assert tests, "name at least one accept test"
-not_green = [test for test in tests if not passes(test)]
+if b"always-refuse mutant" in SCRIPT.read_bytes():
+    sys.exit(f"{SCRIPT} still holds an earlier mutant: restore it from {BACKUP}, then rerun.")
+not_green = [test for test in tests if run(test).returncode != 0]
 assert not not_green, f"not passing before the mutant, so the mutant would prove nothing: {not_green}"
 original = SCRIPT.read_bytes()
 shutil.copyfile(SCRIPT, BACKUP)
@@ -999,12 +1031,19 @@ try:
     mutated = "".join(lines)
     ast.parse(mutated)  # parseable, so a red test is red for the mutant's reason
     SCRIPT.write_text(mutated)
-    survived = [test for test in tests if passes(test)]
+    # Exit 1 means tests failed, unlike a collection or usage error, and the marker shows the failure
+    # came from this mutant's Refusal: main() prints it, and a traceback names it.
+    unproven = []
+    for test in tests:
+        result = run(test)
+        if result.returncode != 1 or "always-refuse mutant" not in result.stdout + result.stderr:
+            unproven.append(test)
 finally:
     shutil.copyfile(BACKUP, SCRIPT)
 assert SCRIPT.read_bytes() == original, "the restore did not reproduce the original bytes"
-if survived:
-    print(f"{function}: SURVIVED in {survived}")
+BACKUP.unlink()
+if unproven:
+    print(f"{function}: UNPROVEN in {unproven}")
     sys.exit(1)
 print(f"{function}: every accept row failed under the mutant")
 ```
@@ -1030,8 +1069,8 @@ git status --short
 ```
 
 Expected: every line prints `<function>: every accept row failed under the mutant`, and
-`git status --short` prints nothing. A `SURVIVED` line names an accept row that does not depend on its
-function: fix the test, not the script.
+`git status --short` prints nothing. An `UNPROVEN` line names an accept row that passed under the
+mutant, or failed without its message: read that test's output, and fix the test, not the script.
 
 ---
 
@@ -1589,6 +1628,7 @@ compare with Task 1's report before changing anything: the fixtures are measurem
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): check produced tags, pours, bottle JSONs and merged blocks as data (#279)
 
@@ -1862,6 +1902,7 @@ Expected: all pass.
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): decide the tap release's lifecycle and asset uploads as data (#279)
 
@@ -2050,6 +2091,30 @@ def test_a_resource_stanza_split_from_its_run_is_refused():
     anchor = rest.index("  test do\n")
     with pytest.raises(Refusal):
         _validate(rest[:anchor] + stanza + rest[anchor:])
+
+
+def _bottle_block(text):
+    """The measured merge's bottle block with the blank line after it, and the text without them."""
+    start = text.index("  bottle do\n")
+    end = text.index("  end\n", start) + len("  end\n") + 1
+    return text[start:end], text[:start] + text[end:]
+
+
+def test_the_bottle_block_moved_below_the_final_end_is_refused():
+    """Removing the block and its blank line restores the renderer's text wherever the block sits, so
+    only its position refuses this: `bottle` below the class's `end` breaks every install."""
+    block, rest = _bottle_block(_merged())
+    with pytest.raises(Refusal):
+        _validate(rest + block)
+
+
+def test_the_bottle_block_moved_between_two_resource_stanzas_is_refused():
+    """Removing the block leaves the stanzas contiguous again, so the run's contiguity cannot see this."""
+    block, rest = _bottle_block(_merged())
+    start, _ = _resource_run(rest)
+    first_end = rest.index("  end\n\n", start) + len("  end\n\n")
+    with pytest.raises(Refusal):
+        _validate(rest[:first_end] + block + rest[first_end:])
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -2088,10 +2153,16 @@ _STANZA_RE = re.compile(
     r"\n"
 )
 
-# Homebrew inserts a new resource group directly above `def install`
-# (utils/ast.rb::replace_resource_stanzas) and refuses a formula whose resources form more than one
-# group, so one contiguous run in exactly that place is the only shape a real fill produces.
+# render() emits no resource, so `brew update-python-resources` takes
+# utils/ast.rb::replace_resource_stanzas' insert arm, which writes one contiguous run directly above
+# `def install`. (A formula that already had resources would have its group replaced in place
+# instead; this pipeline never produces one.)
 _RESOURCES_PRECEDE = "  def install\n"  # measured anchor
+
+# `brew bottle --merge --write` adds the block directly after the `license` line and a blank line
+# (utils/ast.rb::add_stanza). Anywhere else, removing it still restores the renderer's text, below the
+# class's closing `end` included, so its position is checked too.
+_BLOCK_FOLLOWS_RE = re.compile(r'\n  license "[^"\n]+"\n\n\Z')  # measured anchor
 
 
 def _normalise(name: str) -> str:
@@ -2149,6 +2220,11 @@ def validate_formula(
     after = block.end()
     if text[after : after + 1] != "\n":  # measured separator
         raise Refusal("the bottle block is not followed by the blank line brew bottle --merge writes.")
+    if not _BLOCK_FOLLOWS_RE.search(text[: block.start()]):  # measured anchor
+        raise Refusal(
+            "the bottle block does not directly follow the license line and its blank line, where "
+            "brew bottle --merge writes it."
+        )
     remainder = text[: block.start()] + text[after + 1 :]
     stanzas = list(_STANZA_RE.finditer(remainder))
     if not stanzas:
@@ -2183,7 +2259,8 @@ commit body. Do not change them otherwise.
 
 Likewise, if Task 1's report shows the resource run is NOT directly above `  def install`, change the
 `_RESOURCES_PRECEDE` value marked `# measured anchor` to the line Task 1 recorded, and say so in the
-commit body.
+commit body. The same holds for `_BLOCK_FOLLOWS_RE`: if the two lines Task 1 recorded above
+`  bottle do` are not the `license` line and a blank line, change that pattern to match them.
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
@@ -2194,6 +2271,7 @@ Expected: all pass, including the generated injection test.
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): validate the pushed Homebrew formula as data (#279)
 
@@ -2211,6 +2289,7 @@ cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 | the whole `for stanza in stanzas:` loop | `test_a_resource_whose_project_is_not_its_name_is_refused` |
 | the whole `for previous, current in zip(stanzas, stanzas[1:]):` loop | `test_a_resource_stanza_split_from_its_run_is_refused` |
 | the `if not remainder[start:].startswith(_RESOURCES_PRECEDE):` block | `test_the_resource_run_moved_below_the_final_end_is_refused` |
+| the `if not _BLOCK_FOLLOWS_RE.search(text[: block.start()]):` block | `test_the_bottle_block_moved_below_the_final_end_is_refused` and `test_the_bottle_block_moved_between_two_resource_stanzas_is_refused` |
 | the `for tag in tags:` digest loop | `test_arguments_that_disagree_with_the_text_are_refused` |
 | the `if remainder != expected:` block | `test_every_injection_into_every_line_of_the_measured_merge_is_refused` |
 
@@ -2404,6 +2483,7 @@ Expected: all pass.
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): decide the tap push from the target and base commit (#279)
 
@@ -2939,6 +3019,7 @@ Expected: all pass.
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): add the bottle channel's plan and check subcommands (#279)
 
@@ -3285,19 +3366,27 @@ def test_an_absent_default_branch_refuses(tmp_path):
 
 
 def test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap(tmp_path, monkeypatch):
-    """With 9.8.0 at the base this would push. A failed `ls-tree` taken as "no formula at the base"
-    would reach the bootstrap arm and skip the default branch's version refusal, so it must refuse."""
+    """With 9.8.0 at the base this would push. A failed `ls-tree` of the BASE, taken as "no formula
+    there", would reach the bootstrap arm and skip the default branch's version refusal, so it must
+    refuse. Only the base read fails here, so the target read cannot refuse in its place."""
     url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
     real_git = hb.git
 
     def failing_ls_tree(*args, cwd=None):
-        if args and args[0] == "ls-tree":
+        if args and args[0] == "ls-tree" and base in args:
             return subprocess.CompletedProcess(["git", *args], 128, b"", b"fatal: simulated")
         return real_git(*args, cwd=cwd)
 
     monkeypatch.setattr(hb, "git", failing_ls_tree)
     with pytest.raises(Refusal):
         _prepare(tmp_path, url, base)
+
+
+def test_a_tap_with_no_formula_at_the_base_is_the_bootstrap_and_pushes(tmp_path):
+    url, seed, base = _make_tap(tmp_path, None)
+    assert _prepare(tmp_path, url, base) == "push"
+    hb.publish_push(workdir=tmp_path / "work", push_url=url, target_branch="main")
+    assert _remote_formula(seed, "main") == _formula_at("9.9.0")
 
 
 def test_a_hook_left_in_the_clone_does_not_run(tmp_path):
@@ -3334,6 +3423,48 @@ def test_a_failed_push_does_not_print_the_token(tmp_path):
                         target_branch="main", redact="SECRET-TOKEN-VALUE")
     assert "SECRET-TOKEN-VALUE" not in str(err.value)
     assert "***" in str(err.value), "the token never reached git's message, so its redaction is unproven"
+
+
+def test_push_publish_from_the_cli_pushes_with_the_token_and_redacts_it(tmp_path, monkeypatch):
+    """The token reaches the push URL and the redaction only through this subcommand, and a real push
+    to the tap is the first place either would otherwise be exercised."""
+    recorded = {}
+    monkeypatch.setattr(hb, "publish_push", lambda **kwargs: recorded.update(kwargs))
+    env = {"TAP_TOKEN": "tap-token-value", "TAP_OWNER": "ExampleOwner", "TARGET_BRANCH": "bump-9.9.0",
+           "PUSH_WORKDIR": str(tmp_path / "work")}
+    assert hb.main(["push-publish"], env=env) == 0
+    assert recorded == {
+        "workdir": tmp_path / "work",
+        "push_url": "https://x-access-token:tap-token-value@github.com/exampleowner/homebrew-tap.git",
+        "target_branch": "bump-9.9.0",
+        "redact": "tap-token-value",
+    }
+
+
+def test_push_prepare_from_the_cli_maps_each_variable_to_its_argument(tmp_path, monkeypatch, capsys):
+    recorded = {}
+
+    def record(**kwargs):
+        recorded.update(kwargs)
+        return "noop"
+
+    monkeypatch.setattr(hb, "prepare_push", record)
+    formula = tmp_path / "job-sluice.rb"
+    formula.write_bytes(b"formula bytes\n")
+    env = {"TAP_OWNER": "ExampleOwner", "PUSH_WORKDIR": str(tmp_path / "work"),
+           "TARGET_BRANCH": "bump-9.9.0", "DEFAULT_BRANCH": "main", "BASE_SHA": "f" * 40,
+           "VERSION": "9.9.0", "MERGED_FORMULA": str(formula)}
+    assert hb.main(["push-prepare"], env=env) == 0
+    assert recorded == {
+        "remote_url": "https://github.com/exampleowner/homebrew-tap.git",
+        "workdir": tmp_path / "work",
+        "target_branch": "bump-9.9.0",
+        "default_branch": "main",
+        "base_sha": "f" * 40,
+        "version": "9.9.0",
+        "formula": b"formula bytes\n",
+    }
+    assert capsys.readouterr().out == "push-prepare decided: noop\n"
 
 
 # --- one derivation per fact, over the script's own source --------------------------------------
@@ -3394,8 +3525,9 @@ def test_release_writes_happen_only_inside_upload_bottles():
 
 
 def test_the_network_is_reached_only_through_github_request_and_plans_pypi_read():
-    """`http(...)` is the one network seam. A bare call anywhere else could write to a release without
-    passing the sweep above; `cmd_plan`'s is a GET to PyPI, with no body and no method."""
+    """`http(...)` is the one network seam, and `http_request` behind it the one `urlopen`. A bare call
+    anywhere else could write to a release without passing the sweep above; `cmd_plan`'s is a GET to
+    PyPI, with no body and no method."""
     calls = {}
     for fname, function in _functions().items():
         for node in _body(function):
@@ -3406,6 +3538,11 @@ def test_the_network_is_reached_only_through_github_request_and_plans_pypi_read(
     (request,) = call.args
     assert isinstance(request, ast.Call) and len(request.args) == 1
     assert not any(keyword.arg in ("method", "data") for keyword in request.keywords)
+    urlopens = {fname for fname, function in _functions().items() for node in _body(function)
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "urlopen"}
+    assert urlopens == {"http_request"}, sorted(urlopens)
+    assert _callers("http_request") == set(), "http_request is injected as `http`, never called by name"
 
 
 def test_both_formula_subcommands_read_the_same_bytes():
@@ -3429,7 +3566,8 @@ def test_every_git_command_goes_through_the_hook_disabling_helper():
 
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: the new tests FAIL (`AttributeError` for `upload_bottles`, `prepare_push`, `publish_push`,
-`_read_formula`; `main` exits 2 on the unknown subcommands), except three AST pins that Tasks 5 and 7
+`_read_formula`; the CLI tests error with `SystemExit: 2`, since argparse rejects the unknown
+subcommands), except three AST pins that Tasks 5 and 7
 already satisfy and that pass at once: `test_render_has_exactly_two_callers`,
 `test_every_git_command_goes_through_the_hook_disabling_helper` and
 `test_the_network_is_reached_only_through_github_request_and_plans_pypi_read`.
@@ -3787,6 +3925,7 @@ Expected: all pass. The git tests create repositories under pytest's `tmp_path` 
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): upload bottles to the tap release and push the formula as data (#279)
 
@@ -3802,12 +3941,16 @@ cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 
 | Mutant | Test that must fail |
 | --- | --- |
-| replace `"core.hooksPath=/dev/null"` with `"core.editor=true"` in `git` (a MOVE of the value, not an added check) | `test_a_hook_left_in_the_clone_does_not_run` and `test_every_git_command_goes_through_the_hook_disabling_helper` |
+| replace `"core.hooksPath=/dev/null"` with `"core.editor=true"` in `git` (replaces) | `test_a_hook_left_in_the_clone_does_not_run` and `test_every_git_command_goes_through_the_hook_disabling_helper` |
 | delete `lease = ...` and change the scratch push to `_git_ok("push", "--force", push_url, refspec, ...)` | `test_a_scratch_branch_that_moves_after_prepare_is_not_clobbered` |
 | delete the `decisions = [...]` statement, change the loop to `for asset in assets:`, and move the `asset_decision(existing, name=asset.remote_name, sha256=asset.sha256)` call into the loop as its first line, `decision = ...` | `test_a_different_asset_digest_refuses_before_any_upload` |
-| in `cmd_validate_formula`, replace `_read_formula(_require(env, "MERGED_FORMULA")).decode("utf-8")` with `Path(_require(env, "MERGED_FORMULA")).read_text()` | `test_a_carriage_return_in_the_merged_formula_is_refused` and `test_both_formula_subcommands_read_the_same_bytes` |
-| in `_formula_at_commit`, delete the `listed = _git_ok("ls-tree", ...)` statement and the two `if` blocks after it | `test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap` |
-| replace `cmd_render`'s body with `pass` | `test_render_has_exactly_two_callers` |
+| in `cmd_validate_formula`, replace `_read_formula(_require(env, "MERGED_FORMULA")).decode("utf-8")` with `Path(_require(env, "MERGED_FORMULA")).read_text()` (replaces) | `test_a_carriage_return_in_the_merged_formula_is_refused` and `test_both_formula_subcommands_read_the_same_bytes` |
+| in `_formula_at_commit`, replace `_git_ok("ls-tree", "--name-only", commit, "--", path, cwd=clone)` with `git("ls-tree", "--name-only", commit, "--", path, cwd=clone).stdout` (replaces) | `test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap` |
+| in `prepare_push`, replace `base_formula = _formula_at_commit(clone, base_sha)` with `base_formula = _git_ok("show", f"{base_sha}:Formula/{FORMULA_NAME}.rb", cwd=clone) if git("cat-file", "-e", f"{base_sha}:Formula/{FORMULA_NAME}.rb", cwd=clone).returncode == 0 else None` (replaces) | `test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap` |
+| in `_formula_at_commit`, delete `if listed == "":` and the `return None` under it | `test_a_tap_with_no_formula_at_the_base_is_the_bootstrap_and_pushes` |
+| in `cmd_push_publish`, delete `redact=token,` | `test_push_publish_from_the_cli_pushes_with_the_token_and_redacts_it` |
+| in `cmd_push_prepare`, swap the names `"TARGET_BRANCH"` and `"DEFAULT_BRANCH"` in their two `_require` calls (replaces) | `test_push_prepare_from_the_cli_maps_each_variable_to_its_argument` |
+| replace `cmd_render`'s body with `pass` (replaces) | `test_render_has_exactly_two_callers` |
 
 Restore after each, rerun the file (all pass), `git status --short` clean.
 
@@ -3822,8 +3965,10 @@ With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
 .venv/bin/python /tmp/always_refuse.py cmd_validate_formula test_validate_formula_reads_the_published_releases_digests
 .venv/bin/python /tmp/always_refuse.py _read_formula test_validate_formula_reads_the_published_releases_digests
 .venv/bin/python /tmp/always_refuse.py prepare_push test_a_new_version_is_committed_on_the_base_and_pushed test_identical_bytes_are_a_no_op_and_publish_pushes_nothing test_the_first_scratch_push_creates_the_branch test_a_stale_scratch_branch_is_replaced_under_its_lease
-.venv/bin/python /tmp/always_refuse.py _formula_at_commit test_a_new_version_is_committed_on_the_base_and_pushed test_identical_bytes_are_a_no_op_and_publish_pushes_nothing
+.venv/bin/python /tmp/always_refuse.py _formula_at_commit test_a_new_version_is_committed_on_the_base_and_pushed test_identical_bytes_are_a_no_op_and_publish_pushes_nothing test_a_tap_with_no_formula_at_the_base_is_the_bootstrap_and_pushes
 .venv/bin/python /tmp/always_refuse.py publish_push test_a_new_version_is_committed_on_the_base_and_pushed test_the_first_scratch_push_creates_the_branch test_a_stale_scratch_branch_is_replaced_under_its_lease
+.venv/bin/python /tmp/always_refuse.py cmd_push_prepare test_push_prepare_from_the_cli_maps_each_variable_to_its_argument
+.venv/bin/python /tmp/always_refuse.py cmd_push_publish test_push_publish_from_the_cli_pushes_with_the_token_and_redacts_it
 git status --short
 ```
 
@@ -3930,6 +4075,7 @@ def test_the_formula_script_renders_fills_and_audits_in_order():
 def test_the_bottle_script_builds_bottles_and_pours_in_order():
     _assert_in_order(_CI_SCRIPTS / "homebrew_bottle.sh", [
         ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
+        ("formula in", r'cp "\$FORMULA_IN" "\$TAP_FORMULA"'),
         ("build", r'brew install --build-bottle "\$FORMULA_REF"'),
         ("first test", r'brew test "\$FORMULA_REF"'),
         ("bottle", r'brew bottle --json --no-rebuild --root-url="\$ROOT_URL" "\$FORMULA_REF"'),
@@ -4021,7 +4167,7 @@ Create `.github/scripts/homebrew_formula.sh`:
 #!/usr/bin/env bash
 # The `formula` job's body (#279): render the formula, fill its resources, audit it.
 #
-# Runs third-party code (PyPI resolution, Homebrew's gems) and holds no secret. Filled ONCE: two
+# Runs third-party code (PyPI resolution, Homebrew's gems) and references no secret. Filled ONCE: two
 # runners resolving minutes apart could land on different resource trees, and every bottle must be
 # built from one formula text (spec, section 2). SDIST_URL and SDIST_SHA256 come from `plan`.
 set -euo pipefail
@@ -4084,7 +4230,7 @@ Create `.github/scripts/homebrew_bottle.sh`:
 #!/usr/bin/env bash
 # The `bottle` job's body (#279): build, bottle, and prove the bottle pours on this runner.
 #
-# Runs third-party code and holds no secret. The steps and their reasons are the spec's sections 4
+# Runs third-party code and references no secret. The steps and their reasons are the spec's sections 4
 # and 6a; tests/test_release_publish_wiring.py pins their order, occurrence by occurrence.
 set -euo pipefail
 # Auto-update off: `brew install` would otherwise update the tap and, if its default branch has moved
@@ -4146,7 +4292,7 @@ Create `.github/scripts/homebrew_prove.sh`:
 # The `prove` job's body (#279): merge every bottle into the formula, and fetch every tag from its
 # real URL before the formula that points at it is pushed.
 #
-# Runs third-party code and holds no secret: it evaluates the merged formula, which is why `push`
+# Runs third-party code and references no secret: it evaluates the merged formula, which is why `push`
 # validates that text again as data (spec, section 6b).
 set -euo pipefail
 # Auto-update off: a brew command that auto-updates would update the tap and, if its default branch
@@ -4191,6 +4337,7 @@ enlarged roster.
 
 ```bash
 git add .github/scripts/homebrew_tap_checkout.sh .github/scripts/homebrew_formula.sh .github/scripts/homebrew_bottle.sh .github/scripts/homebrew_prove.sh tests/test_release_publish_wiring.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): add the untrusted Homebrew jobs' scripts (#279)
 
@@ -4206,6 +4353,7 @@ cp .github/scripts/homebrew_prove.sh /tmp/homebrew_prove.sh.bak
 | the second `brew test "$FORMULA_REF"` in `homebrew_bottle.sh` | `test_the_bottle_script_builds_bottles_and_pours_in_order` |
 | `rm -f "$cache_path"` in `homebrew_prove.sh` | `test_the_prove_script_merges_checks_and_fetches_every_tag_in_order` |
 | `export HOMEBREW_NO_AUTO_UPDATE=1` in `homebrew_bottle.sh` | `test_the_bottle_script_builds_bottles_and_pours_in_order` |
+| `cp "$FORMULA_IN" "$TAP_FORMULA"` in `homebrew_bottle.sh` | `test_the_bottle_script_builds_bottles_and_pours_in_order` |
 
 Restore each with `cp` from `/tmp`, rerun `tests/test_release_publish_wiring.py` (all pass),
 `git status --short` clean.
@@ -4325,28 +4473,45 @@ def _subcommand_function(path: Path, subcommand: str) -> str:
 
 def _env_reads(path: Path, function: str) -> set[str]:
     """Every environment name `function` in the script at `path` reads through `_require(env, "X")`,
-    `env.get("X")` or `env["X"]`, following calls into that script's own top-level functions."""
+    `env.get("X")` or `env["X"]`, following calls into that script's own top-level functions.
+
+    Fails closed: any other use of `env` in a followed function, and any `os.environ` outside `main`,
+    is an assertion, because a read this sweep cannot see would otherwise leave it green."""
     tree = ast.parse(_text(path))
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    assert "_require" in functions, f"{path.name} has no top-level _require; this sweep would read nothing"
+    environ = sorted({name for name, fn in functions.items() if name != "main"
+                      for node in ast.walk(fn) if isinstance(node, ast.Attribute) and node.attr == "environ"})
+    assert not environ, f"{path.name}: os.environ is read in {environ}, where this sweep cannot see it"
     names, seen, pending = set(), set(), [function]
     while pending:
         current = pending.pop()
         if current in seen:
             continue
         seen.add(current)
+        understood = set()
         for node in ast.walk(functions[current]):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 if node.func.id == "_require" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant):
                     names.add(node.args[1].value)
+                    understood.add(id(node.args[0]))
                 elif node.func.id in functions:
                     pending.append(node.func.id)
+                    understood.update(id(argument) for argument in node.args)
             elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                   and node.func.attr == "get" and isinstance(node.func.value, ast.Name)
                   and node.func.value.id == "env" and node.args and isinstance(node.args[0], ast.Constant)):
                 names.add(node.args[0].value)
+                understood.add(id(node.func.value))
             elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
                   and node.value.id == "env" and isinstance(node.slice, ast.Constant)):
                 names.add(node.slice.value)
+                understood.add(id(node.value))
+        unexplained = [node.lineno for node in ast.walk(functions[current])
+                       if isinstance(node, ast.Name) and node.id == "env" and isinstance(node.ctx, ast.Load)
+                       and id(node) not in understood]
+        assert not unexplained, (
+            f"{path.name}::{current} uses env on lines {unexplained} in a way this sweep cannot read")
     return names
 
 
@@ -4429,6 +4594,21 @@ def test_the_untrusted_jobs_run_only_the_rostered_scripts():
             assert re.fullmatch(r"bash \.github/scripts/homebrew_[a-z_]+\.sh", run), f"{job}: {run!r}"
 
 
+def test_no_workflow_restores_an_actions_cache():
+    """The untrusted Homebrew jobs hold the run's Actions runtime token, which can save a cache entry,
+    and GitHub scopes caches by branch rather than by workflow, so a later run on the same branch could
+    restore it. No workflow in this repository restores a cache, so nothing reads what they could
+    save; `actions/cache`, or a setup action's `cache:` input, anywhere would reopen that."""
+    workflows = _workflow_files(ROOT / ".github" / "workflows")
+    assert HOMEBREW in workflows, "the sweep does not reach homebrew.yml, so it proves nothing"
+    for workflow in workflows:
+        for job, body in (_workflow(workflow).get("jobs") or {}).items():
+            for step in body.get("steps") or []:
+                action = step.get("uses", "").split("@")[0]
+                assert action.split("/")[:2] != ["actions", "cache"], f"{workflow.name} {job}: {step}"
+                assert "cache" not in (step.get("with") or {}), f"{workflow.name} {job}: {step}"
+
+
 def test_every_homebrew_step_supplies_every_variable_its_command_reads():
     """Deleting a variable from a step's `env:` otherwise stays green and fails mid-release, possibly
     after `upload` has published the tap release. The names a command requires are read from the
@@ -4443,7 +4623,17 @@ def test_every_homebrew_step_supplies_every_variable_its_command_reads():
             script = re.fullmatch(r"bash \.github/scripts/([\w.-]+\.sh)", run)
             if script:
                 source = "\n".join(_script_lines(_CI_SCRIPTS / script[1]))
-                required = set(re.findall(r"\$\{([A-Z_]+):\?\}", source))
+                required = set(re.findall(r"\$\{([A-Z][A-Z0-9_]*):\?\}", source))
+                # The guard line is the script's contract, so check that it covers what the script
+                # reads: every upper-case variable it references and never assigns, and every variable
+                # the subcommands it invokes read.
+                assigned = set(re.findall(r"(?<![\w$])([A-Z][A-Z0-9_]*)=", source))
+                referenced = set(re.findall(r"\$\{?([A-Z][A-Z0-9_]*)", source))
+                invoked = re.findall(r'python3 -P "\$BOTTLES" ([a-z-]+)', source)
+                reads = set().union(*(_env_reads(_BOTTLES_SCRIPT, _subcommand_function(_BOTTLES_SCRIPT, sub))
+                                      for sub in invoked))
+                unguarded = ((referenced - assigned) | reads) - required - _RUNNER_PROVIDED
+                assert not unguarded, f"{script[1]} reads {sorted(unguarded)} without naming them on its guard line"
             else:
                 assert _TRUSTED_RUN.fullmatch(run), f"{job}: {run!r}"
                 subcommand = run[len(_BOTTLES_RUN) + 1:]
@@ -4588,7 +4778,9 @@ name: Homebrew publish
 #     CPython finding cairo and pango with no DYLD_FALLBACK_LIBRARY_PATH, is a macOS mechanism. They
 #     reference no secret, but they still hold a contents: read GITHUB_TOKEN and the run's artifact
 #     token, which can create an artifact under any name. That is why a token job validates every
-#     artifact it reads as data, and reads no output of theirs.
+#     artifact it reads as data, and reads no output of theirs. The same token can save an Actions
+#     cache entry that a later run on this branch could restore, which is why no workflow in this
+#     repository restores a cache.
 #
 # No job or step carries `if:` or `continue-on-error`, and no `${{ }}` appears inside `run:`: every
 # value reaches a script through `env:`. tests/test_release_publish_wiring.py pins each of these.
@@ -4891,23 +5083,26 @@ suppressing it, rerun both commands, and rerun the tests.
 
 ```bash
 git add .github/workflows/homebrew.yml tests/test_release_publish_wiring.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): add the reusable Homebrew publish workflow (#279)
 
 Trusted plan, upload and push jobs; untrusted formula, bottle and prove
-jobs, which hold no secret. Nothing calls it yet.
+jobs, which reference no secret. Nothing calls it yet.
 
 MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 Claude-Session: https://claude.ai/code/session_017tWDbFbL5fUG7ofXqJxomL
 EOF
 cp .github/workflows/homebrew.yml /tmp/homebrew.yml.bak
+cp .github/scripts/homebrew_prove.sh /tmp/homebrew_prove.sh.bak
+cp .github/scripts/homebrew_bottle.sh /tmp/homebrew_bottle.sh.bak
 ```
 
-For each row: apply the mutant to `.github/workflows/homebrew.yml`, run
+For each row: apply the mutant, run
 `.venv/bin/python -m pytest -q tests/test_release_publish_wiring.py -k <test name>`, confirm that
-test FAILS on its own assertion (not on a `KeyError` or YAML error), then restore with
-`cp /tmp/homebrew.yml.bak .github/workflows/homebrew.yml`. Rows marked (adds) are the absence-property
-exception Global Constraints names.
+test FAILS on its own assertion (not on a `KeyError` or YAML error), then restore the file the row
+changed with `cp` from its `/tmp` backup. Rows marked (adds) or (replaces) are the exceptions Global
+Constraints names.
 
 | Mutant | Test that must fail |
 | --- | --- |
@@ -4928,7 +5123,10 @@ exception Global Constraints names.
 | delete the `platforms: ${{ steps.plan.outputs.platforms }}` line from `plan`'s `outputs:` | `test_every_output_reference_names_a_declared_output_and_every_output_a_real_step` |
 | delete `owner: ${{ github.repository_owner }}` from `push`'s `create-github-app-token` step | `test_the_mints_and_plan_take_the_owner_from_one_expression` |
 | delete `json-` from `prove`'s second download pattern, leaving `homebrew-bottle-*` | `test_prove_downloads_the_formula_and_the_jsons_but_never_a_bottle` |
-| change the last hex digit of the `actions/checkout` SHA in `plan` | `test_the_trusted_jobs_run_only_the_bottles_script_and_every_action_is_pinned` |
+| change the last hex digit of the `actions/checkout` SHA in `plan` (replaces) | `test_the_trusted_jobs_run_only_the_bottles_script_and_every_action_is_pinned` |
+| in `homebrew_prove.sh`, delete `"${PLATFORMS:?}"` from the guard line | `test_every_homebrew_step_supplies_every_variable_its_command_reads` |
+| in `homebrew_bottle.sh`, delete `"${ROOT_URL:?}"` from the guard line | `test_every_homebrew_step_supplies_every_variable_its_command_reads` |
+| add `cache: pip` to the `with:` of `formula`'s `actions/setup-python` step (adds) | `test_no_workflow_restores_an_actions_cache` |
 | add `if: always()` to the `Push the tap commit` step (adds) | `test_no_homebrew_job_or_step_can_run_after_a_failure` |
 | move `RUN_URL`'s value out of `plan`'s step `env:` into its `run:` line, as `RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" python3 -P ...` (adds) | `test_no_expression_is_pasted_into_a_run_body` |
 | insert ` -x` after `bash` in `formula`'s `Render, resource-fill and audit the formula` step (adds) | `test_the_untrusted_jobs_run_only_the_rostered_scripts` |
@@ -5195,9 +5393,11 @@ def test_only_the_formula_script_fills_resources():
 
 
 # `|| true`, `|| :`, `|| exit 0` and `|| echo ...` turn a failed command into success; `set +e`,
-# `set +o errexit|pipefail` and `shopt -u` switch off what makes a failure fatal.
+# `set +o errexit|pipefail` and `shopt -u` switch off what makes a failure fatal; and an EXIT `trap`
+# that runs `exit 0` replaces the status errexit would return. No script uses `trap`, so it is banned.
 _SWALLOWED = re.compile(
-    r"\|\|\s*(true\b|:(\s|;|$)|exit\s+0\b|echo\b)|\bset\s+\+[a-z]*e|\bset\s+\+o\s+(errexit|pipefail)|\bshopt\s+-u"
+    r"\|\|\s*(true\b|:(\s|;|$)|exit\s+0\b|echo\b)|\bset\s+\+[a-z]*e|\bset\s+\+o\s+(errexit|pipefail)"
+    r"|\bshopt\s+-u|\btrap\b"
 )
 
 
@@ -5368,6 +5568,7 @@ Expected: no findings.
 
 ```bash
 git add .github/workflows/release-please.yml .github/workflows/homebrew-dry-run.yml tests/test_release_publish_wiring.py
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 feat(packaging): publish Homebrew bottles for arm64 macOS 15 and 26 (#279)
 
@@ -5512,6 +5713,7 @@ and leave it if it states something still true, saying which in the commit body.
 
 ```bash
 git add scripts/render_homebrew_formula.py tests/test_homebrew_formula.py docs/INSTALL.md
+.venv/bin/python -m pytest -q
 git commit -F - <<'EOF'
 docs(packaging): say which Macs pour a Homebrew bottle (#279)
 
@@ -5574,10 +5776,11 @@ appear, and a `--limit 1` read straight after dispatching can return the previou
 has finished:
 
 ```bash
-gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
+gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion, .databaseId, .startedAt] | @tsv'
 ```
 
-Read every job's conclusion, not only the run's, and record the `TAG` value from the environment of
+Read every job's conclusion, not only the run's; record each job's `databaseId` and `startedAt`, and
+the `TAG` value from the environment of
 the `push` job's `Validate the merged formula as data` step. Then take the spec's section 8 list "The
 first dry run proves these", and for each item record whether it was proven, with the job log line
 that shows it. Write the record to project memory (`domain_homebrew_bottling.md`) and as a comment on
@@ -5590,12 +5793,15 @@ with it:
 
 ```bash
 gh run view <run id> --json jobs --jq '.jobs[] | select(.name | endswith("upload")) | .databaseId'
+RERUN="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 gh run rerun <run id> --job <that job id>
-gh run view <run id> --attempt 2 --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
+gh run view <run id> --attempt 2 --json jobs --jq '.jobs[] | [.name, .conclusion, .databaseId, .startedAt] | @tsv'
 ```
 
 Expected, each read from attempt 2:
-- attempt 2 ran `upload`, `prove` and `push`, and not `plan`, `formula` or `bottle`;
+- attempt 2 ran `upload`, `prove` and `push`, and not `plan`, `formula` or `bottle`: a job ran again
+  when its `databaseId` differs from Step 4's record or its `startedAt` is later than `$RERUN`, not
+  merely because it appears in the list;
 - `upload` prints `release <tag>: found` and `<asset>: skip` for both bottles, and no `published`
   line: GitHub returned the release's title, notes and target, and each asset's digest, exactly as
   they were sent;
@@ -5608,3 +5814,11 @@ reuses `plan`'s outputs. "Re-run failed jobs", the operation the recovery commen
 different GitHub operation: record it in the section 8 note as still read, not measured. If anything
 in Step 4 or 5 fails, stop before the next release PR merges and treat the failure as a finding
 against this plan. Close #279 once both steps pass.
+
+- [ ] **Step 6: After the first release that publishes bottles, correct the memory index**
+
+The project memory index (`MEMORY.md`) says the tap publishes no bottles. Once a release has pushed a
+formula with a bottle block to the tap's default branch, propose a replacement line to the owner with
+`AskUserQuestion`, since the memory rules require confirming a change to an existing entry: the bottled
+tags, `arm64_sequoia` and `arm64_tahoe`, and that other Macs build from source. Write it with the
+`/memory` skill only after the owner agrees.
