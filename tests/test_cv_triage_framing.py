@@ -5,7 +5,7 @@ import json
 import pytest
 
 from sluice.core.backends import Completion
-from sluice.core.leads import framing_entries, split_framing
+from sluice.core.leads import FRAMING_KEYS, framing_entries, split_framing
 from sluice.cv import compose as C
 from sluice.cv.engine import run_one
 from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
@@ -28,20 +28,68 @@ def _prompt(**kw):
     ("   ", _CONCERNS, (f"concerns: {_CONCERNS}",)),
     ("", "", ()),
     (None, 5, ()),
+    ("|", "", ()),
+    ("", "|", ()),
+    (">-", "", ()),
+    ("", "|2", ()),
+    ("", ">+", ()),
+    ("", "|-2", ()),
+    ("", "a | b", ("concerns: a | b",)),
+    ("", "|x", ("concerns: |x",)),
+    ("", "| # typed by hand", ()),
+    ("", ">- # note", ()),
+    # Controls, pinned on purpose (#329): a value that is ONLY a comment, or a
+    # block-scalar-looking header with no space before the "#", is not a bare header and
+    # still frames.
+    ("", "# typed by hand", ("concerns: # typed by hand",)),
+    ("", "|#x", ("concerns: |#x",)),
 ])
 def test_framing_lines(flags, concerns, expected):
     assert C.framing_lines(flags, concerns) == expected
 
 
-def test_an_empty_framing_leaves_the_prompt_byte_identical():
-    assert _prompt(triage_framing=()) == _prompt()
+def test_every_framing_key_has_its_own_prompt_label():
+    # #329: `FRAMING_KEYS` is the one roster; `_TRIAGE_FRAMING_PROMPT_LABELS` is
+    # positional against it (`framing_lines` zips them). Names the cause directly -- a key
+    # added to the roster with no matching prompt label -- rather than leaving it to be
+    # inferred from whichever unrelated framing-row assertion such a mismatch happens to break.
+    assert len(C._TRIAGE_FRAMING_PROMPT_LABELS) == len(FRAMING_KEYS)
+
+
+@pytest.mark.parametrize("skills", [False, True])
+def test_the_unframed_prompt_matches_the_pre_329_shape_at_both_splice_points(skills):
+    """Replaces a vacuous byte-identity row: `triage_framing` defaults to `()`, so
+    `_prompt(triage_framing=())` and `_prompt()` take the identical path and the comparison could
+    never fail either way. Pins the pre-#329 shape directly instead, at both places #329 spliced
+    something in -- the neighbourhood around the JD block's end and the `=== SOURCE BUNDLE`
+    header, and the rules line the #329 rule is spliced before -- read off `git show
+    origin/main:sluice/cv/compose.py` (c9d700e3, the commit this branch is rebased onto)."""
+    lines = _prompt(skills_requested=skills).splitlines()
+    jd_at = lines.index("=== THE ROLE (JD) ===")
+    assert lines[jd_at:jd_at + 5] == [
+        "=== THE ROLE (JD) ===", "JD", "",
+        "=== SOURCE BUNDLE (the ONLY permitted source) ===", "BUNDLE",
+    ]
+    # Adjacent to the line immediately before the one the #329 rule is spliced before, with no
+    # placeholder-collapse gap between them, exactly as it read before #329. `skills_attribution_
+    # rule` sits in that same gap (#167), so its own line -- present only when `skills` is True --
+    # is part of the expected slice rather than a second, unrelated placeholder.
+    skills_at = lines.index(
+        "- The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which "
+        "experience entries to lead with and how to describe them. Never cite it, never quote "
+        "a number from it, and never introduce a claim that rests on it alone: every fact in "
+        "the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.")
+    expected_next = ([C._SKILLS_ATTRIBUTION_PROMPT_RULE.rstrip("\n")] if skills else []) + [
+        "- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a "
+        "skill the bundle does not contain."]
+    assert lines[skills_at + 1:skills_at + 1 + len(expected_next)] == expected_next
 
 
 @pytest.mark.parametrize("skills", [False, True])
 def test_framing_adds_exactly_its_rule_and_its_section(skills):
     """Standing, not a one-off measurement: remove the rule's own lines and the section block
     from a framed render, and what is left must be the unframed render, line for line. A
-    placeholder that fails to collapse, or a stray blank line, shows up here."""
+    placeholder that fails to collapse shows up here."""
     framing = C.framing_lines(_FLAGS, _CONCERNS)
     base = _prompt(skills_requested=skills).splitlines()
     remaining = _prompt(skills_requested=skills, triage_framing=framing).splitlines()
@@ -191,7 +239,11 @@ def test_a_verdict_triage_wrote_reaches_the_composer(tmp_path, monkeypatch):
     (['triage_concerns: "HAND-TYPED-ONE; HAND-TYPED-TWO"'],
      "- concerns: HAND-TYPED-ONE; HAND-TYPED-TWO"),
     (["triage_concerns:", "  - HAND-TYPED-ONE", "  - HAND-TYPED-TWO"], None),
-], ids=["one-quoted-line", "block-list"])
+    (["triage_concerns: |", "  HAND-TYPED-ONE", "  HAND-TYPED-TWO"], None),
+    (["triage_concerns: | # typed by hand", "  HAND-TYPED-ONE"], None),
+    (["triage_concerns: HAND-TYPED-ONE", "  HAND-TYPED-TWO"], "- concerns: HAND-TYPED-ONE"),
+], ids=["one-quoted-line", "block-list", "block-scalar", "block-scalar-commented",
+        "plain-continuation"])
 def test_a_hand_edited_note_frames_only_a_one_line_value(tmp_path, monkeypatch, typed, framed):
     """The manual route USAGE.md documents, end to end through a REAL vault: a value typed as one
     quoted line frames the CV, and one typed as a YAML list frames nothing (the vault's
