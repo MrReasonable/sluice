@@ -254,7 +254,8 @@ nothing extra prints):
 
 A summary line follows when any dossier fetch failed and composition proceeded blind, a
 second when any CV was composed without the Skills Inventory because the corpus could
-not be read, and a third when any run's diagnostic artefacts (below) could not be written.
+not be read, and a third when any run's diagnostic artefacts (below) could not all be written
+or cleared.
 **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
@@ -287,9 +288,9 @@ There is no history: a later run for the same lead deletes this set (by name, le
 and any other file alone) and writes its own. `run.json`'s `files` lists every other file the
 run wrote, so anything else in the directory, such as an earlier run's PDF, is not from it. A
 lead refused before composition (not shortlisted, held for sign-off, stale, or `skipped-config`)
-writes nothing and leaves the previous set as it was. A file that cannot be written never fails
-the CV: a WARNING names the path and the error, and the result line says
-`artefacts_failed=True`. The prompt carries your verified evidence and your contact block, so
+writes nothing and leaves the previous set as it was. A file that cannot be written, or a stale
+one that cannot be cleared, never fails the CV: a WARNING names the path and the error, and the
+result line says `artefacts_failed=True`. The prompt carries your verified evidence and your contact block, so
 keep `output_dir` outside anything you publish.
 
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`

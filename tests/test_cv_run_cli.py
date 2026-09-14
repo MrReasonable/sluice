@@ -80,7 +80,9 @@ def test_cmd_cv_run_says_when_a_runs_diagnostic_artefacts_could_not_be_written(
     assert cmd_cv_run(_args(), Config()) == 0   # a diagnostic failure never fails the CV
     err = capsys.readouterr().err
     assert "artefacts_failed=True" in err
-    assert "cv: 1 run(s) whose diagnostic artefacts could not be written" in err
+    # "or cleared": the flag also covers a stale file from the previous run that could not
+    # be deleted, and a line naming only writes would give that case the wrong cause.
+    assert "cv: 1 run(s) whose diagnostic artefacts could not all be written or cleared" in err
 
 
 def test_cmd_cv_run_prints_nothing_extra_when_every_finding_list_is_empty(
@@ -101,7 +103,7 @@ def test_cmd_cv_run_prints_nothing_extra_when_every_finding_list_is_empty(
     assert "slop=0" in err and "voice_flags=0" in err
     assert "violations=0" in err and "audit_flags=0" in err
     assert "artefacts_failed=False" in err
-    assert "artefacts could not be written" not in err
+    assert "diagnostic artefacts could not" not in err
     # The general form of the three label assertions above, which #258 is the reason to
     # add: `violations` entries carry no single label to name (every producer prefixes
     # its own category -- see the skipped-gate test), so an absence check keyed on

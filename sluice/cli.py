@@ -1445,13 +1445,15 @@ def cmd_cv_run(args, config) -> int:
         print(f"cv: {unframed} CV(s) composed without the Skills Inventory "
               f"(corpus unreadable -- run `job-sluice doctor`)", file=sys.stderr)
     # The same shape again, for the per-lead diagnostic artefacts (the prompt, each attempt's
-    # composed text, run.json -- cv/artefacts.py). Failing to write them never fails the CV,
+    # composed text, run.json -- cv/artefacts.py). Failing to keep them never fails the CV,
     # so without a count a batch that lost them reads exactly like one that kept them. The
     # engine's WARNING names each path and its error; this says how many runs it touched.
+    # "written or cleared", because the flag covers both: a stale file from the previous run
+    # that could not be deleted is as misleading as a new one that was never written.
     unkept = sum(1 for r in results if r.artefacts_failed)
     if unkept:
-        print(f"cv: {unkept} run(s) whose diagnostic artefacts could not be written "
-              f"(the WARNING above names the path and the error)", file=sys.stderr)
+        print(f"cv: {unkept} run(s) whose diagnostic artefacts could not all be written or "
+              f"cleared (the WARNING above names the path and the error)", file=sys.stderr)
     rendered = [r for r in results if r.status == "rendered"]
     if rendered:
         _notify_reporting("job-sluice cv: " + "; ".join(

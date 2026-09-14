@@ -411,6 +411,33 @@ def test_the_run_record_survives_quoting_text_utf8_cannot_encode(tmp_path):
     assert "\ud800" in run["attempts"][1]["compose_error"]
 
 
+class _NonStringPathRenderer(FakeRenderer):
+    """Returns something other than the `str` path the Renderer protocol declares. Nothing
+    checks an injected renderer's return at runtime, and run.json records it verbatim."""
+
+    def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+        super().render(cv_text, out_dir, neutral_name=neutral_name)
+        return object()
+
+
+def test_a_run_record_that_cannot_be_serialised_flags_rather_than_costing_the_cv(
+        tmp_path, caplog):
+    """Serialising run.json is part of writing it, so it fails the way a write does: a
+    WARNING naming the path, `artefacts_failed`, and a CV that still ships. Serialised
+    ahead of the guarded write, a TypeError escaped `run_one` and turned a rendered CV into
+    an `error`."""
+    with caplog.at_level("WARNING"):
+        r, _be, rend = _run(tmp_path, [CLEAN_CV], renderer=_NonStringPathRenderer())
+    assert r.status == "rendered"
+    assert rend.rendered == [CLEAN_CV]
+    assert r.artefacts_failed is True
+    lead = _lead_dir(tmp_path)
+    assert not (lead / "run.json").exists()
+    # The files written before the record are untouched by its failure.
+    assert _text(lead / "cv.rendered.md") == CLEAN_CV
+    assert any(str(lead / "run.json") in rec.getMessage() for rec in caplog.records)
+
+
 def test_a_run_that_raises_after_composing_records_the_error(tmp_path):
     note = Note(dict(_LEAD_FM))
     [r] = run_batch(FakeVault(ENTRIES, notes=[note]), _cfg_at(tmp_path),
