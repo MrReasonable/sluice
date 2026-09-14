@@ -189,6 +189,7 @@ and report: this task uninstalls `job-sluice` at the end, and the owner must dec
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 WT="$(git rev-parse --show-toplevel)"
 M=/tmp/sluice-279-measure
+brew trust --formula mrreasonable/tap/job-sluice
 brew tap mrreasonable/tap
 TAP="$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap"
 git -C "$TAP" rev-parse HEAD
@@ -223,6 +224,10 @@ assert 'resource "' not in stripped, "a resource stanza outside Task 5's grammar
 print("skeleton matches the renderer" if stripped == render(sdist_url=url, sha256=sha) else "SKELETON DIFFERS")
 PY
 ```
+
+Trust comes first: measured on Homebrew 6.0.22-306, `brew tap` refuses a tap whose formula is not
+trusted ("Refusing to load formula ... from untrusted tap") and leaves no tap behind. Step 8's restore
+removes the entry again: `brew untap` clears it, and the `trust` diff there confirms it.
 
 Expected: the two commit ids are identical; a resource count well above zero; `comm` prints nothing;
 `bottle blocks stripped: 0` (or `1` once this channel has published a release); then
