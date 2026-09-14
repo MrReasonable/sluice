@@ -886,3 +886,86 @@ def test_the_bottle_block_moved_between_two_resource_stanzas_is_refused():
     first_end = rest.index("  end\n\n", start) + len("  end\n\n")
     with pytest.raises(Refusal):
         _validate(rest[:first_end] + block + rest[first_end:])
+
+
+# --- the push decision ----------------------------------------------------------------------------
+
+
+def _formula_at(version):
+    return _merged().replace("job_sluice-9.9.0.tar.gz", f"job_sluice-{version}.tar.gz").encode()
+
+
+def test_the_version_is_read_from_the_top_level_url_as_integers():
+    assert hb.parse_formula_version(_formula_at("9.10.0").decode()) == (9, 10, 0)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "",
+        _merged().replace("job_sluice-9.9.0.tar.gz", "job_sluice-9.9.tar.gz"),
+        _merged().replace('  url "', '  url  "', 1),
+        _merged() + '  url "https://example.invalid/job_sluice-1.0.0.tar.gz"\n',
+    ],
+)
+def test_an_unreadable_version_is_refused(text):
+    with pytest.raises(Refusal):
+        hb.parse_formula_version(text)
+
+
+def _push(**overrides):
+    arguments = {"target_state": "present", "remote_formula": _formula_at("9.8.0"),
+                 "ours": _formula_at("9.9.0"), "target_is_default": True,
+                 "base_formula": _formula_at("9.8.0"), "version": "9.9.0"}
+    arguments.update(overrides)
+    return hb.push_decision(**arguments)
+
+
+def test_identical_bytes_at_the_target_are_a_no_op():
+    assert _push(remote_formula=_formula_at("9.9.0")) == "noop"
+
+
+def test_different_bytes_at_the_target_push():
+    assert _push() == "push"
+
+
+def test_an_absent_scratch_branch_pushes():
+    assert _push(target_state="absent", remote_formula=None, target_is_default=False) == "push"
+
+
+def test_a_target_without_the_formula_pushes():
+    assert _push(remote_formula=None) == "push"
+
+
+@pytest.mark.parametrize("base", ["9.9.0", "9.8.9", "2.9.7"])
+def test_an_equal_or_older_base_version_pushes(base):
+    assert _push(base_formula=_formula_at(base)) == "push"
+
+
+def test_a_newer_base_version_on_the_default_branch_is_refused():
+    """9.10.0 against 9.9.0: a string comparison would call 9.10.0 older and roll the tap back."""
+    with pytest.raises(Refusal):
+        _push(base_formula=_formula_at("9.10.0"))
+
+
+def test_a_newer_base_version_on_a_scratch_branch_pushes():
+    assert _push(target_is_default=False, base_formula=_formula_at("9.10.0")) == "push"
+
+
+def test_the_bootstrap_with_no_formula_at_the_base_pushes():
+    assert _push(target_state="present", remote_formula=None, base_formula=None) == "push"
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"base_formula": b'  url "https://example.invalid/unversioned.tar.gz"\n'},
+        {"base_formula": b"\xff\xfe"},
+        {"target_state": "absent", "remote_formula": None},
+        {"target_state": "error"},
+        {"version": "9.9"},
+    ],
+)
+def test_an_unparseable_base_an_absent_default_or_a_bad_state_is_refused(overrides):
+    with pytest.raises(Refusal):
+        _push(**overrides)

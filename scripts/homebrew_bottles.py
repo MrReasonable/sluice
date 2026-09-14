@@ -579,3 +579,60 @@ def validate_formula(
             "the formula is not the renderer's text plus resource stanzas and one bottle block: "
             + _first_difference(expected, remainder)
         )
+
+
+# --- the push -----------------------------------------------------------------------------------
+
+# The renderer writes no `version` stanza, so the version lives only in the top-level url line: two
+# spaces of indent, where a resource's url line has four.
+_TOP_URL_RE = re.compile(
+    r'^  url "https://[^"\n]+/job_sluice-(?P<version>\d+\.\d+\.\d+)\.tar\.gz"$', re.MULTILINE
+)
+
+
+def parse_formula_version(text: str) -> tuple[int, int, int]:
+    found = _TOP_URL_RE.findall(text)
+    if len(found) != 1:
+        raise Refusal(
+            f"could not read one release version from the tap's formula (found {len(found)} "
+            f"top-level url lines)."
+        )
+    return version_tuple(found[0])
+
+
+def push_decision(
+    *,
+    target_state: str,
+    remote_formula: bytes | None,
+    ours: bytes,
+    target_is_default: bool,
+    base_formula: bytes | None,
+    version: str,
+) -> str:
+    """'noop' or 'push', or a refusal (spec, section 6c).
+
+    - An absent default branch is refused; an absent scratch branch is the first dry run of a
+      version.
+    - Identical bytes at the target are a re-run after this release's push already landed.
+    - On the default branch, the formula at BASE_SHA must not be newer than VERSION: the re-run of
+      an older release must not roll the tap back. A base with no formula is the bootstrap.
+    """
+    wanted = version_tuple(version)
+    if target_state not in ("present", "absent"):
+        raise Refusal(f"the target branch's state is {target_state!r}, not present or absent.")
+    if target_state == "absent" and target_is_default:
+        raise Refusal("the tap's default branch does not exist; refusing to create it from a publish.")
+    if target_state == "present" and remote_formula is not None and remote_formula == ours:
+        return "noop"
+    if target_is_default and base_formula is not None:
+        try:
+            base_text = base_formula.decode("utf-8")
+        except UnicodeDecodeError as err:
+            raise Refusal("the tap's formula at the base commit is not UTF-8 text.") from err
+        current = parse_formula_version(base_text)
+        if current > wanted:
+            raise Refusal(
+                f"the tap's formula at the base commit is {'.'.join(map(str, current))}, newer "
+                f"than {version}. Refusing to roll the tap back."
+            )
+    return "push"
