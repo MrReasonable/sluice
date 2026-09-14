@@ -16,11 +16,13 @@ So each store ships a SEEDER instead. A store with no seeder cannot be conforman
 and that is a hard failure rather than a silent skip -- the whole lesson of this suite is
 that a green tick over an untested store is worse than no tick at all.
 """
+import re
+
 from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
 
 
 def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
-                candidate=None, evidence=()):
+                candidate=None, evidence=(), multi_line_key=None):
     """Seed the markdown vault by writing the files it reads.
 
     This knows the vault's layout, which is fine: it is the VAULT's seeder. The contract
@@ -49,6 +51,17 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
             "Job Applications/Job Leads/Conflicted - Analyst.md",
             f"---\ncompany: Conflicted\nrole: Analyst\nstatus: {a}\nstatus: {b}\n"
             f"url: https://example.invalid/jobs/9\n---\nbody\n",
+        )
+
+    if multi_line_key:
+        # #329: a lead whose `multi_line_key` holds a hand-typed block list, the shape Obsidian
+        # writes for a List property. Through `write_document`, like the conflicted note above,
+        # so the contract rows never pass YAML structure through `update_fields`.
+        store.write_document(
+            "Job Applications/Job Leads/Example Foundry - Analyst.md",
+            f"---\ncompany: Example Foundry\nrole: Analyst\nstatus: new\n"
+            f"{multi_line_key}:\n  - KEPT-ONE\n  - KEPT-TWO\n"
+            f"url: https://example.invalid/jobs/8\n---\nbody\n",
         )
 
     if candidate:
@@ -106,3 +119,71 @@ def seed(store_name, store, **kw):
             f"material to the fabrication gate slipped through review."
         )
     return SEEDERS[store_name](store, **kw)
+
+
+def _witness_vault(store, key):
+    """`key`'s raw on-disk representation in the seeded lead note: the key's own line, plus
+    every following line that belongs to its value (indented deeper than the key, or a `-`
+    item line at the key's own indentation), up to the first line that is neither and is not
+    blank or comment-only either.
+
+    Neither a blank line nor a comment-only line, at any indentation, ends the value on its own
+    (#329): YAML continues a block collection past either kind, so a broken store that appended a
+    corrupted item AFTER either one, following the real block, is still holding one value, and
+    the witness has to keep scanning past that line to see the item -- a scan that stopped
+    there let exactly that corruption through the contract rows undetected. Such a line is
+    included in the captured raw text only when a later qualifying line follows it (it was
+    interior to the value); any after the value's last qualifying line are not part of it and
+    are dropped.
+
+    Reads the note's RAW frontmatter straight off disk, the way `_seed_vault`'s
+    `multi_line_key` note was written -- never through `read_leads`, whose `fm` collapses a
+    block list to `""` and so cannot see a store that deleted or rewrote the block's ITEMS
+    while leaving the key's own line untouched (#329). Written independently of
+    `sluice.core.vault._holds_multiline_value`, on purpose: a bug in that helper must not be
+    able to hide inside the witness meant to catch it."""
+    path = store.read_leads()[0].ref
+    inner = open(path, encoding="utf-8").read().split("---\n", 2)[1]
+    lines = inner.split("\n")
+    pat = re.compile(rf"^(\s*){re.escape(key)}\s*:")
+    for i, line in enumerate(lines):
+        m = pat.match(line)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        block = [line]
+        pending = []
+        for later in lines[i + 1:]:
+            if not later.strip() or later.lstrip().startswith("#"):
+                pending.append(later)
+                continue
+            later_indent = len(later) - len(later.lstrip())
+            if later_indent > indent or (later_indent == indent and later.lstrip().startswith("-")):
+                block.extend(pending)
+                block.append(later)
+                pending = []
+                continue
+            break
+        return "\n".join(block)
+    return ""
+
+
+WITNESSES = {
+    "vault": _witness_vault,
+}
+
+
+def witness(store_name, store, key):
+    """`key`'s raw on-disk representation for `store`, or fail loudly if it has no witness --
+    see `seed`'s docstring for why silence here is worse than an error. A conformance row
+    compares this before and after a write BESIDE the portable `fm`/`wrote` assertions, because
+    `fm` alone cannot see a store that corrupted a preserved key's block while leaving its
+    read-back value unchanged."""
+    if store_name not in WITNESSES:
+        raise AssertionError(
+            f"store '{store_name}' ships no conformance witness (add one to "
+            f"tests/conformance/seeds.py). Without it a store that deletes or rewrites a "
+            f"preserved key's block ITEMS, while leaving the key's own line untouched, would "
+            f"still pass a `preserve_block_values` row."
+        )
+    return WITNESSES[store_name](store, key)

@@ -53,6 +53,11 @@ from sluice.core.protocols import (
     VaultConflict,
 )
 
+try:
+    import yaml
+except ImportError:  # pragma: no cover - yaml is a declared dependency
+    yaml = None
+
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
 _MYCV_BASELINE = os.path.join("My CV", "CV.md")
 _CRITERIA_RELPATH = CRITERIA_RELPATH
@@ -1698,7 +1703,8 @@ class Vault:
                       require_status: frozenset | None = None,
                       require_blank: frozenset | None = None,
                       blank_values: frozenset | None = None,
-                      require_unchanged: dict | None = None) -> bool:
+                      require_unchanged: dict | None = None,
+                      preserve_block_values: frozenset | None = None) -> bool:
         """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
         intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
         is present, so re-runs are idempotent). Routed through _cas_write: the edit is
@@ -1712,6 +1718,17 @@ class Vault:
         `note.fm[key]` gave you rather than a normalised form -- a folded value would
         compare against the stored spelling and never match, and the refusal is
         indistinguishable from a no-op to the caller.
+
+        `preserve_block_values` (#329): each named key that is also in `fields` is re-read from
+        the FRESH note, and left unwritten when its stored value spans several lines (see
+        `_holds_multiline_value`), or when PyYAML reads the note and says a single-line write of
+        the key would break it (see `_single_line_write_breaks_note`); the other fields still
+        land, and a warning names the key. The note append abstains on the same tests.
+        `_set_fm` replaces a key's own line only, so writing a single-line value over a
+        hand-typed block list leaves the item lines orphaned under a plain value and a YAML
+        reader then refuses the note, while sluice's line-based reader carries on and nothing
+        reports it. Decided inside the transform for the same reason as the guards above: the
+        caller's snapshot predates the human's edit.
 
         `require_status` (#9): when given, re-read the status from the FRESH note and
         write nothing unless it is in that set. Returns whether a write happened.
@@ -1797,10 +1814,44 @@ class Vault:
                     _fm_value(inner, key) != expected
                     for key, expected in require_unchanged.items()):
                 return text
+            # Decided once, against the fresh note, BEFORE any field is written: `_set_fm`
+            # matches a key at any indentation, so an earlier write in the loop below can move
+            # a nested child line to column 0 and make a block value look single-line to a
+            # check made after it.
+            preserved = {key for key in (preserve_block_values or ())
+                         if key in fields and _holds_multiline_value(inner, key)}
+            for key in sorted(preserved):
+                _log.warning(
+                    "vault: %s left unwritten for %s -- it holds a value spread over several "
+                    "lines, which a single-line write would corrupt", key, ref)
+            # The same decision asked of PyYAML, against the same fresh `inner`: a note PyYAML
+            # reads whose single-line write the scan above does not catch. Its warning says what
+            # it measured, which is not a value spread over several lines.
+            breaks_note = {key for key in (preserve_block_values or ())
+                           if key in fields and key not in preserved
+                           and _single_line_write_breaks_note(inner, key, fields[key])}
+            for key in sorted(breaks_note):
+                _log.warning(
+                    "vault: %s left unwritten for %s -- a single-line write would break the "
+                    "note's frontmatter as PyYAML reads it", key, ref)
+            preserved |= breaks_note
+            # #329: decided here too, against the same fresh `inner`, before any
+            # field write can move a nested child line and change what this reads. The append
+            # is its own write path, not a `fields` key, so `preserve_block_values` does not
+            # cover it -- but a single-line append over a hand-typed multi-line
+            # `relevance_notes` corrupts it exactly the way an unguarded `fields` write would.
+            append_would_corrupt = (append_note is not None
+                                     and _holds_multiline_value(inner, "relevance_notes"))
             for key, literal in fields.items():
+                if key in preserved:
+                    continue
                 inner = _set_fm(inner, key, literal)
-            if append_note and note_tag:
-                current = _fm_value(inner, "relevance_notes")
+            if append_would_corrupt:
+                _log.warning(
+                    "vault: relevance_notes not appended for %s -- it holds a value spread "
+                    "over several lines, which the append would corrupt", ref)
+            elif append_note and note_tag:
+                current = _fm_own_line_value(inner, "relevance_notes")
                 if note_tag not in current:
                     # Guarded at the SINK, not at each caller. `append_note` lands in
                     # `relevance_notes`, which is FRONTMATTER despite the parameter reading
@@ -1820,7 +1871,14 @@ class Vault:
                     # other fields still land, and this key is simply left as it was.
                     merged = (current + " " + append_note).strip()
                     safe_merged = frontmatter_safe(merged)
-                    if safe_merged:
+                    # #329: the PyYAML check again, on the literal this append would write and
+                    # the note as it stands just before that write.
+                    if safe_merged and _single_line_write_breaks_note(
+                            inner, "relevance_notes", f'"{safe_merged}"'):
+                        _log.warning(
+                            "vault: relevance_notes not appended for %s -- the append would "
+                            "break the note's frontmatter as PyYAML reads it", ref)
+                    elif safe_merged:
                         inner = _set_fm(inner, "relevance_notes", f'"{safe_merged}"')
                     else:
                         _log.warning(
@@ -4018,6 +4076,217 @@ def _fm_value(inner: str | None, key: str) -> str:
         return ""
     m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*(.*)$", inner)
     return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _fm_own_line_value(inner: str | None, key: str) -> str:
+    """`_fm_value`, read from the key's OWN line: the first occurrence of `key:`, matched as
+    `_fm_value` and `_set_fm` match it, with only horizontal whitespace allowed after the colon,
+    so a blank `key:` reads as blank instead of taking the following line as its value (#329).
+
+    Only `Vault.update_fields`' note append reads through this. The append runs after
+    `_holds_multiline_value` has ruled out a value spread over several lines, so an existing note,
+    if there is one, sits on the key's own line; reading past a blank key merged a comment line
+    under it into the note, or took the next key's text and dropped the note as unsafe. Every other
+    `_fm_value` caller keeps the read that crosses the line for now: guards among them currently
+    refuse a blank key over a block list because that read sees the first item as a value, so
+    moving them needs an audit of each caller of its own."""
+    if not inner:
+        return ""
+    m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:[ \t]*(.*)$", inner)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _inline_value_left_open(value: str) -> bool:
+    """Whether the inline value after a key's colon may go on past that line, judged by the quotes,
+    `[` and `{` this scan counts as opened and not closed on that line (#329). This is
+    `_holds_multiline_value`'s check on the key's own line, and it can only report that a value may
+    be unfinished, never that it is finished.
+
+    Leading node properties are skipped first: while the value starts with `!` or `&`, the token up
+    to the next whitespace and the whitespace after it are dropped, so `!!str "a`, `&x [a,` and
+    `! "a` (YAML's bare non-specific tag) are judged by the quote or bracket behind the tag or
+    anchor. A lone `&` is dropped the same way; it names no anchor, so that only over-preserves a
+    note PyYAML already rejects. Only a value that then
+    starts with `"`, `'`, `[` or `{` is scanned; anything else is left to the lines after the key.
+    The scan runs left to right. Inside a double-quoted run, `\\` escapes the next
+    character and `"` ends the run. Inside a single-quoted run, `''` is an escaped quote and a lone
+    `'` ends the run. Outside any quoted run, `"` or `'` starts a run, `[` or `{` opens a flow
+    collection, `]` or `}` closes one, and a `#` at the start or after whitespace starts a comment
+    that ends the scan. Outside a quoted run and while a flow collection is open, so does a `#`
+    straight after `[`, `]`, `{`, `}`, `,` or `?`, straight after a closing quote, or straight after
+    a `:` that itself follows a closing quote, `]` or `}`. A value starting with a quote is left
+    open when its first quoted run never
+    ends; a value starting with `[` or `{` when a quoted run is still open at the end, or more
+    collections were opened than closed.
+
+    Those members were measured against PyYAML rather than picked by hand: for every printable
+    ASCII character, and for a quoted run that has just closed, PyYAML was asked whether a `#`
+    straight after it, inside an open flow collection, starts a comment, and a single-line write
+    over a note PyYAML reads that way would corrupt it. It does not after a letter or a digit, nor
+    after a `:`
+    inside a plain item, so `[a, b#c]` and `[a:#b]` are still written. A tag list typed without
+    spaces, such as `[#remote,#flexible]`, is therefore left unwritten with a warning, which costs
+    nothing a reader accepts, since neither PyYAML nor js-yaml accepts that note on one line.
+
+    ANY quote character outside a quoted run starts one, although YAML opens a quoted scalar only
+    where a node starts. So a complete one-line flow list or mapping whose plain item carries an
+    apostrophe or a quote, such as `[won't sponsor, remote]`, is reported as left open unless a
+    later quote on the line happens to close that run, and the caller leaves it unwritten with a
+    warning. That is the safe direction, taken on purpose: opening a run only where a node starts
+    takes recognising every such place, and a rule that misses one -- a quote after a node
+    property, or after an explicit `?` key -- writes over a quoted value continued on a later
+    line."""
+    text = value.strip()
+    while text[:1] in ("!", "&"):
+        parts = text.split(None, 1)
+        text = parts[1] if len(parts) > 1 else ""
+    if not text or text[0] not in "\"'[{":
+        return False
+    quote = ""
+    runs_closed = 0
+    closed_at = None
+    depth = 0
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote == '"':
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                quote = ""
+                runs_closed += 1
+                closed_at = i
+        elif quote == "'":
+            if ch == "'":
+                if text[i + 1:i + 2] == "'":
+                    i += 2
+                    continue
+                quote = ""
+                runs_closed += 1
+                closed_at = i
+        elif ch in "\"'":
+            quote = ch
+        elif ch in "[{":
+            depth += 1
+        elif ch in "]}":
+            depth -= 1
+        elif ch == "#" and (i == 0 or text[i - 1].isspace() or (depth > 0 and (
+                text[i - 1] in "[]{},?" or closed_at == i - 1
+                or (text[i - 1] == ":"
+                    and (closed_at == i - 2 or text[i - 2:i - 1] in ("]", "}")))))):
+            break
+        i += 1
+    if text[0] in "\"'":
+        return runs_closed == 0
+    return bool(quote) or depth > 0
+
+
+def _holds_multiline_value(inner: str | None, key: str) -> bool:
+    """Whether `key`'s FIRST line in a frontmatter block may open a value spread over several
+    lines -- a block list, a nested mapping, a `|`/`>` block scalar, or a quoted scalar or flow
+    collection its own line leaves open -- so a single-line write must not replace it (#329).
+
+    First occurrence, matched the way `_set_fm` matches, because that is the line a write would
+    replace. The key's own line is consulted for an inline value that opens a quote, a `[` or a
+    `{`, behind any leading tag or anchor, that it does not close on that line
+    (`_inline_value_left_open`): such a value may continue on a later line whatever that line's
+    indentation, so it counts as spanning several lines. That check
+    can only add "spans several lines"; it never decides that a value fits on one. It counts ANY
+    quote character outside a quoted run as opening one, so a complete one-line flow list or
+    mapping whose plain item carries an apostrophe or quote, such as `[won't sponsor, remote]`,
+    can count as spanning several lines too, and is then left unwritten with a warning: the safe
+    direction, taken on purpose over a rule that would write over quoted values continued on a
+    later line. Triage's own writes never trip it: each is a `frontmatter_safe` value in double
+    quotes, and `frontmatter_safe` refuses `"` and `\\`.
+
+    Otherwise the lines after the key decide. They are scanned past blank lines and past any
+    comment-only line (its stripped form starts with `#`) that is NOT indented deeper than the
+    key's own line: such a comment sits between the key and its items and carries no value. The
+    next remaining line decides. Indented deeper than the key, or starting with `-` at the key's
+    own indentation (YAML allows a block list's items to sit there): the value spans several
+    lines. Anything else, or no line at all: it does not. Nothing else on the key's own line
+    changes that: a trailing `# comment` there is not a value, and a `-` line under a genuine
+    inline value is already invalid YAML, where leaving the key alone costs nothing.
+
+    The trade-off, stated plainly: ANY following line indented deeper than the key counts, a
+    comment included. So a one-line value, or a blank key, with an indented comment under it is
+    reported as spread over several lines, and the caller leaves it unwritten and logs a warning.
+    That is the safe direction, taken on purpose. Treating such a line as a skippable comment would
+    take recognising every block scalar header on the key's own line, which the check there does
+    not attempt: a header can carry a tag, an anchor or a comment beside its `|` or `>`. A block
+    scalar whose body starts with `#` would then be written over with no warning -- Obsidian's own
+    `#tag` syntax means a hand-typed block scalar's body can be entirely such lines.
+
+    How it decides together with PyYAML: `Vault.update_fields` leaves a key unwritten when this
+    scan OR `_single_line_write_breaks_note` says so. For a note PyYAML reads, that check leaves
+    unwritten every single-line write that would break it, whatever this scan answers; for a note
+    PyYAML cannot read, the check abstains and this scan decides alone. The scan's own
+    over-reporting, stated above, applies to every note."""
+    if not inner:
+        return False
+    lines = inner.split("\n")
+    pat = re.compile(rf"^(\s*){re.escape(key)}\s*:")
+    for i, line in enumerate(lines):
+        m = pat.match(line)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        if _inline_value_left_open(line[m.end():]):
+            return True
+        following = next(
+            (ln for ln in lines[i + 1:]
+             if ln.strip() and not (len(ln) - len(ln.lstrip()) <= indent and ln.strip().startswith("#"))),
+            None)
+        if following is None:
+            return False
+        following_indent = len(following) - len(following.lstrip())
+        if following_indent > indent:
+            return True
+        return following_indent == indent and following.lstrip().startswith("-")
+    return False
+
+
+def _single_line_write_breaks_note(inner: str | None, key: str, literal: str) -> bool:
+    """Whether writing `key: literal` with `_set_fm` would break the frontmatter as PyYAML reads it
+    (#329): the note stops parsing, or a top-level key other than `key` reads differently. That
+    covers a line of `key`'s own value left orphaned by the replace, another key's line swallowed,
+    and a write that lands on a same-named key nested under another mapping.
+
+    It answers only for a note PyYAML reads. `yaml.compose` parses without constructing values, so
+    an unknown tag elsewhere in the note does not switch the check off. When PyYAML refuses the note
+    as it stands, or `yaml` is not installed, the answer is False and `_holds_multiline_value`
+    decides alone, since no note PyYAML refuses can be broken for PyYAML. Otherwise the note after
+    the write is parsed too: if it fails, or its root is not a mapping, the answer is True. Else the
+    top-level pairs are compared, in order, as their serialized key and value nodes, leaving out
+    every pair whose key is a scalar equal to `key`, whose value is the one being written.
+
+    Both sides are parsed as the file holds the frontmatter, with the newline before its closing
+    `---`, which `_split_frontmatter` leaves out of `inner`. Without it, appending a missing key after
+    a block scalar that ends the frontmatter could read as a change to that scalar, when the file's
+    reading of it does not change."""
+    if yaml is None or not inner:
+        return False
+    try:
+        before = yaml.compose(inner + "\n", Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, RecursionError):
+        return False
+    if not isinstance(before, yaml.MappingNode):
+        return False
+    try:
+        after = yaml.compose(_set_fm(inner, key, literal) + "\n", Loader=yaml.SafeLoader)
+        if not isinstance(after, yaml.MappingNode):
+            return True
+        return _other_top_level_pairs(before, key) != _other_top_level_pairs(after, key)
+    except (yaml.YAMLError, RecursionError):
+        return True
+
+
+def _other_top_level_pairs(node, key: str) -> list:
+    """`node`'s top-level pairs as serialized key and value nodes, in order, without the pairs whose
+    key is a scalar equal to `key`."""
+    return [(yaml.serialize(k), yaml.serialize(v)) for k, v in node.value
+            if not (isinstance(k, yaml.ScalarNode) and k.value == key)]
 
 
 def _counts_as_blank(value: str, blank_values: frozenset | None) -> bool:

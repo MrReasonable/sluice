@@ -106,6 +106,46 @@ def test_same_day_repeat_is_unchanged_and_note_appended_is_false(tmp_path):
     assert "different reason" not in text   # the second reason was suppressed by its own tag
 
 
+def _hand_type_relevance_notes(tmp_path, block):
+    """Replace the seeded note's one-line `relevance_notes` with `block`, the way a person
+    editing the note in Obsidian types a list or a block scalar."""
+    path = pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref)
+    text = path.read_text(encoding="utf-8")
+    assert 'relevance_notes: ""\n' in text
+    path.write_text(text.replace('relevance_notes: ""\n', "\n".join(block) + "\n", 1),
+                    encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize("block", [
+    ["relevance_notes:", "  - KEPT-ONE", "  - KEPT-TWO"],
+    ["relevance_notes: |", "  KEPT-ONE", "  KEPT-TWO"],
+], ids=["block-list", "block-scalar"])
+def test_note_appended_is_false_when_the_store_left_the_append_undone(tmp_path, block):
+    """#329: the store leaves the append undone over a `relevance_notes` spread over several
+    lines while the status still lands, so a committed write no longer proves the reason was
+    appended. The flag has to come from the note as written."""
+    slug = _seed(tmp_path, status="shortlist")
+    path = _hand_type_relevance_notes(tmp_path, block)
+    result = _app(tmp_path).dismiss_lead(lead=slug, reason="SYNTHETIC-REASON")
+    assert result.outcome == "dismissed"
+    assert Vault(str(tmp_path)).read_leads()[0].status == "dismiss"
+    assert result.note_appended is False, "the reason is not in the note, so nothing was appended"
+    text = path.read_text(encoding="utf-8")
+    assert "\n".join(block) + "\n" in text, "the hand-typed block was changed"
+    assert "SYNTHETIC-REASON" not in text
+
+
+def test_note_appended_is_true_when_the_reason_lands_on_a_one_line_relevance_notes(tmp_path):
+    # The control for the row above: a one-line `relevance_notes` gets the append, and the flag
+    # says so.
+    slug = _seed(tmp_path, status="shortlist", relevance_notes='"earlier note"')
+    result = _app(tmp_path).dismiss_lead(lead=slug, reason="SYNTHETIC-REASON")
+    assert result.outcome == "dismissed"
+    assert result.note_appended is True
+    assert "SYNTHETIC-REASON" in Vault(str(tmp_path)).read_leads()[0].fm["relevance_notes"]
+
+
 # ── CAS proofs ──────────────────────────────────────────────────────────────────
 
 def test_dismiss_lead_returns_conflict_on_a_sustained_vault_conflict(tmp_path, monkeypatch):

@@ -6,6 +6,7 @@ import math
 from datetime import date
 
 from sluice.core import status as _status
+from sluice.core.leads import FRAMING_KEYS
 from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
 
@@ -210,6 +211,13 @@ _DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # `triage/reverdict.py`), not in a nightly cron that does it to them silently.
 _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 
+# The frontmatter keys a person is invited to hand-edit (#329: the CV composer reads each as
+# framing). A multi-line value typed into one of them is left alone by a triage write rather
+# than corrupted by one; see `core/vault.py::_holds_multiline_value`. Derived from
+# `core.leads.FRAMING_KEYS`, the one list of these keys, rather than a second
+# hand-typed set that could drift from it.
+_HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS)
+
 
 def apply_classification(vault, note, decision, reason) -> str:
     if _guarded(note):
@@ -290,5 +298,6 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # round trip.
     wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
                                 require_status=_VERDICT_REQUIRE.get(
-                                    status, frozenset(_status.TRIAGE_OWNED)))
+                                    status, frozenset(_status.TRIAGE_OWNED)),
+                                preserve_block_values=_HAND_EDITABLE_KEYS)
     return "applied" if wrote else "unchanged"  # #118: symmetric with apply_classification above
