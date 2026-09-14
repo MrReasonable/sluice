@@ -608,3 +608,122 @@ def test_the_cache_file_refuses_other_bytes_or_an_undeclared_tag(tag, data):
     formula = _merged().replace("a" * 64, hashlib.sha256(b"payload").hexdigest())
     with pytest.raises(Refusal):
         hb.check_cache_file(data, formula, tag)
+
+
+# --- release templates and lifecycle --------------------------------------------------------------
+
+_TAG = "job-sluice-9.9.0-123-1"
+_RUN_URL = "https://github.com/ExampleOwner/sluice/actions/runs/123"
+_BASE_SHA = "f" * 40
+
+_EXPECTED_RELEASE_TITLE = "job-sluice 9.9.0 bottles (release)"
+_EXPECTED_DRY_RUN_TITLE = "job-sluice 9.9.0 bottles (dry run)"
+_EXPECTED_RELEASE_NOTES = (
+    "Bottles for job-sluice 9.9.0, published by "
+    "https://github.com/ExampleOwner/sluice/actions/runs/123 (release).\n"
+    "Release tag: job-sluice-9.9.0-123-1\n"
+)
+
+
+def test_the_release_templates_are_fixed_text_for_each_caller():
+    assert hb.release_templates(version="9.9.0", tag=_TAG, caller="release", run_url=_RUN_URL) == (
+        _EXPECTED_RELEASE_TITLE, _EXPECTED_RELEASE_NOTES)
+    title, notes = hb.release_templates(version="9.9.0", tag=_TAG, caller="dry run", run_url=_RUN_URL)
+    assert title == _EXPECTED_DRY_RUN_TITLE
+    assert notes == _EXPECTED_RELEASE_NOTES.replace("(release)", "(dry run)")
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"caller": "pull request"},
+        {"run_url": "https://example.invalid/actions/runs/123"},
+        {"run_url": _RUN_URL + "\nextra"},
+        {"tag": "job-sluice-9.9.0"},
+        {"version": "9.9"},
+    ],
+)
+def test_the_release_templates_refuse_unexpected_inputs(kwargs):
+    arguments = {"version": "9.9.0", "tag": _TAG, "caller": "release", "run_url": _RUN_URL}
+    arguments.update(kwargs)
+    with pytest.raises(Refusal):
+        hb.release_templates(**arguments)
+
+
+def _release(**overrides):
+    release = {"id": 7, "tag_name": _TAG, "target_commitish": _BASE_SHA,
+               "name": _EXPECTED_RELEASE_TITLE, "body": _EXPECTED_RELEASE_NOTES, "draft": True}
+    release.update(overrides)
+    return release
+
+
+def _decide(releases):
+    return hb.release_decision(releases, tag=_TAG, base_sha=_BASE_SHA,
+                               title=_EXPECTED_RELEASE_TITLE, notes=_EXPECTED_RELEASE_NOTES)
+
+
+def test_an_absent_release_is_to_be_created():
+    assert _decide([_release(tag_name="job-sluice-9.8.0-1-1")]) is None
+    assert _decide([]) is None
+
+
+@pytest.mark.parametrize("draft", [True, False])
+def test_a_matching_release_is_accepted_draft_or_published(draft):
+    assert _decide([_release(draft=draft)])["id"] == 7
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"target_commitish": "e" * 40}, {"name": "other"}, {"body": "other"}],
+)
+def test_a_release_that_differs_is_refused(overrides):
+    with pytest.raises(Refusal) as err:
+        _decide([_release(**overrides)])
+    assert next(iter(overrides)) in str(err.value)
+
+
+def test_two_releases_under_one_tag_are_refused():
+    with pytest.raises(Refusal):
+        _decide([_release(), _release(id=8)])
+
+
+def test_an_absent_asset_is_uploaded():
+    assert hb.asset_decision([{"name": "other"}], name="n", sha256="a" * 64) == "upload"
+
+
+def test_an_identical_asset_is_skipped():
+    assert hb.asset_decision([{"name": "n", "digest": "sha256:" + "a" * 64}], name="n",
+                             sha256="a" * 64) == "skip"
+
+
+@pytest.mark.parametrize("digest", ["sha256:" + "b" * 64, None, "", "a" * 64, "md5:abc"])
+def test_a_different_or_missing_digest_is_refused(digest):
+    asset = {"name": "n"} if digest is None else {"name": "n", "digest": digest}
+    with pytest.raises(Refusal):
+        hb.asset_decision([asset], name="n", sha256="a" * 64)
+
+
+def _assets():
+    return [
+        {"name": "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz", "digest": "sha256:" + "a" * 64},
+        {"name": "job-sluice-9.9.0.arm64_sequoia.bottle.tar.gz", "digest": "sha256:" + "b" * 64},
+    ]
+
+
+def test_release_digests_map_each_declared_tag_to_its_assets_digest():
+    assert hb.release_digests(_assets(), version="9.9.0", tags=_BOTH_TAGS) == {
+        "arm64_sequoia": "b" * 64, "arm64_tahoe": "a" * 64}
+
+
+@pytest.mark.parametrize(
+    "assets",
+    [
+        _assets()[:1],
+        [dict(_assets()[0], digest="sha256:" + "A" * 64), _assets()[1]],
+        [dict(_assets()[0], digest=None), _assets()[1]],
+        _assets() + _assets()[:1],
+    ],
+)
+def test_release_digests_refuse_a_missing_malformed_or_duplicated_asset(assets):
+    with pytest.raises(Refusal):
+        hb.release_digests(assets, version="9.9.0", tags=_BOTH_TAGS)
