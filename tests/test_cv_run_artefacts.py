@@ -162,6 +162,17 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     assert os.listdir(cfg.served_dir) == [r.served]
 
 
+def test_the_prompt_artefact_carries_the_triage_notes(tmp_path):
+    # #329: the artefact is written through compose()'s `on_prompt`, so it records the framing
+    # section with no code of its own. Asserted rather than assumed.
+    from tests.conftest import FRAMING_CONCERNS
+    note = Note({**_LEAD_FM, "triage_concerns": FRAMING_CONCERNS[0]})
+    _, be, _ = _run(tmp_path, [CLEAN_CV], note=note)
+    prompt = _text(_lead_dir(tmp_path) / "prompt.attempt-1.txt")
+    assert prompt == be.compose_prompts[0]
+    assert f"- concerns: {FRAMING_CONCERNS[0]}" in prompt
+
+
 def test_a_gate_failure_that_renders_nothing_still_leaves_both_attempts_to_read(tmp_path):
     r, be, rend = _run(tmp_path, [_UNCITED_CV, _UNCITED_CV])
     assert r.status == "skipped-gate"

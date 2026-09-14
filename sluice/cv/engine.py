@@ -299,6 +299,10 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         return CvResult(note.ref, "skipped-config")
 
     company, role = fm.get("company", ""), fm.get("role", "")
+    # #329: triage's judgement of this role, as framing for the composer. Read HERE, beside the
+    # other lead keys cv reads, and formatted ONCE: the same tuple goes to the compose call and to
+    # the sign-off snapshot, so a reviewer is shown exactly what the composer was given.
+    framing = _compose.framing_lines(fm.get("culture_flags", ""), fm.get("triage_concerns", ""))
     jd, dossier_failed = "", False
     try:
         d = dossier_cache.get_or_build(fm)
@@ -460,6 +464,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                                            slop_allow=cvcfg.slop_allow,
                                            skills_requested=any(
                                                es.skills for es in sources.entries.values()),
+                                           triage_framing=framing,
                                            # The exact prompt this attempt sends, kept
                                            # before the backend call -- see compose()'s
                                            # own comment on `on_prompt`.

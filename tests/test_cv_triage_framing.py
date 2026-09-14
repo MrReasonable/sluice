@@ -4,7 +4,10 @@ import pytest
 
 from sluice.core.backends import Completion
 from sluice.cv import compose as C
+from sluice.cv.engine import run_one
 from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
+from tests.test_cv_engine import (CLEAN_CV, ENTRIES, FakeCache, FakeRenderer, FakeVault, Note,
+                                  RecordingBackend, _cfg, _served)
 
 _NAME = "Example Candidate"
 _FLAGS = ", ".join(FRAMING_FLAGS)
@@ -78,3 +81,133 @@ def test_the_shipped_framing_text_models_nothing_it_forbids():
     assert not any("--" in text for text in shipped), "the CV bans a double hyphen"
     assert not any("auditing" in text.lower() for text in shipped), "the CV test doubles route on it"
     assert "never state, paraphrase or allude to anything in it" in C._TRIAGE_FRAMING_PROMPT_RULE
+
+
+def _framed_note(**fm):
+    return Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                 "culture_flags": _FLAGS, "triage_concerns": _CONCERNS, **fm})
+
+
+def _run(note, backend, renderer=None):
+    renderer = renderer or FakeRenderer()
+    result = run_one(note, FakeVault(ENTRIES, notes=[note]), _cfg(), backend, FakeCache(),
+                     renderer=renderer)
+    return result, renderer
+
+
+def test_a_lead_with_framing_puts_the_section_and_rule_in_the_compose_prompt(monkeypatch):
+    _served(monkeypatch)
+    be = RecordingBackend()
+    _run(_framed_note(), be)
+    prompt = be.prompts[0]
+    assert C._TRIAGE_FRAMING_PROMPT_HEADER in prompt
+    assert C._TRIAGE_FRAMING_PROMPT_RULE.strip("\n") in prompt
+    for line in C.framing_lines(_FLAGS, _CONCERNS):
+        assert f"- {line}" in prompt
+
+
+def test_a_lead_with_no_framing_gets_neither_the_section_nor_the_rule(monkeypatch):
+    # The mirror control. Without it, a `_run_one` that always passed framing would pass the row
+    # above too.
+    _served(monkeypatch)
+    be = RecordingBackend()
+    _run(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}), be)
+    assert be.prompts, "the compose call never happened; this row would pass vacuously"
+    assert C._TRIAGE_FRAMING_PROMPT_HEADER not in be.prompts[0]
+    assert C._TRIAGE_FRAMING_PROMPT_RULE.strip("\n") not in be.prompts[0]
+
+
+def test_the_advisory_audit_is_never_shown_the_triage_notes(monkeypatch):
+    # The audit's prompt opens "SOURCE BUNDLE is the ONLY truth"; showing it the notes would let a
+    # claim resting on them read as supported and skip the sign-off hold.
+    _served(monkeypatch)
+    be = RecordingBackend()
+    _run(_framed_note(), be)
+    assert be.audit_prompts, "the audit never ran; this row would pass vacuously"
+    assert C._TRIAGE_FRAMING_PROMPT_HEADER not in be.audit_prompts[0]
+    assert not any(token in be.audit_prompts[0] for token in (*FRAMING_FLAGS, *FRAMING_CONCERNS))
+
+
+_FIGURE = "4731"   # appears in neither ENTRIES, the fake baseline nor FakeCache's JD
+
+
+def test_a_figure_only_in_the_triage_notes_is_refused_by_the_gate(monkeypatch):
+    """The acceptance row. It is red only if the notes leaked into what the gate may license, and
+    it carries its own wiring witness: without the section-contains-the-figure assertion it would
+    pass on a tree where the notes never reach the composer at all."""
+    _served(monkeypatch)
+    note = _framed_note(triage_concerns=f"{FRAMING_CONCERNS[0]} {_FIGURE}")
+    cv = CLEAN_CV.replace("I build reliable systems.",
+                          f"I build reliable systems for {_FIGURE} users.")
+    assert _FIGURE in cv, "the replace no-opped"
+    be = RecordingBackend(cv_out=cv)
+    r, rend = _run(note, be)
+    section = (be.prompts[0].partition(C._TRIAGE_FRAMING_PROMPT_HEADER)[2]
+               .partition("=== SOURCE BUNDLE")[0])
+    assert _FIGURE in section, "wiring witness: the composer was shown the figure as framing"
+    assert r.status == "skipped-gate"
+    assert any(v.startswith(f"INVENTED PROFILE METRIC {_FIGURE}") for v in r.violations), (
+        r.violations)
+    assert rend.rendered == []
+
+
+def test_the_same_framed_lead_renders_when_the_cv_does_not_use_the_figure(monkeypatch):
+    # The separating control: nothing else about this lead or fixture refuses the CV.
+    _served(monkeypatch)
+    note = _framed_note(triage_concerns=f"{FRAMING_CONCERNS[0]} {_FIGURE}")
+    r, _ = _run(note, RecordingBackend())
+    assert r.status == "rendered", r.violations
+
+
+def test_a_verdict_triage_wrote_reaches_the_composer(tmp_path, monkeypatch):
+    """An integration pin from the triage write to the compose prompt through a REAL vault. It has
+    no unique witness: renaming the key in `apply_verdict` also reddens the triage key rows, and
+    renaming it in `_run_one` also reddens the rows above."""
+    _served(monkeypatch)
+    from sluice.triage.apply import apply_verdict
+    from tests.test_cv_engine import _vault_with_candidate
+
+    v = _vault_with_candidate(tmp_path, {"forenames": "Ada", "surname": "Example",
+                                         "email": "ada@example.invalid"})
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True, exist_ok=True)
+    (leads / "Example Foundry - Analyst.md").write_text(
+        '---\ncompany: "Example Foundry"\nrole: "Analyst"\nstatus: new\nscore: 0\n---\n# body\n',
+        encoding="utf-8")
+    apply_verdict(v, v.read_leads({"new"})[0],
+                  {"verdict": "shortlist", "relevance_score": 80,
+                   "culture_flags": list(FRAMING_FLAGS), "concerns": list(FRAMING_CONCERNS)}, {})
+    be = RecordingBackend()
+    run_one(v.read_leads({"shortlist"})[0], v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert be.prompts, "the compose call never happened"
+    assert f"- culture flags: {_FLAGS}" in be.prompts[0]
+    assert f"- concerns: {_CONCERNS}" in be.prompts[0]
+
+
+@pytest.mark.parametrize("typed,framed", [
+    (['triage_concerns: "HAND-TYPED-ONE; HAND-TYPED-TWO"'],
+     "- concerns: HAND-TYPED-ONE; HAND-TYPED-TWO"),
+    (["triage_concerns:", "  - HAND-TYPED-ONE", "  - HAND-TYPED-TWO"], None),
+], ids=["one-quoted-line", "block-list"])
+def test_a_hand_edited_note_frames_only_a_one_line_value(tmp_path, monkeypatch, typed, framed):
+    """The manual route USAGE.md documents, end to end through a REAL vault: a value typed as one
+    quoted line frames the CV, and one typed as a YAML list frames nothing (the vault's
+    line-based reader sees only the key's own line). The block-list row is the control."""
+    _served(monkeypatch)
+    from tests.test_cv_engine import _vault_with_candidate
+
+    v = _vault_with_candidate(tmp_path, {"forenames": "Ada", "surname": "Example",
+                                         "email": "ada@example.invalid"})
+    leads = tmp_path / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True, exist_ok=True)
+    (leads / "Example Foundry - Analyst.md").write_text(
+        "---\n" + "\n".join(['company: "Example Foundry"', 'role: "Analyst"',
+                             "status: shortlist", *typed]) + "\n---\n# body\n",
+        encoding="utf-8")
+    be = RecordingBackend()
+    run_one(v.read_leads({"shortlist"})[0], v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert be.prompts, "the compose call never happened"
+    if framed:
+        assert framed in be.prompts[0]
+    else:
+        assert C._TRIAGE_FRAMING_PROMPT_HEADER not in be.prompts[0]
