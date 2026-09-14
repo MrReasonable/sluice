@@ -15,9 +15,9 @@ Every Homebrew and GitHub behaviour this design depends on was either executed o
 installed Homebrew 6.0.22 source or GitHub's documentation, and is cited where it is used. Reading
 is weaker evidence than running, and the first draft proved it: several mechanism claims in it were
 wrong as read, and reviewers re-reading the same files corrected them. Everything not yet executed
-is listed in §8, which also names the decisions no dry run can reach. The refuse branches of every
-check, and those unreachable decisions, are proven offline (§9), because a green dry run only ever
-takes the accept branch of what it reaches.
+is listed in §8, which also names the decisions no dry run can reach. Those unreachable decisions
+are proven offline (§9), because a green dry run only ever takes the accept branch of what it
+reaches.
 
 ## Decisions
 
@@ -170,7 +170,7 @@ that receives the token-bearing push URL, or a script that shadows the validator
 
 ### The jobs
 
-```
+```text
 .github/workflows/homebrew.yml      on: workflow_call, and nothing else
 inputs:  version, ref, push_target  each required, no default
 secrets: the two App secrets        each required
@@ -229,7 +229,7 @@ exist. `default` never consults the observable.
 
 ### Callers
 
-`release-please.yml`'s `homebrew` job becomes a call: `uses: ./.github/workflows/homebrew.yml`,
+`release-please.yml`'s `homebrew` job becomes a call: `uses: $/.github/workflows/homebrew.yml`,
 keeping `needs: [release-please, pypi]` (the formula's `url` is the PyPI sdist) and its `if:`,
 passing `version` and `ref` from `release-please`'s outputs, `push_target: default`, and the two App
 secrets by name.
@@ -315,7 +315,12 @@ a new attempt and gets a new tag. For the release, re-running the whole workflow
 these jobs: release-please sees the release already cut and `release_created` comes back `false`
 (recorded in `release-please.yml`'s `build` artifact comment). Its recovery is re-running failed
 jobs, which reuses earlier jobs' outputs and artifacts, the behaviour that workflow's `pypi` and
-`release-assets` recoveries already depend on.
+`release-assets` recoveries already depend on. For a digest clash, or a push rejected because the
+tap's default branch moved after `plan`, that re-run fails the same way every time; re-running the
+`homebrew / plan` job may recover both, since `plan` would plan again under a new run attempt and so
+give a new tag, release and BASE_SHA, but that is unverified (§8), and the next release is the
+fallback. That re-running failed jobs reuses outputs inside a called workflow is read, not measured
+(§8).
 
 **Validation before the token exists.** `upload` refuses to mint unless every JSON and bottle
 checks out against `plan`'s outputs:
@@ -364,7 +369,9 @@ naming the tag and both digests, and one with no digest is refused. The recovery
   rest upload.
 - A bottle already uploaded is rebuilt under the same tag by re-running a specific job that had
   succeeded. The release is accepted, the digest differs, and the upload refuses. No asset is ever
-  replaced, so a formula already pushed against that asset stays valid.
+  replaced, so a formula already pushed against that asset stays valid. Re-running failed jobs meets
+  the same clash; re-running the `homebrew / plan` job may recover it under a new tag, release and
+  BASE_SHA, but that is unverified (§8), and the next release is the fallback.
 
 **The release's title and notes are fixed templates,** built by a pure function of VERSION, the tag,
 the caller (release or dry run, from `push_target`) and the calling run's URL: no command output and
@@ -489,7 +496,8 @@ is what makes that loud.
 `utils/curl.rb::curl_headers` runs with `--fail`; a `404` makes it retry as GET and then raise.
 `curl_download_strategy.rb::resolve_url_basename_time_file_size` rescues that and returns no
 modification time, size or content type, so the freshness checks find nothing to invalidate the
-cached file. It is kept, and its checksum is still verified. This is read, not run (§8).
+cached file. It is kept, and its checksum is still verified. The plan's first task ran this locally,
+on a local machine's Homebrew; it has not yet run on a runner (§8).
 
 `brew install ./<bottle>.tar.gz` is not used. `env_config.rb::forbid_packages_from_paths?` refuses
 path installs by default, and a path install bypasses the formula's bottle block, so it would prove
@@ -533,7 +541,10 @@ In `push`, in order:
    other listing refuses. `ls-remote` matches a pattern against the tail of every ref name, so a tag
    stored as `refs/tags/refs/heads/<TARGET_BRANCH>` would otherwise read as the branch, and the push
    would move the tag. Exit 2 is absent, which is normal for the first dry run of a version and
-   refused for the default branch; any other exit refuses.
+   refused for the default branch; any other exit refuses. A dry run whose target is the default
+   branch refuses when git lists the formula at BASE_SHA: `plan` sends a dry run there only while the
+   contents API reads the formula as absent (the bootstrap), and git's read here cross-checks that
+   observable.
 4. **No-op:** if the target is present and its formula is byte-identical to ours, finish with nothing
    to do. That is a re-run after this release's push already landed. The comparison reads the remote
    tip, never what step 6 builds.
@@ -542,16 +553,20 @@ In `push`, in order:
    line's `job_sluice-<version>.tar.gz` (the renderer writes no `version` stanza) into a tuple of
    integers; an unparseable file refuses; a version newer than VERSION refuses. Integers, because this
    project's releases cross 2.9.x to 2.10.0, where string order is backwards.
-6. **Commit on BASE_SHA, with no work tree:** hash the validated bytes with `--no-filters`, read
-   BASE_SHA (from `plan`) into the index, set `Formula/job-sluice.rb` to that blob as a regular file,
-   and `commit-tree` the result with BASE_SHA as its parent, as `sluice-release-please[bot]` with the
-   message `job-sluice <VERSION>`. A tree equal to BASE_SHA's is a no-op. A checked-out tree would let
-   the tap's own content decide what is stored (a `.gitattributes` working-tree encoding) or where
-   the bytes land (a symlink committed at the formula's path, followed out of the clone).
+6. **Commit on BASE_SHA, with no work tree:** hash the validated bytes from a file outside the clone,
+   which no tap attribute can match (`--no-filters` is a defence that keeps that true if the file ever
+   moves inside the clone), read BASE_SHA (from `plan`) into the index, set `Formula/job-sluice.rb` to
+   that blob as a regular file, and `commit-tree` the result with BASE_SHA as its parent, as
+   `sluice-release-please[bot]` with the message `job-sluice <VERSION>`. A tree equal to BASE_SHA's
+   refuses: it is compared with the base, not the target, and step 4 already found the target without
+   these bytes, so a no-op reported here would leave the formula unpublished behind a green step. A
+   checked-out tree would let the tap's own content decide what is stored (a `.gitattributes`
+   working-tree encoding) or where the bytes land (a symlink committed at the formula's path, followed
+   out of the clone).
 7. **Mint** the token and **push**: fast-forward only for the default branch, `--force-with-lease` for
    a scratch branch.
 
-Steps 3 to 5 are one pure function over what was read, so every branch is proven offline (§9a).
+Steps 3 to 5 are one pure function over what was read, so they are tested offline (§9a).
 
 Building on BASE_SHA is what stops a re-run from rolling the tap back. Re-running an older release's
 failed jobs reuses that release's `plan` outputs, so if a newer release landed in between, the push
@@ -580,12 +595,12 @@ the moved tip.
 | a bottle does not pour, fails `brew test`, or has broken linkage | 6a | nothing |
 | a JSON or bottle is missing, altered or inconsistent | `upload`'s validation | nothing |
 | an existing release that does not match, or a failed release lookup | `upload`'s lifecycle | nothing |
-| a rebuilt bottle meets an already-uploaded asset | the digest refusal | nothing; recovery is a new release |
+| a rebuilt bottle meets an already-uploaded asset | the digest refusal | nothing; re-running the `homebrew / plan` job may recover it with a new tag, release and BASE_SHA, but that is unverified (§8), and the next release is the fallback |
 | the merged block lost or gained a tag | 6b's tag-set check | nothing; orphan assets |
 | a URL, name, release or byte mismatch | 6b | nothing; orphan assets |
 | the formula text was altered anywhere | `push`'s validation | nothing; orphan assets |
 | an artifact carrying a git hook or a shadowing script | §2's artifact rule | nothing |
-| the tap moved since `plan`, or an older release re-runs | 6c | nothing; a refused or rejected push |
+| the tap moved since `plan`, or an older release re-runs | 6c | nothing; a refused or rejected push. For a tap that moved, re-running the `homebrew / plan` job may recover it by planning again under a new run attempt, with a new tag, release and BASE_SHA; whether GitHub offers that job re-run inside a called workflow, and re-runs the jobs after it, is unverified (§8), and the next release is the fallback |
 | homebrew-core later changes a library the keg links by path | **nothing catches it** | a failing pour on that tag until the next release; `brew install --build-from-source` works around it |
 
 The last row is the one risk bottling adds. A source build links against whatever homebrew-core
@@ -610,6 +625,9 @@ residual, stated here.
   the App token, and the digest comparison against a real asset;
 - the whole chain on `macos-15`; the 2026-09-07 measurement ran on a local macOS 26 machine;
 - `brew linkage --test` on both runners;
+- Homebrew's tap-trust gate: every macOS job trusts the tap in `homebrew_tap_checkout.sh`, so
+  `prove`'s merge loads the formula. Read from Homebrew 6.0.22's `Library/Homebrew/trust.rb`; locally
+  the plan's first task needed `brew trust` before `brew tap`;
 - the wall-clock time the release gains.
 
 **Measured locally before the validator is written:** a real two-tag `--merge --write --no-commit`,
@@ -619,7 +637,14 @@ to fix where the block lands relative to the renderer's text (§5).
 the outputs and artifacts of jobs that succeeded holds for `release-please.yml`'s own jobs; that it
 holds for jobs inside `homebrew.yml` is assumed. BASE_SHA's rollback protection and the §3 recovery
 cases depend on it. A deliberate job-level re-run of a dry run's `upload` exercises it; re-running
-failed jobs, the operation the recovery comments name, stays read, not measured.
+failed jobs and re-running the `homebrew / plan` job, the operations the recovery comments name,
+stay read, not measured.
+
+**Read, not measured: re-running the `homebrew / plan` job inside a called workflow.** Whether GitHub
+offers a single-job re-run for a called workflow's job, whether that re-run also re-runs the jobs
+after it, and whether `github.run_attempt` increments: GitHub's re-run documentation addresses none of
+them. The release's recovery comment names that re-run only as a possibility, with the next release as
+the fallback.
 
 **Read, not measured: secret delivery.** That a called workflow's secrets reach only the jobs whose
 steps reference them is assumed. The wiring tests pin that no untrusted job references one; no dry
@@ -627,7 +652,7 @@ run can show a secret absent from a runner.
 
 **Reached by no dry run, proven only offline (§9a):** the version refusal, the byte-identical no-op,
 a non-fast-forward on a moved tip, `auto`'s absent arm once the tap holds a formula, an existing
-release that does not match, the digest refusal, and every refuse branch of every check.
+release that does not match, and the digest refusal.
 
 **Measured already:** `git ls-remote --symref` resolves the tap's default branch and its SHA; the
 contents API answers `200` and `404` for present and absent paths at a commit; the §5 grammar against
@@ -641,8 +666,8 @@ the live formula; `python3 -P`.
 as a pure function, with one named CLI subcommand per job step that calls it.
 `tests/test_homebrew_bottles.py` drives the functions with synthetic fixtures: root URLs under
 `example.invalid`, fake digests, owner `ExampleOwner`. Every function has at least one accept row
-built from realistic input and the refuse rows below, and each row is witnessed by the mutant it
-exists to kill: an always-refuse mutant for the accept rows. The file ports
+built from realistic input and the refuse rows below. The accept rows are witnessed by an
+always-refuse mutant. The file ports
 `tests/test_homebrew_formula.py::test_every_expected_constant_is_built_only_from_literals` over its
 own expected constants.
 
@@ -686,7 +711,9 @@ own expected constants.
   default branch, the version at BASE_SHA and VERSION. Identical bytes are a no-op; different bytes
   push; an absent remote pushes; tap `9.10.0` against VERSION `9.9.0` on the default branch refuses;
   equal and older push; a newer version on a scratch target pushes; the file absent at BASE_SHA
-  passes as the bootstrap; an unparseable `url` refuses; an absent default branch refuses.
+  passes as the bootstrap; an unparseable `url` refuses; an absent default branch refuses. A dry run
+  targeting the default branch with the formula at BASE_SHA refuses; a dry run with no formula at
+  BASE_SHA (the bootstrap) pushes, and so does a dry run targeting a scratch branch.
 - **Push, against local repositories:** a tag whose name tail-matches the target branch refuses; a
   `.gitattributes` working-tree encoding in the tap leaves the pushed bytes unchanged; a symlink at
   the formula's path is replaced, never followed; a symlinked `Formula` directory refuses with
@@ -699,7 +726,7 @@ own expected constants.
 
 - **Triggers and inputs:** `homebrew.yml` triggers only on `workflow_call`; its inputs are required
   with no default; its secrets are exactly the two App secrets, each required.
-- **Callers:** both use `./.github/workflows/homebrew.yml` exactly, pass the secrets by name, never
+- **Callers:** both use `$/.github/workflows/homebrew.yml` exactly, pass the secrets by name, never
   `secrets: inherit`, and pass `push_target` `default` and `auto` respectively. The dry run passes
   `ref: ${{ github.sha }}`; its call job needs `preflight` and carries no status-function `if:`.
 - **Rosters and permissions:** exact job rosters for `homebrew.yml` and the dry run, an exact
@@ -731,7 +758,7 @@ own expected constants.
   `install --build-bottle` < first `test` < `bottle --json --no-rebuild` < `bottle --merge` <
   `--expect-built` check < `uninstall` < cache seed < `install` < pour check < second `test` <
   `linkage --test`.
-- **No inverted checks:** no `run:` line in `homebrew.yml` or a script it invokes begins with `! `, and
+- **No inverted checks:** no `run:` line in `homebrew.yml` or a script it invokes begins with `!` followed by a space, and
   no check invocation is followed by `|| true`.
 - **`upload`'s order:** validate < mint < release lifecycle < asset uploads < publish.
 - **`prove`:** its downloads name the formula and the JSONs only; nothing writes under `brew --cache`
@@ -777,7 +804,7 @@ today, and the constants they use:
 | `test_the_homebrew_dry_run_refuses_a_non_default_branch` | `preflight`: refusal step before the lookup |
 | `test_the_homebrew_dry_run_has_no_elevated_permissions` | per-job permissions in the dry run |
 | `test_the_homebrew_dry_run_triggers_only_on_workflow_dispatch`, `test_the_homebrew_dry_run_workflow_wide_permissions_are_read_only` | unchanged |
-| `test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_release_job` | both callers use `./.github/workflows/homebrew.yml` |
+| `test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_release_job` | both callers use `$/.github/workflows/homebrew.yml` |
 
 The plan's review includes `sluice-architect`: this is the repo's first reusable workflow, and it
 turns step boundaries into job boundaries.
@@ -789,8 +816,7 @@ Claims that become false, each owned by a task in the plan:
 - `scripts/render_homebrew_formula.py`: the `_EXTRA_PACKAGES` rationale ("this tap publishes NO
   BOTTLES, so every `brew install` builds from source") and the `_PYTHON_FORMULA` comment naming
   `--build-from-source` in `homebrew_verify.sh`. The rule survives on narrower grounds: users whose
-  macOS matches no bottle build from source, and the exclusion also carries the prefix-path seam
-  `cellar :any` rests on.
+  macOS matches no bottle build from source.
 - `tests/test_homebrew_formula.py`: the same premise.
 - `homebrew_push.sh`: retired into `push`. Its header's "same job, on the same runner" goes; its
   byte-identical no-op comment's named case (a second dry-run dispatch) can no longer occur, and the
@@ -899,8 +925,8 @@ The implementation plan's first review added these, each argued in the plan wher
 
 ## 14. Execution: what changed in the design
 
-Task reviews during execution found these, and sections 3, 6c, 9a and 9b were edited in place to
-match:
+Task reviews during execution found these, and "A note on method" and sections 2, 3, 6a, 6c, 7, 8, 9a,
+9b and 10 were edited in place to match:
 
 - `upload`'s validator refuses a bottle JSON whose one tag is undeclared before it builds a file name
   from that tag or reads a file (§3). Reproduced first: a path-shaped tag with a matching
@@ -912,3 +938,22 @@ match:
   commit without a work tree (§6c). Reproduced first, each with content already in a tap: a tag named
   `refs/heads/<branch>` read as the branch and was moved by the push; a `.gitattributes` encoding
   re-encoded the pushed bytes; and a symlink at the formula's path sent the write outside the clone.
+- Both callers use GitHub's self-repository form, `uses: $/.github/workflows/homebrew.yml` (§2), which
+  GitHub documents as the recommended reference to a workflow in the same repository and which
+  zizmor's `self-repository` audit requires. Like `./`, it resolves to the caller's own commit.
+- Every macOS job trusts the tap before its first `brew` command that loads the formula
+  (`homebrew_tap_checkout.sh`). The whole-branch review read, in Homebrew 6.0.22's source, that
+  `prove`'s merge names no formula on its command line and so would be refused by the tap-trust gate,
+  after `upload` had published the release; `bottle` passed only because its install records trust and
+  its uninstall removes it again. The dry run is the first run on a runner.
+- The release recovery names re-running the `plan` job for a tap that moved after `plan` ran and for
+  a digest clash, where re-running failed jobs would fail the same way every time. That `plan` re-run
+  is unverified (§8), so the recovery names it as a possibility, with the next release as the
+  fallback.
+- `push` refuses a dry run targeting the tap's default branch when git lists the formula at BASE_SHA
+  (§6c). `plan` sends a dry run there only while the contents API reads the formula as absent, and
+  nothing re-checked that answer, although the token job already reads the same tree through git; a
+  wrong 404 would have made a dry run's formula, whose bottles live in a dry-run release, the tap's
+  tree of record.
+- `VERSION`, the tag and the formula's top-level URL accept ASCII digits only; `\d` also matches every
+  other Unicode decimal digit.

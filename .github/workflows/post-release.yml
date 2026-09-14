@@ -347,8 +347,9 @@ jobs:
             echo "| ghcr image | ${R_DOCKER} |"
             echo
             echo "Homebrew is not listed because it is already covered upstream:"
-            echo "\`release-please.yml\`'s \`homebrew\` job renders, audits, installs and tests"
-            echo "the formula before the tap is pushed."
+            echo "\`release-please.yml\`'s \`homebrew\` job calls \`homebrew.yml\`, which renders, fills"
+            echo "and audits the formula, builds, pours and tests a bottle on each macOS runner, and"
+            echo "fetches every bottle from its release URL before the tap is pushed."
           } >> "$GITHUB_STEP_SUMMARY"
           for r in "$R_PYPI" "$R_DEB" "$R_RPM" "$R_DOCKER"; do
             if [ "$r" != success ]; then
