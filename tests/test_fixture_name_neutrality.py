@@ -28,10 +28,11 @@ guards nothing.
 
 SCOPE, stated honestly. This sweeps five ENUMERATED positions that carry a lead identity:
 frontmatter `company:`, lead-note filenames, `lead_slug=` kwargs, the first positional
-argument of the `_note`/`_lead`/`_vault_with`/`_shortlist_with` helpers, and (#164) an evidence-
-corpus `Company:` — in frontmatter or in a `fields={"Company": ...}` dict/kwarg, since the
-evidence store's fixtures use both and the quoted-key shape hid from the frontmatter-only pattern
-entirely. The fourth of those (the identity-first helper) holds a company
+argument of the `_note`/`_lead`/`_vault_with`/`_shortlist_with`/`_fields` helpers (#329 added
+`_fields`, found by listing every test helper whose first parameter is named `company`), and
+(#164) an evidence-corpus `Company:` — in frontmatter or in a `fields={"Company": ...}`
+dict/kwarg, since the evidence store's fixtures use both and the quoted-key shape hid from the
+frontmatter-only pattern entirely. The fourth of those (the identity-first helper) holds a company
 in some modules and a slug in others — the same helper name has different signatures per file
 — which is why the roster is named for IDENTITIES rather than companies: a leaked employer
 name could land in either shape, so both are swept and neither is filtered out. A name written
@@ -258,6 +259,12 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "Example Systems", "Example Telemetry", "Example Tidal", "Foo", "Gamma",
     "Human Typed Co", "N-A", "Unknown", "Widget", "X",
     "a", "a1", "a2", "b", "b1", "b2", "blank", "c", "d", "example-lead",
+    # Placeholder labels `tests/test_triage_engine.py::_fields` takes as its company (#329). No
+    # collector swept that helper until the positional one was widened to every test helper
+    # whose first parameter is named `company`; each names the lead's role in a test, not a firm.
+    "Alpha Co", "Applied Co", "Beta Co", "Blocked Co", "Current Co", "Example Conflict Co",
+    "Fresh Co", "Gamma Co", "Good Co", "Race Co", "Retry Co", "Shortlisted Co", "Solo Co",
+    "SoloCo", "Survivor Co", "TwinCo",
     # Structural slugs, not names: they mean "this lead" and "a different lead", and the
     # #203 same-slot rule needs two distinguishable ones to express its lead scoping.
     # `other-lead` reached this roster because the fixture kwarg was renamed to
@@ -477,7 +484,7 @@ _IDENTITY_COLLECTORS = (
     # sweep that has to be appeased with entries for things it misread is a sweep nobody can
     # read the roster of.
     ("identity-first helper",
-     re.compile(r'(?<![A-Za-z0-9])_(?:note|lead|vault_with|shortlist_with)\("([^"\n]*)"')),
+     re.compile(r'(?<![A-Za-z0-9])_(?:note|lead|vault_with|shortlist_with|fields)\("([^"\n]*)"')),
     # Evidence-corpus frontmatter (#164) is a DIFFERENT shape from the lead frontmatter
     # `frontmatter company:` above on two independent axes, so that collector cannot see it:
     # the key is capitalised (`Company:`, matching `EVIDENCE_KINDS["experience"].fields`,

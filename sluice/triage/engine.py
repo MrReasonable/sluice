@@ -41,7 +41,8 @@ from sluice.core.protocols import VaultConflict
 from sluice.core.roletype import DECLARED, OBSERVED, normalise_role_type
 from sluice.core.vault import frontmatter_safe
 from sluice.triage import resolve, reverdict
-from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
+from sluice.triage.apply import (apply_classification, apply_verdict, clamp_verdict,
+                                 normalise_verdict)
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
 from sluice.core.config import DOSSIER_CONCURRENCY_MAX
@@ -1044,6 +1045,56 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                          system_prompt=system_prompt)
         report.judged = len(verdicts)
         report.backend = getattr(backend, "last_backend", None)
+        # #329: every verdict is repaired or rejected HERE, before anything reads it --
+        # `judged_ids` below, the apply loop, the counts clamp and the audit entry all used to
+        # read the model's raw dict, and one wrong-typed field raised out of this function and
+        # ended the whole run. AFTER `report.judged` on purpose: that counts what `judge()`
+        # returned, and `cli.py`'s digest reads a zero `judged` beside a non-zero
+        # `sent_to_judge` as the judge returning NOTHING, which would blame the backend for a
+        # reply made entirely of malformed verdicts. A rejected verdict writes nothing, so its
+        # lead stays where it was and the next run judges it again; when the reply holds no
+        # other verdict for it, its dossier is also counted by the no-verdict line below. The
+        # raw value is never echoed.
+        usable, rejected_ids = [], set()
+        for raw in verdicts:
+            verdict, why = normalise_verdict(raw)
+            if verdict is None:
+                lead_id = raw.get("lead_id") if isinstance(raw, dict) else None
+                has_string_id = isinstance(lead_id, str) and bool(lead_id.strip())
+                # #329: stripped BEFORE `named` is decided and everywhere below -- `normalise_verdict`
+                # strips a padded ACCEPTED verdict's id before matching it to a note, so a padded
+                # REJECTED verdict's id has to be stripped the same way, or this compares the padded
+                # spelling against `note_by_id`'s stripped keys, calls a real lead unnamed, and lets a
+                # usable sibling carrying the (also stripped) same id slip past `rejected_ids` below.
+                if has_string_id:
+                    lead_id = lead_id.strip()
+                # #329: a paraphrased id that matches no real lead is still a non-blank string,
+                # but "named" must also require a match against `note_by_id`, or this verdict
+                # would promise a specific lead was left as it was when it never identified one.
+                named = has_string_id and lead_id in note_by_id
+                if named:
+                    # Remembered so NO other verdict for this lead is applied below, whether
+                    # it came before or after this one in the reply: the failure line
+                    # promises the lead was left as it was. Complete before the apply loop
+                    # starts, which is what makes the "before" order hold. Added only when
+                    # NAMED: the apply loop's `rejected_ids` check runs before its own
+                    # `note_by_id` lookup, so an unmatched id remembered here would make a
+                    # usable sibling sharing that id skip straight past "no note matches" and
+                    # report a lead it never identified as "left as it was".
+                    rejected_ids.add(lead_id)
+                    report.failures.append(
+                        f"judge {lead_id!r}: {why} -- ignored, and its lead left as it was "
+                        "for the next run")
+                else:
+                    # #329: a blank/non-string lead_id, or a non-blank one matching no note,
+                    # names no lead this verdict can be matched back to -- unlike the named arm
+                    # above, it makes NO promise about any lead being left alone. When nothing
+                    # else in the reply judges the same lead, the "N of M dossier(s) came back
+                    # with no verdict" line below already reports that lead as unjudged.
+                    report.failures.append(f"judge a verdict: {why} -- ignored")
+                continue
+            usable.append(verdict)
+        verdicts = usable
         # `judge()` drops a batch it cannot get a parseable answer for -- every backend
         # exception and every parse failure, twice per batch -- and holds no reference to
         # `report`, so a total outage returned an empty list with `failures` untouched,
@@ -1065,7 +1116,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             report.failures.append(
                 f"judge: {unjudged} of {len(dossiers)} dossier(s) came back with no "
                 "verdict -- a dropped batch after a backend error or an unparseable "
-                "reply, or a verdict naming another lead (see the log). Those leads were "
+                "reply, a verdict naming another lead, or a malformed verdict reported "
+                "above (see the log). Those leads were "
                 "NOT judged")
         # A bare comprehension, and safe as one only because of the two facts above: every
         # `lead_id` in `dossiers` is a `note.slug`, and no two notes reaching this line share
@@ -1086,6 +1138,15 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # The batch is NOT rejected wholesale: discarding verdicts that did arrive, to
             # punish a malformed sibling, loses good work for leads that were judged fine.
             # Deduped BEFORE the note lookup, so two copies of an unknown id report once.
+            #
+            # #329: a usable verdict for a lead that ALSO got a rejected one above is not
+            # applied, in either order, or that rejection's "left as it was" would be false.
+            # Before the `decided` check, so this verdict never claims the lead's one slot.
+            if lead_id in rejected_ids:
+                report.failures.append(
+                    f"judge {lead_id!r}: another verdict for this lead was unusable, so this "
+                    "one is ignored too -- the lead is left as it was for the next run")
+                continue
             if lead_id in decided:
                 report.failures.append(
                     f"judge {lead_id!r}: a second verdict for the same lead in one run, "
@@ -1120,10 +1181,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             #
             # #169: clamp_verdict, not the raw model string or a bare _status.normalize.
             # apply_verdict() above already clamps what it WRITES, but counts/audit are
-            # computed here, outside it, off the same raw `verdict` dict -- a clamp that
-            # fixed only the write would report a verdict that never landed (the
-            # #109/#118 bug class this repo has already fixed twice). One shared helper
-            # in triage/apply.py, not a second copy of the rule here.
+            # computed here, outside it, off the same `verdict` dict (normalised above,
+            # #329, but NOT clamped) -- a clamp that fixed only the write would report a
+            # verdict that never landed (the #109/#118 bug class this repo has already
+            # fixed twice). One shared helper in triage/apply.py, not a second copy of
+            # the rule here.
             key = "skipped" if outcome in ("skipped", "unchanged") else clamp_verdict(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
