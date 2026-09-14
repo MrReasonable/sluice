@@ -27,8 +27,11 @@
 - `brew bottle --json` always carries `--no-rebuild`.
 - Shell scripts under `.github/scripts/` must run under macOS bash 3.2: no `${VAR,,}`, `${VAR^^}`, `mapfile`, `readarray`, `declare -A`, `&>>`, `[[ -v`, `coproc`.
 - Never cite a line number in a comment or docstring (`tests/test_citation_drift.py` fails the build); cite `file::symbol`.
-- Test fixtures are synthetic: `example.invalid` URLs, fake digests, owner `ExampleOwner` / `exampleowner`. Resource-stanza URLs keep the `files.pythonhosted.org` host, because that host is what the formula grammar checks.
+- Test fixtures are synthetic: `example.invalid` URLs, fake digests, owner `ExampleOwner` / `exampleowner`. Resource-stanza URLs keep the `files.pythonhosted.org` host, because that host is what the formula grammar checks. One exception: `tests/homebrew_fixtures/merged_formula.rb` keeps the renderer's `homepage` line verbatim, which names the upstream project's real owner, because the validator compares that text with `render()`.
 - Mutation witnesses (`.rulesync/rules/CLAUDE.md`, mutation-testing section): commit before each witness; mutate by DELETING or MOVING a line, never by adding one; back the file up with `cp` and restore with `cp`, never `git checkout`; run `.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts` once before the first witness.
+- A witness must leave a Python file parseable. After applying a mutant to one, run `.venv/bin/python -c 'import ast, sys; ast.parse(open(sys.argv[1]).read())' <file>` before its tests: a mutant that fails to parse turns every test red for the wrong reason. Confirm the named test fails on its own assertion.
+- Two kinds of mutant ADD text, and only these. A property that is the ABSENCE of something (no `|| :`, no owner literal, no `if:`) can only be violated by adding it; such rows are marked "(adds)". And the always-refuse mutant, `/tmp/always_refuse.py` (Task 2, Step 6), inserts `raise Refusal("always-refuse mutant")` as a function's first statement to witness its accept rows (spec, §9a). Neither can be an equivalent mutant: nothing else in the file adds that text.
+- Before each task's commit, run the whole suite, `.venv/bin/python -m pytest -q`, not only the files the task names. Guards in other files (the fixture-tree scope in `tests/test_fixture_name_neutrality.py`, the helper signatures in `tests/test_release_publish_wiring.py`, the home-path gate in `tests/test_no_leaked_files.py`) are exactly what a narrow run misses.
 - Use `.venv/bin/python`. The worktree venv has no pip: install a tool with `uv pip install --python .venv/bin/python <package>`.
 - Conventional Commits. End every commit message with these two lines:
 
@@ -45,9 +48,9 @@
 | --- | --- | --- |
 | `scripts/homebrew_bottles.py` | create | Every decision as a pure function, plus the CLI subcommands the workflow steps call |
 | `tests/test_homebrew_bottles.py` | create | Offline accept and refuse rows for every function; CLI and git I/O against local repositories |
-| `tests/fixtures/homebrew/merged_formula.rb` | create | Sanitised real two-tag `brew bottle --merge --write` output: the formula validator's accept fixture |
-| `tests/fixtures/homebrew/bottle.json` | create | Sanitised real `brew bottle --json --no-rebuild` output, reduced to the keys the validator reads |
-| `tests/fixtures/homebrew/info_poured.json` | create | Sanitised real `brew info --json=v2 <tap>/job-sluice` after a pour, reduced to the keys the pour check reads |
+| `tests/homebrew_fixtures/merged_formula.rb` | create | Sanitised real two-tag `brew bottle --merge --write` output: the formula validator's accept fixture |
+| `tests/homebrew_fixtures/bottle.json` | create | Sanitised real `brew bottle --json --no-rebuild` output, reduced to the keys the validator reads |
+| `tests/homebrew_fixtures/info_poured.json` | create | Sanitised real `brew info --json=v2 <tap>/job-sluice` after a pour, reduced to the keys the pour check reads |
 | `.github/scripts/homebrew_tap_checkout.sh` | create | Clone the tap into Homebrew's `Taps` directory at BASE_SHA, for the untrusted jobs |
 | `.github/scripts/homebrew_formula.sh` | create | `formula` job body: render, resource fill, cooldown diagnostic, audit |
 | `.github/scripts/homebrew_bottle.sh` | create | `bottle` job body: build, test, bottle, tag check, pour proof, linkage |
@@ -138,10 +141,21 @@ Artifact names, exact: `homebrew-formula` (holding `job-sluice.rb`), `homebrew-b
 Nothing later in this plan guesses Homebrew's output. This task produces it on this machine,
 records what it saw, and restores the machine. It writes no code.
 
+The fixtures live in `tests/homebrew_fixtures/`, not under `tests/fixtures/`:
+`tests/test_fixture_name_neutrality.py::test_the_corpus_sweep_actually_reads_the_fixtures` requires
+every file under `tests/fixtures/` to be a captured board payload (`*/raw.json`), and narrowing that
+#27 guard is not an option. Task 3 gives the new directory its own closure and content pins.
+
+Every block below starts by exporting `HOMEBREW_NO_AUTO_UPDATE=1`, `HOMEBREW_NO_INSTALL_UPGRADE=1` and
+`HOMEBREW_NO_INSTALL_CLEANUP=1` (each defined in Homebrew's `env_config.rb`), and where it needs the
+worktree, setting `WT`: shell variables do not survive between separate command runs. Without the
+three, `brew install` may update Homebrew, upgrade a dependency the machine already has, or prune an
+old keg, none of which Step 8 can undo. Run every block from the worktree root.
+
 **Files:**
-- Create: `tests/fixtures/homebrew/merged_formula.rb`
-- Create: `tests/fixtures/homebrew/bottle.json`
-- Create: `tests/fixtures/homebrew/info_poured.json`
+- Create: `tests/homebrew_fixtures/merged_formula.rb`
+- Create: `tests/homebrew_fixtures/bottle.json`
+- Create: `tests/homebrew_fixtures/info_poured.json`
 
 **Interfaces:**
 - Produces: the three fixtures. Task 3 reads `bottle.json` and `info_poured.json`; Task 5 reads
@@ -156,9 +170,10 @@ records what it saw, and restores the machine. It writes no code.
 - [ ] **Step 1: Record the machine's Homebrew state, so it can be restored exactly**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 mkdir -p /tmp/sluice-279-measure
 brew tap > /tmp/sluice-279-measure/taps-before.txt
-brew list --formula > /tmp/sluice-279-measure/formulae-before.txt
+brew list --formula --versions > /tmp/sluice-279-measure/formulae-before.txt
 brew trust > /tmp/sluice-279-measure/trust-before.txt 2>&1 || true
 brew list --versions job-sluice || echo "job-sluice not installed"
 ```
@@ -169,16 +184,35 @@ and report: this task uninstalls `job-sluice` at the end, and the owner must dec
 - [ ] **Step 2: Tap the live tap and keep a pristine copy of its formula**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+WT="$(git rev-parse --show-toplevel)"
 brew tap mrreasonable/tap
 cp "$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap/Formula/job-sluice.rb" /tmp/sluice-279-measure/pristine.rb
 grep -c '^  resource "' /tmp/sluice-279-measure/pristine.rb
+"$WT/.venv/bin/python" -P - "$WT" /tmp/sluice-279-measure/pristine.rb <<'PY'
+import re, sys
+sys.path.insert(0, sys.argv[1])
+from scripts.render_homebrew_formula import render
+text = open(sys.argv[2]).read()
+url = re.search(r'^  url "([^"]+)"$', text, re.M).group(1)
+sha = re.search(r'^  sha256 "([0-9a-f]{64})"$', text, re.M).group(1)
+stanza = (r'  resource "[A-Za-z0-9._-]+" do\n    url "https://files\.pythonhosted\.org/[^"\n]+"\n'
+          r'    sha256 "[0-9a-f]{64}"\n  end\n\n')
+stripped = re.sub(stanza, "", text)
+assert 'resource "' not in stripped, "a resource stanza outside the grammar survived the strip"
+print("skeleton matches the renderer" if stripped == render(sdist_url=url, sha256=sha) else "SKELETON DIFFERS")
+PY
 ```
 
-Expected: a resource count well above zero.
+Expected: a resource count well above zero, then `skeleton matches the renderer`. If it prints
+`SKELETON DIFFERS`, or the assertion reports a stanza outside the grammar, STOP and report: the tap was
+last pushed by a different renderer than this branch's, so a fixture captured from it would not be this
+branch's text, and Task 5's accept row could never pass.
 
 - [ ] **Step 3: Build a bottle-ready keg**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 brew install --build-bottle mrreasonable/tap/job-sluice
 ```
 
@@ -187,6 +221,7 @@ Expected: a `🍺 .../job-sluice/<version>: ... built in ...` line, after about 
 - [ ] **Step 4: Bottle it against a synthetic root URL**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 cd /tmp/sluice-279-measure
 brew bottle --json --no-rebuild --root-url=https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1 mrreasonable/tap/job-sluice
 ls ./*.bottle.json ./*.bottle.tar.gz
@@ -206,6 +241,7 @@ This also executes the spec's §6a mechanism for real: the root URL above is a r
 exist, so a pour that succeeds used the seeded file.
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 cd /tmp/sluice-279-measure
 brew bottle --merge --write --no-commit ./*.arm64_tahoe.bottle.json
 brew info --json=v2 mrreasonable/tap/job-sluice > info-built.json
@@ -226,6 +262,7 @@ report the output: the spec's §6a mechanism is then wrong and must be revised b
 - [ ] **Step 6: Merge two tags into a pristine formula, and check style**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
 cd /tmp/sluice-279-measure
 python3 - <<'PY'
 import json, pathlib
@@ -245,19 +282,24 @@ brew bottle --merge --write --no-commit ./*.bottle.json
 cp "$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap/Formula/job-sluice.rb" merged-raw.rb
 brew style --formula mrreasonable/tap/job-sluice
 grep -n -B3 -A6 '^  bottle do$' merged-raw.rb
+grep -n -B3 '^  def install$' merged-raw.rb
 ```
 
-Expected: `brew style` reports no offences. The `grep` shows the block and its neighbours. **Write
-down** the two lines before `  bottle do` and the line after `  end`: Task 5's removal rule is built
-from them (the spec's reading of `utils/ast.rb` predicts the block directly after
-`  license "MIT"` and a blank line, followed by one blank line).
+Expected: `brew style` reports no offences. The first `grep` shows the block and its neighbours.
+**Write down** the two lines before `  bottle do` and the line after `  end`: Task 5's removal rule is
+built from them (the spec's reading of `utils/ast.rb` predicts the block directly after
+`  license "MIT"` and a blank line, followed by one blank line). The second `grep` shows what sits
+directly above `  def install`: **write down** those lines too. Task 5's `_RESOURCES_PRECEDE` is built
+from them (`utils/ast.rb::replace_resource_stanzas` inserts a new resource group directly above
+`def install`, so the last line above it should be a stanza's `  end` followed by a blank line).
 
 - [ ] **Step 7: Sanitise into the three fixtures**
 
 ```bash
+WT="$(git rev-parse --show-toplevel)"
 cd /tmp/sluice-279-measure
-mkdir -p "$OLDPWD/tests/fixtures/homebrew"
-python3 - "$OLDPWD/tests/fixtures/homebrew" <<'PY'
+mkdir -p "$WT/tests/homebrew_fixtures"
+python3 - "$WT/tests/homebrew_fixtures" <<'PY'
 import json, pathlib, re, sys
 out = pathlib.Path(sys.argv[1])
 text = pathlib.Path("merged-raw.rb").read_text()
@@ -277,13 +319,16 @@ assert text.count("job-sluice-9.9.0-1-1") == 1
 
 # Homebrew writes the cellar at the BOTTLE level (dev-cmd/bottle.rb: "cellar" => bottle_cellar.to_s).
 cellar = entry["bottle"]["cellar"]
+# Checked before anything is written: a path-valued cellar or a rebuild must never reach a fixture.
+assert cellar in ("any", "any_skip_relocation"), cellar
+assert entry["bottle"].get("rebuild", 0) == 0, entry["bottle"].get("rebuild")
 bottle = {
     "exampleowner/tap/job-sluice": {
         "formula": {"name": "job-sluice", "pkg_version": "9.9.0"},
         "bottle": {
             "root_url": "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1",
             "cellar": cellar,
-            "rebuild": entry["bottle"].get("rebuild", 0),
+            "rebuild": 0,
             "tags": {
                 "arm64_tahoe": {
                     "filename": real_tag_hash["filename"].replace(real_version, "9.9.0"),
@@ -303,41 +348,59 @@ info = {"formulae": [{"full_name": "exampleowner/tap/job-sluice",
 (out / "info_poured.json").write_text(json.dumps(info, indent=2) + "\n")
 print("cellar:", cellar, "| real version:", real_version)
 PY
-cd "$OLDPWD"
-grep -c "exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1" tests/fixtures/homebrew/merged_formula.rb
-grep -rn "/Users/\|/home/" tests/fixtures/homebrew/ || echo "no home paths"
+cd "$WT"
+grep -c "exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1" tests/homebrew_fixtures/merged_formula.rb
+grep -rnE '/(Users|home)/' tests/homebrew_fixtures/ || echo "no home paths"
 ```
 
-Expected: `1` and `no home paths`. The `cd` into the scratch directory must happen from the worktree
-root, so `$OLDPWD` is the worktree.
+Expected: `cellar: <any or any_skip_relocation> | real version: <version>`, then `1`, then
+`no home paths`. The grep pattern is written with a group so that this plan does not itself contain a
+home-directory prefix, which `tests/test_no_leaked_files.py` refuses in any tracked file.
 
 - [ ] **Step 8: Restore the machine**
 
 ```bash
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+M=/tmp/sluice-279-measure
 brew uninstall job-sluice
-brew list --formula > /tmp/sluice-279-measure/formulae-after.txt
-comm -13 /tmp/sluice-279-measure/formulae-before.txt /tmp/sluice-279-measure/formulae-after.txt
+brew list --formula --versions > "$M/formulae-after.txt"
+cut -d' ' -f1 "$M/formulae-before.txt" > "$M/names-before.txt"
+cut -d' ' -f1 "$M/formulae-after.txt" > "$M/names-after.txt"
+comm -13 "$M/names-before.txt" "$M/names-after.txt"
 ```
 
-The `comm` output lists formulae this task added as dependencies. Uninstall exactly those, then
-compare again:
+The `comm` output names the formulae this task added as dependencies. Uninstall exactly those, then
+compare names AND versions with Step 1's record:
 
 ```bash
-comm -13 /tmp/sluice-279-measure/formulae-before.txt /tmp/sluice-279-measure/formulae-after.txt | xargs brew uninstall
-brew list --formula > /tmp/sluice-279-measure/formulae-after.txt
-diff /tmp/sluice-279-measure/formulae-before.txt /tmp/sluice-279-measure/formulae-after.txt && echo "formulae restored"
-grep -qx "mrreasonable/tap" /tmp/sluice-279-measure/taps-before.txt || brew untap mrreasonable/tap
-brew trust > /tmp/sluice-279-measure/trust-after.txt 2>&1 || true
-diff /tmp/sluice-279-measure/trust-before.txt /tmp/sluice-279-measure/trust-after.txt || echo "trust differs"
+export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_UPGRADE=1 HOMEBREW_NO_INSTALL_CLEANUP=1
+M=/tmp/sluice-279-measure
+comm -13 "$M/names-before.txt" "$M/names-after.txt" | xargs brew uninstall
+brew list --formula --versions > "$M/formulae-after.txt"
+diff "$M/formulae-before.txt" "$M/formulae-after.txt" && echo "formulae restored"
+TAP="$(brew --repository)/Library/Taps/mrreasonable/homebrew-tap"
+if grep -qx "mrreasonable/tap" "$M/taps-before.txt"; then
+  cp "$M/pristine.rb" "$TAP/Formula/job-sluice.rb"
+  git -C "$TAP" status --porcelain
+  echo "the tap pre-existed; its formula is restored"
+else
+  brew untap mrreasonable/tap
+fi
+brew trust > "$M/trust-after.txt" 2>&1 || true
+diff "$M/trust-before.txt" "$M/trust-after.txt" || echo "trust differs"
 ```
 
-Expected: `formulae restored`. If `trust differs` prints, run `brew untrust --help`; if it exists,
-`brew untrust --formula mrreasonable/tap/job-sluice`, else report the leftover trust entry.
+Expected: `formulae restored`. A `diff` line showing a formula whose VERSION changed means this task
+upgraded something the machine already had: STOP and report it, since nothing here can put the old
+version back. When the tap pre-existed, `git status --porcelain` prints nothing. If `trust differs`
+prints, run `brew untrust --help`; if it exists, `brew untrust --formula mrreasonable/tap/job-sluice`,
+else report the leftover trust entry.
 
 - [ ] **Step 9: Commit the fixtures**
 
 ```bash
-git add tests/fixtures/homebrew/merged_formula.rb tests/fixtures/homebrew/bottle.json tests/fixtures/homebrew/info_poured.json
+.venv/bin/python -m pytest -q
+git add tests/homebrew_fixtures/merged_formula.rb tests/homebrew_fixtures/bottle.json tests/homebrew_fixtures/info_poured.json
 git commit -F - <<'EOF'
 test(packaging): capture a real two-tag bottle merge as fixtures (#279)
 
@@ -350,10 +413,14 @@ Claude-Session: https://claude.ai/code/session_017tWDbFbL5fUG7ofXqJxomL
 EOF
 ```
 
+Expected: the whole suite passes before the commit, including `tests/test_fixture_name_neutrality.py`
+and `tests/test_no_leaked_files.py`, which sweep every tracked file.
+
 - [ ] **Step 10: Report the measurements**
 
-Report back: the `cellar` value from Step 4; the lines around the block from Step 6; whether the
-Step 5 pour printed `True`; the `brew style` result; and the restore result from Step 8.
+Report back: the skeleton result from Step 2; the `cellar` value from Step 4; the lines around the
+block and the lines directly above `  def install` from Step 6; whether the Step 5 pour printed
+`True`; the `brew style` result; and the restore result from Step 8.
 
 ---
 
@@ -385,8 +452,11 @@ test compares that module with itself.
 
 Fixtures are synthetic: `example.invalid` URLs where the host is not the property under test, fake
 digests, owner `ExampleOwner`. Resource-stanza URLs keep the files.pythonhosted.org host because
-that host is exactly what the formula grammar checks. tests/fixtures/homebrew/ holds sanitised real
-Homebrew output, captured by the plan's first task.
+that host is exactly what the formula grammar checks. tests/homebrew_fixtures/ holds sanitised real
+Homebrew output. Its formula keeps the renderer's `homepage` line, which names the upstream project's
+owner, because the validator compares that text with `render()`. A change to the renderer's template
+makes that fixture stale: recapture it on a Mac with a real `brew bottle --merge`, as
+docs/superpowers/plans/2026-09-14-homebrew-bottles.md's first task did, never by hand.
 """
 import ast
 import json
@@ -399,7 +469,7 @@ from scripts.homebrew_bottles import Refusal
 
 ROOT = pathlib.Path(__file__).parent.parent
 SCRIPT = ROOT / "scripts" / "homebrew_bottles.py"
-FIXTURES = ROOT / "tests" / "fixtures" / "homebrew"
+FIXTURES = ROOT / "tests" / "homebrew_fixtures"
 
 _EXPECTED_PLATFORMS = {("macos-15", "arm64_sequoia"), ("macos-26", "arm64_tahoe")}
 
@@ -884,6 +954,85 @@ named test, confirm it FAILS, then `cp /tmp/homebrew_bottles.py.bak scripts/home
 Run after each restore: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py` (expected: all
 pass). Finish with `git status --short` (expected: clean).
 
+- [ ] **Step 6: Write the always-refuse witness, and witness every accept row**
+
+A green dry run only ever takes a check's accept branch, and a check that always refuses would pass
+every refuse row, so each function's accept rows are witnessed by making the function refuse (spec,
+§9a). Write `/tmp/always_refuse.py`:
+
+```python
+"""Witness a function's accept rows: the named tests pass, then the function is made to raise before
+its first statement, then every named test must fail. The file is restored byte for byte whatever
+happens. Exit 0 only if every named test passed before and failed after."""
+import ast
+import pathlib
+import shutil
+import subprocess
+import sys
+
+SCRIPT = pathlib.Path("scripts/homebrew_bottles.py")
+BACKUP = pathlib.Path("/tmp/homebrew_bottles.py.always-refuse")
+
+
+def passes(test: str) -> bool:
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+               f"tests/test_homebrew_bottles.py::{test}"]
+    return subprocess.run(command, capture_output=True).returncode == 0
+
+
+function, tests = sys.argv[1], sys.argv[2:]
+assert tests, "name at least one accept test"
+not_green = [test for test in tests if not passes(test)]
+assert not not_green, f"not passing before the mutant, so the mutant would prove nothing: {not_green}"
+original = SCRIPT.read_bytes()
+shutil.copyfile(SCRIPT, BACKUP)
+matches = [node for node in ast.parse(original).body
+           if isinstance(node, ast.FunctionDef) and node.name == function]
+assert len(matches) == 1, f"expected one top-level function {function!r}, found {len(matches)}"
+body = matches[0].body
+has_docstring = (isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant)
+                 and isinstance(body[0].value.value, str))
+first = body[1] if has_docstring else body[0]
+lines = original.decode("utf-8").splitlines(keepends=True)
+lines.insert(first.lineno - 1, " " * first.col_offset + 'raise Refusal("always-refuse mutant")\n')
+try:
+    mutated = "".join(lines)
+    ast.parse(mutated)  # parseable, so a red test is red for the mutant's reason
+    SCRIPT.write_text(mutated)
+    survived = [test for test in tests if passes(test)]
+finally:
+    shutil.copyfile(BACKUP, SCRIPT)
+assert SCRIPT.read_bytes() == original, "the restore did not reproduce the original bytes"
+if survived:
+    print(f"{function}: SURVIVED in {survived}")
+    sys.exit(1)
+print(f"{function}: every accept row failed under the mutant")
+```
+
+Run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py validate_push_target test_push_target_accepts_default_and_auto
+.venv/bin/python /tmp/always_refuse.py validate_version test_version_accepts_three_integers
+.venv/bin/python /tmp/always_refuse.py version_tuple test_version_tuple_orders_numerically_across_a_digit_boundary
+.venv/bin/python /tmp/always_refuse.py validate_sdist test_sdist_accepts_the_pythonhosted_url_for_this_version
+.venv/bin/python /tmp/always_refuse.py pick_sdist test_pick_sdist_returns_the_one_sdist
+.venv/bin/python /tmp/always_refuse.py tap_owner test_tap_owner_lower_cases
+.venv/bin/python /tmp/always_refuse.py compose_tag test_tag_is_deterministic test_tag_changes_with_the_run_id_alone test_tag_changes_with_the_run_attempt_alone
+.venv/bin/python /tmp/always_refuse.py compose_root_url test_root_url_lower_cases_the_owner
+.venv/bin/python /tmp/always_refuse.py parse_symref test_symref_reads_the_branch_and_tip
+.venv/bin/python /tmp/always_refuse.py formula_state_from_status test_the_formula_state_is_three_valued
+.venv/bin/python /tmp/always_refuse.py resolve_target test_default_targets_the_default_branch_whatever_the_observable_says test_auto_with_the_formula_present_targets_a_scratch_branch test_auto_with_the_formula_absent_targets_the_default_branch
+.venv/bin/python /tmp/always_refuse.py caller_for test_the_caller_is_release_or_dry_run
+.venv/bin/python /tmp/always_refuse.py platforms_json test_the_emitted_platforms_are_the_two_pairs_restated_by_hand
+.venv/bin/python /tmp/always_refuse.py declared_tags test_declared_tags_reads_the_emitted_platforms
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing. A `SURVIVED` line names an accept row that does not depend on its
+function: fix the test, not the script.
+
 ---
 
 ### Task 3: Bottle-side checks
@@ -894,7 +1043,7 @@ pass). Finish with `git status --short` (expected: clean).
 
 **Interfaces:**
 - Consumes: `Refusal`, `FORMULA_NAME`, `validate_version`, `_HEX64_RE` (Task 2); the fixtures
-  `tests/fixtures/homebrew/bottle.json`, `info_poured.json`, `merged_formula.rb` (Task 1).
+  `tests/homebrew_fixtures/bottle.json`, `info_poured.json`, `merged_formula.rb` (Task 1).
 - Produces: `check_pour`, `check_produced_tag`, `Asset`, `ALLOWED_CELLARS`, `validate_bottle_jsons`,
   `parse_bottle_block`, `check_merged_tags`, `check_cache_file`.
 
@@ -910,6 +1059,45 @@ fixtures are sanitised measurements of both.
 Append to `tests/test_homebrew_bottles.py` (add `import hashlib` to the imports at the top):
 
 ```python
+# --- the measured fixtures -----------------------------------------------------------------------
+
+
+def test_the_fixture_directory_holds_exactly_the_three_measured_files():
+    """This directory sits outside tests/fixtures/, whose scope guard admits only captured board
+    payloads, so it carries its own closure: a file added here would sit in no pin below."""
+    found = sorted(path.relative_to(FIXTURES).as_posix() for path in FIXTURES.rglob("*"))
+    assert found == ["bottle.json", "info_poured.json", "merged_formula.rb"], found
+
+
+def test_the_json_fixtures_carry_only_the_sanitised_keys_and_values():
+    """Real `brew bottle --json` and `brew info` output also carry the build machine's OS, Xcode and
+    CLT versions, timestamps, and the tap's remote and revision. A verbatim recapture must fail here,
+    by name, rather than commit them."""
+    bottle = json.loads((FIXTURES / "bottle.json").read_text())
+    cellar = bottle.get("exampleowner/tap/job-sluice", {}).get("bottle", {}).pop("cellar", None)
+    assert cellar in ("any", "any_skip_relocation"), cellar
+    assert bottle == {
+        "exampleowner/tap/job-sluice": {
+            "formula": {"name": "job-sluice", "pkg_version": "9.9.0"},
+            "bottle": {
+                "root_url": "https://github.com/exampleowner/homebrew-tap/releases/download/job-sluice-9.9.0-1-1",
+                "rebuild": 0,
+                "tags": {
+                    "arm64_tahoe": {
+                        "filename": "job-sluice-9.9.0.arm64_tahoe.bottle.tar.gz",
+                        "local_filename": "job-sluice--9.9.0.arm64_tahoe.bottle.tar.gz",
+                        "sha256": "a" * 64,
+                    }
+                },
+            },
+        }
+    }
+    assert json.loads((FIXTURES / "info_poured.json").read_text()) == {
+        "formulae": [{"full_name": "exampleowner/tap/job-sluice",
+                      "installed": [{"version": "9.9.0", "poured_from_bottle": True}]}]
+    }
+
+
 # --- the pour check ---------------------------------------------------------------------------
 
 _FULL_NAME = "exampleowner/tap/job-sluice"
@@ -948,6 +1136,9 @@ def test_one_poured_keg_at_the_version_passes():
         _info(_formula(_FULL_NAME, _keg("9.8.0", True))),
         _info(_formula(_FULL_NAME, _keg(), _keg())),
         _info(_formula(_FULL_NAME, {"version": "9.9.0"})),
+        # One poured keg at VERSION under another name: refused by the name check and nothing else.
+        _info(_formula("exampleowner/tap/other", _keg())),
+        _info(_formula("pango", _keg())),
         _info(),
         {},
     ],
@@ -1178,7 +1369,10 @@ def test_the_cache_file_refuses_other_bytes_or_an_undeclared_tag(tag, data):
 
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: the new tests FAIL with `AttributeError: module 'scripts.homebrew_bottles' has no attribute
-'check_pour'` (and similar); Task 2's tests still pass.
+'check_pour'` (and similar), except three that read only the fixtures and pass at once:
+`test_the_fixture_directory_holds_exactly_the_three_measured_files`,
+`test_the_json_fixtures_carry_only_the_sanitised_keys_and_values` and
+`test_the_measured_bottle_json_names_the_real_file_shapes`. Task 2's tests still pass.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -1391,7 +1585,7 @@ Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: all pass. If `test_the_measured_bottle_json_names_the_real_file_shapes` or a pour row fails,
 compare with Task 1's report before changing anything: the fixtures are measurements.
 
-- [ ] **Step 5: Commit, then witness three rows**
+- [ ] **Step 5: Commit, then witness each row**
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
@@ -1402,16 +1596,37 @@ MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 Claude-Session: https://claude.ai/code/session_017tWDbFbL5fUG7ofXqJxomL
 EOF
 cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
+cp tests/homebrew_fixtures/bottle.json /tmp/bottle.json.bak
 ```
 
-| Mutant (delete) | Test that must fail |
+| Mutant | Test that must fail |
 | --- | --- |
-| the `if formula.get("full_name") != full_name:` block in `check_pour` | `test_the_pour_check_refuses_anything_but_one_poured_keg_of_this_formula` |
-| the `if actual != sha256:` block in `validate_bottle_jsons` | `test_a_bottle_json_off_contract_is_refused[digest mismatch]` |
-| the `if set(block_tags) != set(tags):` block in `check_merged_tags` | `test_the_merged_tag_set_refuses_a_missing_extra_or_empty_declaration` |
+| delete the `if formula.get("full_name") != full_name:` block in `check_pour` | `test_the_pour_check_refuses_anything_but_one_poured_keg_of_this_formula` |
+| delete the `if actual != sha256:` block in `validate_bottle_jsons` | `test_a_bottle_json_off_contract_is_refused[digest mismatch]` |
+| delete the `if set(block_tags) != set(tags):` block in `check_merged_tags` | `test_the_merged_tag_set_refuses_a_missing_extra_or_empty_declaration` |
+| delete the `"pkg_version": "9.9.0"` entry, and the comma before it, from `tests/homebrew_fixtures/bottle.json` | `test_the_json_fixtures_carry_only_the_sanitised_keys_and_values` |
+| create an empty `tests/homebrew_fixtures/extra.json` (adds) | `test_the_fixture_directory_holds_exactly_the_three_measured_files` |
 
-Restore with `cp /tmp/homebrew_bottles.py.bak scripts/homebrew_bottles.py` after each, rerun the file
-(all pass), and finish with `git status --short` clean.
+Restore after each: `cp /tmp/homebrew_bottles.py.bak scripts/homebrew_bottles.py`,
+`cp /tmp/bottle.json.bak tests/homebrew_fixtures/bottle.json`, or `rm tests/homebrew_fixtures/extra.json`.
+Rerun the file (all pass), and finish with `git status --short` clean.
+
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py check_pour test_the_measured_brew_info_passes_the_pour_check test_one_poured_keg_at_the_version_passes test_expect_built_passes_a_built_keg
+.venv/bin/python /tmp/always_refuse.py check_produced_tag test_the_produced_tag_passes_when_it_is_the_declared_one
+.venv/bin/python /tmp/always_refuse.py validate_bottle_jsons test_two_valid_bottle_jsons_yield_their_assets_in_declared_order
+.venv/bin/python /tmp/always_refuse.py parse_bottle_block test_the_measured_merge_parses_to_both_tags
+.venv/bin/python /tmp/always_refuse.py check_merged_tags test_the_merged_tag_set_passes_when_it_equals_the_declared_one
+.venv/bin/python /tmp/always_refuse.py check_cache_file test_the_cache_file_passes_when_its_digest_is_the_blocks
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing.
 
 ---
 
@@ -1663,6 +1878,21 @@ cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 
 Restore after each, rerun (all pass), `git status --short` clean.
 
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py release_templates test_the_release_templates_are_fixed_text_for_each_caller
+.venv/bin/python /tmp/always_refuse.py release_decision test_an_absent_release_is_to_be_created test_a_matching_release_is_accepted_draft_or_published
+.venv/bin/python /tmp/always_refuse.py asset_decision test_an_absent_asset_is_uploaded test_an_identical_asset_is_skipped
+.venv/bin/python /tmp/always_refuse.py release_digests test_release_digests_map_each_declared_tag_to_its_assets_digest
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing.
+
 ---
 
 ### Task 5: The formula validator
@@ -1673,12 +1903,14 @@ Restore after each, rerun (all pass), `git status --short` clean.
 
 **Interfaces:**
 - Consumes: `parse_bottle_block`, `Refusal` (Tasks 2, 3); `scripts/render_homebrew_formula.py::render`;
-  `tests/fixtures/homebrew/merged_formula.rb` and Task 1's report of the lines around the block.
+  `tests/homebrew_fixtures/merged_formula.rb` and Task 1's report of the lines around the block.
 - Produces: `ROOT`, `_render`, `validate_formula`.
 
 The accept fixture is the renderer's text at capture time. If a later change to
 `scripts/render_homebrew_formula.py`'s template makes the accept row fail at the skeleton comparison,
-recapture the fixture with Task 1's Steps 2 to 7 rather than editing it by hand.
+recapture the fixture with Task 1's Steps 2 to 7 rather than editing it by hand. The fixture stays the
+accept text, rather than one assembled at test time from `render()`: a renderer change alters what
+every Mac merges, so it earns a real merge and `brew style` again.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1790,6 +2022,34 @@ def test_a_rebuild_line_in_the_block_is_refused():
     root_line = _block_line(text, "    root_url ")
     with pytest.raises(Refusal):
         _validate(text.replace(root_line, root_line + "\n    rebuild 1"))
+
+
+def _resource_run(text):
+    """The measured merge's resource run: from its first stanza to the end of its last."""
+    start = text.index('  resource "')
+    last = text.rindex('  resource "')
+    return start, text.index("  end\n\n", last) + len("  end\n\n")
+
+
+def test_the_resource_run_moved_below_the_final_end_is_refused():
+    """Removing a contiguous run restores the renderer's text wherever the run sits, so only its
+    position refuses this: `resource` below the class's `end` is undefined when the formula loads."""
+    text = _merged()
+    start, end = _resource_run(text)
+    with pytest.raises(Refusal):
+        _validate(text[:start] + text[end:] + text[start:end])
+
+
+def test_a_resource_stanza_split_from_its_run_is_refused():
+    """One stanza moved above `test do`, at the start of its own line: removing every stanza still
+    restores the renderer's text, so only the run's contiguity refuses this."""
+    text = _merged()
+    start, _ = _resource_run(text)
+    first_end = text.index("  end\n\n", start) + len("  end\n\n")
+    stanza, rest = text[start:first_end], text[:start] + text[first_end:]
+    anchor = rest.index("  test do\n")
+    with pytest.raises(Refusal):
+        _validate(rest[:anchor] + stanza + rest[anchor:])
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -1814,9 +2074,11 @@ and append:
 ```python
 # --- the pushed formula -------------------------------------------------------------------------
 
-# One resource stanza as `brew update-python-resources` writes it: four lines and a blank one,
-# anchored. `#`, `{`, `}`, `"`, `;` and spaces appear in no field's character set, so a quoted
-# value cannot carry Ruby interpolation or a second statement (spec, section 5).
+# One resource stanza as `brew update-python-resources` writes it: four lines and a blank one.
+# `#`, `{`, `}`, `"`, `;` and spaces appear in no field's character set, so a quoted value cannot
+# carry Ruby interpolation or a second statement (spec, section 5). The pattern carries no `^`: the
+# run must be contiguous and sit directly above `_RESOURCES_PRECEDE`, and together with the comparison
+# against the renderer's text that puts every stanza at the start of a line.
 _STANZA_RE = re.compile(
     r'  resource "(?P<name>[A-Za-z0-9._-]+)" do\n'
     r'    url "https://files\.pythonhosted\.org/packages/[0-9a-f]{2}/[0-9a-f]{2}/[0-9a-f]{60}/'
@@ -1825,6 +2087,11 @@ _STANZA_RE = re.compile(
     r"  end\n"
     r"\n"
 )
+
+# Homebrew inserts a new resource group directly above `def install`
+# (utils/ast.rb::replace_resource_stanzas) and refuses a formula whose resources form more than one
+# group, so one contiguous run in exactly that place is the only shape a real fill produces.
+_RESOURCES_PRECEDE = "  def install\n"  # measured anchor
 
 
 def _normalise(name: str) -> str:
@@ -1883,13 +2150,25 @@ def validate_formula(
     if text[after : after + 1] != "\n":  # measured separator
         raise Refusal("the bottle block is not followed by the blank line brew bottle --merge writes.")
     remainder = text[: block.start()] + text[after + 1 :]
-    for stanza in _STANZA_RE.finditer(remainder):
+    stanzas = list(_STANZA_RE.finditer(remainder))
+    if not stanzas:
+        raise Refusal("the formula carries no resource stanzas: brew update-python-resources filled none.")
+    for stanza in stanzas:
         if _normalise(stanza.group("project")) != _normalise(stanza.group("name")):
             raise Refusal(
                 f"resource {stanza.group('name')!r} points at an sdist for "
                 f"{stanza.group('project')!r}."
             )
+    for previous, current in zip(stanzas, stanzas[1:]):
+        if current.start() != previous.end():
+            raise Refusal("the resource stanzas do not form one contiguous run.")
+    start = stanzas[0].start()
     remainder = _STANZA_RE.sub("", remainder)
+    if not remainder[start:].startswith(_RESOURCES_PRECEDE):  # measured anchor
+        raise Refusal(
+            f"the resource stanzas are not directly above {_RESOURCES_PRECEDE.strip()!r}, where "
+            "brew update-python-resources writes them."
+        )
     expected = _render(sdist_url, sha256)
     if remainder != expected:
         raise Refusal(
@@ -1902,12 +2181,16 @@ If Task 1's report shows the block is NOT followed by exactly one blank line, ch
 marked `# measured separator` to remove the separator Task 1 recorded instead, and say so in the
 commit body. Do not change them otherwise.
 
+Likewise, if Task 1's report shows the resource run is NOT directly above `  def install`, change the
+`_RESOURCES_PRECEDE` value marked `# measured anchor` to the line Task 1 recorded, and say so in the
+commit body.
+
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: all pass, including the generated injection test.
 
-- [ ] **Step 5: Commit, then witness three rows**
+- [ ] **Step 5: Commit, then witness each row**
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
@@ -1923,13 +2206,27 @@ EOF
 cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 ```
 
-| Mutant | Test that must fail |
+| Mutant (delete) | Test that must fail |
 | --- | --- |
-| delete the `if _normalise(...) != _normalise(...):` block | `test_a_resource_whose_project_is_not_its_name_is_refused` |
-| delete the `for tag in tags:` digest loop | `test_arguments_that_disagree_with_the_text_are_refused` |
-| delete the `if remainder != expected:` block | `test_every_injection_into_every_line_of_the_measured_merge_is_refused` |
+| the whole `for stanza in stanzas:` loop | `test_a_resource_whose_project_is_not_its_name_is_refused` |
+| the whole `for previous, current in zip(stanzas, stanzas[1:]):` loop | `test_a_resource_stanza_split_from_its_run_is_refused` |
+| the `if not remainder[start:].startswith(_RESOURCES_PRECEDE):` block | `test_the_resource_run_moved_below_the_final_end_is_refused` |
+| the `for tag in tags:` digest loop | `test_arguments_that_disagree_with_the_text_are_refused` |
+| the `if remainder != expected:` block | `test_every_injection_into_every_line_of_the_measured_merge_is_refused` |
 
 Restore after each, rerun (all pass), `git status --short` clean.
+
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py validate_formula test_the_measured_merge_is_accepted test_a_resource_named_as_pep_503_normalises_its_project_is_accepted
+git status --short
+```
+
+Expected: `validate_formula: every accept row failed under the mutant`, and `git status --short`
+prints nothing.
 
 ---
 
@@ -2119,9 +2416,22 @@ cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 | Mutant | Test that must fail |
 | --- | --- |
 | delete `if current > wanted:` and its `raise` | `test_a_newer_base_version_on_the_default_branch_is_refused` |
-| delete the `return "noop"` branch | `test_identical_bytes_at_the_target_are_a_no_op` |
+| delete the line `if target_state == "present" and remote_formula is not None and remote_formula == ours:` and the `return "noop"` under it | `test_identical_bytes_at_the_target_are_a_no_op` |
 
 Restore after each, rerun (all pass), `git status --short` clean.
+
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py parse_formula_version test_the_version_is_read_from_the_top_level_url_as_integers
+.venv/bin/python /tmp/always_refuse.py push_decision test_identical_bytes_at_the_target_are_a_no_op test_different_bytes_at_the_target_push test_an_absent_scratch_branch_pushes test_a_target_without_the_formula_pushes test_an_equal_or_older_base_version_pushes test_a_newer_base_version_on_a_scratch_branch_pushes test_the_bootstrap_with_no_formula_at_the_base_pushes
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing.
 
 ---
 
@@ -2149,10 +2459,12 @@ append:
 
 def test_the_plan_subcommand_refuses_a_bad_push_target_before_any_external_command():
     """Executed with an empty PATH: the refusal must come before git or the network, so a caller
-    passing a bad push target fails before anything reads the tap."""
+    passing a bad push target fails before anything reads the tap. Every other variable `plan`
+    requires before its first git call is set, so only statement order stands between the bad value
+    and git."""
     proc = subprocess.run(
         [sys.executable, "-P", str(SCRIPT), "plan"],
-        env={"PATH": "", "PUSH_TARGET": "bogus", "VERSION": "1.2.3"},
+        env={"PATH": "", "PUSH_TARGET": "bogus", "VERSION": "1.2.3", "REPOSITORY_OWNER": "ExampleOwner"},
         capture_output=True, text=True, timeout=60,
     )
     output = proc.stdout + proc.stderr
@@ -2309,6 +2621,8 @@ def test_pour_check_scopes_to_the_tap_formula_and_has_an_expect_built_mode(tmp_p
     env = {"TAP_OWNER": "exampleowner", "VERSION": "9.9.0"}
     assert hb.main(["pour-check", "--info", str(path)], env=env) == 0
     assert hb.main(["pour-check", "--info", str(path), "--expect-built"], env=env) == 1
+    other_owner = {"TAP_OWNER": "otherowner", "VERSION": "9.9.0"}
+    assert hb.main(["pour-check", "--info", str(path)], env=other_owner) == 1
 
 
 def test_merged_tags_and_cache_check_exit_by_their_checks(tmp_path):
@@ -2327,7 +2641,8 @@ def test_merged_tags_and_cache_check_exit_by_their_checks(tmp_path):
 
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: the new tests FAIL (`AttributeError` for `build_plan`, `main`, `write_outputs`; the
-subprocess test exits 2 or 1 without the expected output).
+subprocess test fails its assertions, because the script has no `__main__` block yet and exits 0 with
+no output).
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2641,6 +2956,26 @@ expected: FAIL, because another failure now comes first and its message does not
 targets. Restore with `cp`, rerun the
 file (all pass), `git status --short` clean.
 
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py build_plan test_the_default_plan_emits_every_output test_the_auto_plan_targets_by_the_observable
+.venv/bin/python /tmp/always_refuse.py write_outputs test_outputs_are_written_one_per_line
+.venv/bin/python /tmp/always_refuse.py cmd_plan test_plan_writes_its_outputs_and_reads_the_contents_api_only_for_auto
+.venv/bin/python /tmp/always_refuse.py cmd_render test_render_writes_the_renderers_text
+.venv/bin/python /tmp/always_refuse.py cmd_tags test_tags_prints_one_declared_tag_per_line
+.venv/bin/python /tmp/always_refuse.py cmd_produced_tag test_produced_tag_exits_by_the_check
+.venv/bin/python /tmp/always_refuse.py cmd_pour_check test_pour_check_scopes_to_the_tap_formula_and_has_an_expect_built_mode
+.venv/bin/python /tmp/always_refuse.py cmd_merged_tags test_merged_tags_and_cache_check_exit_by_their_checks
+.venv/bin/python /tmp/always_refuse.py cmd_cache_check test_merged_tags_and_cache_check_exit_by_their_checks
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing.
+
 ---
 
 ### Task 8: Publishing I/O: the release upload and the tap push
@@ -2651,7 +2986,8 @@ file (all pass), `git status --short` clean.
 
 **Interfaces:**
 - Consumes: Tasks 2 to 7.
-- Produces: `list_releases`, `list_assets`, `upload_bottles`, `prepare_push`, `publish_push`, the
+- Produces: `list_releases`, `list_assets`, `upload_bottles`, `prepare_push`, `publish_push`,
+  `_read_formula`, `_formula_at_commit`, the
   subcommands `validate-bottles`, `upload-bottles`, `validate-formula`, `push-prepare`,
   `push-publish`, and the replacement `_parser` and `_COMMANDS`.
 
@@ -2802,7 +3138,35 @@ def test_validate_formula_reads_the_published_releases_digests(tmp_path):
     assert hb.main(["validate-formula"], env=env, http=draft_only) == 1
 
 
+@pytest.mark.parametrize("newline", ["\r", "\r\n"])
+def test_a_carriage_return_in_the_merged_formula_is_refused(tmp_path, newline):
+    """`read_text()` would turn a lone CR into LF, so the text validated would not be the bytes pushed,
+    and Ruby does not end a line at a lone CR. The reader both subcommands share takes the bytes and
+    refuses a CR."""
+    formula = tmp_path / "job-sluice.rb"
+    formula.write_bytes(_merged().replace("\n", newline, 1).encode())
+    env = {"MERGED_FORMULA": str(formula), "SDIST_URL": _FIXTURE_SDIST, "SDIST_SHA256": "c" * 64,
+           "ROOT_URL": _ROOT_URL, "PLATFORMS": hb.platforms_json(), "TAP_OWNER": "exampleowner",
+           "TAG": "job-sluice-9.9.0-1-1", "VERSION": "9.9.0", "GITHUB_TOKEN": "workflow-token"}
+    published = _FakeGitHub(releases=[_release(tag_name="job-sluice-9.9.0-1-1", draft=False)],
+                            assets=_assets())
+    assert hb.main(["validate-formula"], env=env, http=published) == 1
+    with pytest.raises(Refusal):
+        hb._read_formula(str(formula))
+
+
 # --- the tap push, against local repositories -------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _hermetic_git(monkeypatch):
+    """Real git runs in this file. An inherited GIT_DIR or GIT_INDEX_FILE (pytest started from a git
+    hook) would aim it at another repository, and a system or global `core.hooksPath` would make the
+    hook test below pass without the helper's doing."""
+    for name in [name for name in os.environ if name.startswith("GIT_")]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
 
 
 def _git_run(cwd, *args):
@@ -2920,15 +3284,46 @@ def test_an_absent_default_branch_refuses(tmp_path):
         _prepare(tmp_path, url, base, target_branch="trunk", default_branch="trunk")
 
 
+def test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap(tmp_path, monkeypatch):
+    """With 9.8.0 at the base this would push. A failed `ls-tree` taken as "no formula at the base"
+    would reach the bootstrap arm and skip the default branch's version refusal, so it must refuse."""
+    url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
+    real_git = hb.git
+
+    def failing_ls_tree(*args, cwd=None):
+        if args and args[0] == "ls-tree":
+            return subprocess.CompletedProcess(["git", *args], 128, b"", b"fatal: simulated")
+        return real_git(*args, cwd=cwd)
+
+    monkeypatch.setattr(hb, "git", failing_ls_tree)
+    with pytest.raises(Refusal):
+        _prepare(tmp_path, url, base)
+
+
 def test_a_hook_left_in_the_clone_does_not_run(tmp_path):
     url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
     assert _prepare(tmp_path, url, base) == "push"
     marker = tmp_path / "hook-ran"
     hook = tmp_path / "work" / "tap" / ".git" / "hooks" / "pre-push"
+    hook.parent.mkdir(exist_ok=True)
     hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
     os.chmod(hook, 0o755)
     hb.publish_push(workdir=tmp_path / "work", push_url=url, target_branch="main")
     assert not marker.exists()
+
+
+def test_the_same_hook_runs_for_a_push_without_the_helper(tmp_path):
+    """The control for the test above: in the same clone, a plain push DOES run the hook, so its
+    absence there is the helper's doing."""
+    url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
+    assert _prepare(tmp_path, url, base) == "push"
+    marker = tmp_path / "hook-ran"
+    hook = tmp_path / "work" / "tap" / ".git" / "hooks" / "pre-push"
+    hook.parent.mkdir(exist_ok=True)
+    hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
+    os.chmod(hook, 0o755)
+    _git_run(tmp_path / "work" / "tap", "push", url, "HEAD:refs/heads/main")
+    assert marker.exists()
 
 
 def test_a_failed_push_does_not_print_the_token(tmp_path):
@@ -2938,6 +3333,7 @@ def test_a_failed_push_does_not_print_the_token(tmp_path):
         hb.publish_push(workdir=tmp_path / "work", push_url=url + "-SECRET-TOKEN-VALUE",
                         target_branch="main", redact="SECRET-TOKEN-VALUE")
     assert "SECRET-TOKEN-VALUE" not in str(err.value)
+    assert "***" in str(err.value), "the token never reached git's message, so its redaction is unproven"
 
 
 # --- one derivation per fact, over the script's own source --------------------------------------
@@ -2997,6 +3393,26 @@ def test_release_writes_happen_only_inside_upload_bottles():
     assert _callers("upload_bottles") == {"cmd_upload_bottles"}
 
 
+def test_the_network_is_reached_only_through_github_request_and_plans_pypi_read():
+    """`http(...)` is the one network seam. A bare call anywhere else could write to a release without
+    passing the sweep above; `cmd_plan`'s is a GET to PyPI, with no body and no method."""
+    calls = {}
+    for fname, function in _functions().items():
+        for node in _body(function):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "http":
+                calls.setdefault(fname, []).append(node)
+    assert set(calls) == {"github_request", "cmd_plan"}, sorted(calls)
+    (call,) = calls["cmd_plan"]
+    (request,) = call.args
+    assert isinstance(request, ast.Call) and len(request.args) == 1
+    assert not any(keyword.arg in ("method", "data") for keyword in request.keywords)
+
+
+def test_both_formula_subcommands_read_the_same_bytes():
+    assert _callers("_read_formula") == {"cmd_validate_formula", "cmd_push_prepare"}
+    assert _holding("MERGED_FORMULA") == {"cmd_validate_formula", "cmd_push_prepare"}
+
+
 def test_every_git_command_goes_through_the_hook_disabling_helper():
     tree = ast.parse(SCRIPT.read_text())
     functions = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
@@ -3012,8 +3428,11 @@ def test_every_git_command_goes_through_the_hook_disabling_helper():
 - [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
-Expected: the new tests FAIL (`AttributeError` for `upload_bottles`, `prepare_push`, `publish_push`;
-`main` exits 2 on the unknown subcommands).
+Expected: the new tests FAIL (`AttributeError` for `upload_bottles`, `prepare_push`, `publish_push`,
+`_read_formula`; `main` exits 2 on the unknown subcommands), except three AST pins that Tasks 5 and 7
+already satisfy and that pass at once: `test_render_has_exactly_two_callers`,
+`test_every_git_command_goes_through_the_hook_disabling_helper` and
+`test_the_network_is_reached_only_through_github_request_and_plans_pypi_read`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -3117,15 +3536,18 @@ def upload_bottles(
     existing = list_assets(http, token, owner, release["id"]) if release is not None else []
     decisions = [(asset, asset_decision(existing, name=asset.remote_name, sha256=asset.sha256))
                  for asset in assets]
+    print(f"release {tag}: {'absent, creating a draft' if release is None else 'found'}")
     if release is None:
         release = _create_draft_release(
             http, token, owner, tag=tag, base_sha=base_sha, title=title, notes=notes
         )
     for asset, decision in decisions:
+        print(f"{asset.remote_name}: {decision}")
         if decision == "upload":
             _upload_asset(http, token, owner, release["id"], asset)
     if release.get("draft"):
         _publish_release(http, token, owner, release["id"])
+        print(f"published release {tag}")
 
 
 def _validated_assets(env: dict) -> list[Asset]:
@@ -3161,6 +3583,22 @@ _BOT_NAME = "sluice-release-please[bot]"
 _BOT_EMAIL = "sluice-release-please[bot]@users.noreply.github.com"
 
 
+def _read_formula(path: str) -> bytes:
+    """The merged formula's exact bytes, which validate-formula and push-prepare both use.
+
+    Never `read_text()`: universal newlines turn a lone CR into LF, so the text validated would not be
+    the bytes pushed, and Ruby does not end a line at a lone CR. A CR anywhere is refused.
+    """
+    data = Path(path).read_bytes()
+    if b"\r" in data:
+        raise Refusal(f"{path} contains a carriage return; the formula must use LF line endings only.")
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError as err:
+        raise Refusal(f"{path} is not UTF-8 text.") from err
+    return data
+
+
 def cmd_validate_formula(args, env: dict, http) -> None:
     owner = tap_owner(_require(env, "TAP_OWNER"))
     tag = _require(env, "TAG")
@@ -3174,13 +3612,28 @@ def cmd_validate_formula(args, env: dict, http) -> None:
     digests = release_digests(list_assets(http, token, owner, published[0]["id"]), version=version,
                               tags=tags)
     validate_formula(
-        Path(_require(env, "MERGED_FORMULA")).read_text(),
+        _read_formula(_require(env, "MERGED_FORMULA")).decode("utf-8"),
         sdist_url=_require(env, "SDIST_URL"),
         sha256=_require(env, "SDIST_SHA256"),
         root_url=_require(env, "ROOT_URL"),
         tags=tags,
         release_digests=digests,
     )
+
+
+def _formula_at_commit(clone: Path, commit: str) -> bytes | None:
+    """The formula's bytes at `commit`, or None only when git lists no such file there.
+
+    Three-valued on purpose, like `formula_state_from_status`: a failed read taken as "absent" would
+    reach the bootstrap arm and skip the default branch's version refusal (spec, section 6c).
+    """
+    path = f"Formula/{FORMULA_NAME}.rb"
+    listed = _git_ok("ls-tree", "--name-only", commit, "--", path, cwd=clone).decode("utf-8", "replace")
+    if listed == "":
+        return None
+    if listed != f"{path}\n":
+        raise Refusal(f"git listed {listed!r} for {path} at {commit}.")
+    return _git_ok("show", f"{commit}:{path}", cwd=clone)
 
 
 def prepare_push(
@@ -3211,15 +3664,10 @@ def prepare_push(
     if target_state == "present":
         _git_ok("fetch", "origin", f"+refs/heads/{target_branch}:refs/remotes/origin/{target_branch}",
                 cwd=clone)
-        shown = git("show", f"refs/remotes/origin/{target_branch}:Formula/{FORMULA_NAME}.rb", cwd=clone)
-        remote_formula = shown.stdout if shown.returncode == 0 else None
+        remote_formula = _formula_at_commit(clone, f"refs/remotes/origin/{target_branch}")
     if git("cat-file", "-e", f"{base_sha}^{{commit}}", cwd=clone).returncode != 0:
         raise Refusal(f"the base commit {base_sha} is not in the tap's history.")
-    base_path = f"{base_sha}:Formula/{FORMULA_NAME}.rb"
-    base_formula = (
-        _git_ok("show", base_path, cwd=clone)
-        if git("cat-file", "-e", base_path, cwd=clone).returncode == 0 else None
-    )
+    base_formula = _formula_at_commit(clone, base_sha)
     target_is_default = target_branch == default_branch
     decision = push_decision(
         target_state=target_state, remote_formula=remote_formula, ours=formula,
@@ -3273,7 +3721,7 @@ def cmd_push_prepare(args, env: dict, http) -> None:
         default_branch=_require(env, "DEFAULT_BRANCH"),
         base_sha=_require(env, "BASE_SHA"),
         version=validate_version(env.get("VERSION")),
-        formula=Path(_require(env, "MERGED_FORMULA")).read_bytes(),
+        formula=_read_formula(_require(env, "MERGED_FORMULA")),
     )
     print(f"push-prepare decided: {decision}")
 
@@ -3335,7 +3783,7 @@ _COMMANDS = {
 Run: `.venv/bin/python -m pytest -q tests/test_homebrew_bottles.py`
 Expected: all pass. The git tests create repositories under pytest's `tmp_path` and touch no network.
 
-- [ ] **Step 5: Commit, then witness three rows**
+- [ ] **Step 5: Commit, then witness each row**
 
 ```bash
 git add scripts/homebrew_bottles.py tests/test_homebrew_bottles.py
@@ -3356,9 +3804,31 @@ cp scripts/homebrew_bottles.py /tmp/homebrew_bottles.py.bak
 | --- | --- |
 | replace `"core.hooksPath=/dev/null"` with `"core.editor=true"` in `git` (a MOVE of the value, not an added check) | `test_a_hook_left_in_the_clone_does_not_run` and `test_every_git_command_goes_through_the_hook_disabling_helper` |
 | delete `lease = ...` and change the scratch push to `_git_ok("push", "--force", push_url, refspec, ...)` | `test_a_scratch_branch_that_moves_after_prepare_is_not_clobbered` |
-| move the `decisions = [...]` line below the `if release is None:` block | `test_a_different_asset_digest_refuses_before_any_upload` |
+| delete the `decisions = [...]` statement, change the loop to `for asset in assets:`, and move the `asset_decision(existing, name=asset.remote_name, sha256=asset.sha256)` call into the loop as its first line, `decision = ...` | `test_a_different_asset_digest_refuses_before_any_upload` |
+| in `cmd_validate_formula`, replace `_read_formula(_require(env, "MERGED_FORMULA")).decode("utf-8")` with `Path(_require(env, "MERGED_FORMULA")).read_text()` | `test_a_carriage_return_in_the_merged_formula_is_refused` and `test_both_formula_subcommands_read_the_same_bytes` |
+| in `_formula_at_commit`, delete the `listed = _git_ok("ls-tree", ...)` statement and the two `if` blocks after it | `test_a_failed_tree_read_refuses_rather_than_reading_as_the_bootstrap` |
+| replace `cmd_render`'s body with `pass` | `test_render_has_exactly_two_callers` |
 
 Restore after each, rerun the file (all pass), `git status --short` clean.
+
+- [ ] **Step 6: Witness every accept row**
+
+With `/tmp/always_refuse.py` from Task 2, run from the worktree root:
+
+```bash
+.venv/bin/python /tmp/always_refuse.py upload_bottles test_an_absent_release_is_created_as_a_draft_filled_then_published test_a_partial_draft_is_completed_by_the_rerun test_a_complete_published_release_writes_nothing
+.venv/bin/python /tmp/always_refuse.py cmd_validate_bottles test_upload_bottles_from_the_cli_validates_then_publishes
+.venv/bin/python /tmp/always_refuse.py cmd_upload_bottles test_upload_bottles_from_the_cli_validates_then_publishes
+.venv/bin/python /tmp/always_refuse.py cmd_validate_formula test_validate_formula_reads_the_published_releases_digests
+.venv/bin/python /tmp/always_refuse.py _read_formula test_validate_formula_reads_the_published_releases_digests
+.venv/bin/python /tmp/always_refuse.py prepare_push test_a_new_version_is_committed_on_the_base_and_pushed test_identical_bytes_are_a_no_op_and_publish_pushes_nothing test_the_first_scratch_push_creates_the_branch test_a_stale_scratch_branch_is_replaced_under_its_lease
+.venv/bin/python /tmp/always_refuse.py _formula_at_commit test_a_new_version_is_committed_on_the_base_and_pushed test_identical_bytes_are_a_no_op_and_publish_pushes_nothing
+.venv/bin/python /tmp/always_refuse.py publish_push test_a_new_version_is_committed_on_the_base_and_pushed test_the_first_scratch_push_creates_the_branch test_a_stale_scratch_branch_is_replaced_under_its_lease
+git status --short
+```
+
+Expected: every line prints `<function>: every accept row failed under the mutant`, and
+`git status --short` prints nothing.
 
 ---
 
@@ -3446,6 +3916,7 @@ def test_the_tap_checkout_script_clones_at_the_planned_commit_and_derives_nothin
 def test_the_formula_script_renders_fills_and_audits_in_order():
     script = _CI_SCRIPTS / "homebrew_formula.sh"
     _assert_in_order(script, [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
         ("render", r'python3 -P "\$BOTTLES" render --out "\$TAP_FORMULA"'),
         ("resource fill with the cooldown bypass",
          r'if ! brew update-python-resources --version "\$VERSION" --ignore-main-package-cooldown "\$FORMULA_REF"; then'),
@@ -3458,6 +3929,7 @@ def test_the_formula_script_renders_fills_and_audits_in_order():
 
 def test_the_bottle_script_builds_bottles_and_pours_in_order():
     _assert_in_order(_CI_SCRIPTS / "homebrew_bottle.sh", [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
         ("build", r'brew install --build-bottle "\$FORMULA_REF"'),
         ("first test", r'brew test "\$FORMULA_REF"'),
         ("bottle", r'brew bottle --json --no-rebuild --root-url="\$ROOT_URL" "\$FORMULA_REF"'),
@@ -3477,6 +3949,7 @@ def test_the_bottle_script_builds_bottles_and_pours_in_order():
 def test_the_prove_script_merges_checks_and_fetches_every_tag_in_order():
     script = _CI_SCRIPTS / "homebrew_prove.sh"
     _assert_in_order(script, [
+        ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
         ("formula in", r'cp "\$FORMULA_IN" "\$TAP_FORMULA"'),
         ("merge", r'\(cd "\$JSON_DIR" && brew bottle --merge --write --no-commit \./\*\.bottle\.json\)'),
         ("style", r'brew style --formula "\$FORMULA_REF"'),
@@ -3499,8 +3972,7 @@ def test_the_prove_script_merges_checks_and_fetches_every_tag_in_order():
 def test_the_tap_new_ban_moves_to_the_tap_checkout_script():
     """`brew tap-new` writes workflows and a daily `brew bump --open-pr`: a second automated writer
     of a machine-owned formula, and an App token scoped `contents: write` cannot push workflows."""
-    for name in ("homebrew_tap_checkout.sh", "homebrew_formula.sh", "homebrew_bottle.sh",
-                 "homebrew_prove.sh"):
+    for name in _MACOS_SHELL_SCRIPTS:
         assert "tap-new" not in "\n".join(_script_lines(_CI_SCRIPTS / name)), f"{name} must never call brew tap-new"
 ```
 
@@ -3553,6 +4025,10 @@ Create `.github/scripts/homebrew_formula.sh`:
 # runners resolving minutes apart could land on different resource trees, and every bottle must be
 # built from one formula text (spec, section 2). SDIST_URL and SDIST_SHA256 come from `plan`.
 set -euo pipefail
+# Auto-update off: a brew command that auto-updates would update the tap and, if its default branch
+# has moved since `plan`, rebase this checkout off BASE_SHA and leave the formula copied into it
+# stashed (Homebrew's cmd/update.sh::merge_or_rebase).
+export HOMEBREW_NO_AUTO_UPDATE=1
 
 : "${GITHUB_WORKSPACE:?}" "${TAP_OWNER:?}" "${VERSION:?}" "${SDIST_URL:?}" "${SDIST_SHA256:?}" "${FORMULA_OUT:?}"
 
@@ -3611,6 +4087,10 @@ Create `.github/scripts/homebrew_bottle.sh`:
 # Runs third-party code and holds no secret. The steps and their reasons are the spec's sections 4
 # and 6a; tests/test_release_publish_wiring.py pins their order, occurrence by occurrence.
 set -euo pipefail
+# Auto-update off: `brew install` would otherwise update the tap and, if its default branch has moved
+# since `plan`, rebase this checkout off BASE_SHA and leave the formula copied into it stashed, so the
+# bottle would be built from the tap's formula rather than this run's (cmd/update.sh::merge_or_rebase).
+export HOMEBREW_NO_AUTO_UPDATE=1
 
 : "${GITHUB_WORKSPACE:?}" "${RUNNER_TEMP:?}" "${TAP_OWNER:?}" "${VERSION:?}" "${ROOT_URL:?}" "${DECLARED_TAG:?}" "${FORMULA_IN:?}" "${BOTTLE_OUT:?}"
 
@@ -3669,6 +4149,10 @@ Create `.github/scripts/homebrew_prove.sh`:
 # Runs third-party code and holds no secret: it evaluates the merged formula, which is why `push`
 # validates that text again as data (spec, section 6b).
 set -euo pipefail
+# Auto-update off: a brew command that auto-updates would update the tap and, if its default branch
+# has moved since `plan`, rebase this checkout off BASE_SHA and leave the formula copied into it
+# stashed (Homebrew's cmd/update.sh::merge_or_rebase).
+export HOMEBREW_NO_AUTO_UPDATE=1
 
 : "${GITHUB_WORKSPACE:?}" "${TAP_OWNER:?}" "${PLATFORMS:?}" "${FORMULA_IN:?}" "${JSON_DIR:?}" "${MERGED_OUT:?}"
 
@@ -3703,7 +4187,7 @@ Run: `.venv/bin/python -m pytest -q tests/test_release_publish_wiring.py`
 Expected: all pass, including `test_the_homebrew_scripts_use_no_bash_4_only_constructs` over the
 enlarged roster.
 
-- [ ] **Step 5: Commit, then witness two rows**
+- [ ] **Step 5: Commit, then witness each row**
 
 ```bash
 git add .github/scripts/homebrew_tap_checkout.sh .github/scripts/homebrew_formula.sh .github/scripts/homebrew_bottle.sh .github/scripts/homebrew_prove.sh tests/test_release_publish_wiring.py
@@ -3721,6 +4205,7 @@ cp .github/scripts/homebrew_prove.sh /tmp/homebrew_prove.sh.bak
 | --- | --- |
 | the second `brew test "$FORMULA_REF"` in `homebrew_bottle.sh` | `test_the_bottle_script_builds_bottles_and_pours_in_order` |
 | `rm -f "$cache_path"` in `homebrew_prove.sh` | `test_the_prove_script_merges_checks_and_fetches_every_tag_in_order` |
+| `export HOMEBREW_NO_AUTO_UPDATE=1` in `homebrew_bottle.sh` | `test_the_bottle_script_builds_bottles_and_pours_in_order` |
 
 Restore each with `cp` from `/tmp`, rerun `tests/test_release_publish_wiring.py` (all pass),
 `git status --short` clean.
@@ -3740,8 +4225,9 @@ Restore each with `cp` from `/tmp`, rerun `tests/test_release_publish_wiring.py`
   `_job_directives(path, name)`, `_job_names(path)`, `_roster_failure(path, expected, found)`.
 - Produces: `.github/workflows/homebrew.yml` with inputs `version`, `ref`, `push_target` and secrets
   `RELEASE_PLEASE_CLIENT_ID`, `RELEASE_PLEASE_PRIVATE_KEY`; in the test file, `HOMEBREW`,
-  `_APP_SECRETS`, `_workflow(path)`, `_triggers(path)`, `_steps(path, job)` and
-  `_step_position(path, job, *, run=None, uses=None)`.
+  `_APP_SECRETS`, `_workflow(path)`, `_triggers(path)`, `_steps(path, job)`,
+  `_step_position(path, job, *, run=None, uses=None)`, `_env_reads(path, function)` and
+  `_subcommand_function(path, subcommand)`.
 
 Every `_`-prefixed module-level function in `tests/test_release_publish_wiring.py` must take a
 required `path` as its first parameter and be listed in `_MODULE_HELPER_NAMES`
@@ -3752,7 +4238,8 @@ rule, and step predicates are written inline in each test rather than as module-
 
 In `tests/test_release_publish_wiring.py`, add `import json` to the standard-library imports and
 `from scripts import homebrew_bottles` after `import yaml`. Add
-`"_workflow", "_triggers", "_steps", "_step_position"` to the `_MODULE_HELPER_NAMES` set. Then append:
+`"_workflow", "_triggers", "_steps", "_step_position", "_env_reads", "_subcommand_function"` to the
+`_MODULE_HELPER_NAMES` set. Then append:
 
 ```python
 # --- #279: the reusable workflow ----------------------------------------------------------------
@@ -3789,6 +4276,9 @@ _RUN_STEP_KEYS = {"name", "id", "env", "run"}
 _USES_STEP_KEYS = {"name", "id", "uses", "with"}
 _APP_SECRETS = {"RELEASE_PLEASE_CLIENT_ID": "${{ secrets.RELEASE_PLEASE_CLIENT_ID }}",
                 "RELEASE_PLEASE_PRIVATE_KEY": "${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}"}
+_BOTTLES_SCRIPT = ROOT / "scripts" / "homebrew_bottles.py"
+# Set by the runner for every step, so no step's `env:` names them.
+_RUNNER_PROVIDED = {"GITHUB_WORKSPACE", "RUNNER_TEMP", "GITHUB_OUTPUT"}
 
 
 def _workflow(path: Path) -> dict:
@@ -3819,6 +4309,45 @@ def _step_position(path: Path, job: str, *, run: str | None = None, uses: str | 
                or (uses is not None and step.get("uses", "").split("@")[0] == uses)]
     assert len(matches) == 1, f"{path.name} {job}: expected one step for {run or uses}, found {len(matches)}"
     return matches[0]
+
+
+def _subcommand_function(path: Path, subcommand: str) -> str:
+    """The name of the function the script at `path` maps `subcommand` to in its `_COMMANDS` table."""
+    tree = ast.parse(_text(path))
+    tables = [node for node in tree.body if isinstance(node, ast.Assign)
+              and any(isinstance(target, ast.Name) and target.id == "_COMMANDS" for target in node.targets)]
+    assert len(tables) == 1, f"{path.name}: expected one _COMMANDS table, found {len(tables)}"
+    for key, value in zip(tables[0].value.keys, tables[0].value.values):
+        if isinstance(key, ast.Constant) and key.value == subcommand:
+            return value.id
+    raise AssertionError(f"{path.name}: {subcommand!r} is not in _COMMANDS")
+
+
+def _env_reads(path: Path, function: str) -> set[str]:
+    """Every environment name `function` in the script at `path` reads through `_require(env, "X")`,
+    `env.get("X")` or `env["X"]`, following calls into that script's own top-level functions."""
+    tree = ast.parse(_text(path))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    names, seen, pending = set(), set(), [function]
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        for node in ast.walk(functions[current]):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id == "_require" and len(node.args) == 2 and isinstance(node.args[1], ast.Constant):
+                    names.add(node.args[1].value)
+                elif node.func.id in functions:
+                    pending.append(node.func.id)
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                  and node.func.attr == "get" and isinstance(node.func.value, ast.Name)
+                  and node.func.value.id == "env" and node.args and isinstance(node.args[0], ast.Constant)):
+                names.add(node.args[0].value)
+            elif (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name)
+                  and node.value.id == "env" and isinstance(node.slice, ast.Constant)):
+                names.add(node.slice.value)
+    return names
 
 
 def test_the_homebrew_workflow_declares_exactly_its_jobs():
@@ -3887,6 +4416,44 @@ def test_the_trusted_jobs_run_only_the_bottles_script_and_every_action_is_pinned
             if "uses" in step:
                 action, _, sha = step["uses"].partition("@")
                 assert _ACTION_PINS.get(action) == sha, f"{job}: {step['uses']}"
+
+
+def test_the_untrusted_jobs_run_only_the_rostered_scripts():
+    """Every command an untrusted job runs is one of the scripts the bash 3.2 sweep and the order pins
+    read, so nothing runs there that those checks cannot see."""
+    jobs = _workflow(HOMEBREW)["jobs"]
+    for job in ("formula", "bottle", "prove"):
+        runs = [step["run"].strip() for step in jobs[job]["steps"] if "run" in step]
+        assert runs, job
+        for run in runs:
+            assert re.fullmatch(r"bash \.github/scripts/homebrew_[a-z_]+\.sh", run), f"{job}: {run!r}"
+
+
+def test_every_homebrew_step_supplies_every_variable_its_command_reads():
+    """Deleting a variable from a step's `env:` otherwise stays green and fails mid-release, possibly
+    after `upload` has published the tap release. The names a command requires are read from the
+    script's own `: "${NAME:?}"` line or from the subcommand's own environment reads, never restated
+    here."""
+    checked = []
+    for job, body in _workflow(HOMEBREW)["jobs"].items():
+        for step in body["steps"]:
+            if "run" not in step:
+                continue
+            run = step["run"].strip()
+            script = re.fullmatch(r"bash \.github/scripts/([\w.-]+\.sh)", run)
+            if script:
+                source = "\n".join(_script_lines(_CI_SCRIPTS / script[1]))
+                required = set(re.findall(r"\$\{([A-Z_]+):\?\}", source))
+            else:
+                assert _TRUSTED_RUN.fullmatch(run), f"{job}: {run!r}"
+                subcommand = run[len(_BOTTLES_RUN) + 1:]
+                required = _env_reads(_BOTTLES_SCRIPT, _subcommand_function(_BOTTLES_SCRIPT, subcommand))
+            required -= _RUNNER_PROVIDED
+            assert required, f"{job}: {run!r} resolved no required variable; the check below proves nothing"
+            missing = required - set(step.get("env") or {})
+            assert not missing, f"{job}: {run!r} reads {sorted(missing)}, which its step env does not set"
+            checked.append(run)
+    assert checked, "found no run step; the sweep above proves nothing"
 
 
 def test_only_the_token_jobs_touch_secrets():
@@ -3979,12 +4546,13 @@ def test_prove_downloads_the_formula_and_the_jsons_but_never_a_bottle():
         ("homebrew-formula", None), (None, "homebrew-bottle-json-*")]
 
 
-def test_every_upload_fails_when_it_finds_no_files():
+def test_every_upload_fails_on_no_files_and_can_be_replaced_by_a_rerun():
     uploads = [(job, s["with"]) for job, body in _workflow(HOMEBREW)["jobs"].items()
                for s in body["steps"] if s.get("uses", "").startswith("actions/upload-artifact@")]
     assert uploads, "found no upload-artifact step; the sweep below proves nothing"
     for job, arguments in uploads:
         assert arguments.get("if-no-files-found") == "error", f"{job}: {arguments}"
+        assert arguments.get("overwrite") is True, f"{job}: {arguments}"
 ```
 
 - [ ] **Step 2: Run the tests to verify they fail**
@@ -4005,15 +4573,22 @@ name: Homebrew publish
 # release-please.yml's `homebrew` job (push_target: default) and by homebrew-dry-run.yml
 # (push_target: auto); nothing else triggers it.
 #
-# THE TRUST RULE (docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md, section 2). Step
-# order inside one job is not a boundary: a step can write GITHUB_ENV, GITHUB_PATH, a git hook or an
-# action bundle that a later step of the same job uses. So a job either runs third-party code and
-# holds no secret, or holds the tap token and runs none:
+# THE TRUST RULE. This header is its maintained statement; the design that led to it is
+# docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md, section 2. Step order inside one job
+# is not a boundary: a step can write GITHUB_ENV, GITHUB_PATH, a git hook or an action bundle that a
+# later step of the same job uses. So a job either runs third-party code and references no secret,
+# or holds the tap token and runs none:
 #   - plan, upload and push are trusted. They run on ubuntu-latest, their `run:` lines call only
 #     scripts/homebrew_bottles.py through `python3 -P`, and their actions come from an exact roster.
-#     Only upload and push mint the token, and they read job outputs from plan alone.
-#   - formula, bottle and prove run Homebrew, PyPI resolution and Homebrew's gems, and reference no
-#     secret. What they produce reaches a token job only as an artifact that job validates as data.
+#     Only upload and push mint the token, and they read job outputs from plan alone. The dry run's
+#     `preflight` is trusted too, since its `version` output reaches them; it has no checkout, so its
+#     two `run:` bodies are pinned whole instead.
+#   - formula, bottle and prove run Homebrew, PyPI resolution and Homebrew's gems. They run on macOS
+#     because a bottle is built for the macOS it runs on, and because the channel's payoff, Homebrew's
+#     CPython finding cairo and pango with no DYLD_FALLBACK_LIBRARY_PATH, is a macOS mechanism. They
+#     reference no secret, but they still hold a contents: read GITHUB_TOKEN and the run's artifact
+#     token, which can create an artifact under any name. That is why a token job validates every
+#     artifact it reads as data, and reads no output of theirs.
 #
 # No job or step carries `if:` or `continue-on-error`, and no `${{ }}` appears inside `run:`: every
 # value reaches a script through `env:`. tests/test_release_publish_wiring.py pins each of these.
@@ -4098,12 +4673,16 @@ jobs:
           SDIST_SHA256: ${{ needs.plan.outputs.sdist_sha256 }}
           FORMULA_OUT: ${{ runner.temp }}/homebrew-formula
         run: bash .github/scripts/homebrew_formula.sh
+      # `overwrite: true` on every upload in this file: a re-run of a failed job uploads under the
+      # name an earlier attempt may already have used. Token jobs validate every artifact they read,
+      # so replacing one grants nothing.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-formula
           path: ${{ runner.temp }}/homebrew-formula/job-sluice.rb
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   bottle:
     needs: [plan, formula]
@@ -4146,12 +4725,14 @@ jobs:
           path: ${{ runner.temp }}/homebrew-bottle/*.bottle.json
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-bottle-tar-${{ matrix.tag }}
           path: ${{ runner.temp }}/homebrew-bottle/*.bottle.tar.gz
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   upload:
     needs: [plan, bottle]
@@ -4238,6 +4819,7 @@ jobs:
           path: ${{ runner.temp }}/homebrew-merged/job-sluice.rb
           if-no-files-found: error
           retention-days: 7
+          overwrite: true
 
   push:
     needs: [plan, upload, prove]
@@ -4324,20 +4906,32 @@ cp .github/workflows/homebrew.yml /tmp/homebrew.yml.bak
 For each row: apply the mutant to `.github/workflows/homebrew.yml`, run
 `.venv/bin/python -m pytest -q tests/test_release_publish_wiring.py -k <test name>`, confirm that
 test FAILS on its own assertion (not on a `KeyError` or YAML error), then restore with
-`cp /tmp/homebrew.yml.bak .github/workflows/homebrew.yml`.
+`cp /tmp/homebrew.yml.bak .github/workflows/homebrew.yml`. Rows marked (adds) are the absence-property
+exception Global Constraints names.
 
-| Mutant (delete or move) | Test that must fail |
+| Mutant | Test that must fail |
 | --- | --- |
 | in `push`, move the whole `create-github-app-token` step above the `Prepare the tap commit` step | `test_push_validates_and_prepares_before_minting_and_pushes_after` |
 | in `push`, move the `TAP_TOKEN: ...` line from `Push the tap commit`'s `env:` to `Prepare the tap commit`'s `env:` | `test_push_validates_and_prepares_before_minting_and_pushes_after` |
+| in `upload`, move the whole `create-github-app-token` step above `Validate the bottles as data` | `test_upload_validates_before_minting_and_publishes_after` |
 | in `upload`, move the whole `create-github-app-token` step to the end of `formula`'s steps | `test_only_the_token_jobs_touch_secrets` |
-| delete `if-no-files-found: error` from the `homebrew-bottle-tar-` upload | `test_every_upload_fails_when_it_finds_no_files` |
+| delete `if-no-files-found: error` from the `homebrew-bottle-tar-` upload | `test_every_upload_fails_on_no_files_and_can_be_replaced_by_a_rerun` |
+| delete `overwrite: true` from the `homebrew-merged-formula` upload | `test_every_upload_fails_on_no_files_and_can_be_replaced_by_a_rerun` |
 | move `RUN_ATTEMPT: ${{ github.run_attempt }}` from `plan`'s step `env:` to `Publish the bottles to the tap's release`'s `env:` | `test_the_run_attempt_is_read_only_in_plan` |
 | delete `path: ${{ runner.temp }}/homebrew-merged` from `push`'s download step | `test_the_token_jobs_keep_artifacts_in_runner_temp_and_read_only_plans_outputs` |
 | delete `prove` from `push`'s `needs:` list, leaving `[plan, upload]` | `test_each_homebrew_job_needs_exactly_what_it_reads` |
 | delete the `permissions:` and `contents: read` lines from the `bottle` job | `test_every_homebrew_job_reads_the_repository_and_nothing_more` |
 | in `prove`, move the `Check out the tap at the planned commit` step below `Merge the bottles and fetch every one from its release` | `test_the_untrusted_jobs_check_out_the_tap_before_their_bodies` |
 | delete `DECLARED_TAG: ${{ matrix.tag }}` from the `bottle` job | `test_the_homebrew_runners_are_pinned_and_the_matrix_comes_from_plan` |
+| delete `TAP_OWNER: ${{ needs.plan.outputs.tap_owner }}` from `Push the tap commit`'s `env:` | `test_every_homebrew_step_supplies_every_variable_its_command_reads` |
+| delete the `required: true` line under the `ref:` input | `test_the_homebrew_workflow_is_only_ever_called` |
+| delete the `platforms: ${{ steps.plan.outputs.platforms }}` line from `plan`'s `outputs:` | `test_every_output_reference_names_a_declared_output_and_every_output_a_real_step` |
+| delete `owner: ${{ github.repository_owner }}` from `push`'s `create-github-app-token` step | `test_the_mints_and_plan_take_the_owner_from_one_expression` |
+| delete `json-` from `prove`'s second download pattern, leaving `homebrew-bottle-*` | `test_prove_downloads_the_formula_and_the_jsons_but_never_a_bottle` |
+| change the last hex digit of the `actions/checkout` SHA in `plan` | `test_the_trusted_jobs_run_only_the_bottles_script_and_every_action_is_pinned` |
+| add `if: always()` to the `Push the tap commit` step (adds) | `test_no_homebrew_job_or_step_can_run_after_a_failure` |
+| move `RUN_URL`'s value out of `plan`'s step `env:` into its `run:` line, as `RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" python3 -P ...` (adds) | `test_no_expression_is_pasted_into_a_run_body` |
+| insert ` -x` after `bash` in `formula`'s `Render, resource-fill and audit the formula` step (adds) | `test_the_untrusted_jobs_run_only_the_rostered_scripts` |
 
 After the last row, rerun the whole file (all pass) and `git status --short` (clean).
 
@@ -4366,7 +4960,8 @@ Existing tests this task keeps unchanged, because the caller keeps what they pin
 
 - [ ] **Step 1: Retire the old scripts' tests**
 
-Write `/tmp/retire_homebrew_tests.py`:
+Back the file up with `cp tests/test_release_publish_wiring.py /tmp/test_release_publish_wiring.py.bak`,
+then write `/tmp/retire_homebrew_tests.py`:
 
 ```python
 """Delete the Homebrew pins the spec's successor table retires (section 9b), by name, together
@@ -4399,6 +4994,7 @@ retire = {
     "test_the_homebrew_dry_run_refuses_a_non_default_branch",
     "test_the_homebrew_dry_run_has_no_elevated_permissions",
     "test_the_homebrew_dry_run_drives_the_same_verify_and_push_scripts_as_the_release_job",
+    "_step_own_directive_keys",
 }
 lines = source.splitlines(keepends=True)
 spans, found = [], []
@@ -4417,12 +5013,48 @@ for node in ast.parse(source).body:
 assert sorted(found) == sorted(retire), f"not found once each: {sorted(set(retire) ^ set(found))}"
 for start, end in sorted(spans, reverse=True):
     del lines[start:end]
-path.write_text(re.sub(r"\n{4,}", "\n\n\n", "".join(lines)))
+text = "".join(lines)
+# Two surviving docstrings cite retired tests, and _MODULE_HELPER_NAMES names the helper whose last
+# callers were retired. Each anchor must occur exactly once.
+rewrites = [
+    (
+        '''    """homebrew-dry-run.yml is the file holding the cross-repo write token (see
+    `test_the_homebrew_dry_run_has_no_elevated_permissions`'s docstring), and until this pin
+    existed nothing enumerated its job roster at all -- the same blind spot `_ROSTER_MESSAGE`
+    describes for the other two files, unclosed here."""''',
+        '''    """homebrew-dry-run.yml hands the tap App's secrets, by name, to the reusable workflow whose
+    `upload` and `push` jobs mint the write token (`test_only_the_token_jobs_touch_secrets`), and
+    until this pin existed nothing enumerated its job roster at all -- the same blind spot
+    `_ROSTER_MESSAGE` describes for the other two files, unclosed here."""''',
+    ),
+    (
+        '''    guard runs after the publish it was meant to prevent. Index order over the comment-stripped
+    job block is the same idiom
+    `test_the_homebrew_release_job_verifies_before_minting_a_token_before_pushing` uses for the
+    workflow this design is modelled on -- the pre-split `test_the_homebrew_bump_verifies_
+    before_it_pushes` this cross-reference used to name indexed a single SCRIPT body instead,
+    and was deleted when #104 IMPORTANT-3 split that script in two.
+    """''',
+        '''    guard runs after the publish it was meant to prevent. Index order over the comment-stripped
+    job block is this file's idiom for a step that must precede another.
+    """''',
+    ),
+    ('"_step_containing", "_step_own_directive_keys",', '"_step_containing",'),
+]
+for old, new in rewrites:
+    assert text.count(old) == 1, f"anchor found {text.count(old)} times: {old[:60]!r}"
+    text = text.replace(old, new)
+survivors = sorted(name for name in retire if name in text)
+assert not survivors, f"still named after retirement: {survivors}"
+path.write_text(re.sub(r"\n{4,}", "\n\n\n", text))
 print(f"retired {len(spans)} of {len(retire)} definitions")
 ```
 
 Run: `.venv/bin/python /tmp/retire_homebrew_tests.py`
-Expected: `retired 21 of 21 definitions`.
+Expected: `retired 22 of 22 definitions`. If the survivors assertion fires, a docstring or comment
+outside the retired definitions cites a retired name: rewrite that sentence in the script's `rewrites`
+list so it states the property rather than the retired test, and rerun from a fresh
+`cp /tmp/test_release_publish_wiring.py.bak tests/test_release_publish_wiring.py`.
 
 Run: `.venv/bin/python -m pytest -q tests/test_release_publish_wiring.py`
 Expected: all pass (the old scripts and the old workflow shape still exist, and nothing left in the
@@ -4562,8 +5194,20 @@ def test_only_the_formula_script_fills_resources():
     assert "update-python-resources" not in _text(HOMEBREW)
 
 
-def test_no_homebrew_check_is_inverted_or_swallowed():
-    """`! cmd` fails a `bash -e` step only as its last command, and `|| true` swallows a failure."""
+# `|| true`, `|| :`, `|| exit 0` and `|| echo ...` turn a failed command into success; `set +e`,
+# `set +o errexit|pipefail` and `shopt -u` switch off what makes a failure fatal.
+_SWALLOWED = re.compile(
+    r"\|\|\s*(true\b|:(\s|;|$)|exit\s+0\b|echo\b)|\bset\s+\+[a-z]*e|\bset\s+\+o\s+(errexit|pipefail)|\bshopt\s+-u"
+)
+
+
+def test_every_homebrew_script_stops_at_its_first_failure():
+    """homebrew.yml runs each script as `bash <path>`, a child that does not inherit the step shell's
+    `-e`, so every check in these scripts is fatal only through the script's own first command. A
+    `! cmd` fails a `bash -e` script only as its last command."""
+    for name in _MACOS_SHELL_SCRIPTS:
+        lines = _script_lines(_CI_SCRIPTS / name)
+        assert lines[:1] == ["set -euo pipefail"], f"{name} starts with {lines[:1]}"
     sources = [(name, _script_lines(_CI_SCRIPTS / name)) for name in _MACOS_SHELL_SCRIPTS]
     for body in _workflow(HOMEBREW)["jobs"].values():
         for step in body["steps"]:
@@ -4571,7 +5215,7 @@ def test_no_homebrew_check_is_inverted_or_swallowed():
     for where, lines in sources:
         for line in lines:
             assert not line.startswith("! "), f"{where}: {line}"
-            assert "|| true" not in line, f"{where}: {line}"
+            assert not _SWALLOWED.search(line), f"{where}: {line}"
 
 
 def test_no_homebrew_file_names_the_owner_except_the_renderers_homepage():
@@ -4599,7 +5243,7 @@ Expected: FAIL in `test_homebrew_dry_run_declares_exactly_the_jobs_this_file_pin
 `test_the_retired_homebrew_scripts_are_gone_and_nothing_names_them`,
 `test_only_the_formula_script_fills_resources` and
 `test_the_homebrew_scripts_use_no_bash_4_only_constructs`. The two guards
-`test_no_homebrew_check_is_inverted_or_swallowed` and
+`test_every_homebrew_script_stops_at_its_first_failure` and
 `test_no_homebrew_file_names_the_owner_except_the_renderers_homepage` already pass, since they sweep
 only files Tasks 9 and 10 wrote; Step 5 witnesses them.
 
@@ -4614,9 +5258,8 @@ In `.github/workflows/release-please.yml`, replace the whole `homebrew:` job, fr
     # resolve before that upload lands.
     #
     # The channel itself is .github/workflows/homebrew.yml, a reusable workflow the dry run calls
-    # too, so the two cannot drift apart. Its header, and
-    # docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md, give the job graph and the
-    # trust rule that shapes it.
+    # too, so the two cannot drift apart. Its header states the trust rule that shapes the job
+    # graph; docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md records the design.
     #
     # RECOVERY: re-run this run's FAILED JOBS. Re-running the whole workflow never reaches here:
     # release-please sees the release already cut, and `release_created` comes back false.
@@ -4741,6 +5384,7 @@ cp .github/workflows/homebrew-dry-run.yml /tmp/homebrew-dry-run.yml.bak
 cp .github/workflows/release-please.yml /tmp/release-please.yml.bak
 cp .github/scripts/homebrew_prove.sh /tmp/homebrew_prove.sh.bak
 cp .github/scripts/homebrew_formula.sh /tmp/homebrew_formula.sh.bak
+cp .github/scripts/homebrew_bottle.sh /tmp/homebrew_bottle.sh.bak
 ```
 
 For each row: apply the mutant, run
@@ -4752,13 +5396,13 @@ FAILS on its own assertion, then restore the file with `cp` from its `/tmp` back
 | in `homebrew-dry-run.yml`, move the refusal step's `if:` line up into the `preflight` job, above `runs-on:` | `test_the_dry_run_preflight_refuses_a_non_default_branch_before_its_lookup` |
 | in `homebrew-dry-run.yml`, delete `needs: [preflight]` | `test_the_dry_run_calls_the_same_workflow_after_its_preflight` |
 | in `release-please.yml`'s `homebrew` job, delete the `secrets:` line and the two lines under it | `test_the_release_job_calls_the_homebrew_workflow` |
-| in `homebrew_prove.sh`, append ` || true` to the line `mkdir -p "$MERGED_OUT"` | `test_no_homebrew_check_is_inverted_or_swallowed` |
-| in `homebrew_formula.sh`, append a space and the owner segment of pyproject.toml's `Source` URL inside the quotes of the last `echo "::error::` line | `test_no_homebrew_file_names_the_owner_except_the_renderers_homepage` |
+| in `homebrew_prove.sh`, append ` || :` to the line `mkdir -p "$MERGED_OUT"` (adds) | `test_every_homebrew_script_stops_at_its_first_failure` |
+| in `homebrew_bottle.sh`, delete the line `set -euo pipefail` | `test_every_homebrew_script_stops_at_its_first_failure` |
+| in `homebrew_formula.sh`, append a space and the owner segment of pyproject.toml's `Source` URL inside the quotes of the last `echo "::error::` line (adds) | `test_no_homebrew_file_names_the_owner_except_the_renderers_homepage` |
 
-The last two rows ADD text, the one exception to the delete-or-move rule: each property is the
-absence of something, so only an addition can violate it. Both target lines no order pin matches,
-so the named guard is the only test that can fail. The retirement and resource-fill tests were
-witnessed red in Step 2, before the deletion.
+Rows marked (adds) are the absence-property exception Global Constraints names. Their target lines
+match no order pin, so the named guard is the only test that can fail. The retirement and
+resource-fill tests were witnessed red in Step 2, before the deletion.
 
 After the last row, rerun both test files (all pass) and `git status --short` (clean).
 
@@ -4844,9 +5488,9 @@ In `docs/INSTALL.md`, in the `## Homebrew (macOS)` section, after the paragraph 
 `install and not here.`, insert a blank line and:
 
 ```markdown
-On an Apple Silicon Mac running macOS 15 or later, `brew install` pours a prebuilt bottle. An Intel
-Mac, or an Apple Silicon Mac on macOS 14 or earlier, matches no bottle and builds the formula from
-source instead.
+`brew install` pours a prebuilt bottle when the tap's formula carries one for your Mac, and builds the
+formula from source when it does not. Releases publish bottles for Apple Silicon Macs on macOS 15 or
+later; an Intel Mac, or an Apple Silicon Mac on macOS 14 or earlier, always builds from source.
 ```
 
 - [ ] **Step 3: Verify the output is unchanged, the suite is green, and no stale claim is left**
@@ -4855,13 +5499,14 @@ source instead.
 .venv/bin/python -P -c 'import sys; sys.path.insert(0, "."); from scripts.render_homebrew_formula import render; print(render(sdist_url="https://example.invalid/packages/ab/cd/job_sluice-9.9.0.tar.gz", sha256="c" * 64), end="")' > /tmp/render-after.rb
 cmp /tmp/render-before.rb /tmp/render-after.rb && echo "render unchanged"
 .venv/bin/python -m pytest -q tests/test_homebrew_formula.py tests/test_homebrew_bottles.py tests/test_release_publish_wiring.py tests/test_citation_drift.py
-grep -rn -i 'homebrew_verify\|homebrew_push\|build-from-source\|macos-latest\|no bottles' scripts tests .github docs/INSTALL.md README.md
+grep -rn -i --exclude-dir=__pycache__ 'homebrew_verify\|homebrew_push\|build-from-source\|runs-on: macos-latest\|no bottles' scripts tests .github docs/INSTALL.md README.md
 ```
 
-Expected: `render unchanged`; the tests pass; the `grep` prints exactly one line, the
+Expected: `render unchanged`; the tests pass; the `grep` prints the
 `for name in ("homebrew_verify.sh", "homebrew_push.sh"):` loop in
 `test_the_retired_homebrew_scripts_are_gone_and_nothing_names_them`, which names the retired scripts
-in order to prove they are gone. Any other line is a claim this task must fix.
+to prove they are gone. Read any other line it prints: fix it if it describes the retired channel,
+and leave it if it states something still true, saying which in the commit body.
 
 - [ ] **Step 4: Commit**
 
@@ -4871,7 +5516,7 @@ git commit -F - <<'EOF'
 docs(packaging): say which Macs pour a Homebrew bottle (#279)
 
 Also restates why the renderer vendors only packages with no build
-step, now that most users pour a bottle.
+step, now that the tap publishes bottles.
 
 MrReasonable <4990954+MrReasonable@users.noreply.github.com>
 Claude-Session: https://claude.ai/code/session_017tWDbFbL5fUG7ofXqJxomL
@@ -4918,25 +5563,48 @@ The release workflow runs this graph for real on the next release. Dispatch `Hom
 `main` first, and wait for it to finish:
 
 ```bash
+DISPATCHED="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 gh workflow run homebrew-dry-run.yml --ref main
-gh run list --workflow=homebrew-dry-run.yml --limit 1 --json databaseId,status,conclusion
+gh run list --workflow=homebrew-dry-run.yml --limit 5 --json databaseId,createdAt,status \
+  --jq ".[] | select(.createdAt >= \"$DISPATCHED\")"
+```
+
+Repeat the last command until it prints exactly one run: a dispatched run can take several seconds to
+appear, and a `--limit 1` read straight after dispatching can return the previous run. Once that run
+has finished:
+
+```bash
 gh run view <run id> --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 ```
 
-Read every job's conclusion, not only the run's. Then take the spec's section 8 list "The first dry
-run proves these", and for each item record whether it was proven, with the job log line that shows
-it. Write the record to project memory (`domain_homebrew_bottling.md`) and as a comment on #279.
+Read every job's conclusion, not only the run's, and record the `TAG` value from the environment of
+the `push` job's `Validate the merged formula as data` step. Then take the spec's section 8 list "The
+first dry run proves these", and for each item record whether it was proven, with the job log line
+that shows it. Write the record to project memory (`domain_homebrew_bottling.md`) and as a comment on
+#279.
 
 - [ ] **Step 5: Exercise a partial re-run deliberately**
 
-Re-run only that dry run's `push` job:
+Re-run that dry run's `upload` job. GitHub re-runs the jobs that depend on it, `prove` and `push`,
+with it:
 
 ```bash
-gh run view <run id> --json jobs --jq '.jobs[] | select(.name | endswith("push")) | .databaseId'
+gh run view <run id> --json jobs --jq '.jobs[] | select(.name | endswith("upload")) | .databaseId'
 gh run rerun <run id> --job <that job id>
+gh run view <run id> --attempt 2 --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 ```
 
-Expected: its log prints `push-prepare decided: noop`, and its steps' environment shows the same
-`BASE_SHA` and `TARGET_BRANCH` as the first attempt. That proves the spec's section 8 item "re-run
-semantics inside a called workflow". If anything in Step 4 or 5 fails, stop before the next release
-PR merges and treat the failure as a finding against this plan. Close #279 once both steps pass.
+Expected, each read from attempt 2:
+- attempt 2 ran `upload`, `prove` and `push`, and not `plan`, `formula` or `bottle`;
+- `upload` prints `release <tag>: found` and `<asset>: skip` for both bottles, and no `published`
+  line: GitHub returned the release's title, notes and target, and each asset's digest, exactly as
+  they were sent;
+- `push` prints `push-prepare decided: noop`, and its steps' `TAG` is the value recorded in Step 4,
+  ending `-1`, although the run is now on attempt 2.
+
+The `TAG` is what separates reuse from re-derivation: `plan` composes the tag from the run attempt,
+so a re-derived plan would end `-2`. This proves that a job-level re-run inside a called workflow
+reuses `plan`'s outputs. "Re-run failed jobs", the operation the recovery comments name, is a
+different GitHub operation: record it in the section 8 note as still read, not measured. If anything
+in Step 4 or 5 fails, stop before the next release PR merges and treat the failure as a finding
+against this plan. Close #279 once both steps pass.
