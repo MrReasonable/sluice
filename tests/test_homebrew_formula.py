@@ -91,8 +91,8 @@ _EXPECTED_IMPORTABLE = {"cffi", "cryptography", "pillow", "pydantic", "rpds-py"}
 # Vendored back in even though an excluded formula above depends on it. Restated by hand like
 # every other expectation here. See the renderer's comment for the incident: excluding
 # `pydantic` also excluded `typing-extensions`, the brewed pydantic supplied a stale copy, and
-# `import mcp` failed the 2.9.4 release. Keep this to packages with NO build step -- this tap
-# publishes no bottles, so anything vendored here is compiled on every user's machine.
+# `import mcp` failed the 2.9.4 release. Keep this to packages with NO build step -- every user
+# whose Mac matches no bottle compiles anything vendored here, and so does every bottle job.
 _EXPECTED_EXTRA_PACKAGES = {"typing-extensions"}
 # Emitted as `depends_on` but NOT excluded: the interpreter and the native tree are not Python
 # packages, so `exclude_packages` has nothing to say about them.

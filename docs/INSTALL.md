@@ -298,6 +298,10 @@ rendering works with no further setup and **no `DYLD_FALLBACK_LIBRARY_PATH` expo
 [system libraries](#system-libraries-for-pdf-rendering) for why that export is needed on a pip
 install and not here.
 
+`brew install` pours a prebuilt bottle when the tap's formula carries one for your Mac, and builds the
+formula from source when it does not. Releases publish bottles for Apple Silicon Macs on macOS 15 or
+later; an Intel Mac, or an Apple Silicon Mac on macOS 14 or earlier, always builds from source.
+
 The tap carries **only the latest formula**. A tap has no version history, so there is no
 Homebrew route to an older release; use another channel for that — see
 [pinning an older version](#pinning-an-older-version).

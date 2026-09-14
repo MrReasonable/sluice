@@ -47,11 +47,12 @@ _IMPORTABLE_CORE_FORMULAE = ("cffi", "cryptography", "pillow", "pydantic", "rpds
 # version in our libexec is the one our closure asked for. A venv's own site-packages precedes
 # the system ones on sys.path, so ours wins over the brewed pydantic's.
 #
-# WHY NOT JUST VENDOR PYDANTIC. Measured, and rejected on the user's behalf: this tap publishes
-# NO BOTTLES, so every `brew install` builds from source. `pydantic` stays excluded because
-# homebrew-core's formula IS bottled -- dropping it means every user compiles `pydantic-core`
-# from Rust and first downloads a 432MB `rust` toolchain. `typing-extensions` is pure Python
-# and costs them nothing. Keep this list to packages with no build step.
+# WHY NOT JUST VENDOR PYDANTIC. Measured, and rejected on the user's behalf. A user whose Mac
+# matches no bottle this tap publishes (Intel, or Apple Silicon on macOS 14 and older) builds the
+# vendored tree from source, and every release's bottle jobs build it too. `pydantic` stays
+# excluded because homebrew-core's formula IS bottled -- vendoring it means compiling
+# `pydantic-core` from Rust after downloading a 432MB `rust` toolchain. `typing-extensions` is
+# pure Python and costs nothing. Keep this list to packages with no build step.
 _EXTRA_PACKAGES = ("typing-extensions",)
 
 # Never depend on these. Two distinct hazards, one tuple because the consequence is identical:
@@ -95,9 +96,9 @@ _NATIVE_FORMULAE = ("pango", "libyaml")
 # (`exclude_packages` above), and each of those must actually build against it. `brew audit`'s
 # deprecated-dependency check only asks whether the named `python@` formula itself still
 # exists and is current -- it says nothing about whether homebrew-core's OTHER formulae still
-# build for it. `brew install --build-from-source` followed by `brew test` (both in
-# homebrew_verify.sh) is what actually exercises that chain, which is why the release process
-# never skips straight from audit to push.
+# build for it. `brew install --build-bottle`, `brew test`, a pour and a second `brew test` (all
+# in .github/scripts/homebrew_bottle.sh) are what actually exercise that chain, which is why the
+# release process never skips straight from audit to push.
 _PYTHON_FORMULA = "python@3.14"
 
 _DESC = "Engineered, config-driven job-hunting pipeline"
