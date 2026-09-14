@@ -1,7 +1,11 @@
 """Bounded CV composition. The prompt carries a format contract, the JD, a lead's triage notes
 when it has any (#329), and the closed verified SOURCE BUNDLE, which is its ONLY citable source:
-nothing else in the prompt can license a fact in the CV. On a gate failure -- HARD, or a scoped
-STYLE finding (#167) -- the engine calls compose again with the findings appended (one retry)."""
+nothing else in the prompt is citable (the name heading and contact block also reach the CV, but
+from the Candidate Profile, checked by the engine's own structural anchors rather than by
+citation). On a gate failure -- HARD, or a scoped STYLE finding (#167) -- the engine calls compose
+again with the findings appended (one retry)."""
+import re
+
 from sluice.cv.slop import _PHRASES
 
 _RULES = """CV RULES (follow exactly):
@@ -215,18 +219,32 @@ _TRIAGE_FRAMING_PROMPT_HEADER = (
 # `framing_lines` builds and a synthetic `triage_framing` never renders.
 _TRIAGE_FRAMING_PROMPT_LABELS = ("culture flags", "concerns")
 
+# `sluice/core/vault.py::_fm_dict` reads frontmatter line by line, so a person who hand-types a
+# YAML block scalar (`|`/`>`, optionally chomped `+`/`-` and/or indented 1-9, in either order) gets
+# back only that header line, never the indented body underneath. Framing that header would hand
+# the composer a TRIAGE NOTES section with nothing in it, so it counts as blank
+# alongside "". The header line may itself carry a trailing YAML comment (`| # typed by hand`),
+# which is still no value at all and blanks the same way (#329).
+#
+# A value that is ONLY a comment (`# typed by hand`) is NOT blanked, though: the vault's line
+# reader drops a hand-typed value's quotes, so it reads back identically to a quoted concern that
+# happens to start with "#" (for example `"#1 reason"`), and blanking either would silently drop
+# real text the user typed as a value.
+_YAML_BLOCK_HEADER = re.compile(r"[|>](?:[1-9][+-]?|[+-][1-9]?)?(?:\s+#.*)?")
+
 
 def framing_lines(culture_flags, triage_concerns):
     """The lines of a lead's TRIAGE NOTES section, from its framing frontmatter values (#329).
 
-    A line only for a value that is a non-blank string. Values are shown whole, never split back
-    into items: `culture_flags` is comma-joined and a flag may itself contain a comma. Pure, and
-    takes strings rather than the frontmatter dict, so `cv/engine.py` stays the one place that
-    says which lead keys cv reads."""
+    A line only for a value that is a non-blank string and not a bare YAML block-scalar header.
+    Values are shown whole, never split back into items: `culture_flags` is comma-joined and a
+    flag may itself contain a comma. Pure, and takes strings rather than the frontmatter dict, so
+    `cv/engine.py` stays the one place that says which lead keys cv reads."""
     values = (culture_flags, triage_concerns)
     return tuple(f"{label}: {value.strip()}"
                  for label, value in zip(_TRIAGE_FRAMING_PROMPT_LABELS, values)
-                 if isinstance(value, str) and value.strip())
+                 if isinstance(value, str) and value.strip()
+                 and not _YAML_BLOCK_HEADER.fullmatch(value.strip()))
 
 
 def _employer_line(employers):
