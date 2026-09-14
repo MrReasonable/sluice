@@ -14,6 +14,7 @@ An `auth_probe_js` lets a source declare what "logged out" looks like for it. Th
 evaluated on the same tab as the extractor, so it sees exactly the page the extractor failed
 on -- not a second fetch that might land differently.
 """
+import json
 import pytest
 from types import SimpleNamespace
 
@@ -138,47 +139,57 @@ def test_the_linkedin_subclass_runs_the_probe_too():
     src = registry.get("linkedin")
     assert src.auth_probe_js, "linkedin should declare an auth probe"
 
+    # The CURRENT search-results path. The retired `/jobs/search` path now draws a
+    # misconfiguration warning of its own (see tests/test_linkedin_search_results.py), which
+    # is not what this test is about.
+    url = "https://example.invalid/jobs/search-results/"
+
     class _LiCam(_Cam):
         def evaluate(self, tid, expr):
             self.evaluated.append((tid, expr))
             if expr == "location.href":
-                return {"result": "https://example.invalid/jobs/search"}
+                return {"result": url}
             if expr == src.auth_probe_js:
                 return {"result": True}          # logged-out page
             return {"result": []}                 # extractor finds nothing
 
     cam = _LiCam(rows=[])
-    raw = src.fetch(_ctx(cam), Search("A", "https://example.invalid/jobs/search"))
+    raw = src.fetch(_ctx(cam), Search("A", url))
     assert src.auth_probe_js in [e for _tid, e in cam.evaluated], "the subclass skipped the auth probe"
     assert src.health_hint(raw)["auth"] == "missing"
 
 
-def _eval_probe(probe_js, *, artdeco, guest):
+def _eval_probe(probe_js, *, signed_in, guest):
     """Run LinkedIn's real probe expression against stub DOM counts.
 
     The probe is JS, so this translates it rather than executing it -- but it translates the
     EXPRESSION under test, parsed out of the source, so an operator change (`&&` -> `||`) is
     reflected. The previous version of this test only grepped for substrings, which is why
     flipping the operator left the whole suite green.
+
+    `signed_in` counts the search-results page's job cards (`componentkey` prefixed
+    `job-card-component-ref-`), which replaced the `artdeco-entity-lockup` cards on
+    2026-09-14. The selector reaches the JS as a JSON-quoted string, so the pattern allows
+    anything up to the closing parenthesis between the prefix and `.length`.
     """
     import re
 
     op = "and" if "&&" in probe_js else "or"
-    m = re.search(r"artdeco-entity-lockup'\)\.length\s*(===|!==|>|<)\s*(\d+)", probe_js)
+    m = re.search(r"job-card-component-ref-[^)]*\)\.length\s*(===|!==|>|<)\s*(\d+)", probe_js)
     g = re.search(r"job-search-card'\)\.length\s*(===|!==|>|<)\s*(\d+)", probe_js)
     assert m and g, f"probe shape not recognised, update this translator: {probe_js}"
     cmp_ = {"===": lambda a, b: a == b, "!==": lambda a, b: a != b,
             ">": lambda a, b: a > b, "<": lambda a, b: a < b}
-    left = cmp_[m.group(1)](artdeco, int(m.group(2)))
+    left = cmp_[m.group(1)](signed_in, int(m.group(2)))
     right = cmp_[g.group(1)](guest, int(g.group(2)))
     return (left and right) if op == "and" else (left or right)
 
 
 def test_the_linkedin_probe_needs_BOTH_halves():
-    """Guest markup present AND authenticated markup absent.
+    """Guest markup present AND signed-in markup absent.
 
-    Either half alone is a false positive: guest cards can co-exist with authenticated ones
-    during a LinkedIn A/B, and "no artdeco cards" is also what a genuinely empty result set
+    Either half alone is a false positive: guest cards can co-exist with signed-in ones
+    during a LinkedIn A/B, and "no signed-in cards" is also what a genuinely empty result set
     looks like. So the probe must be a conjunction, and this asserts the truth table rather
     than the spelling -- an earlier version grepped for substrings and stayed green when the
     `&&` was flipped to `||`.
@@ -186,16 +197,20 @@ def test_the_linkedin_probe_needs_BOTH_halves():
     from sluice.ingest import sources as registry
 
     probe = registry.get("linkedin").auth_probe_js
-    assert "artdeco-entity-lockup" in probe and "base-card" in probe
-    # The measured logged-out state: no authenticated cards, guest cards present.
-    assert _eval_probe(probe, artdeco=0, guest=60) is True
-    # Logged IN: authenticated cards present. Not a login failure.
-    assert _eval_probe(probe, artdeco=25, guest=0) is False
+    assert "job-card-component-ref-" in probe and "base-card" in probe
+    # The old markup must be GONE from the probe, not merely joined by the new: keyed on
+    # `artdeco-entity-lockup`, a signed-in search-results page (which has none) read as
+    # logged out whenever a guest-style card was anywhere on it.
+    assert "artdeco" not in probe
+    # Logged out: no signed-in cards, guest cards present.
+    assert _eval_probe(probe, signed_in=0, guest=60) is True
+    # Logged IN: signed-in cards present. Not a login failure.
+    assert _eval_probe(probe, signed_in=50, guest=0) is False
     # Genuinely empty result set: neither kind of card. NOT a login failure -- this is the
-    # half a bare "artdeco absent" test would wrongly report.
-    assert _eval_probe(probe, artdeco=0, guest=0) is False
-    # Both rendered (an A/B split). Authenticated markup is present, so we are logged in.
-    assert _eval_probe(probe, artdeco=25, guest=60) is False
+    # half a bare "signed-in cards absent" test would wrongly report.
+    assert _eval_probe(probe, signed_in=0, guest=0) is False
+    # Both rendered (an A/B split). Signed-in markup is present, so we are logged in.
+    assert _eval_probe(probe, signed_in=50, guest=60) is False
 
 
 def test_a_probe_that_errors_does_not_claim_the_user_is_logged_out():
@@ -285,21 +300,29 @@ def test_a_failed_landed_evaluate_does_not_manufacture_no_redirect():
     assert src.health_hint(raw)["fetch_error"] == "evaluate failed"
 
 
-def test_the_linkedin_source_scrolls_the_RESULTS_PANEL():
-    """LinkedIn virtualizes its list, so a window scroll loads no more jobs.
+def test_the_linkedin_source_scrolls_the_RESULTS_COLUMN():
+    """LinkedIn renders its results in a lazy column, so a window scroll is not enough.
 
-    The whole reason the subclass exists. Nothing pinned it, so `_scroll_step` could be
-    emptied and the suite stayed green -- the source would silently return only the first
-    screenful.
+    One of the two reasons the subclass exists (paginating is the other). Nothing pinned it,
+    so `_scroll_step` could be emptied and the suite stayed green -- the source would silently
+    read only the cards rendered in the first screenful.
+
+    Keyed on the source's own `_COLUMN_SCROLL` rather than on a substring such as `scrollBy`:
+    the base class's window scroll goes through `cam.scroll`, not `evaluate`, so any evaluated
+    scroll proves the override ran -- but only an exact match proves it ran the column scroll.
     """
     from sluice.ingest import sources as registry
+    from sluice.ingest.sources import linkedin as li
 
     src = registry.get("linkedin")
     cam = _Cam(rows=[])
-    src.fetch(_ctx(cam), Search("A", "https://example.invalid/jobs/search"))
-    scrolled = [e for _tid, e in cam.evaluated if "scrollTop" in e or "scrollBy" in e]
-    assert scrolled, "linkedin must scroll the results panel, not the window"
-    assert len(scrolled) == src.scrolls, f"expected {src.scrolls} panel scrolls, got {len(scrolled)}"
+    src.fetch(_ctx(cam), Search("A", "https://example.invalid/jobs/search-results/"))
+    scrolled = [e for _tid, e in cam.evaluated if e == li._COLUMN_SCROLL]
+    assert scrolled, "linkedin must scroll its results column, not the window"
+    assert len(scrolled) == src.scrolls, f"expected {src.scrolls} column scrolls, got {len(scrolled)}"
+    # It scrolls the last CARD into view rather than setting `scrollTop` on a guessed container:
+    # which ancestor actually scrolls is not something the hashed markup lets us name.
+    assert "scrollIntoView" in li._COLUMN_SCROLL and json.dumps(li._CARD_SELECTOR) in li._COLUMN_SCROLL
 
 
 # ---- protocol CONFORMANCE, not per-class bespoke tests -----------------------------------

@@ -298,6 +298,36 @@ future run re-fetches it), not about the source running at all: a source you dis
 hand (`ingest disable ID`, above) stays disabled until you `ingest enable` it again, and
 re-authenticating alone will not bring it back.
 
+## LinkedIn warns that a search uses the retired `/jobs/search/` address
+
+LinkedIn replaced its signed-in job search. A `https://www.linkedin.com/jobs/search/?...` URL now
+redirects to `/jobs/search-results/`, and the redirect drops `location=`, `f_WT=` (remote,
+hybrid, on-site) and `sortBy=`. LinkedIn then picks a location itself, so the search still
+returns jobs, just not from the place you configured. `ingest run` and `ingest test-source` log
+a warning naming each such search by its label, on every run until it is replaced. The search
+still runs: refusing it would leave a source whose every search is old-style reporting zero
+jobs until it auto-retired.
+
+To replace one, rebuild it in LinkedIn's own job search:
+
+1. Search for the role, choose the location from LinkedIn's location box, and set a
+   date-posted filter if you want one.
+2. Read `keywords=` and `geoId=` from the address bar. `geoId` is a number standing for the
+   place you chose; the place name does not need to appear in the URL.
+3. Put them into a `/jobs/search-results/` URL under `sources.linkedin.searches`:
+
+```yaml
+sources:
+  linkedin:
+    searches:
+      - ["Example role, city", "https://www.linkedin.com/jobs/search-results/?keywords=software%20developer&geoId=<id>&origin=JOB_SEARCH_PAGE_JOB_FILTER&f_TPR=r604800"]
+```
+
+`f_TPR` (date posted; `r604800` is the past week) survives only with
+`origin=JOB_SEARCH_PAGE_JOB_FILTER` beside it. There is no URL filter for work type or sort
+order any more: LinkedIn drops `f_WT` and `sortBy` even then. You do not need `start=`; sluice
+sets it itself to read past the first page of 25 results.
+
 ## A backend is `setup`, `dead` or `degraded` in `doctor`'s output
 
 - **`setup`, `<KEY_VAR> unset`** on a role used as *primary* anywhere: set the key
