@@ -1,7 +1,7 @@
-"""Bounded CV composition. The prompt's entire factual content is the closed verified
-bundle + the JD + the format contract; the backend has no other source. On a gate failure
--- HARD, or a scoped STYLE finding (#167) -- the engine calls compose again with the
-findings appended (one retry)."""
+"""Bounded CV composition. The prompt carries a format contract, the JD, a lead's triage notes
+when it has any (#329), and the closed verified SOURCE BUNDLE, which is its ONLY citable source:
+nothing else in the prompt can license a fact in the CV. On a gate failure -- HARD, or a scoped
+STYLE finding (#167) -- the engine calls compose again with the findings appended (one retry)."""
 from sluice.cv.slop import _PHRASES
 
 _RULES = """CV RULES (follow exactly):
@@ -12,7 +12,7 @@ _RULES = """CV RULES (follow exactly):
 - Rephrasing changes wording and emphasis, never facts or numbers. Any number or named fact you include must remain unchanged from the bundle entry it came from.
 - Every WORK EXPERIENCE bullet MUST end with a citation [id] naming the bundle entry it came from (several allowed: [id] [id]). No uncited bullets. Any number in a bullet must appear in a cited entry.
 - The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which experience entries to lead with and how to describe them. Never cite it, never quote a number from it, and never introduce a claim that rests on it alone: every fact in the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.
-{skills_attribution_rule}- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
+{triage_framing_rule}{skills_attribution_rule}- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a skill the bundle does not contain.
 {skills_format_rule}- {employer_line}
 - NO em dashes anywhere. Use commas, colons, semicolons, periods, or parentheses. No double hyphens (--). En-dash date ranges (12/2025-present) are fine.
 - No AI slop (avoid these words/phrases and any inflection of them: {banned_phrases}). Short sentences. Real metrics only.
@@ -187,6 +187,47 @@ SKILLS
 - skill
 """
 
+# #329: triage's judgement of THIS role, shown to the composer as framing. Gated on a non-empty
+# framing exactly as the skills rules are gated on `skills_requested`, and spliced the same way:
+# the placeholder sits at column 0 and the rule carries its own trailing newline, so an empty value
+# collapses and the prompt is byte-identical to the unframed one
+# (tests/test_cv_triage_framing.py::test_framing_adds_exactly_its_rule_and_its_section).
+#
+# The notes are the judge model's reading of the job page against the candidate's PRIVATE Judging
+# Profile, and this prompt composes a document sent to that employer. So the rule forbids any
+# mention of them, not only citing them. No deterministic check sees a prose echo; the rule is the
+# guard, which is why it names no example of a preference (an example would also trip
+# tests/test_prompt_neutrality.py, which must not be exempted for it). No `--`: the CV bans one.
+_TRIAGE_FRAMING_PROMPT_RULE = (
+    "- The TRIAGE NOTES ON THIS ROLE section is FRAMING, not a source. Use it only to decide "
+    "which VERIFIED EXPERIENCE ENTRIES to lead with and which to play down. Never cite it, never "
+    "take a number or a name from it, never introduce a claim that rests on it, never describe "
+    "the employer or its culture, and never state, paraphrase or allude to anything in it, "
+    "including the candidate's preferences, criteria or reasons.\n")
+
+# Placed after the JD and OUTSIDE the source bundle: the notes are lead data, not evidence, and
+# keeping them out of `cv/bundle.py`'s bundle is what keeps them out of the gate's allowlist and
+# the advisory audit's input by construction.
+_TRIAGE_FRAMING_PROMPT_HEADER = (
+    "=== TRIAGE NOTES ON THIS ROLE (framing only; NOT citable, introduces no facts) ===")
+
+# `PROMPT`-named so tests/test_prompt_neutrality.py's constant discovery sweeps the labels, which
+# `framing_lines` builds and a synthetic `triage_framing` never renders.
+_TRIAGE_FRAMING_PROMPT_LABELS = ("culture flags", "concerns")
+
+
+def framing_lines(culture_flags, triage_concerns):
+    """The lines of a lead's TRIAGE NOTES section, from its framing frontmatter values (#329).
+
+    A line only for a value that is a non-blank string. Values are shown whole, never split back
+    into items: `culture_flags` is comma-joined and a flag may itself contain a comma. Pure, and
+    takes strings rather than the frontmatter dict, so `cv/engine.py` stays the one place that
+    says which lead keys cv reads."""
+    values = (culture_flags, triage_concerns)
+    return tuple(f"{label}: {value.strip()}"
+                 for label, value in zip(_TRIAGE_FRAMING_PROMPT_LABELS, values)
+                 if isinstance(value, str) and value.strip())
+
 
 def _employer_line(employers):
     """The employer-completeness instruction. With a configured list, name it
@@ -243,13 +284,15 @@ def _banned_phrases_sentence(slop_allow=None):
 # before compose is ever reached).
 def build_prompt(bundle_text, jd, company, role, *, name, contact="",
                   employers=None, prior_violations=None, slop_allow=None,
-                  skills_requested=False):
+                  skills_requested=False, triage_framing=()):
     parts = [
         f"Compose a tailored CV for {name} applying for {role} at {company}.",
         "",
         _RULES.format(contact=contact, name_heading=name.upper(),
                      employer_line=_employer_line(employers), role=role,
                      banned_phrases=_banned_phrases_sentence(slop_allow),
+                     triage_framing_rule=(
+                         _TRIAGE_FRAMING_PROMPT_RULE if triage_framing else ""),
                      skills_attribution_rule=(
                          _SKILLS_ATTRIBUTION_PROMPT_RULE if skills_requested else ""),
                      skills_format_rule=(
@@ -259,6 +302,10 @@ def build_prompt(bundle_text, jd, company, role, *, name, contact="",
         "=== THE ROLE (JD) ===",
         jd or "(no JD text captured; compose from the bundle for a general fit)",
         "",
+    ]
+    if triage_framing:
+        parts += [_TRIAGE_FRAMING_PROMPT_HEADER, *[f"- {line}" for line in triage_framing], ""]
+    parts += [
         "=== SOURCE BUNDLE (the ONLY permitted source) ===",
         bundle_text,
     ]
@@ -395,12 +442,13 @@ def _unwrap_agent_envelope(text):
 # to), so a reader arriving at the real call site is exactly who that comment exists to reach.
 def compose(backend, bundle_text, jd, company, role, *, name, contact="",
             employers=None, prior_violations=None, slop_allow=None,
-            skills_requested=False, on_prompt=None):
+            skills_requested=False, triage_framing=(), on_prompt=None):
     prompt = build_prompt(bundle_text, jd, company, role, name=name,
                           contact=contact, employers=employers,
                           prior_violations=prior_violations,
                           slop_allow=slop_allow,
-                          skills_requested=skills_requested)
+                          skills_requested=skills_requested,
+                          triage_framing=triage_framing)
     # `on_prompt` receives the prompt exactly as it is about to be sent, so a caller can keep
     # it (cv/engine.py writes it into the run's diagnostic artefacts, cv/artefacts.py). A
     # callback rather than the caller running `build_prompt` a second time: that would need

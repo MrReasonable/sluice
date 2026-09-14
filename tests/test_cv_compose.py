@@ -504,7 +504,8 @@ def test_each_gated_prompt_rule_is_its_own_bullet_in_the_rules_list():
     assert len(rules) >= 2, f"discovery found {sorted(rules)}; expected every gated rule"
 
     p = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
-                       skills_requested=True)
+                       skills_requested=True,
+                       triage_framing=("concerns: FRAMING-FOR-THE-GUARD",))
     lines = p.splitlines()
     for name, text in sorted(rules.items()):
         own = text.strip("\n").splitlines()
@@ -532,3 +533,18 @@ def test_each_gated_prompt_rule_is_its_own_bullet_in_the_rules_list():
     # OFF, so it cannot see a `--` introduced by a gated rule. Caught in review: a draft of
     # the shape rule used `--` twice.
     assert p.count("--") == 1, "a gated rule introduced a double hyphen into the prompt"
+
+    # #329's rule splices in directly BEFORE the skills attribution rule. With skills requested,
+    # that neighbour is itself a discovered `*_PROMPT_RULE`, so the whole-line loop above already
+    # sees an absorption. With skills NOT requested the neighbour is the SKILLS "Every line of the
+    # SKILLS section must come from the SOURCE BUNDLE" bullet the assertion below checks, which
+    # only a second render reaches.
+    p_off = C.build_prompt("BUNDLE", "JD", "Co", "Role", name="EXAMPLE CANDIDATE",
+                           triage_framing=("concerns: FRAMING-FOR-THE-GUARD",))
+    off_lines = p_off.splitlines()
+    for line in C._TRIAGE_FRAMING_PROMPT_RULE.strip("\n").splitlines():
+        assert line in off_lines, f"the framing rule does not occupy whole prompt lines: {line!r}"
+    off_bullets = [ln.lstrip("- ") for ln in off_lines if ln.startswith("- ")]
+    assert ("Every line of the SKILLS section must come from the SOURCE BUNDLE. "
+            "Do not add a skill the bundle does not contain.") in off_bullets
+    assert p_off.count("--") == 1, "the framing rule introduced a double hyphen into the prompt"
