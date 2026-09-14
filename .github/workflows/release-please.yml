@@ -468,70 +468,42 @@ jobs:
           subject-digest: ${{ needs.docker.outputs.digest }}
 
   homebrew:
-    # `needs: pypi` is an ORDERING CONSTRAINT, not style: the formula's `url` is a PyPI sdist,
-    # so it cannot resolve until that upload has landed. This is the workflow's first
-    # cross-channel dependency.
+    # `needs: pypi` is an ORDERING CONSTRAINT: the formula's `url` is the PyPI sdist, which cannot
+    # resolve before that upload lands.
+    #
+    # The channel itself is .github/workflows/homebrew.yml, a reusable workflow the dry run calls
+    # too, so the two cannot drift apart. Its header states the trust rule that shapes the job
+    # graph; docs/superpowers/specs/2026-09-14-homebrew-bottles-design.md records the design.
+    #
+    # RECOVERY: re-run this run's FAILED JOBS, which reuses `plan`'s outputs (GitHub documents this;
+    # inside a called workflow it is not yet measured, spec section 8). That re-run keeps `plan`'s base
+    # commit, so if `push` is rejected because the tap's default branch moved after `plan` ran, or
+    # `upload` refuses a digest clash, it fails the same way every time. Re-running the
+    # `homebrew / plan` job may recover both by planning again under a new run attempt (a new tag,
+    # release and base commit, with the version check still refusing a roll-back), but whether GitHub
+    # offers that for a job inside a called workflow, and re-runs the jobs after it, is not verified;
+    # failing that, the next release publishes the formula. Re-running the whole workflow never reaches
+    # here: release-please sees the release already cut, and `release_created` comes back false. No
+    # re-run picks up a fix to this channel's own code, which is pinned to the release commit.
+    #
+    # Dispatching `Homebrew dry run` is NOT a recovery: once the tap holds a formula, it pushes to
+    # a bump-VERSION scratch branch that nothing merges.
     needs: [release-please, pypi]
     if: success() && needs.release-please.outputs.release_created == 'true'
-    # RECOVERY, stated like every other channel job in this file: re-run THIS failed job.
-    # `needs.release-please.outputs.version` and the PyPI upload this job's own `needs: pypi`
-    # depends on both already exist from the run that got this far, so re-running just
-    # `homebrew` re-verifies and re-pushes against the SAME release; it does not need `build`
-    # or `pypi` to run again.
-    #
-    # Dispatching `Homebrew dry run` afterwards is explicitly NOT a substitute recovery path.
-    # That workflow always sets PUSH_TARGET: auto (see homebrew_verify.sh's PUSH_TARGET
-    # comment), which once the tap already holds a formula for an EARLIER version always
-    # resolves to a bump-$VERSION scratch branch nothing merges. So after a failed
-    # release-time bump, the dry run goes green -- render, audit, install and test all pass --
-    # while `brew install` keeps serving whatever version the tap's default branch was last
-    # pushed at. The only correct recovery is re-running THIS job, which sets
-    # PUSH_TARGET: default.
-    # macOS is not a preference. The payoff this channel exists for -- WeasyPrint resolving
-    # cairo/pango with no DYLD_FALLBACK_LIBRARY_PATH -- comes from Homebrew's CPython patching
-    # Lib/ctypes/macholib/dyld.py, which is a macOS mechanism. Verifying on Linux would prove
-    # nothing about what ships.
-    runs-on: macos-latest
-    # Justified rather than copied: this job DOES check out, for the renderer script. The tap
-    # is NOT checked out -- see the step below.
+    # `$/` is GitHub's recommended self-repository form: like `./` it calls the workflow at the commit
+    # that is running, and it stays usable under a policy requiring actions pinned to a full SHA.
+    uses: $/.github/workflows/homebrew.yml
+    # Directly before `with:`, which bounds this block for its pin. A called workflow's jobs can
+    # only narrow what this grants.
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ needs.release-please.outputs.sha }}
-          persist-credentials: false
-      # NO token in this step's environment. It runs `brew install --build-from-source`, which
-      # executes the pip/PEP 517 build backend of every one of the ~45 resource sdists in the
-      # closure -- a compromised transitive build dependency here must not see a live
-      # `contents: write` token for the public tap. See homebrew_verify.sh's header.
-      - name: Render, resource-fill, audit, install and test the formula
-        env:
-          VERSION: ${{ needs.release-please.outputs.version }}
-          # The SAME fact the App-token step below mints against (`owner:`), passed once here
-          # rather than hardcoded a second time in the shell scripts -- see homebrew_verify.sh's
-          # TAP_OWNER comment.
-          TAP_OWNER: ${{ github.repository_owner }}
-          # Always the tap's default branch: nothing merges a bump-X.Y.Z branch, and `brew
-          # install` resolves a tap's default branch, so a release must never land anywhere
-          # else. See homebrew_verify.sh's PUSH_TARGET comment for the full reasoning.
-          PUSH_TARGET: default
-        run: bash .github/scripts/homebrew_verify.sh
-      # Minted only AFTER the untrusted build above has already run, and used by nothing but
-      # the push step immediately below.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: tap-token
-        with:
-          client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
-          private-key: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          repositories: homebrew-tap
-          permission-contents: write
-      - name: Commit and push the verified formula
-        env:
-          VERSION: ${{ needs.release-please.outputs.version }}
-          TAP_TOKEN: ${{ steps.tap-token.outputs.token }}
-        run: bash .github/scripts/homebrew_push.sh
+    with:
+      version: ${{ needs.release-please.outputs.version }}
+      ref: ${{ needs.release-please.outputs.sha }}
+      push_target: default
+    secrets:
+      RELEASE_PLEASE_CLIENT_ID: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
+      RELEASE_PLEASE_PRIVATE_KEY: ${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}
 
   post-release:
     # Dispatches `post-release.yml`, which installs each PUBLISHED artefact from its real
@@ -550,9 +522,9 @@ jobs:
     # one that stood here had already gone stale.
     #
     # `homebrew` is deliberately absent. The check does not exercise that channel (this
-    # workflow's own `homebrew` job renders, audits, installs and tests the formula before the
-    # tap is pushed), so waiting on it would delay the check and couple it to a failure in a
-    # channel it never looks at. `tests/test_release_publish_wiring.py` pins that
+    # workflow's own `homebrew` job renders, audits, installs and tests the formula through
+    # `homebrew.yml` before the tap is pushed), so waiting on it would delay the check and couple
+    # it to a failure in a channel it never looks at. `tests/test_release_publish_wiring.py` pins that
     # correspondence from both ends so a new channel cannot be checked without being waited on.
     needs: [release-please, pypi, docker, release-assets]
     if: success() && needs.release-please.outputs.release_created == 'true'
