@@ -733,7 +733,8 @@ class Store(Protocol):
     def update_fields(self, ref, fields: dict, *, append_note=None, note_tag=None,
                       require_status: frozenset | None = None,
                       require_blank: frozenset | None = None,
-                      blank_values: frozenset | None = None) -> bool:
+                      blank_values: frozenset | None = None,
+                      preserve_block_values: frozenset | None = None) -> bool:
         """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
         This is the sanctioned write path for triage, cv, apply and track. MAY raise
         VaultConflict if the note changed under a sustained concurrent edit and the store
@@ -780,7 +781,28 @@ class Store(Protocol):
         non-blank value is still refused, including one that merely *differs* from the
         value being written -- never-clobber holds for anything not named here.
         `blank_values` given without `require_blank` is inert and must never become a
-        guard of its own."""
+        guard of its own.
+
+        `preserve_block_values` (#329): each named key that is also in `fields` MUST be left
+        unwritten when its FRESH stored value spans several lines (a block list, nested mapping
+        or block scalar) -- for a markdown store, what a person editing the note by hand may
+        type -- while every other field still lands and the returned bool still reports whether
+        the record changed. The key then reads back exactly as it did before the write. A value
+        that fits on one line, a flow list or flow mapping included, is written normally, though a
+        store MAY also leave it unwritten when a line indented deeper than the key follows it, a
+        comment included -- the safe direction. Decided against the fresh record, before any named field is written, for the delegation reason
+        given above. It stays opt-in per key rather than applying to every key: a caller's
+        status or score write MUST never be silently skipped just because some unrelated field
+        on the same note happens to span several lines.
+
+        `append_note` (#329) carries the same obligation for its own write path, which is not
+        a `fields` key and so is not covered by `preserve_block_values`: when the FRESH stored
+        `relevance_notes` spans several lines (a block list, nested mapping or block scalar),
+        the append MUST be left undone -- the key read back exactly as it was, never corrupted
+        -- while every other named field still lands, exactly as an unsafe-for-frontmatter
+        append already abstains rather than mangling the note. A `relevance_notes` that fits on
+        one line, a flow list or flow mapping included, gets the append normally, with the same
+        allowance for a line indented deeper than the key after it."""
         ...
 
     def merge_cluster(self, survivor_ref, loser_refs, *, alt_urls, first_seen, last_seen) -> list:

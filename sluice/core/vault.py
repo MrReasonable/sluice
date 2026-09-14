@@ -1698,7 +1698,8 @@ class Vault:
                       require_status: frozenset | None = None,
                       require_blank: frozenset | None = None,
                       blank_values: frozenset | None = None,
-                      require_unchanged: dict | None = None) -> bool:
+                      require_unchanged: dict | None = None,
+                      preserve_block_values: frozenset | None = None) -> bool:
         """Surgically set frontmatter keys (literal YAML scalars), body byte-for-byte
         intact. Optionally append a guarded note to relevance_notes (skipped if note_tag
         is present, so re-runs are idempotent). Routed through _cas_write: the edit is
@@ -1712,6 +1713,15 @@ class Vault:
         `note.fm[key]` gave you rather than a normalised form -- a folded value would
         compare against the stored spelling and never match, and the refusal is
         indistinguishable from a no-op to the caller.
+
+        `preserve_block_values` (#329): each named key that is also in `fields` is re-read from
+        the FRESH note, and left unwritten when its stored value spans several lines (see
+        `_holds_multiline_value`); the other fields still land, and a warning names the key.
+        `_set_fm` replaces a key's own line only, so writing a single-line value over a
+        hand-typed block list leaves the item lines orphaned under a plain value and a YAML
+        reader then refuses the note, while sluice's line-based reader carries on and nothing
+        reports it. Decided inside the transform for the same reason as the guards above: the
+        caller's snapshot predates the human's edit.
 
         `require_status` (#9): when given, re-read the status from the FRESH note and
         write nothing unless it is in that set. Returns whether a write happened.
@@ -1797,10 +1807,33 @@ class Vault:
                     _fm_value(inner, key) != expected
                     for key, expected in require_unchanged.items()):
                 return text
+            # Decided once, against the fresh note, BEFORE any field is written: `_set_fm`
+            # matches a key at any indentation, so an earlier write in the loop below can move
+            # a nested child line to column 0 and make a block value look single-line to a
+            # check made after it.
+            preserved = {key for key in (preserve_block_values or ())
+                         if key in fields and _holds_multiline_value(inner, key)}
+            for key in sorted(preserved):
+                _log.warning(
+                    "vault: %s left unwritten for %s -- it holds a value spread over several "
+                    "lines, which a single-line write would corrupt", key, ref)
+            # #329: decided here too, against the same fresh `inner`, before any
+            # field write can move a nested child line and change what this reads. The append
+            # is its own write path, not a `fields` key, so `preserve_block_values` does not
+            # cover it -- but a single-line append over a hand-typed multi-line
+            # `relevance_notes` corrupts it exactly the way an unguarded `fields` write would.
+            append_would_corrupt = (append_note is not None
+                                     and _holds_multiline_value(inner, "relevance_notes"))
             for key, literal in fields.items():
+                if key in preserved:
+                    continue
                 inner = _set_fm(inner, key, literal)
-            if append_note and note_tag:
-                current = _fm_value(inner, "relevance_notes")
+            if append_would_corrupt:
+                _log.warning(
+                    "vault: relevance_notes not appended for %s -- it holds a value spread "
+                    "over several lines, which the append would corrupt", ref)
+            elif append_note and note_tag:
+                current = _fm_own_line_value(inner, "relevance_notes")
                 if note_tag not in current:
                     # Guarded at the SINK, not at each caller. `append_note` lands in
                     # `relevance_notes`, which is FRONTMATTER despite the parameter reading
@@ -4018,6 +4051,70 @@ def _fm_value(inner: str | None, key: str) -> str:
         return ""
     m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*(.*)$", inner)
     return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _fm_own_line_value(inner: str | None, key: str) -> str:
+    """`_fm_value`, read from the key's OWN line: the first occurrence of `key:`, matched as
+    `_fm_value` and `_set_fm` match it, with only horizontal whitespace allowed after the colon,
+    so a blank `key:` reads as blank instead of taking the following line as its value (#329).
+
+    Only `Vault.update_fields`' note append reads through this. The append runs after
+    `_holds_multiline_value` has ruled out a value spread over several lines, so an existing note,
+    if there is one, sits on the key's own line; reading past a blank key merged a comment line
+    under it into the note, or took the next key's text and dropped the note as unsafe. Every other
+    `_fm_value` caller keeps the read that crosses the line for now: guards among them currently
+    refuse a blank key over a block list because that read sees the first item as a value, so
+    moving them needs an audit of each caller of its own."""
+    if not inner:
+        return ""
+    m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:[ \t]*(.*)$", inner)
+    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+
+def _holds_multiline_value(inner: str | None, key: str) -> bool:
+    """Whether `key`'s FIRST line in a frontmatter block may open a value spread over several
+    lines -- a block list, a nested mapping, a `|`/`>` block scalar -- so a single-line write must
+    not replace it (#329).
+
+    First occurrence, matched the way `_set_fm` matches, because that is the line a write would
+    replace. The lines after it are scanned past blank lines and past any comment-only line (its
+    stripped form starts with `#`) that is NOT indented deeper than the key's own line: such a
+    comment sits between the key and its items and carries no value. The next remaining line
+    decides. Indented deeper than the key, or starting with `-` at the key's own indentation (YAML
+    allows a block list's items to sit there): the value spans several lines. Anything else, or no
+    line at all: it does not, whatever the key's own line holds. The key's own line is not
+    consulted: a trailing `# comment` there is not a value, and a `-` line under a genuine inline
+    value is already invalid YAML, where leaving the key alone costs nothing.
+
+    The trade-off, stated plainly: ANY following line indented deeper than the key counts, a
+    comment included. So a one-line value, or a blank key, with an indented comment under it is
+    reported as spread over several lines, and the caller leaves it unwritten and logs a warning.
+    That is the safe direction, taken on purpose. Treating such a line as a skippable comment would
+    take parsing the key's own line, and a multi-line value this helper cannot fully parse would
+    then be written over with no warning: a block scalar whose header carries a tag or an anchor,
+    or a quoted scalar continued on an indented line, where the body or the continuation starts
+    with `#` -- Obsidian's own `#tag` syntax means a hand-typed block scalar's body can be entirely
+    such lines."""
+    if not inner:
+        return False
+    lines = inner.split("\n")
+    pat = re.compile(rf"^(\s*){re.escape(key)}\s*:")
+    for i, line in enumerate(lines):
+        m = pat.match(line)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        following = next(
+            (ln for ln in lines[i + 1:]
+             if ln.strip() and not (len(ln) - len(ln.lstrip()) <= indent and ln.strip().startswith("#"))),
+            None)
+        if following is None:
+            return False
+        following_indent = len(following) - len(following.lstrip())
+        if following_indent > indent:
+            return True
+        return following_indent == indent and following.lstrip().startswith("-")
+    return False
 
 
 def _counts_as_blank(value: str, blank_values: frozenset | None) -> bool:
