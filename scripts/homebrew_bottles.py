@@ -131,10 +131,16 @@ def tap_owner(repository_owner: str | None) -> str:
 def compose_tag(version: str, run_id: str, run_attempt: str) -> str:
     """One tag per run attempt: no release asset is ever replaced (spec, section 3)."""
     validate_version(version)
+    validate_run_numbers(run_id, run_attempt)
+    return f"{FORMULA_NAME}-{version}-{run_id}-{run_attempt}"
+
+
+def validate_run_numbers(run_id: str, run_attempt: str) -> None:
+    """The run id and run attempt, the parts of a tag that come from the run, are positive integers.
+    `plan` checks them before any external read, and `compose_tag` again where it builds the tag."""
     for label, value in (("run id", run_id), ("run attempt", run_attempt)):
         if not _POSITIVE_INT_RE.fullmatch(value or ""):
             raise Refusal(f"the {label} must be a positive integer, got {value!r}.")
-    return f"{FORMULA_NAME}-{version}-{run_id}-{run_attempt}"
 
 
 def compose_root_url(repository_owner: str, tag: str) -> str:
@@ -410,6 +416,13 @@ DRY_RUN_CALLER = "dry run"
 CALLERS = ("release", DRY_RUN_CALLER)
 
 
+def validate_run_url(run_url: str) -> None:
+    """The run URL is a GitHub Actions run URL. `plan` checks it before any external read, and
+    `build_plan` and `release_templates` again where they use it."""
+    if not _RUN_URL_RE.fullmatch(run_url or ""):
+        raise Refusal(f"run URL {run_url!r} is not a GitHub Actions run URL.")
+
+
 def release_templates(*, version: str, tag: str, caller: str, run_url: str) -> tuple[str, str]:
     """The release's title and notes: fixed text from trusted values, never command output or
     generated notes. The caller is in the title so a human can tell a release's bottles from a dry
@@ -419,8 +432,7 @@ def release_templates(*, version: str, tag: str, caller: str, run_url: str) -> t
         raise Refusal(f"release tag {tag!r} is not a composed bottle tag.")
     if caller not in CALLERS:
         raise Refusal(f"caller must be one of {list(CALLERS)}, got {caller!r}.")
-    if not _RUN_URL_RE.fullmatch(run_url or ""):
-        raise Refusal(f"run URL {run_url!r} is not a GitHub Actions run URL.")
+    validate_run_url(run_url)
     title = f"{FORMULA_NAME} {version} bottles ({caller})"
     notes = f"Bottles for {FORMULA_NAME} {version}, published by {run_url} ({caller}).\nRelease tag: {tag}\n"
     return title, notes
@@ -800,8 +812,7 @@ def build_plan(
     validate_push_target(push_target)
     validate_version(version)
     owner = tap_owner(repository_owner)
-    if not _RUN_URL_RE.fullmatch(run_url or ""):
-        raise Refusal(f"run URL {run_url!r} is not a GitHub Actions run URL.")
+    validate_run_url(run_url)
     default_branch, base_sha = parse_symref(ls_remote_output)
     sdist_url, sdist_sha256 = pick_sdist(pypi_json, version)
     formula_state = (
@@ -825,10 +836,20 @@ def build_plan(
 
 
 def cmd_plan(args, env: dict, http) -> None:
-    # Validated before any external command: a wrong PUSH_TARGET must be the first thing that fails.
+    # Every required value from the environment is checked, present and well formed, before any external
+    # command, a wrong PUSH_TARGET first of all: a missing or malformed one must refuse before the
+    # ls-remote, the PyPI read and the contents API read, not after them.
     push_target = validate_push_target(env.get("PUSH_TARGET"))
     version = validate_version(env.get("VERSION"))
     repository_owner = _require(env, "REPOSITORY_OWNER")
+    run_id = _require(env, "RUN_ID")
+    run_attempt = _require(env, "RUN_ATTEMPT")
+    run_url = _require(env, "RUN_URL")
+    output_path = _require(env, "GITHUB_OUTPUT")
+    # The run values' form, through the validators that compose_tag, build_plan and release_templates call
+    # again where they use those values.
+    validate_run_numbers(run_id, run_attempt)
+    validate_run_url(run_url)
     owner = tap_owner(repository_owner)
     ls_remote = _git_ok(
         "ls-remote", "--symref", f"https://github.com/{owner}/{TAP_REPO}.git", "HEAD"
@@ -858,14 +879,14 @@ def cmd_plan(args, env: dict, http) -> None:
         push_target=push_target,
         version=version,
         repository_owner=repository_owner,
-        run_id=_require(env, "RUN_ID"),
-        run_attempt=_require(env, "RUN_ATTEMPT"),
-        run_url=_require(env, "RUN_URL"),
+        run_id=run_id,
+        run_attempt=run_attempt,
+        run_url=run_url,
         ls_remote_output=ls_remote,
         pypi_json=pypi_json,
         contents_status=contents_status,
     )
-    write_outputs(outputs, _require(env, "GITHUB_OUTPUT"))
+    write_outputs(outputs, output_path)
 
 
 # --- the untrusted jobs' checks -----------------------------------------------------------------

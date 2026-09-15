@@ -1297,6 +1297,39 @@ def test_plan_writes_its_outputs_and_reads_the_contents_api_only_for_auto(
         assert contents_calls[0][2]["Authorization"] == "Bearer workflow-token"
 
 
+@pytest.mark.parametrize(
+    "name, value, message",
+    [
+        ("RUN_ID", None, "RUN_ID"),
+        ("RUN_ATTEMPT", None, "RUN_ATTEMPT"),
+        ("RUN_URL", None, "RUN_URL"),
+        ("GITHUB_OUTPUT", None, "GITHUB_OUTPUT"),
+        ("RUN_ID", "12a", "the run id must be a positive integer"),
+        ("RUN_ATTEMPT", "0", "the run attempt must be a positive integer"),
+        ("RUN_URL", "https://example.invalid/actions/runs/123", "is not a GitHub Actions run URL"),
+    ],
+)
+def test_plan_checks_its_run_variables_before_any_external_call(tmp_path, monkeypatch, capsys, name, value, message):
+    """Every value `plan` reads from its environment is checked, for presence and for form, before the tap's
+    ls-remote, the PyPI read and the contents API read, and git and HTTP here raise if either is reached. A
+    check made after them fails a row with the fakes' AssertionError rather than the refusal naming what is
+    wrong. A row with no value removes the variable; the others set a malformed one."""
+    def unreachable(*args, **kwargs):
+        raise AssertionError("plan made an external call before it had checked its environment")
+
+    monkeypatch.setattr(hb, "git", unreachable)
+    env = {"PUSH_TARGET": "auto", "VERSION": "9.9.0", "REPOSITORY_OWNER": "ExampleOwner",
+           "RUN_ID": "123", "RUN_ATTEMPT": "1", "RUN_URL": _RUN_URL,
+           "GITHUB_TOKEN": "workflow-token", "GITHUB_OUTPUT": str(tmp_path / "output")}
+    if value is None:
+        del env[name]
+    else:
+        env[name] = value
+    assert hb.main(["plan"], env=env, http=unreachable) == 1
+    assert message in capsys.readouterr().out
+    assert not (tmp_path / "output").exists()
+
+
 # --- the CLI: the untrusted jobs' checks ------------------------------------------------------------
 
 
