@@ -7,18 +7,20 @@ offline (tests/test_homebrew_bottles.py) rather than by a dry run that only ever
 branch. The CLI at the bottom is the layer the workflow steps call.
 
 THE TRUST RULE THIS FILE SERVES. A job either runs third-party code and references no secret, or
-holds the tap token and runs only this file and scripts/render_homebrew_formula.py, which it imports
-to compare the formula with, and `git`, which it runs itself. The token jobs invoke it as
-`python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"`: `-P` keeps the working directory off
-`sys.path`, and every artifact they read is untrusted data this file validates before anything is
-published. Both files are standard library only, for that reason: a dependency would be third-party
-code running beside the token.
+holds the tap token and runs only this file and scripts/render_homebrew_formula.py, which it loads from
+its file to compare the formula with, and `git`, which it runs itself. The token jobs invoke it as
+`python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"`: `-P` removes the script's own directory from
+`sys.path`, and this file adds no entry of its own. Every artifact they read is untrusted data this
+file validates before anything is published. Both files are standard library only, for that reason: a
+dependency would be third-party code running beside the token.
 """
 
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -33,9 +35,9 @@ from typing import NamedTuple
 FORMULA_NAME = "job-sluice"
 TAP_REPO = "homebrew-tap"
 
-# The repository root, so this file can import the renderer when run as `python3 -P <path>`: -P
-# removes the script's own directory from sys.path, and the renderer is the one thing the
-# validator must reproduce rather than restate.
+# The repository root, which the renderer is loaded from (see `_renderer`). The renderer is the one
+# thing the validator must reproduce rather than restate, and loading it from its file adds nothing to
+# sys.path, which `-P` keeps free of the script's own directory.
 ROOT = Path(__file__).resolve().parent.parent
 
 # The (runner label, bottle tag) pairs, declared ONCE. `plan` emits them for the bottle matrix, and
@@ -516,12 +518,22 @@ def _normalise(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _render(sdist_url: str, sha256: str) -> str:
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
-    from scripts.render_homebrew_formula import render
+@functools.lru_cache(maxsize=1)
+def _renderer():
+    """The renderer module, loaded from its file rather than imported. An import would need a directory
+    on sys.path to find it, and an entry added ahead of the standard library, where an insert at the front
+    puts it, lets a module file in that directory shadow the standard library for every import after it.
+    Loaded once: the validator renders on every call."""
+    spec = importlib.util.spec_from_file_location(
+        "render_homebrew_formula", ROOT / "scripts" / "render_homebrew_formula.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    return render(sdist_url=sdist_url, sha256=sha256)
+
+def _render(sdist_url: str, sha256: str) -> str:
+    return _renderer().render(sdist_url=sdist_url, sha256=sha256)
 
 
 def _first_difference(expected: str, actual: str) -> str:

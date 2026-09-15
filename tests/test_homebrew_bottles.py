@@ -2050,29 +2050,82 @@ def test_every_git_command_goes_through_the_hook_disabling_helper():
     assert [e.value for e in command.elts[:3]] == ["git", "-c", "core.hooksPath=/dev/null"]
 
 
-def test_the_helper_and_what_it_imports_are_standard_library_only():
+def _path_parts(node):
+    """The string segments of a `ROOT / "a" / "b.py"` expression, left to right."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        return _path_parts(node.left) + _path_parts(node.right)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return [node.value]
+    return []
+
+
+def test_the_helper_and_what_it_loads_are_standard_library_only():
     """The token jobs run `python3 -P scripts/homebrew_bottles.py` on a bare runner Python, so every
-    import it reaches, following its `scripts.*` imports, must be the standard library or one of these
-    two files. Collected from every import statement, function-local ones included."""
-    local = {"scripts.homebrew_bottles": SCRIPT, "scripts.render_homebrew_formula": ROOT / "scripts" / "render_homebrew_formula.py"}
-    seen, pending, third_party, reached = set(), ["scripts.homebrew_bottles"], [], set()
+    import it reaches must be the standard library or one of these two files. The renderer is loaded from
+    its file through `importlib.util.spec_from_file_location`, so that call is followed exactly as a
+    `scripts.*` import is. So are `importlib.import_module` and `__import__` calls, whose module must be a
+    string literal the sweep can read. Each function is matched under any name the file imports it as.
+    Collected from import statements and those calls, function-local ones included."""
+    renderer = "scripts/render_homebrew_formula.py"
+    local = {"scripts/homebrew_bottles.py": SCRIPT, renderer: ROOT / renderer}
+    seen, pending, third_party, reached = set(), ["scripts/homebrew_bottles.py"], [], set()
     while pending:
         module = pending.pop()
         if module in seen:
             continue
         seen.add(module)
-        for node in ast.walk(ast.parse(local[module].read_text())):
-            names = []
+        tree = ast.parse(local[module].read_text())
+
+        def bound(function, source, tree=tree):
+            return {function} | {alias.asname or alias.name for node in ast.walk(tree)
+                                 if isinstance(node, ast.ImportFrom) and node.module == source
+                                 for alias in node.names if alias.name == function}
+
+        loaders = bound("spec_from_file_location", "importlib.util")
+        importers = bound("import_module", "importlib") | {"__import__"}
+        for node in ast.walk(tree):
+            names, loaded = [], []
             if isinstance(node, ast.Import):
                 names = [alias.name for alias in node.names]
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [node.module]
+            elif isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr == "spec_from_file_location")
+                or (isinstance(node.func, ast.Name) and node.func.id in loaders)
+            ):
+                loaded = ["/".join(_path_parts(node.args[1]))]
+            elif isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Attribute) and node.func.attr in {"import_module", "__import__"})
+                or (isinstance(node.func, ast.Name) and node.func.id in importers)
+            ):
+                argument = node.args[0] if node.args else None
+                assert isinstance(argument, ast.Constant) and isinstance(argument.value, str), (
+                    f"{module} imports a module named at runtime at line {node.lineno}; this sweep cannot follow it")
+                names = [argument.value]
             for name in names:
                 if name.split(".")[0] == "scripts":
-                    assert name in local, f"{module} imports {name}, which this roster does not cover"
-                    reached.add(name)
-                    pending.append(name)
+                    loaded.append(name.replace(".", "/") + ".py")
                 elif name.split(".")[0] not in sys.stdlib_module_names:
                     third_party.append((module, name))
-    assert reached == {"scripts.render_homebrew_formula"}, reached
+            for path in loaded:
+                assert path in local, f"{module} reaches {path}, which this roster does not cover"
+                reached.add(path)
+                pending.append(path)
+    assert reached == {renderer}, reached
     assert not third_party, third_party
+
+
+def test_the_helper_puts_nothing_on_sys_path():
+    """`-P` keeps the script's own directory off sys.path, and an entry the helper added would put a
+    directory back, ahead of the standard library when inserted at the front. A reference to `path` on any
+    name `sys` is imported as, or `path` imported from `sys`, is refused; those names are read from the
+    file's own imports rather than assumed."""
+    tree = ast.parse(SCRIPT.read_text())
+    sys_names = {"sys"} | {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
+                           for alias in node.names if alias.name == "sys"}
+    uses = [node.lineno for node in ast.walk(tree)
+            if (isinstance(node, ast.Attribute) and node.attr == "path"
+                and isinstance(node.value, ast.Name) and node.value.id in sys_names)
+            or (isinstance(node, ast.ImportFrom) and node.module == "sys"
+                and any(alias.name == "path" for alias in node.names))]
+    assert uses == [], f"scripts/homebrew_bottles.py uses sys.path at lines {uses}"
