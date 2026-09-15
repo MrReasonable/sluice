@@ -140,7 +140,10 @@ execute code within ephemeral and clean isolated virtual machines, meaning there
 persistently compromise this environment." Within that:
 
 - **A job whose secrets or outputs a token job consumes runs no third-party code.** These are the
-  trusted jobs: `plan`, `upload` and `push` in `homebrew.yml`, and the dry run's `preflight`. Of
+  trusted jobs: `plan`, `upload` and `push` in `homebrew.yml`, and the dry run's `preflight`. The
+  release's `release-please` job is trusted by exception: its `sha` output is the `ref` the token jobs
+  check out, and it runs the SHA-pinned `googleapis/release-please-action`, which already writes to this
+  repository with its own App token, so its steps are pinned whole rather than rostered. Of
   them, only `upload` and `push` hold the tap token. Homebrew itself, its runtime gem groups, PyPI
   resolution, sdist build backends, evaluating the formula, and any action outside the roster below
   all count as third-party code.
