@@ -88,7 +88,7 @@ keywords = ["job-search", "job-hunting", "cli", "cv", "resume", "automation"]
 job-sluice = "sluice.cli:main"
 
 [project.optional-dependencies]
-render = ["weasyprint>=69,<70", "jinja2>=3,<4"]
+render = ["weasyprint>=69,<71", "jinja2>=3,<4"]
 # FLOOR AT THE MAJOR BOUNDARY. THE CEILING IS WHAT DEPENDABOT TRACKS, NOT THE FLOOR.
 #
 # These constraints were introduced to give Dependabot something to update, and the floors were
@@ -181,7 +181,7 @@ test = [
     "jinja2==3.1.6",
     "setuptools==84.0.0",
     "build==1.6.0",
-    "mcp==2.1.1",
+    "mcp==2.2.0",
 ]
 
 # `packages.find` selects PACKAGES, not DATA. Without this table a built wheel ships
