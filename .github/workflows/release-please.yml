@@ -411,8 +411,19 @@ jobs:
           # .dockerignore's `!dist/*.whl` both name that exact directory, and without it the
           # artifact unpacks into the workspace root where the build context cannot see it.
           path: dist/
+      # Both setup actions cache to the GitHub Actions cache BY DEFAULT: `cache-image` saves and
+      # restores the binfmt image, `cache-binary` the buildx binary. A job on this branch that runs
+      # third-party code (homebrew.yml's formula, bottle and prove) holds a token that can save a cache
+      # entry, so a restore here could run its bytes in a job that pushes the image. Both off:
+      # homebrew.yml's header states the rule, and
+      # tests/test_release_publish_wiring.py::test_no_workflow_restores_an_actions_cache reads every
+      # action's caching inputs by name.
       - uses: docker/setup-qemu-action@1f40c72289eff860ee54a304f1438e3cff362e0a # v4.3.0
+        with:
+          cache-image: false
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+        with:
+          cache-binary: false
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
