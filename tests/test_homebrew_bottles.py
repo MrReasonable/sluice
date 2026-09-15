@@ -636,6 +636,28 @@ def test_a_bottle_block_off_shape_is_refused(mutate):
         hb.parse_bottle_block(mutate(_merged()))
 
 
+def test_a_bottle_block_naming_a_tag_twice_is_refused():
+    """The extra line sits first and carries a digest no release asset has. The parse keeps one entry per
+    tag, so without this refusal the later, genuine line would stand for both and the validator would
+    pass a block whose first `arm64_tahoe` line points at nothing. Every row above refuses too, so only
+    the message shows this guard fired."""
+    text = _merged()
+    real = _block_line(text, "    sha256 cellar: :any, arm64_tahoe:")
+    doubled = text.replace(real, real.replace("a" * 64, "0" * 64) + "\n" + real)
+    assert doubled.count("arm64_tahoe:") == 2, "the doubled line was not inserted, so this row proves nothing"
+    with pytest.raises(Refusal, match="twice"):
+        hb.parse_bottle_block(doubled)
+    with pytest.raises(Refusal, match="twice"):
+        _validate(doubled)
+
+
+def test_a_formula_with_no_resource_stanzas_is_refused():
+    """Without this refusal, reading the first stanza's position raises IndexError instead: the step still
+    fails, but with a traceback in place of the message that names the empty resource fill."""
+    with pytest.raises(Refusal, match="carries no resource stanzas"):
+        _validate(hb._STANZA_RE.sub("", _merged()))
+
+
 def test_the_cache_file_passes_when_its_digest_is_the_blocks():
     formula = _merged().replace("a" * 64, hashlib.sha256(b"payload").hexdigest())
     hb.check_cache_file(b"payload", formula, "arm64_tahoe")
@@ -814,6 +836,61 @@ def test_every_injection_into_every_line_of_the_measured_merge_is_refused():
     )
     accepted = [(kind, index) for kind, index, candidate in cases if not _refused("\n".join(candidate))]
     assert accepted == [], f"injections the validator accepted: {accepted[:20]}"
+
+
+def test_every_payload_inside_a_resource_stanzas_values_is_refused():
+    """The sweep above puts `#{1}` only straight after each opening quote. On a renderer or bottle-block
+    line that is enough, because every other character there is compared with a trusted value. A resource
+    stanza's values are backed by no trusted value at all: `_STANZA_RE`'s character classes are their
+    only check. So one stanza's name, url and sha256 each get every payload three ways:
+
+    - inserted at every position inside the quotes;
+    - written over the characters at every position, which keeps a fixed-length value its length, so a
+      widened fixed-count class is still reached, where an insertion always breaks the count;
+    - inserted at the same offset into the name and into the url's project, which keeps the name and
+      project comparison agreeing, so the two classes are reached as a pair, where an insertion into one
+      alone trips that comparison however wide the classes are.
+
+    One stanza stands for all of them, since every stanza is matched by the same pattern."""
+    text = _merged()
+    start = text.index('  resource "')
+    end = text.index("  end\n", start) + len("  end\n")
+    stanza = text[start:end]
+    quotes = [index for index, char in enumerate(stanza) if char == '"']
+    assert len(quotes) == 6, "the first stanza is not the name, url and sha256 values this sweep expects"
+    values = list(zip(quotes[0::2], quotes[1::2]))
+    (name_open, name_close), (url_open, url_close) = values[0], values[1]
+    name = stanza[name_open + 1:name_close]
+    project_start = stanza.rindex("/", url_open, url_close) + 1
+    assert stanza[project_start:project_start + len(name)] == name, (
+        "the first stanza's url does not start its file name with the resource name, so the paired cases "
+        "would not keep the name and project comparison agreeing")
+    payloads = ["#{1}", '"', "'", "`", ";", " ", "}"]
+
+    def placed(candidate):
+        return text[:start] + candidate + text[end:]
+
+    inserted = [placed(stanza[:position] + payload + stanza[position:])
+                for opening, closing in values
+                for position in range(opening + 1, closing + 1)
+                for payload in payloads]
+    overwritten = [placed(stanza[:position] + payload + stanza[position + len(payload):])
+                   for opening, closing in values
+                   for payload in payloads
+                   for position in range(opening + 1, closing - len(payload) + 1)]
+    paired = [placed(stanza[:name_open + 1 + offset] + payload
+                     + stanza[name_open + 1 + offset:project_start + offset] + payload
+                     + stanza[project_start + offset:])
+              for offset in range(len(name) + 1)
+              for payload in payloads]
+    expected = (sum(closing - opening for opening, closing in values) * len(payloads)
+                + sum(max(0, closing - opening - len(payload)) for opening, closing in values for payload in payloads)
+                + (len(name) + 1) * len(payloads))
+    cases = inserted + overwritten + paired
+    assert len(cases) == expected and inserted and overwritten and paired, (
+        "the generator produced the wrong number of cases; the loop below would prove less than it claims")
+    accepted = [index for index, candidate in enumerate(cases) if not _refused(candidate)]
+    assert accepted == [], f"payloads the validator accepted, by case index: {accepted[:20]}"
 
 
 @pytest.mark.parametrize(
@@ -1771,15 +1848,22 @@ def test_the_pushed_commit_changes_only_the_formula_on_top_of_the_base(tmp_path)
     assert changed == "Formula/job-sluice.rb\n"
 
 
-def test_a_hook_left_in_the_clone_does_not_run(tmp_path):
+# Both push arms. The default branch gets a plain push and a scratch branch a push under a lease, each
+# through its own git call in publish_push, so a property shown for one arm says nothing about the other.
+# The dry run takes the scratch arm once the tap holds a formula.
+_PUSH_ARMS = pytest.mark.parametrize("target", ["main", "bump-9.9.0"])
+
+
+@_PUSH_ARMS
+def test_a_hook_left_in_the_clone_does_not_run(tmp_path, target):
     url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
-    assert _prepare(tmp_path, url, base) == "push"
+    assert _prepare(tmp_path, url, base, target_branch=target) == "push"
     marker = tmp_path / "hook-ran"
     hook = tmp_path / "work" / "tap" / ".git" / "hooks" / "pre-push"
     hook.parent.mkdir(exist_ok=True)
     hook.write_text(f"#!/bin/sh\ntouch '{marker}'\n")
     os.chmod(hook, 0o755)
-    hb.publish_push(workdir=tmp_path / "work", push_url=url, target_branch="main")
+    hb.publish_push(workdir=tmp_path / "work", push_url=url, target_branch=target)
     assert not marker.exists()
 
 
@@ -1797,12 +1881,13 @@ def test_the_same_hook_runs_for_a_push_without_the_helper(tmp_path):
     assert marker.exists()
 
 
-def test_a_failed_push_does_not_print_the_token(tmp_path):
+@_PUSH_ARMS
+def test_a_failed_push_does_not_print_the_token(tmp_path, target):
     url, _seed, base = _make_tap(tmp_path, _formula_at("9.8.0"))
-    assert _prepare(tmp_path, url, base) == "push"
+    assert _prepare(tmp_path, url, base, target_branch=target) == "push"
     with pytest.raises(Refusal) as err:
         hb.publish_push(workdir=tmp_path / "work", push_url=url + "-SECRET-TOKEN-VALUE",
-                        target_branch="main", redact="SECRET-TOKEN-VALUE")
+                        target_branch=target, redact="SECRET-TOKEN-VALUE")
     assert "SECRET-TOKEN-VALUE" not in str(err.value)
     assert "***" in str(err.value), "the token never reached git's message, so its redaction is unproven"
 
