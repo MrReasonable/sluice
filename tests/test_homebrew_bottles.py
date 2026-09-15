@@ -27,6 +27,7 @@ import json
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 
@@ -1620,12 +1621,13 @@ def _git_run(cwd, *args):
     )
 
 
-def _make_tap(tmp_path, formula):
-    """A bare 'origin' with a main branch, optionally holding Formula/job-sluice.rb."""
-    origin = tmp_path / "origin.git"
-    _git_run(tmp_path, "init", "--bare", "-b", "main", str(origin))
-    seed = tmp_path / "seed"
-    _git_run(tmp_path, "clone", origin.as_uri(), str(seed))
+def _seed_tap(directory, formula):
+    """A bare 'origin' with a main branch, optionally holding Formula/job-sluice.rb, and the clone that
+    seeded it, both under `directory`. Returns the seed commit."""
+    origin = directory / "origin.git"
+    _git_run(directory, "init", "--bare", "-b", "main", str(origin))
+    seed = directory / "seed"
+    _git_run(directory, "clone", origin.as_uri(), str(seed))
     (seed / "README.md").write_text("tap\n")
     if formula is not None:
         (seed / "Formula").mkdir()
@@ -1633,7 +1635,38 @@ def _make_tap(tmp_path, formula):
     _git_run(seed, "add", "-A")
     _git_run(seed, "commit", "-m", "seed")
     _git_run(seed, "push", "origin", "HEAD:refs/heads/main")
-    return origin.as_uri(), seed, _git_run(seed, "rev-parse", "HEAD").stdout.decode().strip()
+    return _git_run(seed, "rev-parse", "HEAD").stdout.decode().strip()
+
+
+# One seeded tap per distinct seed formula, built once per module and copied into each test. Seeding takes
+# an init, a clone, a commit and a push, and repeating that for every git row made this the suite's
+# slowest file. Each test still gets an origin of its own to push to.
+_TAP_TEMPLATES = {}  # seed formula -> (template directory, seed commit)
+_TAP_TEMPLATE_ROOT = []
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _tap_template_root(tmp_path_factory):
+    _TAP_TEMPLATES.clear()
+    _TAP_TEMPLATE_ROOT[:] = [tmp_path_factory.mktemp("tap-templates")]
+    yield
+    _TAP_TEMPLATES.clear()
+
+
+def _make_tap(tmp_path, formula):
+    """A bare 'origin' with a main branch, optionally holding Formula/job-sluice.rb, and a clone whose
+    `origin` is that bare repository, both new to this test. Copied from a template seeded once per seed
+    formula, so the seed commit is the same in every copy of it."""
+    if formula not in _TAP_TEMPLATES:
+        template = _TAP_TEMPLATE_ROOT[0] / f"tap-{len(_TAP_TEMPLATES)}"
+        template.mkdir()
+        _TAP_TEMPLATES[formula] = (template, _seed_tap(template, formula))
+    template, base = _TAP_TEMPLATES[formula]
+    origin, seed = tmp_path / "origin.git", tmp_path / "seed"
+    shutil.copytree(template / "origin.git", origin, symlinks=True)
+    shutil.copytree(template / "seed", seed, symlinks=True)
+    _git_run(seed, "remote", "set-url", "origin", origin.as_uri())
+    return origin.as_uri(), seed, base
 
 
 def _commit_to(seed, branch, formula):
