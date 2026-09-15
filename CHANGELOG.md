@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.17.0](https://github.com/MrReasonable/sluice/compare/v2.16.1...v2.17.0) (2026-09-15)
+
+
+### Features
+
+* **packaging:** `brew install` now pours a prebuilt bottle on Apple Silicon Macs running macOS 15 or later, instead of compiling job-sluice and its Python dependencies from source. An Intel Mac, or an Apple Silicon Mac on macOS 14 or earlier, still builds from source. Each release builds the bottles on GitHub's macOS 15 and macOS 26 runners, publishes them to a release on the tap, fetches every bottle back from its public URL, and only then pushes a formula that points at them ([#279](https://github.com/MrReasonable/sluice/issues/279)) ([162c3ad](https://github.com/MrReasonable/sluice/commit/162c3adc6fa63321cb6a1b7ffaa96e44c2e2806b))
+
+
+### Documentation
+
+* **packaging:** say which Macs pour a Homebrew bottle ([#279](https://github.com/MrReasonable/sluice/issues/279)) ([e9f6b86](https://github.com/MrReasonable/sluice/commit/e9f6b86bdf3e962bac6ad8e7d72ab8efd60bf46e))
+
 ## [2.16.1](https://github.com/MrReasonable/sluice/compare/v2.16.0...v2.16.1) (2026-09-14)
 
 
