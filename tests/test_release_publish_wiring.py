@@ -2308,19 +2308,102 @@ def test_the_untrusted_jobs_run_only_the_rostered_scripts():
             assert re.fullmatch(r"bash \.github/scripts/homebrew_[a-z_]+\.sh", run), f"{job}: {run!r}"
 
 
+# Every action a workflow here uses: the commit its caching inputs were read at, and why it restores no
+# Actions cache as used. Each reason was read from the action's own action.yml at that commit, and for CodeQL
+# from its source too, never from a README. An action missing from this roster, or pinned at a commit other
+# than the one recorded, fails the test below until its caching inputs have been read again at the pin: a
+# re-pin can turn a new caching input on by default.
+_ACTIONS_WITHOUT_A_CACHE_RESTORE = {
+    "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "declares no caching input"),
+    "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "declares no caching input"),
+    "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "declares no caching input"),
+    "actions/create-github-app-token": ("bcd2ba49218906704ab6c1aa796996da409d3eb1", "declares no caching input"),
+    "actions/attest-build-provenance": ("4d101475d8b20a2381f78447822ac1eab6504dd8", "declares no caching input"),
+    "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97",
+                             "caches only through its `cache` input, which has no default"),
+    "actions/setup-node": ("820762786026740c76f36085b0efc47a31fe5020", "`package-manager-cache` defaults to true"),
+    "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "declares no caching input"),
+    "googleapis/release-please-action": ("45996ed1f6d02564a971a2fa1b5860e934307cf7", "declares no caching input"),
+    "github/codeql-action/init": ("cdf488f595d80d6e07e03d4674febd5ab45fa938",
+                                  "`trap-caching` and `dependency-caching` follow a server-side flag when unset, "
+                                  "and overlay analysis restores a database from the cache under another flag no "
+                                  "input controls (src/config-utils.ts::checkOverlayEnablement)"),
+    "github/codeql-action/analyze": ("cdf488f595d80d6e07e03d4674febd5ab45fa938",
+                                     "declares no caching input; the overlay mode it caches under is init's"),
+    "docker/setup-qemu-action": ("1f40c72289eff860ee54a304f1438e3cff362e0a", "`cache-image` defaults to true"),
+    "docker/setup-buildx-action": ("37fe631027851001ddb9b187196cc803df7f5f0e", "`cache-binary` defaults to true"),
+    "docker/login-action": ("dbcb813823bdd20940b903addbd779551569679f", "declares no caching input"),
+    "docker/build-push-action": ("53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+                                 "caches only through `cache-from` and `cache-to`, which have no default"),
+}
+
+# The inputs that cache unless a use turns them off: a default of true, or a flag decided outside this
+# repository.
+_CACHING_INPUTS_SET_OFF = {
+    "actions/setup-node": ("package-manager-cache",),
+    "github/codeql-action/init": ("trap-caching", "dependency-caching"),
+    "docker/setup-qemu-action": ("cache-image",),
+    "docker/setup-buildx-action": ("cache-binary",),
+}
+
+# The environment variables that stand in for an off switch no input provides, with the value that turns
+# caching off. Read from wherever the step gets them: the workflow's, the job's or the step's own `env:`.
+_CACHING_ENV_SET_OFF = {
+    "github/codeql-action/init": {"CODEQL_OVERLAY_DATABASE_MODE": "none"},
+}
+
+
 def test_no_workflow_restores_an_actions_cache():
     """The untrusted Homebrew jobs hold the run's Actions runtime token, which can save a cache entry,
     and GitHub scopes caches by branch rather than by workflow, so a later run on the same branch could
-    restore it. No workflow in this repository restores a cache, so nothing reads what they could
-    save; `actions/cache`, or a setup action's `cache:` input, anywhere would reopen that."""
+    restore it. So no workflow in this repository restores a cache.
+
+    Checked as the allowed shape rather than a list of bad spellings: every action used is in the roster
+    above at the commit recorded there, every input or environment switch that caches unless turned off is
+    off, no other `with:` key or value mentions caching, no roster entry goes unused, and a job that calls
+    a reusable workflow names one of this repository's own workflow files, which this same sweep reads. An
+    external reusable workflow would run in this repository's cache scope with none of its steps checked.
+    The first version refused only `actions/cache` and a key spelled exactly `cache`, and stayed green
+    while the docker job's qemu and buildx setup actions cached by default."""
     workflows = _workflow_files(ROOT / ".github" / "workflows")
-    assert HOMEBREW in workflows, "the sweep does not reach homebrew.yml, so it proves nothing"
+    assert HOMEBREW in workflows and RELEASE_PLEASE in workflows, (
+        "the sweep does not reach the release workflows, so it proves nothing")
+    local_workflows = {f"{prefix}.github/workflows/{path.name}" for path in workflows for prefix in ("./", "$/")}
+    used = set()
     for workflow in workflows:
-        for job, body in (_workflow(workflow).get("jobs") or {}).items():
+        parsed = _workflow(workflow)
+        for job, body in (parsed.get("jobs") or {}).items():
+            if "uses" in body:
+                assert body["uses"] in local_workflows, (
+                    f"{workflow.name} {job} calls {body['uses']!r}, which is not one of this repository's workflow "
+                    "files; an external reusable workflow runs in this repository's cache scope unchecked")
             for step in body.get("steps") or []:
-                action = step.get("uses", "").split("@")[0]
-                assert action.split("/")[:2] != ["actions", "cache"], f"{workflow.name} {job}: {step}"
-                assert "cache" not in (step.get("with") or {}), f"{workflow.name} {job}: {step}"
+                if "uses" not in step:
+                    continue
+                action, _, sha = step["uses"].partition("@")
+                used.add(action)
+                where = f"{workflow.name} {job}: {action}"
+                assert action in _ACTIONS_WITHOUT_A_CACHE_RESTORE, (
+                    f"{where} is not in _ACTIONS_WITHOUT_A_CACHE_RESTORE: read its action.yml at the pinned "
+                    "commit for inputs that cache, then add it with that commit and the reason")
+                read_at = _ACTIONS_WITHOUT_A_CACHE_RESTORE[action][0]
+                assert sha == read_at, (
+                    f"{where} is pinned at {sha}, but its caching inputs were read at {read_at}: read its "
+                    "action.yml at the new pin for inputs that cache, then update the roster")
+                set_off = _CACHING_INPUTS_SET_OFF.get(action, ())
+                arguments = step.get("with") or {}
+                for name in set_off:
+                    assert arguments.get(name) is False, f"{where} must set `{name}: false`; unset, it caches"
+                for key, value in arguments.items():
+                    if key not in set_off:
+                        assert "cach" not in f"{key} {value}".lower(), (
+                            f"{where} passes `{key}: {value}`, which can restore a cache")
+                environment = {**(parsed.get("env") or {}), **(body.get("env") or {}), **(step.get("env") or {})}
+                for name, off in _CACHING_ENV_SET_OFF.get(action, {}).items():
+                    assert environment.get(name) == off, (
+                        f"{where} must run with `{name}: {off}`; unset, it can restore a cache")
+    unused = sorted(set(_ACTIONS_WITHOUT_A_CACHE_RESTORE) - used)
+    assert not unused, f"roster entries no workflow uses, so their reasons are unchecked: {unused}"
 
 
 def test_every_homebrew_step_supplies_every_variable_its_command_reads():

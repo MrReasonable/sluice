@@ -21,7 +21,10 @@ name: Homebrew publish
 #     token, which can create an artifact under any name. That is why a token job validates every
 #     artifact it reads as data, and reads no output of theirs. The same token can save an Actions
 #     cache entry that a later run on this branch could restore, which is why no workflow in this
-#     repository restores a cache.
+#     repository restores a cache. That includes actions that cache unless told not to: every use of
+#     one turns its caching inputs off, or the environment switch that stands in for a missing input, and
+#     tests/test_release_publish_wiring.py::test_no_workflow_restores_an_actions_cache reads each
+#     action's caching inputs by name.
 #
 # No job or step carries `if:` or `continue-on-error`, and no `${{ }}` appears inside `run:`: every
 # value reaches a script through `env:`. tests/test_release_publish_wiring.py pins each of these.

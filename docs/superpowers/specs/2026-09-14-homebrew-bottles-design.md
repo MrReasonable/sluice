@@ -158,7 +158,9 @@ roster at pinned SHAs: `actions/checkout` of this repository at the release ref 
 `homebrew.yml` trusted jobs), `actions/download-artifact` (`upload`, `push`), and
 `actions/create-github-app-token` (`upload`, `push` only). `actions/cache` or a `setup-*` action with
 caching would restore an entry a third-party job can write, in this run or in an earlier run on the same branch (GitHub scopes caches by branch, not by workflow), which is why the roster
-is exact. `python3 -P` keeps the working directory off `sys.path` (measured: `sys.flags.safe_path`
+is exact, and why no workflow in the repository restores a cache. Several actions cache unless a use sets
+their caching inputs to false: the release's docker job ran qemu and buildx setup actions that did, until
+the post-merge review of #339 found them. `python3 -P` keeps the working directory off `sys.path` (measured: `sys.flags.safe_path`
 is true and the current directory is no longer the first entry).
 
 **Artifacts in a token job.** Every artifact downloads into a fresh directory under `$RUNNER_TEMP`,

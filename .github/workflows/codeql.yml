@@ -33,6 +33,13 @@ jobs:
   analyze:
     name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
+    # With GitHub's overlay-analysis feature flag on, a pull request's analysis restores an overlay-base
+    # database from the Actions cache and a default-branch analysis stores one
+    # (codeql-action's src/config-utils.ts::checkOverlayEnablement at the pinned commit). No `init`
+    # input controls that; this variable is the switch a workflow holds. Off, because no workflow here
+    # restores an Actions cache (homebrew.yml's header has the reason).
+    env:
+      CODEQL_OVERLAY_DATABASE_MODE: none
     permissions:
       # `security-events: write` is what uploads the SARIF; nothing else here needs a
       # token. Declared per job rather than at the top so the rest of the file keeps the
@@ -52,6 +59,11 @@ jobs:
           languages: ${{ matrix.language }}
           build-mode: none
           config-file: ./.github/codeql-config.yml
+          # Unset, both follow a server-side feature flag, so whether this job restores an Actions cache
+          # would be decided outside this repository. Off, because no workflow here restores one
+          # (homebrew.yml's header has the reason).
+          trap-caching: false
+          dependency-caching: false
       - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
         with:
           category: "/language:${{ matrix.language }}"
