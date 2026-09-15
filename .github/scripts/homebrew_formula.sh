@@ -34,11 +34,18 @@ if ! brew update-python-resources --version "$VERSION" --ignore-main-package-coo
   if ! EXTRAS="$(grep -oE 'job-sluice\[[a-z,]+\]' "$TAP_FORMULA" | head -1 | sed 's/.*\[//;s/\]//')" || [ -z "$EXTRAS" ]; then
     diag_fail "could not read the extras from the rendered formula"
   fi
-  if ! brew_prefix="$(brew --prefix python@3.14)" || [ -z "$brew_prefix" ]; then
-    diag_fail "could not locate the brewed python@3.14 prefix"
+  # The brewed interpreter is read from the rendered formula's own `depends_on "python@X.Y"` line,
+  # the same way the extras are read above, never written here: the renderer is where that version
+  # is declared, and a copy here would go stale on the Python bump most likely to make the resource
+  # fill fail, pointing this diagnostic at the old interpreter.
+  if ! PYTHON_FORMULA="$(grep -oE 'depends_on "python@[0-9]+\.[0-9]+"' "$TAP_FORMULA" | head -1 | sed -E 's/^depends_on "(python@[0-9]+\.[0-9]+)"$/\1/')" || [ -z "$PYTHON_FORMULA" ]; then
+    diag_fail "could not read the brewed python formula from the rendered formula"
+  fi
+  if ! brew_prefix="$(brew --prefix "$PYTHON_FORMULA")" || [ -z "$brew_prefix" ]; then
+    diag_fail "could not locate the brewed ${PYTHON_FORMULA} prefix"
   fi
   brew_py="${brew_prefix}/libexec/bin/python"
-  [ -x "$brew_py" ] || brew_py="${brew_prefix}/bin/python3.14"
+  [ -x "$brew_py" ] || brew_py="${brew_prefix}/bin/python${PYTHON_FORMULA#python@}"
   if [ ! -x "$brew_py" ]; then
     diag_fail "no executable python under ${brew_prefix}"
   fi

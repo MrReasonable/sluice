@@ -2042,6 +2042,18 @@ def test_the_formula_script_renders_fills_and_audits_in_order():
         "homebrew_formula.sh must use plan's SDIST_URL, never query PyPI a second time")
 
 
+def test_no_homebrew_script_names_a_python_version():
+    """homebrew_formula.sh's cooldown diagnostic reads the brewed interpreter from the rendered formula's
+    own `depends_on "python@X.Y"` line. A version written into a script instead goes stale on the
+    renderer's next Python bump, the change most likely to make the resource fill fail, and points the
+    diagnostic at the old interpreter."""
+    scripts = sorted(_CI_SCRIPTS.glob("homebrew_*.sh"))
+    assert _CI_SCRIPTS / "homebrew_formula.sh" in scripts, "the sweep does not reach homebrew_formula.sh"
+    for script in scripts:
+        body = "\n".join(_script_lines(script))
+        assert not re.search(r"python@?3\.[0-9]+", body), f"{script.name} names a python version"
+
+
 def test_the_bottle_script_builds_bottles_and_pours_in_order():
     _assert_in_order(_CI_SCRIPTS / "homebrew_bottle.sh", [
         ("auto-update off", r"export HOMEBREW_NO_AUTO_UPDATE=1"),
