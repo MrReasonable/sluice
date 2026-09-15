@@ -5602,7 +5602,7 @@ FAILS on its own assertion, then restore the file with `cp` from its `/tmp` back
 | in `homebrew-dry-run.yml`, move the refusal step's `if:` line up into the `preflight` job, above `runs-on:` | `test_the_dry_run_preflight_refuses_a_non_default_branch_before_its_lookup` |
 | in `homebrew-dry-run.yml`, delete `needs: [preflight]` | `test_the_dry_run_calls_the_same_workflow_after_its_preflight` |
 | in `release-please.yml`'s `homebrew` job, delete the `secrets:` line and the two lines under it | `test_the_release_job_calls_the_homebrew_workflow` |
-| in `homebrew_prove.sh`, append ` || :` to the line `mkdir -p "$MERGED_OUT"` (adds) | `test_every_homebrew_script_stops_at_its_first_failure` |
+| in `homebrew_prove.sh`, append a space and `\|\| :` to the line `mkdir -p "$MERGED_OUT"` (adds) | `test_every_homebrew_script_stops_at_its_first_failure` |
 | in `homebrew_bottle.sh`, delete the line `set -euo pipefail` | `test_every_homebrew_script_stops_at_its_first_failure` |
 | in `homebrew_formula.sh`, append a space and the owner segment of pyproject.toml's `Source` URL inside the quotes of the last `echo "::error::` line (adds) | `test_no_homebrew_file_names_the_owner_except_the_renderers_homepage` |
 
