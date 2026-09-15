@@ -14,6 +14,12 @@ name: Homebrew publish
 #     Only upload and push mint the token, and they read job outputs from plan alone. The dry run's
 #     `preflight` is trusted too, since its `version` output reaches them; it has no checkout, so its
 #     two `run:` bodies are pinned whole instead.
+#   - release-please.yml's `release-please` job is trusted BY EXCEPTION. Its `sha` output becomes this
+#     workflow's `ref`, the commit upload and push check out and run while holding the tap token, and
+#     it runs googleapis/release-please-action, which is not on the roster. That action is pinned to a
+#     full SHA and already writes to this repository with its own App token, the repository every
+#     channel ships from. Its job's steps are pinned whole instead: create-github-app-token, then
+#     release-please-action, and no `run:`.
 #   - formula, bottle and prove run Homebrew, PyPI resolution and Homebrew's gems. They run on macOS
 #     because a bottle is built for the macOS it runs on, and because the channel's payoff, Homebrew's
 #     CPython finding cairo and pango with no DYLD_FALLBACK_LIBRARY_PATH, is a macOS mechanism. They

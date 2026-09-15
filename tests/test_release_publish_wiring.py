@@ -2706,6 +2706,53 @@ def test_the_release_job_calls_the_homebrew_workflow():
     assert job["secrets"] == _APP_SECRETS, "pass the two secrets by name, never `secrets: inherit`"
 
 
+def test_the_release_please_job_runs_only_its_pinned_release_actions():
+    """The `release-please` job is trusted by exception (homebrew.yml's header): its `sha` output is the
+    `ref` that upload and push check out and run while holding the tap token. So its steps and its
+    outputs are pinned whole, the way the dry run's preflight is. A `run:` step, or any action beyond
+    these, would be code running beside the output the token jobs trust."""
+    job = _workflow(RELEASE_PLEASE)["jobs"]["release-please"]
+    assert set(job) == {"runs-on", "permissions", "steps", "outputs"}, sorted(job)
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["permissions"] == {"contents": "read"}
+    steps = job["steps"]
+    assert [step.get("uses", "").split("@")[0] for step in steps] == [
+        "actions/create-github-app-token", "googleapis/release-please-action"], steps
+    assert all("run" not in step for step in steps), steps
+    assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", step["uses"]) for step in steps), (
+        "pin each action to a full commit SHA")
+    assert steps[1]["id"] == "release"
+    # Every output, exactly: a job that needs this one reads whichever of them it names, so a repointed
+    # `version` or `tag_name`, or an output added beside these, changes what the jobs downstream receive
+    # while a `sha`-only row stays green. An output added to the workflow on purpose is added here too.
+    assert job["outputs"] == {
+        "release_created": "${{ steps.release.outputs.release_created }}",
+        "sha": "${{ steps.release.outputs.sha }}",
+        "tag_name": "${{ steps.release.outputs.tag_name }}",
+        "version": "${{ steps.release.outputs.version }}",
+        "major": "${{ steps.release.outputs.major }}",
+        "minor": "${{ steps.release.outputs.minor }}",
+    }, job["outputs"]
+    # Both steps' keys and inputs, exactly. The token step names no `owner` or `repositories`, so its token
+    # covers this repository alone: one that could also write the tap would give release-please-action the
+    # tap token's reach, which the exception does not grant it. The release step reads that token and its
+    # two config files, nothing else.
+    assert [set(step) for step in steps] == [{"uses", "id", "with"}, {"uses", "id", "with"}], steps
+    assert steps[0]["id"] == "app-token"
+    assert steps[0]["with"] == {
+        "client-id": "${{ secrets.RELEASE_PLEASE_CLIENT_ID }}",
+        "private-key": "${{ secrets.RELEASE_PLEASE_PRIVATE_KEY }}",
+        "permission-contents": "write",
+        "permission-pull-requests": "write",
+        "permission-issues": "write",
+    }, steps[0]["with"]
+    assert steps[1]["with"] == {
+        "token": "${{ steps.app-token.outputs.token }}",
+        "config-file": "release-please-config.json",
+        "manifest-file": ".release-please-manifest.json",
+    }, steps[1]["with"]
+
+
 def test_the_dry_run_calls_the_same_workflow_after_its_preflight():
     """No `if:` on the call: `if: always()` would run it after a failed refusal."""
     call = _workflow(HOMEBREW_DRY_RUN)["jobs"]["homebrew"]
