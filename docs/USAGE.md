@@ -279,7 +279,7 @@ role, lowercased, with each run of characters other than `a-z` and `0-9` turned 
 
 | File | Holds |
 |---|---|
-| `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: the rules, the job description and the source bundle. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
+| `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: everything the composer was shown, of which only the source bundle is citable. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
 | `cv.attempt-N.md` | the text attempt N's compose returned, before any gate ruled on it |
 | `cv.rendered.md` | the text handed to the renderer; absent when nothing was rendered |
 | `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
@@ -290,15 +290,28 @@ run wrote, so anything else in the directory, such as an earlier run's PDF, is n
 lead refused before composition (not shortlisted, held for sign-off, stale, or `skipped-config`)
 writes nothing and leaves the previous set as it was. A file that cannot be written, or a stale
 one that cannot be cleared, never fails the CV: a WARNING names the path and the error, and the
-result line says `artefacts_failed=True`. The prompt carries your verified evidence and your contact block, so
-keep `output_dir` outside anything you publish.
+result line says `artefacts_failed=True`. The prompt carries your verified evidence, your
+contact block and the lead's triage notes, so keep `output_dir` outside anything you publish.
+
+**Framing from triage.** When a lead carries `culture_flags` or `triage_concerns` (triage writes
+both), the composer is shown them in a TRIAGE NOTES section, as framing for which verified entries
+to lead with. It may neither cite nor mention them, and the fabrication gate never treats them as a
+source. To steer a lead triage never judged, set `status: shortlist` first, then write each key as
+one quoted line: `culture_flags: "positive: a, negative: b"` and `triage_concerns: "a; b"`. A
+default `triage run` re-judges `new`, `research` and `unjudgeable` leads and replaces both keys.
+A value typed across several lines is left alone by triage. As a YAML block list or block scalar
+it frames nothing, unless the key's own line holds only a comment, or a YAML tag or anchor: that
+line's text is framed instead. As a plain value continued on an indented line, it frames only its
+first line. Rewrite it as one quoted line. A one-line value with an indented comment line under it
+is left alone too. Blank both keys to compose a lead without framing.
 
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 
 Releases or discards a CV that composed clean against the hard fabrication gate but was held
 back by the softer advisory audit (`cv.require_signoff`, on by default). Without `--yes`,
-prompts interactively: lists the unsupported claims, prints the served path, then
-`sign off <slug>? [y/N] `. `--discard` rejects the held CV instead, freeing a fresh compose.
+prompts interactively: lists the triage notes the CV was composed with (context, not claims)
+and the unsupported claims, prints the served path, then `sign off <slug>? [y/N] `.
+`--discard` rejects the held CV instead, freeing a fresh compose.
 The held run's diagnostic artefacts (see `cv run` above) stay in place for as long as the
 hold does: `cv signoff` never touches them, and `cv run` refuses a held lead before composing,
 so it does not replace them either. The next compose after a `--discard` does.
@@ -826,10 +839,13 @@ promotion stays interactive-only (`job-sluice <kind> verify`). See
 - `cv_signoff(lead, discard=False, confirm_token=None)` -- resolve a #60 sign-off
   hold. `discard=True` clears it outright. **Promoting needs TWO calls**: the first
   (no `confirm_token`) writes nothing and returns a `confirm_token` bound to the
-  exact claims text; relay the claims to a human, get explicit approval, then call
-  again passing that token back to actually promote. A token whose claims have
-  since changed (a re-compose interleaved) returns `stale_confirmation` with a
-  fresh token, having written nothing.
+  exact hold (its claims and any framing); relay the claims to a human, get
+  explicit approval, then call again passing that token back to actually
+  promote. Any framing (the triage notes the CV was composed with) comes back
+  in its own `framing` list, never inside `claims`, to show the human as
+  context. A token whose claims or framing have since changed (a re-compose
+  interleaved) returns `stale_confirmation` with a fresh token, having written
+  nothing.
 - `create_lead(title, company, url, location="", salary="", job_type="",
   source="manual")` -- create a new lead note directly, for a job a human found
   that no scanner ingested. Lands at `status: new`; `job-sluice triage run`

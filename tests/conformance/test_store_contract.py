@@ -29,7 +29,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
 from sluice.core.protocols import EVIDENCE_KINDS, CandidateProfile, Store
-from tests.conformance.seeds import seed
+from tests.conformance.seeds import seed, witness
 from tests.conftest import LOCATIONS
 
 _STORES = Sluice.available("store")
@@ -1161,6 +1161,65 @@ def test_update_fields_require_status_writes_on_a_fresh_match(store_name, tmp_pa
 
     assert wrote is True
     assert store.read_leads()[0].status == "dismiss"
+
+
+def test_update_fields_preserve_block_values_leaves_a_multi_line_value_unwritten(
+        store_name, tmp_path, monkeypatch):
+    """#329. A key named in `preserve_block_values` whose FRESH stored value spans several lines
+    is left unwritten, and the other named fields still land.
+
+    The seeder puts the value in place the way the store holds it, so this row asserts only what
+    the contract promises: the key reads back exactly as it did before the write, whatever that
+    read-back looks like for a given store. For the vault, a single-line write over a hand-typed
+    block list replaces only the key's own line and orphans the items under a plain value, which
+    a YAML reader then refuses.
+
+    `fm` alone cannot see a store that deletes or rewrites the block's ITEMS while leaving the
+    key's own line in place -- the vault reads a block list back as `""` either way -- so this
+    row also compares the key's raw on-disk representation (`witness`, independent of the
+    store's own multi-line detection) before and after the write."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, multi_line_key="triage_concerns")
+    ref = store.read_leads()[0].ref
+    before = store.read_leads()[0].fm.get("triage_concerns", "")
+    before_raw = witness(store_name, store, "triage_concerns")
+
+    wrote = store.update_fields(ref, {"status": "research", "triage_concerns": '"written"'},
+                                preserve_block_values=frozenset({"triage_concerns"}))
+
+    after = store.read_leads()[0]
+    after_raw = witness(store_name, store, "triage_concerns")
+    assert wrote is True, "the other named fields changed, so the write must report True"
+    assert after.status == "research", "preserving one key must not refuse the whole write"
+    assert after.fm.get("triage_concerns", "") == before, "a multi-line value was overwritten"
+    assert after.fm.get("triage_concerns", "") != "written", "a multi-line value was overwritten"
+    assert after_raw == before_raw, \
+        "the key's raw block changed even though `fm` still reads back the old value"
+
+
+def test_update_fields_append_note_abstains_on_a_multi_line_relevance_notes(
+        store_name, tmp_path, monkeypatch):
+    """#329. `append_note`'s obligation is its own write path, not a
+    `fields` key, so it is NOT covered by `preserve_block_values` -- the guard has to fire on
+    its own when the FRESH stored `relevance_notes` spans several lines. Beside the
+    `preserve_block_values` row above: the append is left undone, the key's raw block is
+    untouched, and the other named field still lands."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, multi_line_key="relevance_notes")
+    ref = store.read_leads()[0].ref
+    before = store.read_leads()[0].fm.get("relevance_notes", "")
+    before_raw = witness(store_name, store, "relevance_notes")
+
+    wrote = store.update_fields(ref, {"status": "research"},
+                                append_note="PROBE-NOTE", note_tag="[probe]")
+
+    after = store.read_leads()[0]
+    after_raw = witness(store_name, store, "relevance_notes")
+    assert wrote is True, "the status field still landed, so the write must report True"
+    assert after.status == "research", "the append guard must not refuse the whole write"
+    assert after.fm.get("relevance_notes", "") == before, "a multi-line value was overwritten"
+    assert after_raw == before_raw, \
+        "the key's raw block changed even though `fm` still reads back the old value"
 
 
 def test_update_fields_require_status_compares_the_NORMALIZED_status(store_name, tmp_path,

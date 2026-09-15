@@ -183,6 +183,14 @@ def cfg_titles(titles):
 # and the conformance suite cannot receive a fixture.
 LOCATIONS = ("Alfa", "Bravo", "Charlie", "Foxtrot")
 
+# Synthetic triage framing values (#329). A lead's `culture_flags` and `triage_concerns` reach the
+# CV composer's prompt, so a realistic flag or concern here would be a shipped opinion about which
+# jobs are good, sitting in a public test tree. Obvious tokens only, held in ONE place so every
+# triage, cv, sign-off and MCP row draws from the same neutral values -- and never the word the CV
+# test doubles use to tell a compose prompt from an audit prompt.
+FRAMING_FLAGS = ("positive: SYNTHETIC-FLAG-A", "negative: SYNTHETIC-FLAG-B")
+FRAMING_CONCERNS = ("SYNTHETIC-CONCERN-A", "SYNTHETIC-CONCERN-B")
+
 
 @pytest.fixture
 def locations():

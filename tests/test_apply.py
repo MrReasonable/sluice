@@ -1,6 +1,11 @@
 import os
+
+import pytest
+
+from sluice.core.leads import FRAMING_KEYS
 from sluice.core.vault import Vault
 from sluice.triage.apply import apply_classification, apply_verdict, clamp_verdict
+from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
 
 
 def _note(vault, name, fm_lines):
@@ -28,8 +33,8 @@ def test_apply_verdict_writes_all_fields(tmp_path):
                       'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     verdict = {"verdict": "shortlist", "relevance_score": 82,
-               "fit_reasoning": "Strong single-team fit.",
-               "concerns": ["remote-only"], "culture_flags": ["fast-paced"],
+               "fit_reasoning": "SYNTHETIC-FIT",
+               "concerns": list(FRAMING_CONCERNS), "culture_flags": list(FRAMING_FLAGS),
                "recommended_next_action": "apply"}
     dossier = {"glassdoor": {"rating": "4.1"}}
     assert apply_verdict(v, note, verdict, dossier) == "applied"
@@ -37,8 +42,40 @@ def test_apply_verdict_writes_all_fields(tmp_path):
     assert after.status == "shortlist"
     assert after.fm["score"] == "82"
     assert after.fm["glassdoor_rating"] == "4.1"
-    assert "fast-paced" in after.fm["culture_flags"]
-    assert "Strong single-team fit." in after.fm["relevance_notes"]
+    # Exact equality, not `in`: the key is what the CV composer reads, so its whole value matters.
+    assert after.fm["culture_flags"] == ", ".join(FRAMING_FLAGS)
+    assert after.fm["triage_concerns"] == "; ".join(FRAMING_CONCERNS)
+    assert "SYNTHETIC-FIT" in after.fm["relevance_notes"]
+
+
+def test_every_framing_key_gets_a_non_blank_value_from_a_verdict_carrying_both(tmp_path):
+    # #329: `apply_verdict`'s write loop hand-types `("culture_flags", flags),
+    # ("triage_concerns", concerns)` by field name rather than iterating `FRAMING_KEYS`. This
+    # guards the roster against the write loop drifting from it: a key added to `FRAMING_KEYS`
+    # with no matching entry in the loop would read blank forever, and this row would catch it.
+    v = Vault(str(tmp_path))
+    _note(v, "D.md", ['company: "Delta"', "status: new", "score: 0",
+                      'glassdoor_rating: ""', 'culture_flags: ""', 'triage_concerns: ""',
+                      'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    verdict = {"verdict": "shortlist", "relevance_score": 82,
+               "concerns": list(FRAMING_CONCERNS), "culture_flags": list(FRAMING_FLAGS)}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    after = v.read_leads()[0]
+    for key in FRAMING_KEYS:
+        assert after.fm.get(key, "") != "", f"{key} was not written by a verdict carrying both"
+
+
+def test_a_later_verdict_with_no_concerns_clears_triage_concerns(tmp_path):
+    # The key holds the LATEST judgement. A verdict with no concerns must clear an earlier value,
+    # or the CV composer is framed by a judgement triage has since withdrawn.
+    v = Vault(str(tmp_path))
+    _note(v, "C.md", ['company: "Gamma"', "status: new", "score: 0",
+                      f'triage_concerns: "{FRAMING_CONCERNS[0]}"', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 60,
+                                   "concerns": []}, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_concerns"] == ""
 
 
 def test_never_clobbers_application_status(tmp_path):
@@ -202,3 +239,32 @@ def test_an_ordinary_verdict_may_still_rewrite_a_shortlisted_lead(tmp_path):
                "fit_reasoning": "Scope is above the target shape on a full re-read."}
     assert apply_verdict(v, note, verdict, {}) == "applied"
     assert v.read_leads()[0].status == "dismiss"
+
+
+@pytest.mark.parametrize("field,key,values", [
+    ("concerns", "triage_concerns", FRAMING_CONCERNS),
+    ("culture_flags", "culture_flags", FRAMING_FLAGS),
+])
+def test_one_unsafe_item_drops_only_itself_and_replaces_the_earlier_value(tmp_path, field, key,
+                                                                          values):
+    # Before #329 one unsafe item failed the JOINED value, the key was skipped, and the PREVIOUS
+    # verdict's value stayed on the note -- where the CV composer would now read it as framing.
+    v = Vault(str(tmp_path))
+    _note(v, "K.md", ['company: "Delta"', "status: new", "score: 0",
+                      f'{key}: "EARLIER-VALUE"', 'relevance_notes: ""'])
+    note = v.read_leads({"new"})[0]
+    verdict = {"verdict": "research", "relevance_score": 60, field: [values[0], 'UN"SAFE']}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].fm[key] == values[0]
+
+
+def test_a_verdict_with_no_usable_verdict_field_writes_nothing(tmp_path):
+    # Before #329 a null verdict clamped to `needs_review`, moving the lead out of the default
+    # run's selection with no failure reported anywhere.
+    v = Vault(str(tmp_path))
+    _note(v, "L.md", ['company: "Epsilon"', "status: research", "score: 72",
+                      'relevance_notes: ""'])
+    note = v.read_leads({"research"})[0]
+    before = open(note.ref, encoding="utf-8").read()
+    assert apply_verdict(v, note, {"verdict": None, "relevance_score": 80}, {}) == "skipped"
+    assert open(note.ref, encoding="utf-8").read() == before
