@@ -163,8 +163,10 @@ roster at pinned SHAs: `actions/checkout` of this repository at the release ref 
 caching would restore an entry a third-party job can write, in this run or in an earlier run on the same branch (GitHub scopes caches by branch, not by workflow), which is why the roster
 is exact, and why no workflow in the repository restores a cache. Several actions cache unless a use sets
 their caching inputs to false: the release's docker job ran qemu and buildx setup actions that did, until
-the post-merge review of #339 found them. `python3 -P` keeps the working directory off `sys.path` (measured: `sys.flags.safe_path`
-is true and the current directory is no longer the first entry).
+the post-merge review of #339 found them. `python3 -P` removes the script's own directory from
+`sys.path` (measured with the working directory and the script's directory apart and `PYTHONPATH` unset:
+without `-P` the script's directory is listed, with it neither is, and `sys.flags.safe_path` is true).
+The helper loads the renderer from its file, so it adds no entry of its own.
 
 **Artifacts in a token job.** Every artifact downloads into a fresh directory under `$RUNNER_TEMP`,
 outside `$GITHUB_WORKSPACE` and every git work tree, before any clone. Nothing from that directory is
