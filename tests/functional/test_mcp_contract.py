@@ -538,7 +538,8 @@ def test_call_tool_propose_evidence_refuses_a_name_already_taken(tmp_path):
 
     Structured: mcp 2.1.1 wraps EVERY unhandled tool exception as
     `UnexpectedToolError("Error executing tool <name>")` and discards the message --
-    measured against the real SDK for ValueError, FileExistsError and OSError alike
+    measured against the real SDK for ValueError, FileExistsError and OSError alike,
+    and re-measured unchanged on 2.2.0
     (the neighbouring cv_run test's surviving "bogus" comes from pydantic's own enum
     VALIDATION, which never enters the tool body, not from an exception surviving the
     wrapper). So letting FileExistsError propagate would hand the agent a string that

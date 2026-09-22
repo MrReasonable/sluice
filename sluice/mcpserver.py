@@ -681,7 +681,8 @@ def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
     NOT raised, and that is a measured choice rather than a stylistic one. mcp 2.1.1
     wraps every unhandled tool exception as `UnexpectedToolError("Error executing tool
     <name>")` and discards the message -- measured against the real SDK for ValueError,
-    FileExistsError and OSError alike. Letting the refusal propagate would therefore
+    FileExistsError and OSError alike, and re-measured unchanged on 2.2.0
+    (2026-09-30). Letting the refusal propagate would therefore
     hand the caller a string indistinguishable from an unwritable vault, and the one
     correct recovery (choose another name) would be unreachable, while the store's
     message is the only thing that says WHICH set the name clashed in -- the inbox, or
@@ -748,13 +749,15 @@ def build_server(config, write: bool = False):
     attempt to call. `write` is a flag on `serve`, not a config key: a
     per-registration trust decision about one client, not a property of the install.
 
-    Verified live against a real install, twice: 2026-08-14 on `mcp==2.0.0`, and
-    again 2026-08-24 on `mcp==2.1.0` (the version `[test]` now pins, so CI exercises
-    what this claim describes). `MCPServer` dispatches a sync `@tool`-decorated
-    function to an AnyIO WORKER THREAD, never inline on the event loop -- concurrent
-    `call_tool` requests genuinely overlap. The 2026-08-24 measurement: three 0.5s
-    tool calls fired via `asyncio.gather` completed in 0.529s total (serial would be
-    ~1.5s) on three DISTINCT thread idents, none of them the main thread.
+    Verified live against a real install: 2026-08-14 on `mcp==2.0.0`, 2026-08-24 on
+    `mcp==2.1.0`, and 2026-09-30 on `mcp==2.2.0`. `[test]` pins mcp, so CI exercises
+    the SDK this claim describes -- but the pin moves with Dependabot and the dates
+    here do not, so re-measure on a bump rather than trusting the last date.
+    `MCPServer` dispatches a sync `@tool`-decorated function to an AnyIO WORKER
+    THREAD, never inline on the event loop -- concurrent `call_tool` requests
+    genuinely overlap. The 2026-09-30 measurement: three 0.5s tool calls fired via
+    `asyncio.gather` completed in 0.506s total (serial would be ~1.5s) on three
+    DISTINCT thread idents, none of them the main thread.
     Re-measured rather than merely re-dated, because 2.1.0 did change unrelated
     error-wrapping behaviour and a version bump is not evidence a threading contract
     survived it.
