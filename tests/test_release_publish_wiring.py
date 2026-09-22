@@ -2336,16 +2336,16 @@ _ACTIONS_WITHOUT_A_CACHE_RESTORE = {
     "actions/setup-node": ("820762786026740c76f36085b0efc47a31fe5020", "`package-manager-cache` defaults to true"),
     "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "declares no caching input"),
     "googleapis/release-please-action": ("45996ed1f6d02564a971a2fa1b5860e934307cf7", "declares no caching input"),
-    "github/codeql-action/init": ("cdf488f595d80d6e07e03d4674febd5ab45fa938",
+    "github/codeql-action/init": ("1c5b675653bb5c22dbe9b12b556ec555138e09fd",
                                   "`trap-caching` and `dependency-caching` follow a server-side flag when unset, "
                                   "and overlay analysis restores a database from the cache under another flag no "
                                   "input controls (src/config-utils.ts::checkOverlayEnablement)"),
-    "github/codeql-action/analyze": ("cdf488f595d80d6e07e03d4674febd5ab45fa938",
+    "github/codeql-action/analyze": ("1c5b675653bb5c22dbe9b12b556ec555138e09fd",
                                      "declares no caching input; the overlay mode it caches under is init's"),
-    "docker/setup-qemu-action": ("1f40c72289eff860ee54a304f1438e3cff362e0a", "`cache-image` defaults to true"),
-    "docker/setup-buildx-action": ("37fe631027851001ddb9b187196cc803df7f5f0e", "`cache-binary` defaults to true"),
+    "docker/setup-qemu-action": ("99012661954931238ded8c8b007157a8430204e1", "`cache-image` defaults to true"),
+    "docker/setup-buildx-action": ("f87e5991a6d7451dcb8d9637bfbc97413f497069", "`cache-binary` defaults to true"),
     "docker/login-action": ("dbcb813823bdd20940b903addbd779551569679f", "declares no caching input"),
-    "docker/build-push-action": ("53b7df96c91f9c12dcc8a07bcb9ccacbed38856a",
+    "docker/build-push-action": ("c3c9e263c25d99ce0380d002d59b67737d91b0dc",
                                  "caches only through `cache-from` and `cache-to`, which have no default"),
 }
 
