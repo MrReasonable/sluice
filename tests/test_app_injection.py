@@ -663,3 +663,29 @@ def test_an_unknown_seam_names_every_real_seam_at_both_raise_sites():
         Sluice(Config(), definitely_not_a_seam=object())
     missing = [seam for seam in _SEAMS if seam not in str(ctor.value)]
     assert not missing, f"the seam-override raise omits real seams: {missing}"
+
+
+def test_sign_off_cv_binds_a_blank_snapshot_to_the_store_write():
+    """#329: with a blank `pending_cv` in the snapshot the facade lets the store decide, and binds
+    that call to the blank value so a hold placed in between returns `stale` rather than being
+    promoted with no confirmation."""
+    from sluice.core.protocols import LeadNote
+
+    class _Store:
+        calls = []
+
+        def read_leads(self, statuses=None):
+            return [LeadNote(ref="r", slug="example-foundry-analyst",
+                             fm={"company": "Example Foundry", "role": "Analyst",
+                                 "status": "shortlist", "pending_cv": ""}, body="",
+                             status="shortlist")]
+
+        def sign_off(self, ref, **kw):
+            self.calls.append(kw)
+            return "nothing"
+
+    store = _Store()
+    result = Sluice(Config(), store=store).sign_off_cv(lead="example-foundry-analyst")
+
+    assert result.outcome == "nothing"
+    assert store.calls == [{"accept": True, "require_pending": ""}]

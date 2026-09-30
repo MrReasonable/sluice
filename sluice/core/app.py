@@ -1943,7 +1943,18 @@ class Sluice:
         note = notes[0]
         pending = note.fm.get("pending_cv") or ""
         if not pending:
-            return SignOffResult(slug=note.slug, outcome="nothing")
+            # A blank snapshot is not proof that nothing is pending: a hand-typed `pending_cv:`
+            # holding a list reads blank on its own line (#329), and answering here left the
+            # user with "nothing pending" while `leads dismiss` refused the same lead as held.
+            # The store reads the fresh note, writes nothing, and names a spread value.
+            # Bound to the blank snapshot: a hold placed after it returns `stale` rather than
+            # being promoted without the confirmation this path never asked for.
+            try:
+                return SignOffResult(slug=note.slug, outcome=store.sign_off(
+                    note.ref, accept=accept, require_pending=""))
+            except VaultConflict as e:
+                _log.warning("cv signoff for %s lost the write race: %s", note.ref, e)
+                return SignOffResult(slug=note.slug, outcome="conflict")
         if confirm is not None:
             raw = note.fm.get("needs_signoff")
             claims = []

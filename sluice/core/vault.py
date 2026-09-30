@@ -15,6 +15,7 @@ The engine's Lead model is source-agnostic (title, job_type); the vault schema's
 """
 import copy
 import dataclasses
+import functools
 import hashlib
 import json
 import os
@@ -138,10 +139,25 @@ def _parse_fm_spaced(inner: str | None) -> dict:
     """Frontmatter parse tolerant of spaced keys ('Best For'), quotes, and YAML
     block-list values (Category:\n  - Process\n  - Leadership) - the Experience
     Library format. Block-list items are joined into a comma-separated string so
-    every field stays a str. Line-based, stdlib only."""
+    every field stays a str. Line-based, stdlib only.
+
+    Only TOP-LEVEL keys are read -- a key line at the frontmatter's base indent, as
+    `_key_lines` defines it -- because this is the read that decides citability: a
+    `verified:` nested under another mapping is not the entry's `verified` key, and
+    counting it made a hand note citable (#329). A nested key line also ends the list
+    the last top-level key was collecting, so items under it are not joined to that key.
+
+    A NESTED key line still counts for one thing: a key it names reads absent. The old
+    any-indent read took the last line of a key, so a nested blank `verified:` after a top-level
+    stamp un-cited the entry, and a nested blank `Metrics:` hid the top-level figure from the
+    gate; reading top-level only would have made both citable and licensed. This read may
+    narrow what is citable, never widen it, so it fails closed for every key."""
     out: dict = {}
+    nested_names: set = set()
     last_key = None
-    for line in (inner or "").splitlines():
+    lines = (inner or "").splitlines()
+    base = _base_indent(lines)
+    for line in lines:
         stripped = line.lstrip()
         if stripped.startswith("- ") and last_key is not None:
             item = stripped[2:].strip().strip('"')
@@ -149,10 +165,16 @@ def _parse_fm_spaced(inner: str | None) -> dict:
                 out[last_key] = f"{out[last_key]}, {item}" if out[last_key] else item
             continue
         if ":" in line and not stripped.startswith("-"):
+            if line[:len(line) - len(stripped)] != base:
+                nested_names.add(stripped.partition(":")[0].strip())
+                last_key = None
+                continue
             k, _, val = line.partition(":")
             key = k.strip()
             out[key] = val.strip().strip('"')
             last_key = key
+    for name in nested_names:
+        out.pop(name, None)
     return out
 
 
@@ -1768,9 +1790,11 @@ class Vault:
         `require_blank` it gates nothing; the presence check it widens simply never runs.
 
         Both guards assume a well-formed note: `require_status`/`require_blank` read via
-        `_fm_value` (FIRST occurrence of `key:`), while `note.fm` -- what a caller's own
-        blank/status check runs against before ever calling this method -- is built via
-        `_fm_dict` (LAST occurrence wins on a duplicate key). `_set_fm` cannot itself create a
+        `_fm_value` (FIRST top-level occurrence of `key:`), while `note.fm` -- what a caller's
+        own blank/status check runs against before ever calling this method -- is built via
+        `_fm_dict` (LAST top-level occurrence wins on a duplicate key). Both find a key at the
+        frontmatter's base indent only (`_key_lines`), so a same-named key nested under another
+        mapping is invisible to both (#329). `_set_fm` cannot itself create a
         duplicate (it replaces the first match or appends if absent), so this only matters for
         a hand-edited note carrying the same key twice. Traced for every 2-occurrence
         combination: the caller's own pre-check (via `note.fm`) always runs first and already
@@ -1799,8 +1823,7 @@ class Vault:
             # into the presence check too, on the SAME fresh `inner` -- there is no separate
             # read to go stale.
             if require_blank is not None and any(
-                    not _counts_as_blank(_fm_value(inner, key), blank_values)
-                    for key in require_blank):
+                    not _counts_as_blank(inner, key, blank_values) for key in require_blank):
                 return text
             # Third guard, same freshness rule and the same reason (#223). `require_blank`
             # asks "is this still empty"; this asks "is this still EXACTLY what I read",
@@ -1818,14 +1841,18 @@ class Vault:
             # A caller that passed a folded value would compare `contract` against a
             # stored `Contract` and the write would never land -- silently, which is the
             # dangerous direction for a guard that reports refusal and no-op alike.
+            # A value spread over several lines never compares equal (#329): its own line reads
+            # blank, as does the caller's `note.fm` snapshot of it, so the two would agree and
+            # the write would land over a hand-typed block list.
             if require_unchanged is not None and any(
-                    _fm_value(inner, key) != expected
+                    _value_state(inner, key) != (expected, False)
                     for key, expected in require_unchanged.items()):
                 return text
-            # Decided once, against the fresh note, BEFORE any field is written: `_set_fm`
-            # matches a key at any indentation, so an earlier write in the loop below can move
-            # a nested child line to column 0 and make a block value look single-line to a
-            # check made after it.
+            # Decided once, against the fresh note, BEFORE any field is written, so every key is
+            # judged on the note as the human left it. A write replaces only its own key's
+            # top-level line (`_set_fm`), so no write in the loop below can move a nested child
+            # line and change what this reads; deciding first keeps that true of any write added
+            # to the loop later.
             preserved = {key for key in (preserve_block_values or ())
                          if key in fields and _holds_multiline_value(inner, key)}
             for key in sorted(preserved):
@@ -1843,8 +1870,8 @@ class Vault:
                     "vault: %s left unwritten for %s -- a single-line write would break the "
                     "note's frontmatter as PyYAML reads it", key, ref)
             preserved |= breaks_note
-            # #329: decided here too, against the same fresh `inner`, before any
-            # field write can move a nested child line and change what this reads. The append
+            # #329: decided here too, against the same fresh `inner`, before any field is
+            # written, for the reason given above. The append
             # is its own write path, not a `fields` key, so `preserve_block_values` does not
             # cover it -- but a single-line append over a hand-typed multi-line
             # `relevance_notes` corrupts it exactly the way an unguarded `fields` write would.
@@ -1859,7 +1886,7 @@ class Vault:
                     "vault: relevance_notes not appended for %s -- it holds a value spread "
                     "over several lines, which the append would corrupt", ref)
             elif append_note and note_tag:
-                current = _fm_own_line_value(inner, "relevance_notes")
+                current = _fm_value(inner, "relevance_notes")
                 if note_tag not in current:
                     # Guarded at the SINK, not at each caller. `append_note` lands in
                     # `relevance_notes`, which is FRONTMATTER despite the parameter reading
@@ -2466,8 +2493,15 @@ class Vault:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 inner, body = "", text
-            if only_if_absent and _fm_value(inner, "tailored_cv"):
+            # A hand-typed value spread over several lines counts as present (#329).
+            if only_if_absent and _is_present(inner, "tailored_cv"):
                 return text
+            # Unguarded, a spread value would be overwritten on its key line with its items
+            # orphaned. Refuse by name: returning False here would be reported as rendered.
+            if _holds_multiline_value(inner, "tailored_cv"):
+                raise MalformedNoteField(
+                    f"{ref}: tailored_cv holds a value spread over several lines; writing the CV "
+                    "pointer would orphan it -- rewrite it as one line or clear it")
             inner = _set_fm(inner, "tailored_cv", value)
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
@@ -2488,8 +2522,16 @@ class Vault:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 inner, body = "", text
-            if _fm_value(inner, "tailored_cv"):
+            if _is_present(inner, "tailored_cv"):
                 return text  # a real CV already won; do not latch a redundant hold
+            # #329: a marker spread over several lines reads blank on its own line, so the
+            # engine's snapshot latch misses it; stamping over it would orphan the items. Refuse
+            # by name rather than return False, which the caller reports as skipped-has-cv.
+            for key in ("pending_cv", "needs_signoff"):
+                if _holds_multiline_value(inner, key):
+                    raise MalformedNoteField(
+                        f"{ref}: {key} holds a value spread over several lines; a sign-off hold "
+                        "would orphan it -- rewrite it as one line or clear it")
             inner = _set_fm(inner, "pending_cv", pending)
             inner = _set_fm(inner, "needs_signoff", claims)
             stamped[0] = True
@@ -2505,7 +2547,9 @@ class Vault:
         accept=False -> 'discarded'; accept and tailored_cv ABSENT -> set tailored_cv =
         pending_cv, 'promoted'; accept but tailored_cv already PRESENT -> leave it (a
         real CV appeared since -- a direct set_tailored_cv), 'collision'. No pending_cv
-        -> unchanged, 'nothing'. The tailored_cv check lives inside the transform
+        -> unchanged, 'nothing'; so is a pending_cv or needs_signoff spread over several
+        lines, logged, since `_del_fm` would orphan its items (#329). A tailored_cv spread
+        over several lines counts as present. The tailored_cv check lives inside the transform
         (atomic under CAS, mirroring set_tailored_cv(only_if_absent=...)), so the
         pointer is never clobbered. The returned string is DISTINCT from _cas_write's
         write-happened bool: the collision case WRITES (clears markers) yet is not
@@ -2524,17 +2568,31 @@ class Vault:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 return text
+            # #329: `_del_fm` removes a key's own line only, so a marker spread over several
+            # lines -- only a hand edit makes one; `hold_for_signoff` writes both on one line --
+            # would leave its item lines under the key before it. Write nothing, and say why.
+            # Checked BEFORE the blank test below: a blank `pending_cv:` holding a list reads
+            # blank on its own line, and returning there first said nothing at all.
+            spread = [k for k in ("pending_cv", "needs_signoff") if _holds_multiline_value(inner, k)]
+            if spread:
+                _log.warning(
+                    "vault: sign-off left undone for %s -- %s holds a value spread over several "
+                    "lines, which clearing it would corrupt", ref, ", ".join(spread))
+                return text
             pending = _fm_value(inner, "pending_cv")
             if not pending:
                 return text  # nothing to resolve -> _cas_write no-op
             if require_pending is not None and pending != require_pending:
                 outcome[0] = "stale"
                 return text  # a mismatch is also a _cas_write no-op -- nothing written
+            # Decided on the note as read, before the markers are deleted, so the answer does
+            # not depend on which line the deletions leave after `tailored_cv`.
+            has_cv = _is_present(inner, "tailored_cv")
             inner = _del_fm(inner, "pending_cv")
             inner = _del_fm(inner, "needs_signoff")
             if not accept:
                 outcome[0] = "discarded"
-            elif _fm_value(inner, "tailored_cv"):
+            elif has_cv:
                 outcome[0] = "collision"  # a real CV won the race; stale markers cleared, pointer kept
             else:
                 inner = _set_fm(inner, "tailored_cv", pending)
@@ -2602,17 +2660,26 @@ class Vault:
             # own. Unlike read_leads, skipping here costs nothing: there is no lead to lose.
             if not _is_lead_note(_fm_dict(inner)):
                 continue
-            raws = re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)
-            norms = [_status.normalize(r.strip()) for r in raws]
+            found = _key_lines(inner, "status")
+            norms = [_status.normalize(value.strip()) for _i, value, _indent in found]
+            # #329: a status spread over several lines is hands-off too -- collapsing it to one
+            # line would orphan the rest -- and reported beside the conflicts, since both need a
+            # human to settle the value.
+            if _status_spans_lines(inner):
+                summary["conflicts"].append((name, ["(spread over several lines)"]))
+                continue
             if len(set(norms)) > 1:  # conflicting duplicate statuses -> hands off
                 summary["conflicts"].append((name, sorted(set(norms))))
                 continue
             canonical = norms[0] if norms else ""
             if not _status.is_canonical(canonical):
                 summary["unknown"].append(canonical)
-            status_lines = [line for line in inner.split("\n")
-                            if re.match(r"^\s*status\s*:", line)]
-            already = len(status_lines) == 1 and status_lines[0].strip() == f"status: {canonical}"
+            lines = inner.split("\n")
+            status_lines = [lines[i] for i, _value, _indent in found]
+            # No status at all is left alone by `_normalize_status_transform` too, so the dry
+            # run must not preview a write the real run will not make.
+            already = not canonical or (len(status_lines) == 1 and
+                                        status_lines[0].strip() == f"status: {canonical}".strip())
             if already:
                 summary["unchanged"] += 1
                 continue
@@ -3503,20 +3570,27 @@ class Vault:
         and the whole body verbatim. last_seen is MONOTONIC: an incoming stamp older-or-
         equal to the stored one is ignored. Routed through _cas_write, so the monotonic
         decision is re-derived from the FRESH last_seen each attempt -- a concurrent newer
-        bump is respected, never regressed (#16). May raise VaultConflict; upsert absorbs
+        bump is respected, never regressed (#16). A stored last_seen spread over several
+        lines is left as it is and logged (#329). May raise VaultConflict; upsert absorbs
         it (Task 4)."""
         def transform(text: str) -> str:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 return f"---\nlast_seen: {last_seen}\n---\n{text}"
-            m = re.search(r"(?m)^\s*last_seen\s*:\s*(.*)$", inner)
-            if m:
-                if last_seen <= m.group(1).strip().strip('"').strip("'"):
-                    return text  # older-or-equal: never regress, write nothing
-                # `[ \t]*` for the reason `_set_fm` gives: this is the re-scrape's only write.
-                inner = re.sub(r"(?m)^[ \t]*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
-            else:
-                inner = f"{inner}\nlast_seen: {last_seen}" if inner else f"last_seen: {last_seen}"
+            # Through `_set_fm`, as every other write goes (#329): the old inline
+            # `re.sub` matched at any indent with no count, so it also rewrote a `last_seen:`
+            # nested under another mapping, lifting it out of its parent.
+            stored, multiline = _value_state(inner, "last_seen")
+            if multiline:
+                # A hand-typed value spread over several lines: a one-line stamp would orphan
+                # its items. This is the re-scrape's only write, so say it was skipped.
+                _log.warning(
+                    "vault: last_seen not advanced for %s -- it holds a value spread over "
+                    "several lines, which the stamp would corrupt", path)
+                return text
+            if stored and last_seen <= stored:
+                return text  # older-or-equal: never regress, write nothing
+            inner = _set_fm(inner, "last_seen", last_seen)
             return f"---\n{inner}\n---\n{body}"
         _cas_write(path, transform)
 
@@ -3606,7 +3680,13 @@ class Vault:
             inner, body = _split_frontmatter(text)
             if inner is None:
                 inner, body = "", text
-            existing = _fm_value(inner, "alt_urls")
+            existing, alt_spread = _value_state(inner, "alt_urls")
+            if alt_spread:
+                # #329: a hand-typed value spread over several lines reads blank on its own line,
+                # and writing the union over it would orphan its items -- the same discard of a
+                # human's value the malformed arm below refuses, for the same reason.
+                raise MalformedNoteField(
+                    f"{survivor_ref}: alt_urls spans several lines, not a JSON list of strings")
             current = []
             if existing:
                 try:
@@ -3625,11 +3705,13 @@ class Vault:
                 current = parsed
             merged = list(dict.fromkeys([*current, *alt_urls]))   # order-stable union
             inner = _set_fm(inner, "alt_urls", json.dumps(merged))
-            fresh_first = _fm_value(inner, "first_seen")
-            if first_seen and (not fresh_first or first_seen < fresh_first):
+            # #329: a timestamp spread over several lines is a hand edit a one-line write would
+            # orphan, so it is left as it is and the merge goes on without it.
+            fresh_first, first_spread = _value_state(inner, "first_seen")
+            if first_seen and not first_spread and (not fresh_first or first_seen < fresh_first):
                 inner = _set_fm(inner, "first_seen", first_seen)
-            fresh_last = _fm_value(inner, "last_seen")
-            if last_seen and (not fresh_last or last_seen > fresh_last):
+            fresh_last, last_spread = _value_state(inner, "last_seen")
+            if last_seen and not last_spread and (not fresh_last or last_seen > fresh_last):
                 inner = _set_fm(inner, "last_seen", last_seen)   # monotonic: only advance
             return f"---\n{inner}\n---\n{body}"
         _cas_write(survivor_ref, transform)   # raises VaultConflict/MalformedNoteField BEFORE any archive
@@ -4082,30 +4164,129 @@ def _split_frontmatter(text: str) -> tuple[str | None, str]:
     return None, text
 
 
+@functools.lru_cache(maxsize=256)
+def _yaml_base_indent(text: str) -> str | None:
+    """The indent of the root mapping's first key as PyYAML reads `text`, or None when PyYAML is
+    missing, refuses the text, reads something other than a non-empty mapping, or finds the first
+    key after something other than whitespace on its line. Cached because
+    every key lookup on one frontmatter asks the same question of the same text."""
+    if yaml is None or not text.strip():
+        return None
+    try:
+        node = yaml.compose(text + "\n", Loader=yaml.SafeLoader)
+    except (yaml.YAMLError, RecursionError):
+        return None
+    if not isinstance(node, yaml.MappingNode) or not node.value:
+        return None
+    # From the mark's character OFFSET, never its line number: PyYAML also breaks lines at U+2028,
+    # U+2029 and U+0085, so its line count does not index a `split("\n")` list -- a comment
+    # carrying one read the indent off the wrong line, or past the end of the list.
+    index = node.value[0][0].start_mark.index
+    indent = text[text.rfind("\n", 0, index) + 1:index]
+    # Only whitespace before the first key is an indent: a flow mapping's `{` is not, and the line
+    # rule decides instead.
+    return indent if not indent.strip() else None
+
+
+# A line shaped like a mapping key: not blank, not a comment, not a list item, not a directive,
+# tag, anchor or alias line (`%`, `!`, `&`, `*` can open a line that carries a `: ` without being
+# a key), and a `:` followed by a space or the line's end. Only these set the base indent when
+# PyYAML cannot, and only these can take the column-0 fast path.
+_KEY_LINE_SHAPE = re.compile(r"([ \t]*)[^\s#\-%!&*][^:]*:(?:[ \t]|$)")
+
+
+def _base_indent(lines: list) -> str:
+    """The frontmatter's BASE indent: where a top-level key sits (#329).
+
+    PyYAML decides it when PyYAML reads the frontmatter: the indent of the root mapping's first
+    key. A line scan cannot tell a key from a quoted or flow value continued onto a line of its
+    own, and every hand-written rule lost to one -- the first line's indent to a stray leading
+    space on it, the shallowest key-shaped line to an all-indented note whose continuation sits at
+    column 0 and carries a `: `. Either way every real key read as nested, the lead left
+    `read_leads` with nothing logged, and a re-scrape wrote a key where it broke the note.
+
+    For a note PyYAML refuses, the fallback is the shallowest KEY-shaped line: a stray leading
+    space on the first line is the common such note, and it must not hide the lead."""
+    # Nearly every note opens with a key at column 0, and for it PyYAML and the fallback both
+    # answer column 0: that line IS the root mapping's first key. So PyYAML is not asked --
+    # parsing every note on every read made a whole-vault read many times slower.
+    for line in lines:
+        m = _KEY_LINE_SHAPE.match(line)
+        if m:
+            if not m.group(1):
+                return ""
+            break
+    parsed = _yaml_base_indent("\n".join(lines))
+    if parsed is not None:
+        return parsed
+    best = None
+    for line in lines:
+        m = _KEY_LINE_SHAPE.match(line)
+        if m and (best is None or len(m.group(1)) < len(best)):
+            best = m.group(1)
+    return best or ""
+
+
+def _key_lines(inner: str | None, key: str) -> list:
+    """Every TOP-LEVEL line of `key` in a frontmatter block, in order, as
+    `(line index, value on that line, indent)` (#329).
+
+    The one place a key is found, so every reader and every writer finds the same line. A line
+    is `key`'s when it starts with the frontmatter's base indent (`_base_indent`) followed
+    directly by `key:`, so a same-named key nested under another mapping is not it: a write that
+    matched at any indent landed on the nested line and lifted it out of its parent, and a read
+    reported the nested value as the note's own. The base indent rather than column 0, because
+    PyYAML reads a block whose every key is indented as a mapping, and a column-0 rule would find
+    no key in it and append each write at column 0, which breaks the block. Block-scalar content
+    cannot sit at the base indent (PyYAML then reads the line as a key), so the rule is exact for
+    block content.
+
+    The value is what follows the colon on the key's OWN line, horizontal whitespace skipped. A
+    blank `key:` therefore reads blank rather than taking the next line as its value, which
+    promoted `needs_signoff: [...]` as a send-ready CV pointer and wrote `status: location: ...`.
+    Whether the value goes on over later lines is `_holds_multiline_value`'s question, not this
+    one's.
+
+    Residual, stated rather than closed: a quoted or flow value continued onto a later line at
+    the base indent reads here as ending, and that later line as a key of its own, where PyYAML
+    reads it as part of the value. Skipping lines while `_inline_value_left_open` holds would
+    over-skip on an apostrophe and hide a real key, so a write would append a duplicate."""
+    if not inner:
+        return []
+    lines = inner.split("\n")
+    base = _base_indent(lines)
+    pat = re.compile(rf"{re.escape(base)}{re.escape(key)}[ \t]*:[ \t]*(.*)")
+    out = []
+    for i, line in enumerate(lines):
+        m = pat.match(line)
+        if m:
+            out.append((i, m.group(1), base))
+    return out
+
+
 def _fm_value(inner: str | None, key: str) -> str:
-    """First value for `key` in a frontmatter block, stripped of quotes."""
-    if not inner:
-        return ""
-    m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:\s*(.*)$", inner)
-    return m.group(1).strip().strip('"').strip("'") if m else ""
+    """`key`'s value in a frontmatter block, stripped of quotes: the FIRST top-level occurrence,
+    read from its own line only (`_key_lines`). A blank `key:` reads blank whatever follows it,
+    so a caller deciding a write on this value must also ask `_holds_multiline_value` whether
+    that blank key holds a value spread over the lines after it (#329)."""
+    found = _key_lines(inner, key)
+    return found[0][1].strip().strip('"').strip("'") if found else ""
 
 
-def _fm_own_line_value(inner: str | None, key: str) -> str:
-    """`_fm_value`, read from the key's OWN line: the first occurrence of `key:`, matched as
-    `_fm_value` and `_set_fm` match it, with only horizontal whitespace allowed after the colon,
-    so a blank `key:` reads as blank instead of taking the following line as its value (#329).
+def _value_state(inner: str | None, key: str) -> tuple[str, bool]:
+    """`(value, multiline)` for `key`: its own-line value (`_fm_value`) and whether it holds a
+    value spread over the lines after it (`_holds_multiline_value`) -- the one question every
+    write decision on a fresh note asks (#329). A multi-line value can read blank on its own
+    line, so a decision taken on the value alone writes over a hand-typed block list; each
+    caller treats `multiline` as PRESENT, never blank, and never equal to anything."""
+    return _fm_value(inner, key), _holds_multiline_value(inner, key)
 
-    Only `Vault.update_fields`' note append reads through this. The append runs after
-    `_holds_multiline_value` has ruled out a value spread over several lines, so an existing note,
-    if there is one, sits on the key's own line; reading past a blank key merged a comment line
-    under it into the note, or took the next key's text and dropped the note as unsafe. Every other
-    `_fm_value` caller keeps the read that crosses the line for now: guards among them currently
-    refuse a blank key over a block list because that read sees the first item as a value, so
-    moving them needs an audit of each caller of its own."""
-    if not inner:
-        return ""
-    m = re.search(rf"(?m)^\s*{re.escape(key)}\s*:[ \t]*(.*)$", inner)
-    return m.group(1).strip().strip('"').strip("'") if m else ""
+
+def _is_present(inner: str | None, key: str) -> bool:
+    """Whether `key` holds any value: a non-blank own-line value, or one spread over several
+    lines (`_value_state`)."""
+    value, multiline = _value_state(inner, key)
+    return bool(value) or multiline
 
 
 def _inline_value_left_open(value: str) -> bool:
@@ -4199,8 +4380,8 @@ def _holds_multiline_value(inner: str | None, key: str) -> bool:
     lines -- a block list, a nested mapping, a `|`/`>` block scalar, or a quoted scalar or flow
     collection its own line leaves open -- so a single-line write must not replace it (#329).
 
-    First occurrence, matched the way `_set_fm` matches, because that is the line a write would
-    replace. The key's own line is consulted for an inline value that opens a quote, a `[` or a
+    The first TOP-LEVEL occurrence, found by `_key_lines` as `_set_fm` finds it, because that is
+    the line a write would replace. The key's own line is consulted for an inline value that opens a quote, a `[` or a
     `{`, behind any leading tag or anchor, that it does not close on that line
     (`_inline_value_left_open`): such a value may continue on a later line whatever that line's
     indentation, so it counts as spanning several lines. That check
@@ -4235,35 +4416,35 @@ def _holds_multiline_value(inner: str | None, key: str) -> bool:
     unwritten every single-line write that would break it, whatever this scan answers; for a note
     PyYAML cannot read, the check abstains and this scan decides alone. The scan's own
     over-reporting, stated above, applies to every note."""
-    if not inner:
+    found = _key_lines(inner, key)
+    return bool(found) and _line_opens_multiline_value(inner.split("\n"), *found[0])
+
+
+def _line_opens_multiline_value(lines: list, i: int, value: str, indent_prefix: str) -> bool:
+    """`_holds_multiline_value`'s decision for the key line `lines[i]`, whose own-line value and
+    indent `_key_lines` returned. Split out so a caller holding several occurrences of one key
+    (`leads normalize`, over duplicate `status:` lines) can ask it of each."""
+    indent = len(indent_prefix)
+    if _inline_value_left_open(value):
+        return True
+    following = next(
+        (ln for ln in lines[i + 1:]
+         if ln.strip() and not (len(ln) - len(ln.lstrip()) <= indent and ln.strip().startswith("#"))),
+        None)
+    if following is None:
         return False
-    lines = inner.split("\n")
-    pat = re.compile(rf"^(\s*){re.escape(key)}\s*:")
-    for i, line in enumerate(lines):
-        m = pat.match(line)
-        if not m:
-            continue
-        indent = len(m.group(1))
-        if _inline_value_left_open(line[m.end():]):
-            return True
-        following = next(
-            (ln for ln in lines[i + 1:]
-             if ln.strip() and not (len(ln) - len(ln.lstrip()) <= indent and ln.strip().startswith("#"))),
-            None)
-        if following is None:
-            return False
-        following_indent = len(following) - len(following.lstrip())
-        if following_indent > indent:
-            return True
-        return following_indent == indent and following.lstrip().startswith("-")
-    return False
+    following_indent = len(following) - len(following.lstrip())
+    if following_indent > indent:
+        return True
+    return following_indent == indent and following.lstrip().startswith("-")
 
 
 def _single_line_write_breaks_note(inner: str | None, key: str, literal: str) -> bool:
     """Whether writing `key: literal` with `_set_fm` would break the frontmatter as PyYAML reads it
     (#329): the note stops parsing, or a top-level key other than `key` reads differently. That
-    covers a line of `key`'s own value left orphaned by the replace, another key's line swallowed,
-    and a write that lands on a same-named key nested under another mapping.
+    covers a line of `key`'s own value left orphaned by the replace and another key's line
+    swallowed. A write landing on a same-named key nested under another mapping was a third case
+    until `_set_fm` found keys at the base indent only (`_key_lines`, #329).
 
     It answers only for a note PyYAML reads. `yaml.compose` parses without constructing values, so
     an unknown tag elsewhere in the note does not switch the check off. When PyYAML refuses the note
@@ -4301,10 +4482,12 @@ def _other_top_level_pairs(node, key: str) -> list:
             if not (isinstance(k, yaml.ScalarNode) and k.value == key)]
 
 
-def _counts_as_blank(value: str, blank_values: frozenset | None) -> bool:
-    """Whether `value` (a fresh `_fm_value` read) satisfies `update_fields`'s
+def _counts_as_blank(inner: str | None, key: str, blank_values: frozenset | None) -> bool:
+    """Whether `key` in the fresh frontmatter `inner` satisfies `update_fields`'s
     `require_blank` guard: genuinely empty, or -- when `blank_values` names a set --
-    a fold-match against it (#151). Only `value` -- the fresh stored side -- is folded
+    a fold-match against it (#151). A value spread over several lines is never blank, though
+    its own line reads blank: filling it would write over a hand-typed block list and orphan its
+    items (#329). Only the value -- the fresh stored side -- is folded
     through `fold_company_answer`, so "Unknown", "Unknown.", " unknown " and "UNKNOWN!"
     are the same value to this check, exactly as they already are to the resolution gate
     that decided the write was safe. `blank_values` members are compared VERBATIM, never
@@ -4316,25 +4499,33 @@ def _counts_as_blank(value: str, blank_values: frozenset | None) -> bool:
     differs from the one being written, is NOT blank -- the whole point of require_blank
     is refusal on presence, and this helper only ever narrows what counts as absent,
     never what counts as a difference."""
+    value, multiline = _value_state(inner, key)
+    if multiline:
+        return False
     if not value.strip():
         return True
     return blank_values is not None and fold_company_answer(value) in blank_values
 
 
 def _set_fm(inner: str, key: str, literal: str) -> str:
-    """Replace `key:`'s line in a frontmatter block, or append it if absent.
-    `literal` is written verbatim, so the caller controls quoting.
+    """Replace `key:`'s first TOP-LEVEL line in a frontmatter block (`_key_lines`), or append it
+    at the base indent if absent. `literal` is written verbatim, so the caller controls quoting.
 
-    The REPLACEMENT is a callable, not an f-string, and that is the whole point:
-    `re.sub` interprets backslash escapes in a STRING replacement template, so a
-    literal carrying one was rewritten on its way through this function rather
-    than written. All three arms were measured: `"Foo\\Bar Ltd"` raised
-    `re.PatternError: bad escape \\B` (and `re.PatternError` is not
-    `VaultConflict`, so triage's `except VaultConflict` could not catch it and one
-    scraped company killed a whole batch mid-run); `"Foo\\nBar"` silently became a
-    real newline and split the frontmatter; `"Foo\\g<0>Bar"` silently expanded to
-    the matched line. A callable replacement is substituted verbatim, so all three
-    are now closed HERE, once, for every caller -- it is not the writer's problem.
+    Only that one line is replaced, at the indent it already had, so a same-named key nested
+    under another mapping is never touched, and a block whose every key is indented keeps its
+    indent on an append (#329). A value spread over the lines after the key is NOT replaced as a
+    whole: its item lines would be left orphaned under the new value, so a caller writing over a
+    value that may span several lines asks `_holds_multiline_value` first.
+
+    The line is spliced in as a plain string, never through a regex replacement template, and
+    that is the point: `re.sub` interprets backslash escapes in a STRING replacement template, so
+    a literal carrying one was rewritten on its way through this function rather than written.
+    Each arm was measured under the old `re.sub`: `"Foo\\Bar Ltd"` raised
+    `re.PatternError: bad escape \\B` (and `re.PatternError` is not `VaultConflict`, so triage's
+    `except VaultConflict` could not catch it and one scraped company killed a whole batch
+    mid-run); `"Foo\\nBar"` silently became a real newline and split the frontmatter;
+    `"Foo\\g<0>Bar"` silently expanded to the matched line. They stay closed HERE, once, for
+    every caller -- it is not the writer's problem.
 
     What DOES remain the caller's problem is anything structural inside the quoted
     scalar it hands over, because this layer cannot tell a wrapping quote from an
@@ -4343,14 +4534,18 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
     caller writing unmediated external content (a scraped page, a parsed email, a
     CLI value that may have been pasted rather than typed) therefore still needs
     its own pre-quote guard; see `frontmatter_safe` below."""
-    # `[ \t]*`, never `\s*`, before the key: `\s*` runs across newlines, so the match
-    # began on a blank line above the key and the rewrite deleted it -- and a `|+`/`>+`
-    # block scalar above the key KEEPS its trailing blank lines as part of its value
-    # (#329). The line matched is the same one; only the match's start moves.
-    pat = rf"(?m)^[ \t]*{re.escape(key)}\s*:.*$"
-    if re.search(pat, inner):
-        return re.sub(pat, lambda _m: f"{key}: {literal}", inner, count=1)
-    return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
+    # The splice replaces exactly one element of the split, so a blank line above the key is
+    # kept: a `|+`/`>+` block scalar above the key KEEPS its trailing blank lines as part of
+    # its value (#329).
+    if not inner:
+        return f"{key}: {literal}"
+    lines = inner.split("\n")
+    found = _key_lines(inner, key)
+    if found:
+        i, _value, indent = found[0]
+        lines[i] = f"{indent}{key}: {literal}"
+        return "\n".join(lines)
+    return f"{inner}\n{_base_indent(lines)}{key}: {literal}"
 
 
 _FRONTMATTER_UNSAFE_CHARS = ('"', "\\")
@@ -4401,11 +4596,11 @@ def _archived_from(inner: str | None) -> str | None:
     remove. The value is written by `json.dumps`, so `json.loads` returns it exactly."""
     if not inner:
         return None
-    m = re.search(rf"(?m)^\s*{re.escape(_ARCHIVED_FROM)}\s*:\s*(.*)$", inner)
-    if not m:
+    found = _key_lines(inner, _ARCHIVED_FROM)
+    if not found:
         return None
     try:
-        value = json.loads(m.group(1).strip())
+        value = json.loads(found[0][1].strip())
     except ValueError:
         return None
     return value if isinstance(value, str) else None
@@ -4450,30 +4645,30 @@ def _stamp_archived_from(path: str, seated: str) -> None:
 
 
 def _del_fm(inner: str, key: str) -> str:
-    """Remove `key`'s line(s) from a frontmatter block; return `inner` unchanged if
-    absent. The counterpart to _set_fm, which only replaces/appends -- sign_off (#60)
-    needs a true delete to clear a resolved marker. Line-based (like
-    _collapse_status_lines) so it leaves no stray blank line and cannot disturb the body."""
-    pat = re.compile(rf"^\s*{re.escape(key)}\s*:")
-    return "\n".join(ln for ln in inner.split("\n") if not pat.match(ln))
+    """Remove `key`'s TOP-LEVEL line(s) from a frontmatter block (`_key_lines`); return `inner`
+    unchanged if absent. The counterpart to _set_fm, which only replaces/appends -- sign_off
+    (#60) needs a true delete to clear a resolved marker. Line-based (like
+    _collapse_status_lines) so it leaves no stray blank line and cannot disturb the body. A
+    same-named key nested under another mapping is the user's and is kept (#329). Only the key's
+    own line goes, so a caller must not delete a key whose value spans several lines
+    (`_holds_multiline_value`): its item lines would be left under the key before it."""
+    drop = {i for i, _value, _indent in _key_lines(inner, key)}
+    return "\n".join(ln for i, ln in enumerate(inner.split("\n")) if i not in drop)
 
 
 def _collapse_status_lines(inner: str, canonical: str) -> str:
-    """Return `inner` with every status line removed and a single canonical
-    `status: <value>` line placed where the first one was (or appended). Fixes the
-    legacy duplicate-status-key corruption without disturbing any other key."""
-    out, inserted = [], False
-    for line in inner.split("\n"):
-        if re.match(r"^\s*status\s*:", line):
-            if not inserted:
-                out.append(f"status: {canonical}")
-                inserted = True
-            # drop any further status lines
-        else:
-            out.append(line)
-    if not inserted:
-        out.append(f"status: {canonical}")
-    return "\n".join(out)
+    """Return `inner` with every TOP-LEVEL status line removed and a single canonical
+    `status: <value>` line placed where the first one was (or appended at the base indent).
+    Fixes the legacy duplicate-status-key corruption without disturbing any other key -- a
+    `status:` nested under another mapping included, which is the user's (#329)."""
+    lines = inner.split("\n")
+    found = _key_lines(inner, "status")
+    if not found:
+        return f"{inner}\n{_base_indent(lines)}status: {canonical}"
+    first, _value, indent = found[0]
+    drop = {i for i, _v, _ind in found}
+    return "\n".join(f"{indent}status: {canonical}" if i == first else ln
+                     for i, ln in enumerate(lines) if i == first or i not in drop)
 
 
 def _normalize_status_transform(text: str) -> str:
@@ -4484,22 +4679,38 @@ def _normalize_status_transform(text: str) -> str:
     inner, body = _split_frontmatter(text)
     if not inner:  # no block, or an empty one: no status to collapse
         return text
-    norms = [_status.normalize(r.strip())
-             for r in re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)]
+    if _status_spans_lines(inner):
+        return text  # a value spread over several lines: collapsing it would orphan the rest
+    norms = [_status.normalize(value.strip()) for _i, value, _ind in _key_lines(inner, "status")]
     if len(set(norms)) > 1:
         return text
     canonical = norms[0] if norms else ""
+    if not canonical:
+        return text  # a blank or absent status has nothing to collapse; rewriting it adds a space
     return f"---\n{_collapse_status_lines(inner, canonical)}\n---\n{body}"
 
 
+def _status_spans_lines(inner: str) -> bool:
+    """Whether ANY top-level `status:` line holds a value spread over several lines (#329).
+    `leads normalize` rewrites every one of them, so every one is asked, not only the first."""
+    lines = inner.split("\n")
+    return any(_line_opens_multiline_value(lines, *found) for found in _key_lines(inner, "status"))
+
+
 def _fm_dict(inner: str | None) -> dict:
-    """Parse a frontmatter block into a flat dict. Simple line-based `key: value`
-    parse (the vault notes are flat), values stripped of surrounding quotes."""
+    """Parse a frontmatter block into a flat dict of its TOP-LEVEL keys. Simple line-based
+    `key: value` parse (the vault notes are flat), values read from each key's own line and
+    stripped of surrounding quotes; a repeated key reads as its last line. A key is top-level at
+    the base indent `_key_lines` uses, so a same-named key nested under another mapping never
+    shadows the note's own (#329): it reported a nested `status: rejected` as the lead's status
+    while every write guard read the top-level one."""
     out: dict = {}
     if not inner:
         return out
-    for line in inner.split("\n"):
-        m = re.match(r"^\s*([A-Za-z0-9_]+)\s*:\s*(.*)$", line)
+    lines = inner.split("\n")
+    pat = re.compile(rf"{re.escape(_base_indent(lines))}([A-Za-z0-9_]+)[ \t]*:[ \t]*(.*)")
+    for line in lines:
+        m = pat.match(line)
         if m:
             out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
     return out

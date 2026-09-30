@@ -275,8 +275,10 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # #329: the concerns are ALSO written as their own key, replaced on every verdict, so the CV
     # composer reads triage's latest judgement without parsing `relevance_notes`, which
     # accumulates dated prose from triage, dismiss and expire alike. `triage_`-prefixed on
-    # purpose: `_set_fm` matches a key at ANY indentation and no earlier note carries a top-level
-    # concerns key, so a bare `concerns` would land on a user's nested `concerns:` line.
+    # purpose: the key is replaced on every verdict, so it must not be a name a person might
+    # already use for their own top-level notes, and a bare `concerns` is exactly such a name. A
+    # `concerns:` nested under another property is safe either way, since a write finds a key at
+    # the frontmatter's base indent only (`core/vault.py::_key_lines`).
     concerns = "; ".join(verdict["concerns"])
     fields = {"status": status, "score": str(score)}
     for key, raw in (("glassdoor_rating", rating), ("culture_flags", flags),
