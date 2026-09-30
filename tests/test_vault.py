@@ -735,3 +735,148 @@ def test_url_stable_capped_title_updates_when_tail_drifts(tmp_path):
     assert v.upsert(_lead(company="X", title=prefix + " Bravo",   # same URL, drifted tail
                           location=LOCATIONS[0], url="https://a/1")).outcome == "updated"
     assert len(list(_leads_dir(tmp_path).glob("*.md"))) == 1, "a url-stable posting must not split on title drift"
+
+
+# --- A kept block scalar's trailing blank lines, and an empty frontmatter block (#329) -----------
+#
+# Both were found by #329's round-9 re-review, predate that branch, and are silent. `yaml` is the
+# judge because a `|+`/`>+` scalar's trailing blank lines ARE part of its value -- sluice's own
+# line-based readers cannot see the loss, which is why it went unnoticed.
+
+_KEEP_NOTE = (
+    '---\ncompany: "Acme"\nrole: "Analyst"\nurl: "https://a/1"\nlocation: "{loc}"\n'
+    "notes: {header}\n  hand-typed line\n\n{key}: {old}\nlast_seen: 2026-07-01\n---\nbody\n")
+
+
+def _fm_yaml(text):
+    import yaml
+    from sluice.core.vault import _split_frontmatter
+    inner, _ = _split_frontmatter(text)
+    return yaml.safe_load(inner + "\n")
+
+
+@pytest.mark.parametrize("header", ["|+", ">+"])
+@pytest.mark.parametrize("key, old, new", [
+    ("status", "new", "shortlist"),
+    ("score", "10", "85"),
+    ("glassdoor_rating", '"3.9"', '"4.1"'),
+])
+def test_rewriting_a_key_below_a_kept_block_scalar_keeps_its_blank_line(tmp_path, header, key, old, new):
+    """`_set_fm` matched `(?m)^\\s*key`, and `\\s*` runs across newlines, so the match began on the
+    blank line the scalar keeps and the rewrite deleted it: `notes` lost its trailing newline while
+    the key updated correctly and nothing was logged."""
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    path.write_text(_KEEP_NOTE.format(loc=LOCATIONS[0], header=header, key=key, old=old))
+    before = _fm_yaml(path.read_text())
+    assert before["notes"].endswith("\n\n"), "the fixture no longer keeps a blank line"
+
+    assert Vault(str(tmp_path)).update_fields(str(path), {key: new}) is True
+
+    after = _fm_yaml(path.read_text())
+    assert after["notes"] == before["notes"]
+    assert str(after[key]) == new.strip('"')
+    assert path.read_text().endswith("---\nbody\n")
+
+
+@pytest.mark.parametrize("header", ["|+", ">+"])
+def test_a_rescrape_below_a_kept_block_scalar_touches_only_last_seen(tmp_path, header):
+    """The same `^\\s*` sat in `_bump_last_seen`, so a RE-SCRAPE -- which may touch `last_seen` and
+    nothing else -- deleted a hand-typed blank line from the note above it."""
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    text = _KEEP_NOTE.format(loc=LOCATIONS[0], header=header, key="status", old="new")
+    text = text.replace("status: new\nlast_seen: 2026-07-01\n", "last_seen: 2026-07-01\nstatus: new\n")
+    path.write_text(text)
+    before = _fm_yaml(path.read_text())
+    assert before["notes"].endswith("\n\n"), "the fixture no longer keeps a blank line"
+
+    result = Vault(str(tmp_path)).upsert(_lead(last_seen="2026-07-09"))
+
+    assert result.outcome == "updated", result
+    after = _fm_yaml(path.read_text())
+    assert str(after["last_seen"]) == "2026-07-09"
+    assert {k: v for k, v in after.items() if k != "last_seen"} == {
+        k: v for k, v in before.items() if k != "last_seen"}
+
+
+def test_an_empty_frontmatter_block_is_read_as_one_not_as_body():
+    """`---` then `---` is an empty frontmatter block. `_FM_RE` needs a line between the fences, so
+    it could not split one at all, and every writer then PREPENDED a second block."""
+    from sluice.core.vault import _split_frontmatter
+    assert _split_frontmatter("---\n---\nbody\n") == ("", "body\n")
+    assert _split_frontmatter("---\n---\n") == ("", "")
+    assert _split_frontmatter("---\n---") == ("", "")
+    assert _split_frontmatter("---\n\n---\nbody\n") == ("", "body\n")
+    assert _split_frontmatter("---\na: 1\n---\nbody\n") == ("a: 1", "body\n")
+    assert _split_frontmatter("no fence\n") == (None, "no fence\n")
+
+
+@pytest.mark.parametrize("text", ["---\n----\nsee notes\n", "---\n---x\nsee notes\n"])
+def test_a_line_that_only_starts_with_a_fence_is_not_one(tmp_path, text):
+    """The empty-block match must take the second fence as a whole line. Taking `----` for `---`
+    left `-` behind as the body, and a write then rewrote the note's first line."""
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    path.write_text(text)
+
+    assert Vault(str(tmp_path)).update_fields(str(path), {"status": "shortlist"}) is True
+
+    assert path.read_text() == f"---\nstatus: shortlist\n---\n{text}"
+
+
+def test_a_lead_typed_with_a_doubled_opening_fence_stays_a_lead(tmp_path):
+    """The empty-block reading is only a fallback for a note the old split could not read at all.
+    A note opening `---`, `---`, then its keys, was always read as a lead, and reading it as an
+    empty block plus a body would silently drop an APPLIED lead from every triage, cv and track
+    view."""
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    (d / "Acme - Analyst.md").write_text(
+        f'---\n---\ncompany: "Acme"\nrole: "Analyst"\nurl: "https://a/1"\n'
+        f'location: "{LOCATIONS[0]}"\nstatus: applied\n---\nbody\n')
+
+    leads = Vault(str(tmp_path)).read_leads()
+
+    assert [(n.fm.get("company"), n.status) for n in leads] == [("Acme", "applied")]
+
+
+def test_a_rescrape_into_an_empty_frontmatter_block_writes_no_blank_line(tmp_path):
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    path.write_text("---\n---\nbody\n")
+
+    Vault(str(tmp_path))._bump_last_seen(str(path), "2026-07-09")
+
+    assert path.read_text() == "---\nlast_seen: 2026-07-09\n---\nbody\n"
+
+
+def test_writing_into_an_empty_frontmatter_block_leaves_one_block(tmp_path):
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    path.write_text("---\n---\nbody\n")
+
+    assert Vault(str(tmp_path)).update_fields(str(path), {"status": "shortlist"}) is True
+
+    assert path.read_text() == "---\nstatus: shortlist\n---\nbody\n"
+
+
+def test_normalizing_statuses_leaves_an_empty_frontmatter_block_alone(tmp_path):
+    """Now that an empty block reads as frontmatter rather than as body, the status normalizer
+    must still count it as a note with nothing to normalize and write nothing to it. Unguarded,
+    the transform recomposed it with a blank line between the fences."""
+    from sluice.core.vault import _normalize_status_transform
+    assert _normalize_status_transform("---\n---\nbody\n") == "---\n---\nbody\n"
+
+    d = _leads_dir(tmp_path)
+    d.mkdir(parents=True)
+    path = d / "Acme - Analyst.md"
+    path.write_text("---\n---\nbody\n")
+    summary = Vault(str(tmp_path)).normalize_all_statuses()
+    assert summary["unchanged"] == 1 and summary["changed"] == 0, summary
+    assert path.read_text() == "---\n---\nbody\n"
