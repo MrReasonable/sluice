@@ -702,22 +702,32 @@ def test_the_render_probe_is_a_cv_the_parser_accepts():
     assert doc.education, "the education entry was dropped"
 
 
-def test_every_docker_smoke_run_renders_and_no_other_channel_does():
-    """The image is the one smoked channel that installs the `render` extra, so it is the only
-    place the WeasyPrint that extra pins is rendered through before merge. A docker leg without
-    `--render` loses that; any other leg with it would render against no WeasyPrint at all (the
-    wheel and sdist legs install no extra) or the distribution's own (the .deb/.rpm), neither of
-    which is what the pin governs."""
+def test_every_leg_that_installs_the_render_extra_renders_and_no_other_does():
+    """The container image and the Homebrew formula install the `render` extra, so they carry the
+    WeasyPrint that extra pins; a leg of theirs without `--render` never renders it. Any other leg
+    with it would render against no WeasyPrint at all (the wheel and sdist legs install no extra)
+    or the distribution's own (the .deb/.rpm), neither of which is what the pin governs."""
     root = _SCRIPT.parent.parent / ".github" / "workflows"
     invocations = []
     for wf in (root / "ci.yml", root / "post-release.yml"):
         text = wf.read_text(encoding="utf-8").replace("\\\n", " ")
         invocations += [ln for ln in text.splitlines()
                         if re.search(r"smoke(\.py|\")?\S*\s+\S+\s+--channel", ln)]
-    docker = [ln for ln in invocations if "--channel docker" in ln or "--channel ci-docker" in ln]
-    assert len(docker) == 2, f"expected the CI and post-release docker legs, found: {docker}"
-    # SCOPE for the other half: "no other channel renders" is vacuous if the sweep only ever
-    # matched the docker lines.
-    assert len(invocations) > len(docker), f"the sweep found no non-docker leg: {invocations}"
+    # By the `--channel` label each leg reports under, which names the artefact it installed. The
+    # label is matched WHOLE: `\b` would let `--channel docker` also match a `docker-arm64` leg.
+    rendering = {"ci-docker", "docker", "homebrew-macos27"}
+
+    def label(ln):
+        m = re.search(r"--channel\s+(\S+)", ln)
+        return m.group(1) if m else None
+
+    labels = [label(ln) for ln in invocations]
+    assert None not in labels, f"a leg reports under no --channel label: {invocations}"
+    for channel in rendering:
+        assert labels.count(channel) == 1, (
+            f"expected exactly one leg reporting as {channel!r}, found {labels.count(channel)}: {labels}")
+    # SCOPE for the other half: "no other leg renders" is vacuous if the sweep only ever matched
+    # the rendering legs.
+    assert set(labels) - rendering, f"the sweep found no other leg: {labels}"
     for ln in invocations:
-        assert ("--render" in ln) == (ln in docker), ln
+        assert ("--render" in ln) == (label(ln) in rendering), ln

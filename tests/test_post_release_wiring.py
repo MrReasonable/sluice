@@ -56,7 +56,7 @@ _NON_CHANNEL_JOBS = {"version", "report"}
 # fix. Keyed by channel so `test_every_channel_names_its_producing_job` can require this
 # mapping to cover the channel set EXACTLY -- a new channel cannot be added without one.
 _CHANNEL_PRODUCER = {"pypi": "pypi", "deb": "release-assets", "rpm": "release-assets",
-                     "docker": "docker"}
+                     "docker": "docker", "homebrew": "homebrew"}
 
 
 def _text() -> str:
@@ -99,7 +99,7 @@ def test_the_job_sweep_finds_the_real_roster():
     matches SOMETHING but lost a shape is caught too."""
     jobs = _job_names()
     assert len(jobs) >= 5, f"the job sweep found only {sorted(jobs)} -- it is not working"
-    for expected in ("version", "pypi", "deb", "rpm", "docker", "report"):
+    for expected in ("version", "pypi", "deb", "rpm", "docker", "homebrew", "report"):
         assert expected in jobs, f"{expected!r} missing from the sweep: {sorted(jobs)}"
 
 
@@ -393,9 +393,9 @@ def test_the_dispatcher_waits_for_every_producing_job():
     # red anywhere, which is this workflow's original defect wearing a different hat.
     #
     # An EXTRA entry is not free either: if the added job is skipped, `post-release` is skipped
-    # with it, for the same silent result. So `homebrew`'s absence is part of the claim rather
-    # than an accident -- the job's own comment says why the check does not wait on a channel it
-    # never exercises.
+    # with it, for the same silent result. So every entry must be a channel's producer, and
+    # `homebrew` is one only because the check has a job that installs from the tap -- the
+    # dispatcher's own comment states the cost of waiting on it.
     expected = {"release-please"} | set(_CHANNEL_PRODUCER.values())
     assert set(needs) == expected, (
         f"release-please.yml's `post-release` job must declare exactly {sorted(expected)}. A "
@@ -730,7 +730,7 @@ def test_only_the_pypi_job_retries_its_install():
     block = _jobs_block()
     # What each job fetches, so a body that no longer contains it is reported as a bad slice
     # rather than passing as a clean one.
-    fetches = {"deb": "curl", "rpm": "curl", "docker": "docker pull"}
+    fetches = {"deb": "curl", "rpm": "curl", "docker": "docker pull", "homebrew": "brew install"}
     # DERIVED, not hand-listed. Keyed only on the three names above, a new channel job would sit
     # outside this guard entirely and nothing would say so -- the shape this file's own docstring
     # warns about for the `report` job's two hand-lists. `_job_names()` and `_NON_CHANNEL_JOBS`
@@ -773,3 +773,162 @@ def test_the_artefact_is_installed_by_exactly_one_command():
     assert len(installs) == 1, (
         f"expected exactly one `pip install ... job-sluice==` in the step so that wheel and "
         f"sdist cannot drift apart, found {len(installs)}: {installs}")
+
+
+# --------------------------------------------------------------------------------------
+# The macOS 27 Homebrew check, EXECUTED rather than read, for the reason the pypi section
+# above gives: this job's first real run is against a release that is already public. Its
+# refusals are what make a green result mean something -- a runner that is not on 27, a tap
+# that served another version, a keg built from source rather than poured -- and each of them
+# fails OPEN if it is miswritten, so each gets a row that drives it.
+# --------------------------------------------------------------------------------------
+
+_HOMEBREW_STEP = "Install from the tap on macOS 27 and run it"
+
+_STUB_SW_VERS = """#!/bin/sh
+[ "$1" = "-productVersion" ] && echo "$STUB_OS" && exit 0
+exit 1
+"""
+
+# Logs every call; answers `--prefix` with the fake keg and `info --json=v2` with the canned
+# JSON, so the step's own python check reads exactly what a real `brew info` would give it. STRICT
+# about its arguments: a stub that answered any `info` or `--prefix` call let the step drop
+# `--json=v2`, or ask about a bare `job-sluice` rather than the tap's formula, and stay green.
+_STUB_BREW = """#!/bin/sh
+printf '%s\\n' "$*" >> "$STUB_BREW_LOG"
+case "$1" in
+  --prefix) [ "$#" = 2 ] && [ "$2" = "$STUB_FORMULA" ] || exit 64; echo "$STUB_KEG" ;;
+  info) [ "$#" = 3 ] && [ "$2" = "--json=v2" ] && [ "$3" = "$STUB_FORMULA" ] || exit 64
+        cat "$STUB_INFO_JSON" ;;
+  install|test) [ "$#" = 2 ] && [ "$2" = "$STUB_FORMULA" ] || exit 64 ;;
+  *) exit 64 ;;
+esac
+exit 0
+"""
+
+# The keg's interpreter: `-c` goes to a REAL python so the step's JSON check actually runs;
+# anything else is the smoke invocation, logged with the directory it ran from.
+_STUB_KEG_PYTHON = """#!/bin/sh
+if [ "$1" = "-c" ]; then exec "$REAL_PYTHON" "$@"; fi
+printf '%s|%s\\n' "$PWD" "$*" >> "$STUB_SMOKE_LOG"
+exit 0
+"""
+
+
+def _homebrew_script() -> str:
+    steps = _parsed(POST_RELEASE)["jobs"]["homebrew"]["steps"]
+    matching = [s for s in steps if s.get("name") == _HOMEBREW_STEP]
+    assert len(matching) == 1, (
+        f"expected exactly one homebrew step named {_HOMEBREW_STEP!r}, found {len(matching)} -- "
+        f"steps present: {[s.get('name') for s in steps]}")
+    run = matching[0]["run"]
+    assert "${{" not in run, "the homebrew step interpolates directly, so it cannot be executed as-is"
+    return run
+
+
+def _installed(version, poured=True):
+    return {"formulae": [{"installed": [{"version": version, "poured_from_bottle": poured}]}]}
+
+
+def _run_homebrew(tmp_path, *, os_version="27.0.1", info=None):
+    import json
+    import sys
+
+    root = tmp_path / "checkout"
+    (root / "scripts").mkdir(parents=True)
+    (root / "scripts" / "smoke_installed.py").write_text("# stub\n")
+    stub = tmp_path / "stub"
+    stub.mkdir()
+    keg = tmp_path / "keg"
+    (keg / "libexec" / "bin").mkdir(parents=True)
+    for p, body in ((stub / "sw_vers", _STUB_SW_VERS), (stub / "brew", _STUB_BREW),
+                    (keg / "libexec" / "bin" / "python", _STUB_KEG_PYTHON)):
+        p.write_text(body)
+        p.chmod(0o755)
+    info_path = tmp_path / "info.json"
+    info_path.write_text(json.dumps(_installed("9.9.9") if info is None else info))
+    logs = {k: tmp_path / f"{k}.log" for k in ("brew", "smoke")}
+    for p in logs.values():
+        p.write_text("")
+    work = tmp_path / "tmp"
+    work.mkdir()
+    env = {
+        "PATH": f"{stub}:{os.environ.get('PATH', '')}",
+        "HOME": str(tmp_path),
+        "TMPDIR": str(work),
+        "VERSION": "9.9.9",
+        "OWNER": "Example-Owner",
+        "STUB_OS": os_version,
+        "STUB_FORMULA": "example-owner/tap/job-sluice",
+        "STUB_KEG": str(keg),
+        "STUB_INFO_JSON": str(info_path),
+        "STUB_BREW_LOG": str(logs["brew"]),
+        "STUB_SMOKE_LOG": str(logs["smoke"]),
+        "REAL_PYTHON": sys.executable,
+    }
+    path = tmp_path / "step.sh"
+    path.write_text(_homebrew_script())
+    proc = subprocess.run(["bash", str(path)], cwd=root, env=env,
+                          capture_output=True, text=True, timeout=60)
+    reads = {k: [ln for ln in p.read_text().splitlines() if ln] for k, p in logs.items()}
+    return proc, reads, root
+
+
+def test_the_macos27_check_installs_tests_and_renders_the_users_formula(tmp_path):
+    proc, reads, root = _run_homebrew(tmp_path)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    formula = "example-owner/tap/job-sluice"
+    assert f"install {formula}" in reads["brew"], reads["brew"]
+    assert f"test {formula}" in reads["brew"], reads["brew"]
+    assert len(reads["smoke"]) == 1, reads["smoke"]
+    cwd, argv = reads["smoke"][0].split("|", 1)
+    assert argv.split()[1:] == ["9.9.9", "--channel", "homebrew-macos27", "--render"], argv
+    assert argv.split()[0] == str(root / "scripts" / "smoke_installed.py"), argv
+    assert not cwd.startswith(str(root)), f"the smoke ran from inside the checkout: {cwd}"
+
+
+@pytest.mark.parametrize("os_version", ["26.6.2", "15.7", "270.0"])
+def test_the_macos27_check_refuses_any_other_macos(tmp_path, os_version):
+    proc, reads, _ = _run_homebrew(tmp_path, os_version=os_version)
+    assert proc.returncode != 0
+    assert "not 27" in proc.stdout + proc.stderr
+    assert reads["brew"] == [], f"brew ran on the wrong macOS: {reads['brew']}"
+
+
+@pytest.mark.parametrize("info, message", [
+    (_installed("9.8.0"), "carries only its latest formula"),
+    ({"formulae": [{"installed": []}]}, "carries only its latest formula"),
+    (_installed("9.9.9", poured=False), "built from source"),
+])
+def test_the_macos27_check_refuses_a_keg_that_is_not_the_released_bottle(tmp_path, info, message):
+    proc, reads, _ = _run_homebrew(tmp_path, info=info)
+    assert proc.returncode != 0
+    assert message in proc.stdout + proc.stderr, proc.stdout + proc.stderr
+    assert not any(ln.startswith("test ") for ln in reads["brew"]), reads["brew"]
+    assert reads["smoke"] == [], "the smoke ran against a keg the check had already refused"
+
+
+def test_the_macos27_check_still_has_a_reason_to_exist():
+    """The job exists because the release bottles for no macOS newer than the ones it names. If a
+    native macOS 27 bottle is added, this job silently goes on re-testing it, and docs/INSTALL.md's
+    list of bottled versions goes stale with nothing red. So the bottled set is read from the one
+    place it is declared, and both are checked against it."""
+    from scripts.homebrew_bottles import PLATFORMS
+
+    runners = [runner for runner, _tag in PLATFORMS]
+    for r in runners:
+        assert re.fullmatch(r"macos-\d+", r), (
+            f"PLATFORMS runner {r!r} is not a plain `macos-N` label, so this guard cannot tell which "
+            "macOS it bottles for. Decide whether that runner changes what the macOS 27 check covers "
+            "before widening the pattern.")
+    versions = [int(r.split("-")[1]) for r in runners]
+    assert versions, "PLATFORMS declares no runner, so this guard checks nothing"
+    assert 27 not in versions and "arm64_golden_gate" not in {t for _r, t in PLATFORMS}, (
+        "the release now bottles for macOS 27, so post-release.yml's `homebrew` job re-tests a native "
+        "bottle rather than the older-macOS substitution it exists for: retarget it at the next "
+        "unbottled macOS, or retire it, and update docs/INSTALL.md")
+    install = (ROOT / "docs" / "INSTALL.md").read_text(encoding="utf-8")
+    m = re.search(r"Releases build bottles on macOS ([0-9]+(?:, [0-9]+)*(?:,? and [0-9]+)?)\.", install)
+    assert m, "docs/INSTALL.md no longer says which macOS versions releases build bottles on"
+    assert sorted(int(v) for v in re.findall(r"\d+", m.group(1))) == sorted(versions), (
+        f"docs/INSTALL.md says releases bottle on macOS {m.group(1)}, but PLATFORMS builds on {runners}")
