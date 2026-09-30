@@ -301,6 +301,9 @@ install and not here.
 `brew install` pours a prebuilt bottle when the tap's formula carries one for your Mac, and builds the
 formula from source when it does not. Releases publish bottles for Apple Silicon Macs on macOS 15 or
 later; an Intel Mac, or an Apple Silicon Mac on macOS 14 or earlier, always builds from source.
+Releases build bottles on macOS 15 and 26. A newer macOS pours the newest of those, so macOS 27
+installs the macOS 26 bottle; each release checks that install on a macOS 27 runner after it is
+published.
 
 The tap carries **only the latest formula**. A tap has no version history, so there is no
 Homebrew route to an older release; use another channel for that — see
