@@ -318,7 +318,7 @@ jobs:
           docker pull -q "$img"
           docker run --rm --entrypoint python3 \
             -v "${PWD}/scripts/smoke_installed.py:/tmp/smoke.py:ro" -w /tmp \
-            "$img" /tmp/smoke.py "$VERSION" --channel docker
+            "$img" /tmp/smoke.py "$VERSION" --channel docker --render
 
   report:
     # One place to read the verdict. `always()` so a failed channel still reports rather than

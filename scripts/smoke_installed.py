@@ -265,12 +265,82 @@ def check_offline_commands(report, trust_env=False):
     report("offline commands", "--help and list-sources --health both exit 0")
 
 
+# A synthetic CV in the grammar `cv/parse.py` accepts. No location field: the two-field meta line
+# is the accepted spelling of "no location", and it keeps a place name out of a shipped script.
+_RENDER_PROBE_CV = """\
+Email: someone@example.invalid
+
+EXAMPLE PERSON
+
+PROFILE
+Engineer with nine years building data pipelines.
+
+WORK EXPERIENCE
+
+Example Data Co
+03/2021-present | Staff Engineer
+- Cut p99 latency to under 200ms [ED1]
+
+EDUCATION
+- Example University, 2010-2013 | BSc Computer Science
+"""
+
+# Measured on WeasyPrint 70.0: the test suite's fake writes 13 bytes, an empty page ~0.7KB and a
+# one-word page ~2.3KB, while the probe renders at ~12KB in the container image (~49KB on macOS,
+# whose fonts embed larger). The floor sits between the one-word page and the probe. It catches a
+# stub or a near-empty page; it does NOT prove every section rendered -- a heading and a paragraph
+# (~5.5KB) would clear it.
+_RENDER_MIN_BYTES = 4096
+
+
+def check_real_render(report):
+    """The `template` renderer must write a real PDF through the installed WeasyPrint.
+
+    OPT-IN (`--render`), for the container image: of the channels smoked here it is the only one
+    that installs the `render` extra, and so the only one carrying the WeasyPrint that extra's pin
+    governs, with the native libraries (cairo/pango) no `pip install` can supply. The wheel and
+    sdist legs install no extra at all, and the .deb/.rpm take the distribution's own WeasyPrint,
+    which the pin does not govern -- rendering there would test a different library.
+
+    Every render test in the suite injects a fake `HTML`, and CI's test job does not install the
+    `render` extra, so before this check nothing before merge rendered a real PDF, and nothing at
+    all rendered one through sluice's own `template` renderer -- the Homebrew formula's `brew test`
+    calls `write_pdf` for real, but only on its own one-line document, and only at release. A
+    WeasyPrint major bump went through review certified green by tests that never touched it.
+
+    Resolved through `Sluice.renderer` with a default `CvConfig`, so it exercises the same
+    registry lookup and factory `cv run` does rather than constructing the class by hand.
+    """
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.cv.config import CvConfig
+
+    renderer = Sluice(Config()).renderer(CvConfig())
+    with tempfile.TemporaryDirectory() as out_dir:
+        path = renderer.render(_RENDER_PROBE_CV, out_dir)
+        with open(path, "rb") as fh:
+            data = fh.read()
+    if not data.startswith(b"%PDF-"):
+        raise SmokeFailure(f"the template renderer wrote something that is not a PDF: {data[:16]!r}")
+    if len(data) < _RENDER_MIN_BYTES:
+        raise SmokeFailure(
+            f"the template renderer wrote a {len(data)}-byte PDF, below the {_RENDER_MIN_BYTES}-byte "
+            "floor a real render clears -- a stub, or a render that produced no page content")
+    report("real render", f"template renderer wrote a {len(data)}-byte PDF")
+
+
 CHECKS = (
     ("import path", check_not_the_source_tree),
     ("version", check_version),
     ("sources", check_sources_load),
     ("package data", check_packaged_template),
     ("offline commands", check_offline_commands),
+)
+
+# Run, and COUNTED, only under `--render`. Kept out of `CHECKS` rather than reported as skipped:
+# an `ok` row for a check that never ran is exactly the green this script exists not to give.
+RENDER_CHECKS = (
+    ("real render", check_real_render),
 )
 
 
@@ -284,14 +354,18 @@ def main(argv=None) -> int:
     ap.add_argument("--trust-env", action="store_true",
                     help="do not sandbox the environment -- for the CONTAINER channel, where "
                          "the image's own XDG_* variables are the artefact under test")
+    ap.add_argument("--render", action="store_true",
+                    help="also render a real PDF through the template renderer -- for the "
+                         "container image, the one channel that installs the `render` extra")
     args = ap.parse_args(argv)
 
+    checks = CHECKS + (RENDER_CHECKS if args.render else ())
     lines, failures = [], []
 
     def report(name, detail):
         lines.append(f"  ok    {name}: {detail}")
 
-    for name, fn in CHECKS:
+    for name, fn in checks:
         try:
             if fn is check_version:
                 fn(report, args.version, trust_env=args.trust_env)
@@ -314,9 +388,9 @@ def main(argv=None) -> int:
     print(f"post-release smoke [{args.channel}] job-sluice {args.version}")
     print("\n".join(lines))
     if failures:
-        print(f"\n{len(failures)} of {len(CHECKS)} checks failed on the {args.channel} artefact.")
+        print(f"\n{len(failures)} of {len(checks)} checks failed on the {args.channel} artefact.")
         return 1
-    print(f"\nall {len(CHECKS)} checks passed on the {args.channel} artefact.")
+    print(f"\nall {len(checks)} checks passed on the {args.channel} artefact.")
     return 0
 
 

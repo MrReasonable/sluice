@@ -236,9 +236,12 @@ jobs:
           # wrong tag needs the registry, and post-release.yml covers that.
           # `--trust-env` because the image SETS its own XDG_* roots (see the Dockerfile): here
           # those variables are the artefact, not contamination from a caller's shell.
+          # `--render` because the image is the one smoked channel that installs the `render`
+          # extra, so it is the only place the WeasyPrint that extra pins renders a real PDF before
+          # merge; every render test in the suite injects a fake WeasyPrint.
           docker run --rm --entrypoint python3 \
             -v "${PWD}/scripts/smoke_installed.py:/tmp/smoke.py:ro" -w /tmp \
-            job-sluice:ci /tmp/smoke.py "$v" --channel ci-docker --trust-env
+            job-sluice:ci /tmp/smoke.py "$v" --channel ci-docker --trust-env --render
       - name: Smoke -- doctor renders its report
         run: |
           set -uo pipefail

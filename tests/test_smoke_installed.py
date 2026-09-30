@@ -50,6 +50,7 @@ _EXPECTED_CHECKS = {
     "check_sources_load",
     "check_packaged_template",
     "check_offline_commands",
+    "check_real_render",
 }
 
 
@@ -186,7 +187,8 @@ def test_every_check_defined_is_registered_in_the_checks_table():
                if name.startswith("check_")
                and inspect.isfunction(obj)
                and obj.__module__ == smoke.__name__}
-    registered = {fn.__name__ for _label, fn in smoke.CHECKS}
+    registry = smoke.CHECKS + smoke.RENDER_CHECKS
+    registered = {fn.__name__ for _label, fn in registry}
 
     # SCOPE, before the comparison: two empty sets are equal, so `defined == registered` is
     # satisfied by a sweep that found nothing at all. The named set is also what catches a
@@ -201,14 +203,14 @@ def test_every_check_defined_is_registered_in_the_checks_table():
     assert defined == registered, (
         f"defined but never registered (so never run): {sorted(defined - registered)}; "
         f"registered but not defined here: {sorted(registered - defined)}")
-    assert len(smoke.CHECKS) == len(registered), (
-        f"a check is registered twice: {[f.__name__ for _l, f in smoke.CHECKS]}")
+    assert len(registry) == len(registered), (
+        f"a check is registered twice: {[f.__name__ for _l, f in registry]}")
 
 
 def test_every_registered_check_has_a_distinct_label():
     """The label is what the reader sees in the summary and what names the failing row. Two
     checks sharing one makes the report ambiguous exactly when it is being read in anger."""
-    labels = [label for label, _fn in smoke.CHECKS]
+    labels = [label for label, _fn in smoke.CHECKS + smoke.RENDER_CHECKS]
     assert len(set(labels)) == len(labels), f"duplicate label in CHECKS: {labels}"
 
 
@@ -606,3 +608,116 @@ def test_all_checks_passing_exits_zero(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0, f"a clean run must exit 0, got {rc}:\n{out}"
     assert "all 1 checks passed" in out, out
+
+
+def test_the_render_check_runs_and_counts_only_under_the_flag(monkeypatch, capsys):
+    """`--render` needs WeasyPrint's native libraries, so it is opt-in; but when it is on, the
+    check must be both RUN and COUNTED. Without the flag it must not appear at all -- an `ok`
+    row or a denominator that includes a check that never ran is a green for nothing."""
+    ran = []
+
+    def planted_render(report):
+        ran.append(True)
+        raise smoke.SmokeFailure("no pdf")
+
+    monkeypatch.setattr(smoke, "CHECKS", (("planted", lambda report: report("planted", "ok")),))
+    monkeypatch.setattr(smoke, "RENDER_CHECKS", (("real render", planted_render),))
+
+    assert smoke.main(["9.9.9", "--channel", "unit"]) == 0
+    out = capsys.readouterr().out
+    assert not ran, "the render check ran without --render"
+    assert "all 1 checks passed" in out and "real render" not in out, out
+
+    assert smoke.main(["9.9.9", "--channel", "unit", "--render"]) == 1
+    out = capsys.readouterr().out
+    assert ran, "the render check did not run under --render"
+    assert "FAIL  real render: no pdf" in out, out
+    assert "1 of 2 checks failed" in out, f"the render check must be COUNTED:\n{out}"
+
+
+def test_a_passing_render_is_counted_in_the_success_summary(monkeypatch, capsys):
+    """The accept direction of the same accounting: a clean `--render` run must show the row AND
+    count it, or the summary certifies fewer checks than ran."""
+    monkeypatch.setattr(smoke, "CHECKS", (("planted", lambda report: report("planted", "ok")),))
+    monkeypatch.setattr(smoke, "RENDER_CHECKS",
+                        (("real render", lambda report: report("real render", "pdf")),))
+    assert smoke.main(["9.9.9", "--channel", "unit", "--render"]) == 0
+    out = capsys.readouterr().out
+    assert "  ok    real render: pdf" in out, out
+    assert "all 2 checks passed" in out, out
+
+
+class _WritingRenderer:
+    """Stands in for the resolved renderer: writes `payload` where `render` is told to."""
+
+    def __init__(self, payload):
+        self.payload = payload
+        self.cv_text = None
+
+    def render(self, cv_text, out_dir):
+        self.cv_text = cv_text
+        path = os.path.join(out_dir, "CV.pdf")
+        with open(path, "wb") as fh:
+            fh.write(self.payload)
+        return path
+
+
+def _plant_renderer(monkeypatch, payload):
+    from sluice.core.app import Sluice
+    fake = _WritingRenderer(payload)
+    monkeypatch.setattr(Sluice, "renderer", lambda self, cvcfg: fake)
+    return fake
+
+
+@pytest.mark.parametrize("payload, why", [
+    (b"<html>not a pdf</html>" * 400, "not a PDF"),
+    (b"%PDF-1.4 fake", "the 13-byte stub the render tests write"),
+    (b"%PDF-1.7\n" + b"0" * 2300, "the size of a real one-word page on WeasyPrint 70.0"),
+], ids=["not-a-pdf", "stub-sized-pdf", "one-word-page-sized-pdf"])
+def test_the_render_check_refuses_output_a_real_render_would_not_produce(monkeypatch, payload, why):
+    _plant_renderer(monkeypatch, payload)
+    with pytest.raises(smoke.SmokeFailure):
+        smoke.check_real_render(_report)
+
+
+def test_the_render_check_accepts_a_real_sized_pdf_and_reports_it(monkeypatch):
+    fake = _plant_renderer(monkeypatch, b"%PDF-1.7\n" + b"0" * smoke._RENDER_MIN_BYTES)
+    rows = _Collector()
+    smoke.check_real_render(rows)
+    assert rows.labels == ["real render"], rows.rows
+    assert fake.cv_text == smoke._RENDER_PROBE_CV
+
+
+def test_the_render_probe_is_a_cv_the_parser_accepts():
+    """A probe the parser refuses would fail the check on every channel for the SCRIPT's fault,
+    which reads as a broken image. Parsed here with the real grammar, offline."""
+    from sluice.cv.parse import parse_cv
+    doc = parse_cv(smoke._RENDER_PROBE_CV)
+    # Every section the probe exists to put on the page must survive the parse: a document the
+    # parser accepted but emptied would render the near-blank page the size floor refuses.
+    assert doc.name == "EXAMPLE PERSON"
+    assert doc.profile
+    assert [(r.company, r.title) for r in doc.work] == [("Example Data Co", "Staff Engineer")]
+    assert doc.work[0].bullets, "the work entry lost its bullet"
+    assert doc.education, "the education entry was dropped"
+
+
+def test_every_docker_smoke_run_renders_and_no_other_channel_does():
+    """The image is the one smoked channel that installs the `render` extra, so it is the only
+    place the WeasyPrint that extra pins is rendered through before merge. A docker leg without
+    `--render` loses that; any other leg with it would render against no WeasyPrint at all (the
+    wheel and sdist legs install no extra) or the distribution's own (the .deb/.rpm), neither of
+    which is what the pin governs."""
+    root = _SCRIPT.parent.parent / ".github" / "workflows"
+    invocations = []
+    for wf in (root / "ci.yml", root / "post-release.yml"):
+        text = wf.read_text(encoding="utf-8").replace("\\\n", " ")
+        invocations += [ln for ln in text.splitlines()
+                        if re.search(r"smoke(\.py|\")?\S*\s+\S+\s+--channel", ln)]
+    docker = [ln for ln in invocations if "--channel docker" in ln or "--channel ci-docker" in ln]
+    assert len(docker) == 2, f"expected the CI and post-release docker legs, found: {docker}"
+    # SCOPE for the other half: "no other channel renders" is vacuous if the sweep only ever
+    # matched the docker lines.
+    assert len(invocations) > len(docker), f"the sweep found no non-docker leg: {invocations}"
+    for ln in invocations:
+        assert ("--render" in ln) == (ln in docker), ln
