@@ -120,6 +120,14 @@ _log = get_logger("core.vault")
 # inner text and the body separately so updates can edit one key and leave the
 # body byte-for-byte intact.
 _FM_RE = re.compile(r"\A---\n(.*?)\n---\n?(.*)\Z", re.DOTALL)
+# An EMPTY block -- a `---` line directly followed by another `---` LINE -- that
+# `_FM_RE` cannot split at all, since it needs a line between the fences (#329).
+# Without it every writer read such a note as having no frontmatter and prepended a
+# second block. It is a FALLBACK, never tried first: a note `_FM_RE` does split keeps
+# that reading, so a lead typed with a doubled opening fence stays visible. And the
+# second fence must be the whole line, or `----` would be taken for it and a write
+# would drop the leftover `-` from the body.
+_EMPTY_FM_RE = re.compile(r"\A---\n---(?:\n|\Z)(.*)\Z", re.DOTALL)
 
 
 def _today() -> str:
@@ -2585,7 +2593,7 @@ class Vault:
                 inner, _ = _split_frontmatter(_read(path))
             except OSError:
                 continue
-            if inner is None:
+            if not inner:  # no block, or an empty one: no status to normalize
                 summary["unchanged"] += 1
                 continue
             # A file that is not a lead is the USER's -- an interview-prep or research note
@@ -3505,9 +3513,10 @@ class Vault:
             if m:
                 if last_seen <= m.group(1).strip().strip('"').strip("'"):
                     return text  # older-or-equal: never regress, write nothing
-                inner = re.sub(r"(?m)^\s*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
+                # `[ \t]*` for the reason `_set_fm` gives: this is the re-scrape's only write.
+                inner = re.sub(r"(?m)^[ \t]*last_seen\s*:.*$", f"last_seen: {last_seen}", inner)
             else:
-                inner = f"{inner}\nlast_seen: {last_seen}"
+                inner = f"{inner}\nlast_seen: {last_seen}" if inner else f"last_seen: {last_seen}"
             return f"---\n{inner}\n---\n{body}"
         _cas_write(path, transform)
 
@@ -4065,9 +4074,12 @@ def _split_frontmatter(text: str) -> tuple[str | None, str]:
     """Return (frontmatter_inner, body). frontmatter_inner is None when the note
     has no leading `---` block."""
     m = _FM_RE.match(text)
-    if not m:
-        return None, text
-    return m.group(1), m.group(2)
+    if m:
+        return m.group(1), m.group(2)
+    m = _EMPTY_FM_RE.match(text)
+    if m:
+        return "", m.group(1)
+    return None, text
 
 
 def _fm_value(inner: str | None, key: str) -> str:
@@ -4331,7 +4343,11 @@ def _set_fm(inner: str, key: str, literal: str) -> str:
     caller writing unmediated external content (a scraped page, a parsed email, a
     CLI value that may have been pasted rather than typed) therefore still needs
     its own pre-quote guard; see `frontmatter_safe` below."""
-    pat = rf"(?m)^\s*{re.escape(key)}\s*:.*$"
+    # `[ \t]*`, never `\s*`, before the key: `\s*` runs across newlines, so the match
+    # began on a blank line above the key and the rewrite deleted it -- and a `|+`/`>+`
+    # block scalar above the key KEEPS its trailing blank lines as part of its value
+    # (#329). The line matched is the same one; only the match's start moves.
+    pat = rf"(?m)^[ \t]*{re.escape(key)}\s*:.*$"
     if re.search(pat, inner):
         return re.sub(pat, lambda _m: f"{key}: {literal}", inner, count=1)
     return f"{inner}\n{key}: {literal}" if inner else f"{key}: {literal}"
@@ -4466,7 +4482,7 @@ def _normalize_status_transform(text: str) -> str:
     status lines DISAGREE: a concurrent edit that introduced a conflict must be reported,
     never auto-guessed (never-regress). #16: derive from fresh, never from the snapshot."""
     inner, body = _split_frontmatter(text)
-    if inner is None:
+    if not inner:  # no block, or an empty one: no status to collapse
         return text
     norms = [_status.normalize(r.strip())
              for r in re.findall(r"(?m)^\s*status\s*:\s*(.*)$", inner)]
