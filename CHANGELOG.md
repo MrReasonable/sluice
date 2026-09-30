@@ -40,6 +40,57 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.18.0](https://github.com/MrReasonable/sluice/compare/v2.17.2...v2.18.0) (2026-09-30)
+
+
+### Changed
+
+Sluice now reads a lead note's frontmatter the way YAML does: a key nested under
+another property is not the note's own key, and a blank `key:` is blank rather than
+borrowing the next line. On notes you edited by hand this can change what sluice sees
+and does:
+
+* A lead whose top-level `status: shortlist` sat beside a nested `status:` now reads
+  `shortlist`, so triage may write it, and `apply record` or a confirmation receipt may
+  move it to `applied`.
+* Nested values no longer feed a lead's `url` or `location`, so an ingest or
+  `leads dedupe` decision on such a note can change.
+* A blank `company`, `role_type`, `pending_cv`, `tailored_cv`, `alt_urls` or `last_seen`
+  now reads blank and may be filled; the same key holding a hand-typed list is left alone.
+* `cv run` on a lead whose `pending_cv`, `needs_signoff` or `tailored_cv` is a hand-typed
+  list reports an error naming the key instead of writing over it.
+* An evidence entry with a nested key named like one of its fields loses that field, and
+  a nested `verified:` makes it uncitable.
+
+CVs for leads triaged before this release are now composed with their `culture_flags`
+and `triage_concerns` as framing. There is no switch; blank both keys to opt a lead out.
+
+
+### Features
+
+* **cv:** add a framing-only triage notes section to the composer prompt ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([231703e](https://github.com/MrReasonable/sluice/commit/231703e563a022a043d0d16779516eda7f9532a3))
+* **cv:** frame nothing for a hand-typed YAML block scalar header ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([a1bea85](https://github.com/MrReasonable/sluice/commit/a1bea85dfffe56008a741deea0915c8c41781717))
+* **cv:** give the composer a lead's triage notes as framing ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([bc9f176](https://github.com/MrReasonable/sluice/commit/bc9f17650ead2ec6f3c8a9fbb9a3d9dbd9ef3e4d))
+* **cv:** record the framing the composer was given in the sign-off hold ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([56ce98b](https://github.com/MrReasonable/sluice/commit/56ce98b8c08edeb2137c21ffc3f166ed26ef5ef1))
+* **cv:** show the triage notes a held CV was composed with at sign-off ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([21a8b5c](https://github.com/MrReasonable/sluice/commit/21a8b5c827fecefd7c2fa9fdf6d733ac5aa0139c))
+* **mcp:** return a held CV's framing apart from its claims ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([70be413](https://github.com/MrReasonable/sluice/commit/70be4131d3134aa84a461e3e2f3478a535fd6c6f))
+* **triage:** record triage concerns as their own frontmatter key ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([cf9fe37](https://github.com/MrReasonable/sluice/commit/cf9fe370a66d36b185f67170b8af396f09397ec3))
+
+
+### Bug Fixes
+
+* **triage:** leave a hand-typed multi-line framing value unwritten instead of corrupting it ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([c53fcad](https://github.com/MrReasonable/sluice/commit/c53fcadb26688a472d301aa8cc19a6e57a815e20))
+* **triage:** repair or reject a triage verdict's fields before writing them ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([189f1eb](https://github.com/MrReasonable/sluice/commit/189f1eb620fd5877216234c6928693eb374e8522))
+* **triage:** report and skip an unusable judge verdict instead of ending the run ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([7672f83](https://github.com/MrReasonable/sluice/commit/7672f83579838f0096fdb2c406518d3c1b394485))
+* **vault:** read a frontmatter key at its own level, on its own line ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([a765460](https://github.com/MrReasonable/sluice/commit/a765460631a724fcc303f2b9e208586e078aa61c))
+* **vault:** stop two silent frontmatter rewrites of a hand-edited note ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([9fa6b69](https://github.com/MrReasonable/sluice/commit/9fa6b69da49295575d5e3e4e4553c2d3d1237b43))
+
+
+### Documentation
+
+* describe the triage framing section, its sign-off display and the multi-line guard ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([cf2d309](https://github.com/MrReasonable/sluice/commit/cf2d3094e30a53299989195c18aba2cad1bc94c5))
+* design and plan CV composer framing from triage verdicts ([#329](https://github.com/MrReasonable/sluice/issues/329)) ([db3a890](https://github.com/MrReasonable/sluice/commit/db3a890ba336a5fe4b9ed7626c494bd0066885b5))
+
 ## [2.17.2](https://github.com/MrReasonable/sluice/compare/v2.17.1...v2.17.2) (2026-09-30)
 
 
