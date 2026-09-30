@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.17.1](https://github.com/MrReasonable/sluice/compare/v2.17.0...v2.17.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **deps:** admit weasyprint 70 in the render extra ([7813a91](https://github.com/MrReasonable/sluice/commit/7813a91bba57a5ee60444ba98819aa3132485dd1))
+  WeasyPrint 70.0 is a security release (CVE-2026-55073, GHSA-r543-q48m-4c9j). If you use
+  `cv run` with the `template` renderer, run `pip install -U weasyprint` (or the pipx/uv
+  equivalent) after upgrading: pip leaves an already-satisfied 69.x in place, so upgrading
+  `job-sluice` alone does not move it. The container image and the Homebrew formula carry 70
+  from this release on.
+
 ## [2.17.0](https://github.com/MrReasonable/sluice/compare/v2.16.1...v2.17.0) (2026-09-15)
 
 
