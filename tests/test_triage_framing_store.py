@@ -173,14 +173,16 @@ def test_a_hash_comment_after_a_measured_flow_member_survives_a_triage_write(
     assert any(key in m and "several lines" in m for m in said), said
 
 
-# Notes PyYAML reads with the key's value continued past its own line, or with a same-named key
-# nested earlier, that `core/vault.py::_holds_multiline_value` does not recognise. Only the check
-# asking PyYAML whether a single-line write would change how the note reads keeps them unwritten.
+# Notes PyYAML reads with the key's value continued past its own line, that
+# `core/vault.py::_holds_multiline_value` does not recognise. Only the check asking PyYAML whether
+# a single-line write would change how the note reads keeps them unwritten. A same-named key
+# nested earlier used to be one of these shapes, when a write matched at any indent and landed on
+# the nested line; `test_a_same_named_key_nested_earlier_is_kept_and_the_top_level_one_written`
+# now pins that the write lands on the top-level line instead.
 _PYYAML_ONLY_SHAPES = {
     "colon-after-spaced-closing-quote": ['{key}: ["a" :#c]', "KEPT-TWO]"],
     "colon-after-explicit-key": ["{key}: [? :#c]", "KEPT-TWO]"],
     "tag-against-flow-punctuation": ["{key}: [!]", "KEPT-TWO]"],
-    "same-key-nested-earlier": ["hand_notes:", '  {key}: "kept"', '{key}: "old"'],
 }
 
 
@@ -192,10 +194,9 @@ def test_a_write_pyyaml_reads_as_breaking_the_note_is_left_unwritten(tmp_path, c
           'relevance_notes: ""']
     # PyYAML's parser accepts the original, so the row cannot pass on a note already broken, and
     # the scan alone would write it, so the row is held by the PyYAML check and nothing else.
-    nested = ["hand_notes"] if shape == "same-key-nested-earlier" else []
     original = yaml.compose("\n".join(fm), Loader=yaml.SafeLoader)
     assert [k.value for k, _ in original.value] == [
-        "company", "role", "status", "score", *nested, key, "relevance_notes"]
+        "company", "role", "status", "score", key, "relevance_notes"]
     assert not _holds_multiline_value("\n".join(fm), key)
     v, path = _seed_note(tmp_path, fm)
     note = v.read_leads({"new"})[0]
@@ -205,14 +206,30 @@ def test_a_write_pyyaml_reads_as_breaking_the_note_is_left_unwritten(tmp_path, c
     start = lines.index(block[0])
     assert lines[start:start + len(block)] == block
     assert isinstance(yaml.compose("\n".join(lines), Loader=yaml.SafeLoader), yaml.MappingNode)
-    if nested:
-        assert yaml.safe_load("\n".join(lines))["hand_notes"] == {key: "kept"}
     after = v.read_leads()[0]
     assert after.status == "shortlist" and after.fm["score"] == "81"
     said = [r.getMessage() for r in caplog.records if r.name == "sluice.core.vault"]
     # Named, and not blamed on a value spread over several lines, which these are not.
     assert any(key in m for m in said), said
     assert not any(key in m and "several lines" in m for m in said), said
+
+
+@pytest.mark.parametrize("key", ["triage_concerns", "culture_flags"])
+def test_a_same_named_key_nested_earlier_is_kept_and_the_top_level_one_written(
+        tmp_path, caplog, key):
+    # #329: the write finds the key at the frontmatter's base indent (`_key_lines`), so the nested
+    # line is the user's and stays, the top-level one takes the verdict, and nothing is warned.
+    fm = ['company: "Example Foundry"', 'role: "Analyst"', "status: new", "score: 0",
+          "hand_notes:", f'  {key}: "kept"', f'{key}: "old"', 'relevance_notes: ""']
+    v, path = _seed_note(tmp_path, fm)
+    note = v.read_leads({"new"})[0]
+    with caplog.at_level("WARNING"):
+        assert apply_verdict(v, note, dict(_VERDICT), {}) == "applied"
+    held = yaml.safe_load("\n".join(_frontmatter_lines(path)))
+    assert held["hand_notes"] == {key: "kept"}
+    joined = {"triage_concerns": "; ".join(FRAMING_CONCERNS), "culture_flags": ", ".join(FRAMING_FLAGS)}
+    assert held[key] == joined[key]
+    assert not [r for r in caplog.records if r.name == "sluice.core.vault"]
 
 
 # The PyYAML check above also holds most hand-typed shapes through a real Vault, so a Vault-level
@@ -322,8 +339,9 @@ def test_a_one_line_flow_value_with_a_quote_in_a_plain_item_is_left_unwritten(
 
 
 def test_a_nested_concerns_line_under_another_property_is_left_alone(tmp_path):
-    # Why the key is `triage_`-prefixed: `_set_fm` matches a key at ANY indentation, so a bare
-    # `concerns` write would land on this nested line.
+    # A write finds a key at the frontmatter's base indent only (`core/vault.py::_key_lines`), so
+    # a nested `concerns:` is the user's and never a write target. The `triage_` prefix is about a
+    # person's own TOP-LEVEL `concerns:` key instead; see `triage/apply.py::apply_verdict`.
     nested = ["hand_notes:", "  concerns: KEPT-NESTED", "  owner: KEPT-OWNER"]
     v, path = _seed_note(tmp_path, ['company: "Example Foundry"', 'role: "Analyst"',
                                     "status: new", "score: 0", *nested, 'relevance_notes: ""'])
@@ -334,13 +352,12 @@ def test_a_nested_concerns_line_under_another_property_is_left_alone(tmp_path):
     assert lines[start:start + len(nested)] == nested
 
 
-def test_a_nested_key_before_the_real_one_is_matched_by_first_occurrence(tmp_path):
-    # #329: `_holds_multiline_value` must match the FIRST occurrence of the key -- the same
-    # line `_set_fm` would replace -- not the last. A nested `culture_flags:` inside
-    # `hand_notes`, ahead of the real top-level `culture_flags: ""`, is what a write would
-    # actually land on; reading the LAST occurrence would see the real key's single-line value
-    # instead, judge the key safe to write, and corrupt `hand_notes` when the write landed on
-    # the nested line anyway.
+def test_a_nested_key_before_the_real_one_is_left_alone(tmp_path):
+    # #329: `_holds_multiline_value` and `_set_fm` find the same line -- the first TOP-LEVEL
+    # occurrence (`_key_lines`). A nested `culture_flags:` inside `hand_notes`, ahead of the real
+    # top-level `culture_flags: ""`, is neither judged nor written: the real key takes the write
+    # and `hand_notes` keeps its block. When both matched at any indent, the nested line is what
+    # a write landed on.
     hand_notes = ["hand_notes:", "  culture_flags:", "    - KEPT-ONE"]
     v, path = _seed_note(tmp_path, ['company: "Example Foundry"', 'role: "Analyst"',
                                     "status: new", "score: 0", *hand_notes,
@@ -351,6 +368,9 @@ def test_a_nested_key_before_the_real_one_is_matched_by_first_occurrence(tmp_pat
     lines = _frontmatter_lines(path)
     start = lines.index(hand_notes[0])
     assert lines[start:start + len(hand_notes)] == hand_notes
+    # The real key was judged single-line and took the write; judging the nested one instead
+    # would have preserved it unwritten.
+    assert v.read_leads()[0].fm["culture_flags"] == ", ".join(FRAMING_FLAGS)
 
 
 @pytest.mark.parametrize("typed,read", [
@@ -378,32 +398,37 @@ def test_a_multi_line_key_is_written_when_it_is_not_preserved(tmp_path):
     assert v.read_leads()[0].fm["triage_concerns"] == "written"
 
 
-def test_a_preserved_key_is_decided_before_any_field_is_written(tmp_path):
-    # `_set_fm` matches a key at ANY indentation, so the verdict's `score` write lands on the
-    # nested `score:` child first and moves it to column 0. A check made after that write sees
-    # `culture_flags:` followed by a key at its own indentation, reads it as single-line, and
-    # overwrites it. The nested child is lost either way (that is `_set_fm`'s own hazard, and
-    # why this row does not assert valid YAML); what the guard owes is the key it was named for.
+def test_a_preserved_key_keeps_a_nested_child_named_like_a_written_field(tmp_path):
+    # #329: the verdict's `score` write lands on the top-level `score:` line only
+    # (`core/vault.py::_key_lines`), so the nested `score:` child stays where it is and
+    # `culture_flags:` keeps its block. When `_set_fm` matched at any indent, that write moved
+    # the child to column 0 first, and only deciding the guard before any write saved the key.
+    block = ["culture_flags:", "  score: KEPT-NESTED"]
     v, path = _seed_note(tmp_path, ['company: "Example Foundry"', 'role: "Analyst"',
-                                    "status: new", "culture_flags:", "  score: KEPT-NESTED",
-                                    "score: 0", 'relevance_notes: ""'])
+                                    "status: new", *block, "score: 0", 'relevance_notes: ""'])
     note = v.read_leads({"new"})[0]
     apply_verdict(v, note, dict(_VERDICT), {})
-    assert "culture_flags:" in _frontmatter_lines(path)
+    lines = _frontmatter_lines(path)
+    start = lines.index("culture_flags:")
+    assert lines[start:start + len(block)] == block
+    assert "score: 81" in lines
 
 
-def test_the_append_guard_is_decided_before_any_field_is_written(tmp_path):
-    # #329: the append guard is its own decision, made against the same fresh
-    # `inner` as the `preserve_block_values` check above and for the identical reason -- the
-    # verdict's `score` write lands on the nested `score:` child first and moves it to column
-    # 0, so a decision made AFTER the field loop would see `relevance_notes:` followed by a
-    # key at its own indentation and append over it.
+def test_the_append_guard_keeps_a_nested_child_named_like_a_written_field(tmp_path):
+    # #329: the same shape for the append guard. The verdict's `score` write lands on the
+    # top-level `score:` line only, so `relevance_notes:` keeps its nested child and the append
+    # abstains over it. When `_set_fm` matched at any indent, that write moved the child to
+    # column 0 and a guard decided after it appended over `relevance_notes:`.
+    block = ["relevance_notes:", "  score: KEPT-NESTED"]
     v, path = _seed_note(tmp_path, ['company: "Example Foundry"', 'role: "Analyst"',
                                     "status: new", 'culture_flags: ""', 'triage_concerns: ""',
-                                    "relevance_notes:", "  score: KEPT-NESTED", "score: 0"])
+                                    *block, "score: 0"])
     note = v.read_leads({"new"})[0]
     apply_verdict(v, note, dict(_VERDICT), {})
-    assert "relevance_notes:" in _frontmatter_lines(path)
+    lines = _frontmatter_lines(path)
+    start = lines.index("relevance_notes:")
+    assert lines[start:start + len(block)] == block
+    assert "score: 81" in lines
 
 
 def test_a_hand_typed_relevance_notes_block_survives_an_append(tmp_path, caplog):

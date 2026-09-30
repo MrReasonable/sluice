@@ -678,7 +678,8 @@ class Store(Protocol):
         On "updated" and "merged" ONLY `last_seen` may change -- never status, enrichment,
         or body -- and it may only move FORWARD: a re-scrape carrying an older date leaves
         the newer stored value untouched (`last_seen` is monotonic). This is never-clobber,
-        and it is the reason sluice exists.
+        and it is the reason sluice exists. A stored `last_seen` spread over several lines
+        is a hand edit the stamp would corrupt, so it is left as it is (#329).
 
         "created"/"updated" are MUST-support. "merged"/"refused" are MAY-return: a store
         keyed on synthetic ids never merges-on-uncertainty and never hits a naming
@@ -766,7 +767,10 @@ class Store(Protocol):
         refuse on PRESENCE rather than on inequality -- a value DIFFERING from the one
         offered is the harmful case, and it is the one a store comparing values would
         wave through. Same delegation argument as above: a caller-side blankness check
-        reads the pre-fetch snapshot and is byte-identical to no check at all.
+        reads the pre-fetch snapshot and is byte-identical to no check at all. A value
+        spread over several lines (for a markdown store, a hand-typed block list under a
+        key whose own line is blank) is PRESENT, never blank (#329): filling it would
+        write over what a person typed.
 
         `blank_values`, when given alongside `require_blank`, names the stored values
         that count as BLANK for that guard in addition to empty/whitespace-only. Only the
@@ -816,7 +820,9 @@ class Store(Protocol):
         survivor removes nothing. If the survivor's EXISTING `alt_urls` is present but
         not a JSON list of strings, MAY raise MalformedNoteField instead of silently
         resetting it -- never-clobber forbids discarding a possibly-human-edited value,
-        so the whole merge is aborted with nothing written and no loser touched. Each
+        so the whole merge is aborted with nothing written and no loser touched; an
+        `alt_urls` spread over several lines is such a value too, and a `first_seen` or
+        `last_seen` spread over several lines is left as it is (#329). Each
         loser is then removed/archived independently; a per-loser removal failure is
         isolated to that loser (it stays in the active view and is never counted as
         merged) rather than aborting the whole cluster.
@@ -838,16 +844,19 @@ class Store(Protocol):
 
     def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
         """Set the served-CV pointer. When `only_if_absent`, do not overwrite an existing
-        one (returns False without writing). Returns whether a write happened. MAY raise
-        VaultConflict on sustained concurrent edit (#16)."""
+        one (returns False without writing); a value spread over several lines counts as an
+        existing one (#329). Otherwise a value spread over several lines raises
+        MalformedNoteField rather than being overwritten with its items orphaned. Returns whether a
+        write happened. MAY raise VaultConflict on sustained concurrent edit (#16)."""
         ...
 
     def hold_for_signoff(self, ref, *, pending: str, claims: str) -> bool:
         """Stamp a #60 sign-off hold (pending_cv + needs_signoff) ONLY IF the note has no
         tailored_cv in FRESH content, mirroring set_tailored_cv(only_if_absent=...). Returns
         whether it stamped -- False means a real send-ready CV already exists, so the caller
-        leaves the flagged CV inert rather than latching the lead behind a redundant hold.
-        MAY raise VaultConflict (#16)."""
+        leaves the flagged CV inert rather than latching the lead behind a redundant hold. A
+        `pending_cv` or `needs_signoff` spread over several lines raises MalformedNoteField
+        rather than being stamped over (#329). MAY raise VaultConflict (#16)."""
         ...
 
     def sign_off(self, ref, *, accept: bool = True,
@@ -859,7 +868,10 @@ class Store(Protocol):
         intact, stale markers cleared), 'nothing' (no pending_cv -> no write), or
         'stale' (#131: `require_pending` given and it does not match the FRESH
         pending_cv -> no write). The outcome is the store's own verdict, like
-        upsert's, so a caller never reconstructs it from a stale snapshot. MAY raise
+        upsert's, so a caller never reconstructs it from a stale snapshot. A tailored_cv
+        spread over several lines counts as existing ('collision'), and a pending_cv or
+        needs_signoff spread over several lines is left as it is and reported 'nothing',
+        since clearing it would corrupt what a person typed (#329). MAY raise
         VaultConflict (#16)."""
         ...
 
@@ -1057,8 +1069,9 @@ class Store(Protocol):
 
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every note's status vocabulary; return a `changed`/`unchanged`/
-        `unknown`/`conflicts` summary. A note whose duplicate status lines disagree is
-        left untouched and reported under `conflicts`, never auto-resolved. Unlike the
+        `unknown`/`conflicts` summary. A note whose duplicate status lines disagree, or
+        whose status is spread over several lines (#329), is left untouched and reported
+        under `conflicts`, never auto-resolved. Unlike the
         other writers here, a sustained VaultConflict on one note is ABSORBED rather than
         raised -- that note is reported under `summary["skipped"]` instead -- so one
         conflicting note never aborts the sweep over the rest (#16). `conflicts` reports

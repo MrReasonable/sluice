@@ -1359,9 +1359,22 @@ path, not a `fields` key, so `preserve_block_values` does not cover it, but
 the corruption it would cause is identical. Beside that hand-written scan,
 `_single_line_write_breaks_note` asks PyYAML: when PyYAML reads the note and a
 single-line write would stop it parsing or change how another top-level key
-reads (a continuation line left orphaned, or a same-named key nested under
-another mapping), the key is left unwritten too, and the append abstains on
-the same test. A note PyYAML cannot read is left to the scan alone.
+reads (a continuation line left orphaned), the key is left unwritten too, and
+the append abstains on the same test. A note PyYAML cannot read is left to the
+scan alone.
+
+Every read and write finds a key the same way (`_key_lines`, #329): at the
+frontmatter's base indent -- the indent of the root mapping's first key as
+PyYAML reads it, or, for a note PyYAML refuses, the shallowest key-shaped line
+-- with its value read from the key's own line. A same-named key
+nested under another mapping is the user's, so no write lands on it and no read
+reports it; a blank `key:` reads blank rather than taking the next line as its
+value. A blank key can still hold a hand-typed block list on the lines after it,
+so every write decision that asks whether a key is blank, unchanged or present
+(`require_blank`, `require_unchanged`, the `tailored_cv` checks in
+`set_tailored_cv`, `hold_for_signoff` and `sign_off`, `merge_cluster`'s
+`alt_urls` and timestamps, the re-scrape's `last_seen` stamp, `leads normalize`)
+treats a value spread over several lines as present and leaves it unwritten.
 
 A fourth property sits beside the write contract, but a deliberately weaker one:
 **read-path dedup** (#23) is human-gated, not automatic. `job-sluice leads dedupe`

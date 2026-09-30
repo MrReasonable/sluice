@@ -145,6 +145,31 @@ def _lead_text(vault_dir, company, role):
         return f.read()
 
 
+def test_cv_signoff_on_a_blank_pending_cv_over_a_list_says_why_it_did_nothing(cli, caplog):
+    """#329: a hand-typed `pending_cv:` holding a list reads blank on its own line, so the facade's
+    snapshot saw nothing pending and returned before the store could say why -- while `leads
+    dismiss` refused the same lead as held. The store now reports the spread value by name, and
+    the facade lets the store decide rather than answering from its snapshot."""
+    h, run = cli(backend=ScriptedBackend())
+    leads = os.path.join(h.paths["vault"], "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    fm = ['company: "Example Foundry"', 'role: "Staff Engineer"', "status: shortlist",
+          'url: "https://example.invalid/jobs/1"', "pending_cv:", "  - CV_ab12.pdf"]
+    with open(os.path.join(leads, "Example Foundry - Staff Engineer.md"), "w", encoding="utf-8") as f:
+        f.write("---\n" + "\n".join(fm) + "\n---\n# body\n")
+    before = _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
+
+    # The warning is a log record: `core/log.py`'s handler writes to the terminal's own stderr,
+    # which the harness's captured `err` does not see.
+    with caplog.at_level("WARNING"):
+        rc, _out, err = run(["cv", "signoff", "--lead", "example-foundry", "--yes"])
+
+    assert rc == 1 and "nothing" in err.lower()
+    said = [r.getMessage() for r in caplog.records if "spread over several lines" in r.getMessage()]
+    assert said and "pending_cv" in said[0], [r.getMessage() for r in caplog.records]
+    assert _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer") == before
+
+
 def test_cv_signoff_parses_lead_discard_yes():
     args = _build_parser().parse_args(
         ["cv", "signoff", "--lead", "acme-em", "--discard", "--yes"])

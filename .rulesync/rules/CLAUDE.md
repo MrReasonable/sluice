@@ -457,7 +457,11 @@ value spans several lines -- a hand-typed block list or block scalar -- is left 
 than corrupted by `_set_fm`'s single-line replace, while the other fields still land. Its
 `append_note` write to `relevance_notes` is a separate write path, not a `fields` key, and
 abstains the same way when the fresh stored value itself spans several lines, rather than
-corrupting it.
+corrupting it. Every frontmatter read and write finds a key at the frontmatter's base indent
+(`core/vault.py::_base_indent`, used by `_key_lines`), value from the key's OWN line. A
+blank `key:` therefore reads blank even when a hand-typed block list sits under it, so every write
+decision that asks "blank / unchanged / present" also asks `_holds_multiline_value` and treats a
+multi-line value as PRESENT; a reader moved without its guard turns a refusal into an overwrite.
 
 `job-sluice leads reconcile` (#1) is the one pass that MOVES a note, and a move writes no note bytes —
 only a directory entry, via the `O_EXCL`-reserve + `os.replace` primitive `merge_cluster` shares. It
