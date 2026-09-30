@@ -296,11 +296,11 @@ _RENDER_MIN_BYTES = 4096
 def check_real_render(report):
     """The `template` renderer must write a real PDF through the installed WeasyPrint.
 
-    OPT-IN (`--render`), for the container image: of the channels smoked here it is the only one
-    that installs the `render` extra, and so the only one carrying the WeasyPrint that extra's pin
-    governs, with the native libraries (cairo/pango) no `pip install` can supply. The wheel and
-    sdist legs install no extra at all, and the .deb/.rpm take the distribution's own WeasyPrint,
-    which the pin does not govern -- rendering there would test a different library.
+    OPT-IN (`--render`), for the channels that install the `render` extra -- the container image
+    and the Homebrew formula -- and so carry the WeasyPrint that extra's pin governs, with the
+    native libraries (cairo/pango) no `pip install` can supply. The wheel and sdist legs install no
+    extra at all, and the .deb/.rpm take the distribution's own WeasyPrint, which the pin does not
+    govern -- rendering there would test a different library.
 
     Every render test in the suite injects a fake `HTML`, and CI's test job does not install the
     `render` extra, so before this check nothing before merge rendered a real PDF, and nothing at
@@ -356,7 +356,7 @@ def main(argv=None) -> int:
                          "the image's own XDG_* variables are the artefact under test")
     ap.add_argument("--render", action="store_true",
                     help="also render a real PDF through the template renderer -- for the "
-                         "container image, the one channel that installs the `render` extra")
+                         "channels that install the `render` extra (the image, Homebrew)")
     args = ap.parse_args(argv)
 
     checks = CHECKS + (RENDER_CHECKS if args.render else ())

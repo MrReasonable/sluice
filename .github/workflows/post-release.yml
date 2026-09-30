@@ -16,17 +16,18 @@ name: Post-release install check
 #
 # `release-please.yml` DISPATCHES IT, and that is the whole of the ordering. This workflow used
 # to trigger on `release: published`, which reads as "after the release" and is not: release-
-# please cuts the GitHub release in its FIRST job, and every publishing job (`pypi`, `docker`,
-# `release-assets`) declares `needs: release-please` and therefore runs after it. The event
+# please cuts the GitHub release in its FIRST job, and every publishing job declares
+# `needs: release-please` and therefore runs after it. The event
 # fired at the START of the publish fan-out and this workflow raced it -- measured red on every
 # release up to #231. Deliberately NO version list: the one that stood here enumerated three, went
 # stale the moment a fourth was cut, and was still being read as current. "no matching
 # distribution" from PyPI, 404 for the .deb and .rpm, "manifest unknown" for the image. A check
 # that fails on every release is a check nobody reads, which is worse than not having one --
 # the next genuine publish failure is indistinguishable from the noise. `release-please.yml`'s
-# `post-release` job now names those publishes in its `needs:` and dispatches this workflow
-# once they are done, so the ordering is DECLARED where it can be enforced rather than inferred
-# from an event name.
+# `post-release` job now names the job that publishes each channel checked here in its `needs:`
+# and dispatches this workflow once they are done, so the ordering is DECLARED where it can be
+# enforced rather than inferred from an event name. Which jobs those are is pinned from both
+# ends by `tests/test_post_release_wiring.py::_CHANNEL_PRODUCER`, not listed here.
 #
 # NON-ROOT is the point of the deb/rpm jobs. Verifying a Linux package as root cannot see a
 # non-root failure and looks identical to success: root bypasses directory traversal checks, so
@@ -48,7 +49,10 @@ on:
   #
   # Being a dispatch is also what makes this re-runnable by hand against any released version:
   # useful for a release published before this workflow existed, and for re-checking after a
-  # registry incident.
+  # registry incident. EXCEPT the `homebrew` row: the tap serves only its latest formula, so a
+  # hand run against an older release -- or against the new one after its Homebrew publish
+  # failed -- reds that row by design, and `report` with it. Every other row still reads on
+  # its own. A tap that does not serve the version asked for is exactly what that row reports.
   workflow_dispatch:
     inputs:
       version:
@@ -320,11 +324,79 @@ jobs:
             -v "${PWD}/scripts/smoke_installed.py:/tmp/smoke.py:ro" -w /tmp \
             "$img" /tmp/smoke.py "$VERSION" --channel docker --render
 
+  homebrew:
+    # The Homebrew channel on a macOS NEWER than any the release bottles for. The release builds,
+    # pours and tests a bottle on each of its own runners (macos-15, macos-26) before the tap is
+    # pushed, so those are covered upstream. macOS 27 is not among them: it has no bottle of its
+    # own, and Homebrew pours the newest OLDER one instead -- measured on macOS 27.0.1, the
+    # `arm64_golden_gate` lookup resolves to `arm64_tahoe`. Nothing in the release exercises that
+    # substitution, so a Tahoe bottle that stopped working on 27 would ship green; this job is
+    # where it is seen. It installs exactly as a user does, so it checks the pour and the tap's
+    # published formula rather than a local build.
+    #
+    # `xcode-27` is a PREVIEW label, and it is the only runner on macOS 27: GitHub has no
+    # `macos-27` label yet. The image moved its base OS to macOS 27 on 2026-09-16 and could move
+    # again, so the step refuses to run on anything else rather than quietly re-testing 26. A
+    # preview image carries no SLA and can queue; this job runs after publication, so a slow or
+    # failed runner delays a verdict and never a release. When `macos-27` reaches GA, a native
+    # bottle belongs in the release instead and this job's reason goes away.
+    needs: version
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # No token is needed here -- the only checked-out file is the smoke script, and
+          # every artefact is fetched from a public registry. Leaving credentials in .git
+          # would put them in reach of anything this job runs.
+          persist-credentials: false
+          sparse-checkout: scripts/smoke_installed.py
+          sparse-checkout-cone-mode: false
+      - name: Install from the tap on macOS 27 and run it
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          os="$(sw_vers -productVersion)"
+          if [ "${os%%.*}" != 27 ]; then
+            echo "::error::the xcode-27 runner is on macOS ${os}, not 27 -- this job would re-test a macOS the release already bottles for"
+            exit 1
+          fi
+          # The name a user types, lowercased as Homebrew stores taps. Naming the formula in full
+          # is also what passes Homebrew's tap-trust gate, exactly as it does for a user, so no
+          # `brew trust` runs here that a user would not have run.
+          formula="$(printf '%s' "${OWNER}" | tr '[:upper:]' '[:lower:]')/tap/job-sluice"
+          smoke="$PWD/scripts/smoke_installed.py"
+          brew install "$formula"
+          keg="$(brew --prefix "$formula")"
+          # The tap carries only the latest formula, so a re-run against an older release cannot
+          # install that release here. Said by name rather than left to the version check below,
+          # whose mismatch message would read as a broken publish. And a keg built from source
+          # has not tested the bottle this job exists for, so that fails too.
+          brew info --json=v2 "$formula" | "$keg/libexec/bin/python" -c '
+          import json, sys
+          version = sys.argv[1]
+          installed = json.load(sys.stdin)["formulae"][0]["installed"]
+          if not installed or installed[0]["version"] != version:
+              got = installed[0]["version"] if installed else "nothing"
+              sys.exit(f"::error::the tap installed {got}, not {version}; it carries only its latest formula")
+          if not installed[0]["poured_from_bottle"]:
+              sys.exit("::error::job-sluice was built from source, not poured, so no bottle was tested on macOS 27")
+          print(f"poured job-sluice {version} from a bottle on macOS 27")
+          ' "$VERSION"
+          brew test "$formula"
+          # From a directory that is not the checkout, for the reason the pypi job gives. The
+          # formula installs the `render` extra, so this is a channel that renders; see
+          # scripts/smoke_installed.py::check_real_render.
+          cd "$(mktemp -d)"
+          "$keg/libexec/bin/python" "$smoke" "$VERSION" --channel homebrew-macos27 --render
+
   report:
     # One place to read the verdict. `always()` so a failed channel still reports rather than
     # leaving the summary blank -- and the step FAILS if any channel did, because a green
     # summary sitting above a red job is worse than no summary at all.
-    needs: [version, pypi, deb, rpm, docker]
+    needs: [version, pypi, deb, rpm, docker, homebrew]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -334,6 +406,7 @@ jobs:
           R_DEB: ${{ needs.deb.result }}
           R_RPM: ${{ needs.rpm.result }}
           R_DOCKER: ${{ needs.docker.result }}
+          R_HOMEBREW: ${{ needs.homebrew.result }}
         run: |
           set -euo pipefail
           {
@@ -345,13 +418,13 @@ jobs:
             echo "| .deb, installed and run as non-root | ${R_DEB} |"
             echo "| .rpm, installed and run as non-root | ${R_RPM} |"
             echo "| ghcr image | ${R_DOCKER} |"
+            echo "| Homebrew on macOS 27, pouring an older macOS's bottle | ${R_HOMEBREW} |"
             echo
-            echo "Homebrew is not listed because it is already covered upstream:"
-            echo "\`release-please.yml\`'s \`homebrew\` job calls \`homebrew.yml\`, which renders, fills"
-            echo "and audits the formula, builds, pours and tests a bottle on each macOS runner, and"
-            echo "fetches every bottle from its release URL before the tap is pushed."
+            echo "Homebrew on the macOS versions the release bottles for is covered upstream:"
+            echo "\`release-please.yml\`'s \`homebrew\` job calls \`homebrew.yml\`, which builds, pours"
+            echo "and tests a bottle on each of its macOS runners before the tap is pushed."
           } >> "$GITHUB_STEP_SUMMARY"
-          for r in "$R_PYPI" "$R_DEB" "$R_RPM" "$R_DOCKER"; do
+          for r in "$R_PYPI" "$R_DEB" "$R_RPM" "$R_DOCKER" "$R_HOMEBREW"; do
             if [ "$r" != success ]; then
               echo "::error::a published artefact failed its install check"; exit 1
             fi
