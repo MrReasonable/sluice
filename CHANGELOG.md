@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.17.2](https://github.com/MrReasonable/sluice/compare/v2.17.1...v2.17.2) (2026-09-30)
+
+
+### Documentation
+
+* **packaging:** say which bottle macOS 27 pours ([7ea18ab](https://github.com/MrReasonable/sluice/commit/7ea18ab02f2cec1a41627ea1dd0bf57e3e95d6ef))
+
 ## [2.17.1](https://github.com/MrReasonable/sluice/compare/v2.17.0...v2.17.1) (2026-09-30)
 
 
