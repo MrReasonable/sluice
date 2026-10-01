@@ -174,8 +174,9 @@ per-module detail; what follows is what you cannot see from the file tree.
 
 **Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` (else
 `<XDG config>/sluice/config.yaml`) < env vars. Each sub-app has its own `load_*_config()` reading
-its own top-level block of that same file (`triage:`, `cv:`, `apply:`, `track:`); ingest reads the
-root keys. Every knob has a code default, so everything runs with no config file at all. New
+its own top-level block of that same file (`triage:`, `cv:`, `apply:`, `track:`); the root
+keys, read by `load_config`, carry ingest's settings and every setting no single sub-app owns (for
+example the adapter seams, the dossier keys, `lead_ttl_days` and `backend_timeout`). Every knob has a code default, so everything runs with no config file at all. New
 tunables go in the relevant `*Config` dataclass and `sluice.yaml.example` — never hardcoded in
 logic. Only `load_config` names its fields explicitly; the four sub-app loaders are
 `hasattr`-filtered `setattr` loops, so a new ROOT field is dead until `load_config` names it, and

@@ -53,7 +53,7 @@ _log = get_logger("triage.engine")
 
 # #120: after this many CONSECUTIVE tier-3 backend errors in one run, stop
 # attempting tier 3 for the REST of this run. 107 candidate leads x
-# resolve_backend's own timeout (DEFAULT_TIMEOUT, core/backends.py) is up to
+# resolve_backend's own timeout (the root `backend_timeout`, 300s by default) is up to
 # ~9 hours if the backend is simply down -- this bounds that to
 # _LLM_BREAKER_THRESHOLD failed attempts, reported ONCE, with every remaining
 # candidate lead abstaining through resolve_company's OWN existing

@@ -7,6 +7,7 @@ can override without editing files.
 import os
 from dataclasses import dataclass, field, fields
 
+from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.leads import LEAD_LAYOUTS, Lead
 from sluice.core.paths import config_file
 from sluice.core.urlguard import parse_allow_hosts
@@ -126,6 +127,16 @@ class Config:
     # different floors over one directory means whichever sub-app ran last decides
     # whether an entry exists.
     min_jd_chars: int = 0
+    # Seconds each backend attempt may take, for every backend `Sluice.backend()` builds whose
+    # caller names no timeout -- every one except cv's, which names `cv.compose_timeout` for
+    # its compose, audit and voice calls alike, and `doctor`'s probes, which are built with
+    # their own short limit. Per ATTEMPT: under `auto` a call that fails over gets a fresh
+    # deadline for the fallback leg. ROOT rather than per sub-app because the sub-apps that
+    # read it would otherwise each carry a key with the same meaning. Since #337 an HTTP
+    # backend treats it as a TOTAL deadline rather than a per-read one, so a provider that
+    # queues a request and then answers slowly fails where it used to finish late, and this
+    # is the knob that gives it longer. No "off": 0 would end every call at once.
+    backend_timeout: int = DEFAULT_TIMEOUT
     # How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
     # in milliseconds, waiting for it to stop changing. It does not pause before the first
     # read -- it reads immediately, then re-reads until two consecutive reads match or this
@@ -837,6 +848,17 @@ def load_config(path: str | None = None) -> Config:
             f"min_jd_chars must be a non-negative integer (0 = off), got "
             f"{_safe_scalar_repr(raw_floor)}")
 
+    # Same bool-first shape, different floor: 0 is REFUSED rather than read as "off", because
+    # a zero deadline ends every backend call at once -- there is no abstain value, exactly as
+    # for `cv.compose_timeout`. `backend_timeout: yes` would otherwise load as one second.
+    raw_backend_timeout = data.get("backend_timeout")
+    raw_backend_timeout = DEFAULT_TIMEOUT if raw_backend_timeout is None else raw_backend_timeout
+    if (isinstance(raw_backend_timeout, bool) or not isinstance(raw_backend_timeout, int)
+            or raw_backend_timeout <= 0):
+        raise ValueError(
+            f"backend_timeout must be a positive integer (seconds), got "
+            f"{_safe_scalar_repr(raw_backend_timeout)}")
+
     # #228. Identical shape and identical reason: `dossier_settle_ms: yes` is the natural
     # spelling to turn a wait ON, and bool SUBCLASSES int, so without the bool check first it
     # would load as a ONE MILLISECOND budget -- a settle that is off in every way that matters
@@ -908,6 +930,7 @@ def load_config(path: str | None = None) -> Config:
                   lead_ttl_days=raw_ttl,
                   lead_layout=raw_layout or "",
                   min_jd_chars=raw_floor,
+                  backend_timeout=raw_backend_timeout,
                   dossier_settle_ms=raw_settle,
                   dossier_concurrency=raw_conc,
                   dossier_allow_hosts=allow)
