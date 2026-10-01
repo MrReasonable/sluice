@@ -40,6 +40,13 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.19.1](https://github.com/MrReasonable/sluice/compare/v2.19.0...v2.19.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **triage:** create the triage state files usable by their owner whatever the umask ([#332](https://github.com/MrReasonable/sluice/issues/332)) ([8672631](https://github.com/MrReasonable/sluice/commit/8672631ad295c509bab4f082e1a1b23a0aad01d9))
+
 ## [2.19.0](https://github.com/MrReasonable/sluice/compare/v2.18.0...v2.19.0) (2026-10-01)
 
 
