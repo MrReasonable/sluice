@@ -3,7 +3,8 @@ Every field has a sane default so track runs with no config file."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import apply_claude_cli_env, sub_app_block
+from sluice.core.config import (apply_claude_cli_env, refuse_retired_backend_keys,
+                                sub_app_block)
 from sluice.core.paths import config_file, resolve
 
 try:
@@ -184,18 +185,15 @@ class TrackConfig:
     # more likely to be in your local time than in UTC. An unresolvable value warns once and
     # falls back to UTC rather than raising, so a typo cannot start dropping messages.
     calendar_assumed_timezone: str = "UTC"
-    # Which backend fills each role. Track had no selectors while its backend was
-    # hardcoded; it needs them now that construction is config-driven, and matches
-    # the triage/cv defaults.
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    claude_max_model: str = "claude-sonnet-4-5"
+    # The ONE backend and model the classifier uses (#333), matching the triage/cv
+    # defaults. No fallback: a failure is retried on this same backend, then fails the run.
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"
     claude_max_effort: str = "medium"
     # Host + claude binary path for the ClaudeMaxBackend this sub-app builds.
     # Empty host runs claude_max_path locally; set a host to shell out over ssh.
     claude_max_host: str = ""
     claude_max_path: str = "claude"
-    cheap_model: str = "deepseek-v4-flash"
     auto_status_min: float = 0.75             # min confidence to auto-advance a scheduling/offer signal
     auto_reject_min: float = 0.9              # stricter bar to auto-reject (F4)
     auto_apply_min: float = 0.75              # min receipt-classification confidence to auto-advance shortlist->applied on a domain-PROOF match
@@ -248,6 +246,7 @@ def load_track_config(path: str | None = None, *,
     if path and os.path.exists(path) and yaml is not None:
         with open(path, encoding="utf-8") as f:
             data = sub_app_block("track", (yaml.safe_load(f) or {}).get("track"))
+        refuse_retired_backend_keys("track", data)
         for k, v in data.items():
             if not (hasattr(cfg, k) and v is not None):
                 continue

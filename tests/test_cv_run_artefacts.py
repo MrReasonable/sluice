@@ -65,7 +65,7 @@ class _ScriptedBackend:
     def __init__(self, replies, audit_out="supported\tx\tEF1"):
         self.replies = list(replies)
         self.audit_out = audit_out
-        self.last_backend = "primary"
+        self.label = "fake-provider fake-model"
         self.compose_prompts = []
 
     def complete(self, prompt):
@@ -138,7 +138,7 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     assert run["attempt_count"] == 1
     assert run["retained_attempt"] == 1
     assert run["attempts"] == [{"attempt": 1, "compose_error": None}]
-    assert run["backend"] == "primary"
+    assert run["backend"] == "fake-provider fake-model"
     assert run["dossier_failed"] is False
     assert run["skills_unreadable"] is False
     assert run["bundle_entry_ids"] == ["EF1"]

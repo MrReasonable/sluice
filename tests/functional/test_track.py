@@ -17,8 +17,8 @@ from tests.harness import ScriptedBackend
 
 # ── parser wiring (kept) ─────────────────────────────────────────────────────
 def test_track_run_parses_flags():
-    a = _build_parser().parse_args(["track", "run", "--dry-run", "--backend", "primary"])
-    assert a.group == "track" and a.cmd == "run" and a.dry_run and a.backend == "primary"
+    a = _build_parser().parse_args(["track", "run", "--dry-run", "--backend", "deepseek"])
+    assert a.group == "track" and a.cmd == "run" and a.dry_run and a.backend == "deepseek"
 
 
 def test_track_confirm_parses_args():

@@ -8,16 +8,13 @@ rules: what is configured (enumeration), and given a set of resolved facts
 about one piece of it, is it ok / degraded / dead / awaiting setup / worth a notice
 (classification).
 
-Backend classification is ROLE-AWARE, and that is the whole point. The default
-install ships a keyless `deepseek` fallback, which `_make_fallback` already
-treats as a sanctioned degrade to primary-only -- so a keyless *fallback* is
-`degraded` (exit 0), while a keyless *primary* (a run cannot happen) is `setup`
--- unsupplied rather than broken (#243), so it too exits 0, while still naming
-the capability it stops.
-A backend whose credentials ARE present but whose round-trip fails is `dead`
-regardless of role: that is the silently-non-functional fallback this tool
-exists to catch -- the one you believe in and never test until the primary
-dies.
+Every stage uses ONE backend (#333: there is no fallback any more), so every backend a
+stage uses blocks that stage when it cannot run. Two states answer "why not", and they
+are the distinction #333's open question asked for: a keyless backend is `setup` --
+unsupplied rather than broken (#243), so it exits 0 while still naming the capability it
+stops -- and a backend whose credentials ARE present but whose round-trip fails is `dead`,
+which does fail the exit code. Triage's tier-3 resolve backend is enumerated as a use of
+its own, and only when `company_resolve_llm` is on: switched off, nothing runs on it.
 
 Backends were the only thing doctor probed for a while, which let the renderer,
 the store artefacts and every preference gate stay invisible: `2 ok, 1
@@ -77,11 +74,12 @@ PROBE_PROMPT = "Reply with the single word: ok"
 
 @dataclass(frozen=True)
 class RoleUse:
-    """One (sub-app, role) pair that references a backend target. A single
-    target can be referenced by several -- e.g. the shared deepseek fallback is
-    used by triage, cv, and track."""
+    """One (sub-app, role) pair that references a backend target. A single target can be
+    referenced by several -- e.g. one claude-max backend shared by triage, cv and track.
+    `role` is "backend" (the stage's one backend) or "resolve" (triage's tier-3 company
+    resolution, #333); both block their sub-app, so the role only labels the display."""
     subapp: str
-    role: str  # "primary" | "fallback"
+    role: str  # "backend" | "resolve"
 
 
 @dataclass
@@ -94,13 +92,6 @@ class BackendTarget:
     host: str
     claude_path: str
     uses: list = field(default_factory=list)  # list[RoleUse]
-
-    @property
-    def is_primary(self) -> bool:
-        """True if ANY use is a primary. A backend that serves as a primary
-        anywhere must satisfy the strict primary rule (a keyless primary is
-        dead), even if it is also used as a fallback elsewhere."""
-        return any(u.role == "primary" for u in self.uses)
 
 
 @dataclass
@@ -191,8 +182,8 @@ class DoctorReport:
 
     def exit_code(self, *, strict: bool = False) -> int:
         """Non-zero iff a run-blocking backend or component is dead. `--strict`
-        additionally fails on any degraded one (the cron mode that enforces a
-        believed-in fallback).
+        additionally fails on any degraded one (the cron mode for a user who wants a
+        run that works but not properly to page them).
 
         NOTICE and SETUP never contribute, under `--strict` or otherwise --
         that exclusion is BY CONSTRUCTION (the states this loop tests for), not
@@ -235,16 +226,13 @@ class DoctorReport:
         profile and a board returned zero rows for days. Reading `blocks` on only two of
         the five states printed `Ready now: scrape job boards` directly above a `--verbose`
         row saying `blocks: ingest`, and printed that row's remedy nowhere. A DEGRADED row
-        with an EMPTY `blocks` still blocks nothing -- which is what keeps the keyless
-        fallback, the sanctioned primary-only degrade, out of this entirely.
+        with an EMPTY `blocks` still blocks nothing.
         Nothing here re-derives a state: it reads the classifiers' verdicts and groups
         them, so the verdict and the table can never disagree about a row.
 
-        Backend rows block only where the target is that sub-app's PRIMARY. A shared
-        target that is triage's primary and cv's fallback, with its key unset, stops
-        triage and merely degrades cv -- which is exactly what `Sluice.backend()`'s
-        `auto` role does at runtime, so reporting it as blocking cv would overstate the
-        damage on the commonest multi-sub-app config there is.
+        Every backend row blocks every sub-app it serves (#333). There used to be a
+        degradable FALLBACK role whose failure blocked nothing; with one backend per
+        stage, a backend that cannot run stops each stage that names it.
         """
         blockers: dict = {name: [] for name, _ in CAPABILITIES}
         for c in self.checks:
@@ -254,7 +242,7 @@ class DoctorReport:
                 # producers (this module's `blocks=` tuples and `enumerate_targets`'
                 # specs) against CAPABILITIES so that cannot happen unnoticed.
                 for u in c.target.uses:
-                    if u.role == "primary" and u.subapp in blockers:
+                    if u.subapp in blockers:
                         blockers[u.subapp].append(c)
         for c in self.components:
             # DEGRADED joins the two blocking states here, but only ever contributes
@@ -307,69 +295,48 @@ class DoctorReport:
         return [c for c in self.checks + self.components if c.state == SETUP]
 
 
-def _fallback_host_path(fallback_backend, host, claude_path):
-    """(#117) `_make_fallback`/`_make_fallback_strict` forward host/claude_path to
-    EVERY fallback build now, unconditionally -- but they are only MEANINGFUL when
-    the fallback provider actually IS claude-max; every other factory ignores them.
-    Folding them into the dedup key regardless would needlessly split two sub-apps'
-    otherwise-identical per-token fallback (the common case) into separate probes, so
-    this mirrors runtime behaviour rather than the raw plumbing: real host/path when
-    claude-max plays fallback, the shared "", "claude" default otherwise."""
-    return (host, claude_path) if fallback_backend == "claude-max" else ("", "claude")
-
-
 def enumerate_targets(triage_cfg, cv_cfg, track_cfg) -> list:
-    """Every sub-app × role backend, deduped by (provider, model, host, claude_path).
+    """Every sub-app's ONE backend, plus triage's tier-3 resolve backend when it is on,
+    deduped by (provider, model, host, claude_path).
 
-    Apply is absent: it is offline by contract and has no backend. The fallback leg's
-    host/claude_path come from `_fallback_host_path` above -- real values when the
-    fallback provider IS claude-max (#117: a remote-host install may name claude-max
-    as either role, and `Sluice.backend()` threads the same config to both legs), the
-    shared "", "claude" default otherwise, so doctor probes what a real run actually
-    builds either way.
+    Apply is absent: it is offline by contract and has no backend. The resolve use mirrors
+    `Sluice.triage()` exactly -- `resolve_backend` or triage's own `backend`, and a blank
+    model when only `resolve_backend` was named (that provider's default, since triage's
+    `model` is an id in another provider's namespace) -- so doctor probes what a real run
+    actually builds. It shares triage's claude-max host/path, as the real construction does.
 
-    Effort is deliberately NOT part of the dedup key: it changes cost/quality,
-    not whether the backend works, so triage(medium)+cv(max) fold into one
-    claude-max probe. A per-sub-app MODEL override does split, preserving the
-    per-sub-app "is this a live model id" check. `claude_path` IS in the key so
-    two claude-max backends pointing at different binaries never collapse.
+    Effort is deliberately NOT part of the dedup key: it changes cost/quality, not whether
+    the backend works, so triage(medium)+cv(max) fold into one claude-max probe. A
+    per-sub-app MODEL override does split, preserving the per-sub-app "is this a live model
+    id" check. `claude_path` IS in the key so two claude-max backends pointing at different
+    binaries never collapse.
 
-    `cv_cfg` may be `None` -- `Sluice.doctor` passes that when `load_cv_config()`
-    itself raised (#133/#107). cv's two specs are simply OMITTED from the
-    enumeration then, rather than substituted with a placeholder: triage's and
-    track's backends are unrelated to cv's config and must still be checked, and
-    the alternative -- building a bare `CvConfig()` here to read fields off --
-    is exactly what tests/test_config_paths.py's
-    test_no_production_code_builds_a_sub_app_config_directly forbids anywhere
-    outside a sub-app's own loader.
+    `cv_cfg` may be `None` -- `Sluice.doctor` passes that when `load_cv_config()` itself
+    raised (#133/#107). cv's spec is simply OMITTED then, rather than substituted with a
+    placeholder: triage's and track's backends are unrelated to cv's config and must still
+    be checked, and building a bare `CvConfig()` here is exactly what
+    tests/test_config_paths.py's test_no_production_code_builds_a_sub_app_config_directly
+    forbids anywhere outside a sub-app's own loader.
     """
     specs = [
         # (subapp, role, provider, model, host, claude_path)
-        ("triage", "primary", triage_cfg.primary_backend, triage_cfg.claude_max_model,
+        ("triage", "backend", triage_cfg.backend, triage_cfg.model,
          triage_cfg.claude_max_host, triage_cfg.claude_max_path),
-        ("triage", "fallback", triage_cfg.fallback_backend, triage_cfg.cheap_model,
-         *_fallback_host_path(triage_cfg.fallback_backend, triage_cfg.claude_max_host,
-                              triage_cfg.claude_max_path)),
     ]
     if cv_cfg is not None:
-        # Kept in its ORIGINAL triage/cv/track position rather than appended at the
-        # end: a shared target's `uses` list is built in spec-iteration order, and
-        # `format_roles` prints subapps in that same order -- moving cv to the tail
-        # would silently reorder "primary: triage, cv, track" to "..., track, cv"
-        # for every install that shares one backend across all three, with no
-        # behavioural reason tied to the None case this branch exists for.
-        specs.append(("cv", "primary", cv_cfg.primary_backend, cv_cfg.compose_model,
+        # Kept in its ORIGINAL triage/cv/track position rather than appended at the end: a
+        # shared target's `uses` list is built in spec-iteration order, and `format_roles`
+        # prints sub-apps in that same order.
+        specs.append(("cv", "backend", cv_cfg.backend, cv_cfg.model,
                       cv_cfg.compose_host, cv_cfg.compose_claude_path))
-        specs.append(("cv", "fallback", cv_cfg.fallback_backend, cv_cfg.cheap_model,
-                      *_fallback_host_path(cv_cfg.fallback_backend, cv_cfg.compose_host,
-                                           cv_cfg.compose_claude_path)))
-    specs += [
-        ("track", "primary", track_cfg.primary_backend, track_cfg.claude_max_model,
-         track_cfg.claude_max_host, track_cfg.claude_max_path),
-        ("track", "fallback", track_cfg.fallback_backend, track_cfg.cheap_model,
-         *_fallback_host_path(track_cfg.fallback_backend, track_cfg.claude_max_host,
-                              track_cfg.claude_max_path)),
-    ]
+    specs.append(("track", "backend", track_cfg.backend, track_cfg.model,
+                  track_cfg.claude_max_host, track_cfg.claude_max_path))
+    if triage_cfg.company_resolve_llm:
+        specs.append((
+            "triage", "resolve", triage_cfg.resolve_backend or triage_cfg.backend,
+            triage_cfg.resolve_model or ("" if triage_cfg.resolve_backend
+                                         else triage_cfg.model),
+            triage_cfg.claude_max_host, triage_cfg.claude_max_path))
     by_key: dict = {}  # (provider, model, host, claude_path) -> BackendTarget, insertion-ordered
     for subapp, role, provider, model, host, claude_path in specs:
         # claude_path is IN the key (rev-001): two claude-max backends that share
@@ -418,13 +385,11 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
                 f"{_field} begins with '-', which ssh and the shelled binary read as an "
                 f"OPTION rather than a value (argument injection; e.g. -oProxyCommand=...)")
     if needs_key and not key_present:
-        if target.is_primary:
-            # SETUP, not DEAD (#243): an unset key is a credential the user has not supplied,
-            # not one that fails. A key that IS set and fails its round-trip falls through to
-            # `probe_error` below and stays DEAD, which is the distinction that matters to a
-            # monitor -- "not configured yet" is not an incident.
-            return BackendCheck(target, SETUP, f"{key_var} unset")
-        return BackendCheck(target, DEGRADED, f"{key_var} unset - primary-only")
+        # SETUP, not DEAD (#243): an unset key is a credential the user has not supplied,
+        # not one that fails. A key that IS set and fails its round-trip falls through to
+        # `probe_error` below and stays DEAD, which is the distinction that matters to a
+        # monitor -- "not configured yet" is not an incident.
+        return BackendCheck(target, SETUP, f"{key_var} unset")
     # BEFORE the `offline` split, deliberately (#243). `Sluice.doctor` now resolves
     # `cli_present` in both modes, and this arm must classify it in both: while it sat
     # inside `if offline:` the two modes disagreed about the same fact -- offline said
@@ -439,16 +404,6 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
         # moved, a homedir that changed) supplied something that does not work, and that
         # must keep exiting 1: otherwise a cron `doctor --strict` goes green on a backend
         # that cannot run.
-        if not target.is_primary:
-            # A fallback that cannot run is a DEGRADE, exactly like the keyless-fallback
-            # arm above -- `auto` still runs primary-only. Without this, two spellings of
-            # one fact got opposite `--strict` verdicts: a keyless per-token fallback
-            # failed the build while a claude-max fallback whose binary is simply absent
-            # passed it, which is the silently-non-functional fallback `--strict` exists
-            # to catch.
-            return BackendCheck(
-                target, DEGRADED,
-                f"CLI '{target.claude_path}' not on PATH - primary-only")
         unsupplied = target.claude_path == _DEFAULT_CLAUDE_PATH
         return BackendCheck(
             target, SETUP if unsupplied else DEAD,
@@ -461,16 +416,16 @@ def classify(target, *, known, needs_key, key_present, key_var, cli_present,
 
 
 def format_roles(uses: list) -> str:
-    """Group a target's uses by role for display, primaries first:
-    "primary: triage, cv, track; fallback: cv"."""
+    """The sub-apps a target serves, for display: "triage, cv, track", with triage's tier-3
+    resolve use named separately ("...; resolve: triage") since it is a different job."""
     by_role: dict = {}
     for u in uses:
         by_role.setdefault(u.role, []).append(u.subapp)
     parts = []
-    for role in ("primary", "fallback"):
-        subs = by_role.get(role)
-        if subs:
-            parts.append(f"{role}: {', '.join(subs)}")
+    if by_role.get("backend"):
+        parts.append(", ".join(by_role["backend"]))
+    if by_role.get("resolve"):
+        parts.append(f"resolve: {', '.join(by_role['resolve'])}")
     return "; ".join(parts)
 
 

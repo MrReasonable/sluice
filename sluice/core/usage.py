@@ -87,8 +87,8 @@ class UsageLog:
         batches leads (the triage judge sends several dossiers per call) has no single lead
         to name, and a null there reads as "we lost it" rather than "there isn't one".
 
-        `served=False` marks spend that did not produce the answer -- a FallbackBackend
-        primary that billed and then raised. The tokens count toward totals either way,
+        `served=False` marks spend that did not produce the answer -- a `RetryingBackend`
+        attempt that billed and then raised. The tokens count toward totals either way,
         because they were billed either way; the flag is what keeps them identifiable.
         """
         row = {"ts": clock().isoformat(), "stage": stage}
@@ -214,25 +214,17 @@ class MeteredBackend:
         self.lead = lead
 
     @property
-    def last_backend(self):
-        """Which leg served, delegated to the wrapped backend.
+    def label(self):
+        """The served backend's "<provider> <model>", delegated to the wrapped backend.
 
         ONE consumer reads it through a wrapper: `triage/engine.py`, whose backend
-        `core/app.py` wraps before handing it down. `cv/engine.py` also does
-        `getattr(backend, "last_backend", None)` but reads the BARE backend -- cv receives the
-        log and wraps locally -- so it is unaffected either way.
-
-        What a missing delegation costs, read off `cli.py::_format_triage_digest` rather than
-        assumed: on a run that judged, `if report.judged:` is the arm taken, and a null
-        `report.backend` merely empties its `via` clause, so the digest prints "Judged N."
-        without naming a leg. That is not an outage report -- the outage arm is
-        `elif report.sent_to_judge:`, unreachable while `judged` is truthy -- it is the loss of
-        the fallback-degradation signal: the operator can no longer tell from the digest
-        whether the primary answered or the fallback did. Cheap to delegate, and silent if not.
-        (Two earlier versions of this docstring claimed the outage reading. Both were written
-        from the shape of the code rather than from reading the branch order.)
+        `core/app.py` wraps before handing it down; it becomes `report.backend`, which the
+        triage digest prints as "via <label>". `cv/engine.py` reads the BARE backend -- cv
+        receives the log and wraps locally -- so it is unaffected either way. Without this
+        delegation the digest silently drops the one line naming which model judged (#333:
+        that a run cannot say which model served was half of the issue).
         """
-        return getattr(self.inner, "last_backend", None)
+        return getattr(self.inner, "label", None)
 
     def complete(self, prompt: str):
         try:
@@ -245,7 +237,7 @@ class MeteredBackend:
             burned = getattr(e, "usage", None)
             if burned is not None:
                 self._record(burned, served=False)
-            # A call can have spent on more than one leg -- FallbackBackend with both legs
+            # A call can have spent more than once -- RetryingBackend with several attempts
             # billing and then failing. Everything here is unserved: the call raised.
             for also in getattr(e, "unserved_usage", ()):
                 self._record(also, served=False)
@@ -269,7 +261,7 @@ class MeteredBackend:
           `BackendError("the real failure")` whose `unserved_usage` held a non-`Usage` raised
           `AttributeError: 'str' object has no attribute 'provider'` out of the loop below, and
           the original error was gone. Worse than losing the message -- an AttributeError does
-          not satisfy `except BackendError`, so `FallbackBackend` would not have fallen back and
+          not satisfy `except BackendError`, so `RetryingBackend` would not have retried and
           every caller's error handling would have been bypassed by a telemetry bug.
 
         Scoped to exactly one row, and loud in the log rather than silent. It cannot hide a

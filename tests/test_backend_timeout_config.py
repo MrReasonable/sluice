@@ -64,9 +64,9 @@ class _Stop(Exception):
 
 @pytest.fixture
 def built(monkeypatch):
-    """The timeout each backend leg was CONSTRUCTED with -- recorded at `_make_primary` /
-    `_make_fallback_strict`, below `Sluice.backend()`, because the resolution under test
-    happens inside that method and a spy above it would see only what the stage passed."""
+    """The timeout each backend was CONSTRUCTED with -- recorded at `_build_backend`, below
+    `Sluice.backend()`, because the resolution under test happens inside that method and a
+    spy above it would see only what the stage passed."""
     import sluice.core.app as A
     rec = []
 
@@ -74,8 +74,7 @@ def built(monkeypatch):
         rec.append(timeout)
         raise _Stop()
 
-    monkeypatch.setattr(A, "_make_primary", spy)
-    monkeypatch.setattr(A, "_make_fallback_strict", spy)
+    monkeypatch.setattr(A, "_build_backend", spy)
     return rec
 
 
@@ -105,7 +104,7 @@ def test_cv_keeps_its_own_compose_timeout(built, tmp_path, monkeypatch):
     from sluice.cv.config import load_cv_config
     from tests.conftest import make_composable
     cvc = dataclasses.replace(load_cv_config(), compose_timeout=4321,
-                              primary_backend="claude-max", compose_model="m")
+                              backend="claude-max", model="m")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
     make_composable(Vault(str(tmp_path / "vault")))
 
@@ -119,11 +118,11 @@ def test_an_explicit_timeout_still_wins():
     falls back to the root knob."""
     def b(**kw):
         return Sluice(Config(backend_timeout=1234)).backend(
-            "primary", primary_name="claude-max", primary_model="m", effort="max", host="",
-            claude_path="claude", fallback_name="deepseek", fallback_model="cheap", **kw)
+            provider="claude-max", model="m", effort="max", host="", claude_path="claude",
+            **kw)
 
-    assert b().timeout == 1234
-    assert b(timeout=900).timeout == 900
+    assert b().inner.timeout == 1234
+    assert b(timeout=900).inner.timeout == 900
 
 
 # ── importing the CLI must not load a backend ─────────────────────────────────
@@ -150,33 +149,24 @@ def test_importing_the_cli_loads_no_backend_module():
     assert out == "[]", f"importing sluice.cli loaded {out}"
 
 
-# ── every leg, not only the first one built ───────────────────────────────────
+# ── every backend a stage builds, not only the first ──────────────────────────
 
 
-def _named(role, monkeypatch):
+def test_an_override_provider_gets_backend_timeout(monkeypatch):
+    """A one-run `--backend` provider is a different construction from the configured one,
+    and must be sized by the same knob rather than the module constant."""
     monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-key")
     monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
-    return Sluice(Config(backend_timeout=1234)).backend(
-        role, primary_name="claude-max", primary_model="m", effort="max", host="",
-        claude_path="claude", fallback_name="deepseek", fallback_model="cheap")
-
-
-def test_both_legs_of_auto_get_backend_timeout(monkeypatch):
-    """The stage rows above see only the first backend built. Under `auto` a call that fails
-    over runs a SECOND leg, which must be sized by the same knob, not by the module constant."""
-    be = _named("auto", monkeypatch)
-    assert (be.primary.timeout, be.fallback.timeout) == (1234, 1234)
-
-
-def test_the_fallback_role_gets_backend_timeout(monkeypatch):
-    """Triage's tier-3 company resolution always takes the `fallback` role (#120)."""
-    assert _named("fallback", monkeypatch).timeout == 1234
+    be = Sluice(Config(backend_timeout=1234)).backend(
+        provider="claude-max", model="m", effort="max", host="", claude_path="claude",
+        override="deepseek")
+    assert be.inner.timeout == 1234
 
 
 def test_every_backend_triage_builds_gets_backend_timeout(monkeypatch, tmp_path):
-    """The judge's legs AND tier-3 company resolution's, recorded from `triage()` itself
-    without stopping at the first: a stage passing one of them its own timeout would leave the
-    rest of these rows green."""
+    """The judge's AND tier-3 company resolution's, recorded from `triage()` itself without
+    stopping at the first: a stage passing one of them its own timeout would leave the rows
+    above green."""
     import dataclasses
 
     import sluice.core.app as A
@@ -184,20 +174,20 @@ def test_every_backend_triage_builds_gets_backend_timeout(monkeypatch, tmp_path)
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-key")
     tcfg = dataclasses.replace(load_triage_config(), company_resolve_llm=True,
-                               company_resolve_fetch=True)
+                               company_resolve_fetch=True, resolve_backend="deepseek")
     monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: tcfg)
     seen = []
-    for name in ("_make_primary", "_make_fallback", "_make_fallback_strict"):
-        real = getattr(A, name)
+    real = A._build_backend
 
-        def spy(*a, _real=real, _name=name, timeout=None, **k):
-            seen.append((_name, timeout))
-            return _real(*a, timeout=timeout, **k)
+    def spy(name, *a, timeout=None, **k):
+        seen.append((name, timeout))
+        return real(name, *a, timeout=timeout, **k)
 
-        monkeypatch.setattr(A, name, spy)
+    monkeypatch.setattr(A, "_build_backend", spy)
 
     Sluice(Config(backend_timeout=1234)).triage(dry_run=True)
 
-    assert {n for n, _t in seen} == {"_make_primary", "_make_fallback",
-                                     "_make_fallback_strict"}, seen
+    # Both constructions, distinguishable by provider: the judge's claude-max and tier 3's
+    # deepseek. A `len` check alone would pass on two judge builds.
+    assert sorted(n for n, _t in seen) == ["claude-max", "deepseek"], seen
     assert all(t == 1234 for _n, t in seen), seen

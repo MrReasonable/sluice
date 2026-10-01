@@ -72,13 +72,19 @@ baseline_rel: My CV/CV.md
 
 # Seconds each backend attempt may take, for every backend call except cv's (sized by
 # cv.compose_timeout below, for its compose, audit and voice calls alike) and doctor's
-# probes (their own short limit). Per attempt: under the default `auto` role a call that
-# fails over gets a fresh deadline for the fallback, so it can take about twice this.
-# For an HTTP backend it is a TOTAL deadline from sending the request, checked
+# probes (their own short limit). Per ATTEMPT: each retry (backend_retries, below) gets
+# a fresh deadline of its own. For an HTTP backend it is a TOTAL deadline from sending the request, checked
 # between reads of the body, so a provider that holds a queued request open with
 # keep-alive bytes is ended rather than waited on. Raise it if those calls fail with
 # "no complete response ... within". Must be a positive integer; there is no "off".
 # backend_timeout: 300
+
+# How many times a stage retries its ONE backend after a transient failure (a timeout, a
+# 5xx, a rate limit) before the run stops and says so (#333). sluice never switches to a
+# different provider. A failure that would repeat identically -- a missing key, a 401 --
+# is not retried. 0 means one attempt. Worst case per call: (retries + 1) x the timeout,
+# plus a 2s-then-4s backoff.
+# backend_retries: 2
 
 # How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
 # in milliseconds, waiting for it to stop changing. It does not pause before the first
@@ -206,8 +212,8 @@ triage:
   # company_resolve_fetch: true   # <- uncomment to opt in
   # Off by default (#120): tier 3 of the same resolution. When tiers 1 and 2 both come up
   # empty, the page data tier 2 ALREADY fetched (no second page visit) is handed to the
-  # CHEAP backend -- fallback_backend/cheap_model, regardless of what --backend says --
-  # with an abstain-biased prompt that answers NONE unless the page settles who the
+  # backend named by resolve_backend/resolve_model below (default: triage's own), regardless
+  # of what --backend says -- with an abstain-biased prompt that answers NONE unless the page settles who the
   # employer is. One small LLM call per unresolved lead, so it is opt-in like the fetch
   # above. Requires company_resolve_fetch: true; set alone, the loader RAISES rather than
   # leaving a knob that could never fire.
@@ -247,14 +253,16 @@ triage:
   contract_floor_gbp_day: 450     # illustrative; set your own (0 = no floor)
   contract_floor_gbp_week: 2000   # illustrative; set your own (0 = no floor)
   perm_floor_gbp: 85000          # illustrative; set your own (0 = no floor)
-  primary_backend: claude-max
-  fallback_backend: deepseek
-  # Model ids are BARE, not provider/model: the value is sent verbatim as the API's
-  # `model` field (the provider is already chosen by the *_backend keys above), so
-  # an "anthropic/" or "deepseek/" prefix here would 400.
-  claude_max_model: claude-sonnet-4-5    # the primary_backend's model
-  cheap_model: deepseek-v4-flash         # the fallback_backend's model
-                                         # (deepseek-chat is retired 2026-07-24)
+  # The ONE backend the judge uses (#333) -- no fallback. Model ids are BARE, not
+  # provider/model: the value is sent verbatim as the API's `model` field (the provider is
+  # already chosen by `backend`), so an "anthropic/" or "deepseek/" prefix here would 400.
+  backend: claude-max
+  model: claude-sonnet-4-5
+  # Tier-3 company resolution's own backend and model (empty = the two above). A cheaper
+  # model is reasonable here: it is bulk extraction, not judgement. Naming only
+  # resolve_backend uses that provider's default model.
+  # resolve_backend: deepseek
+  # resolve_model: deepseek-v4-flash      # (deepseek-chat is retired 2026-07-24)
   # Which roles you want, and which disqualify a role, is PERSONAL. Nothing ships in
   # code: declare yours here. The values below are randomly generated placeholders,
   # deliberately nonsense, so nobody inherits somebody else's taste. Leave both empty
@@ -355,19 +363,17 @@ triage:
 #   served_prefix: CV
 #   compose_host: <your-claude-host>       # empty runs compose_claude_path locally
 #   compose_claude_path: claude
-#   compose_timeout: 300                   # seconds PER INVOCATION PER LEG. The engine
-#                                          # composes up to twice and then audits, and
-#                                          # under the default `auto` role each one may
-#                                          # try the primary AND then the fallback -- so a
-#                                          # lead's worst case is several times this.
-#                                          # Applies to both legs. For an HTTP backend it
-#                                          # is a total deadline from sending the request,
-#                                          # checked between reads of the body; a read
-#                                          # already blocked then is bounded per read.
-#                                          # Raise it if compositions degrade to the
-#                                          # fallback mid-run (logged at WARNING). Must be
-#                                          # a positive integer -- there is no "off", and
-#                                          # `yes` is refused rather than read as 1 second.
+#   compose_timeout: 300                   # seconds PER ATTEMPT. The engine composes up
+#                                          # to twice and then audits, and each call may be
+#                                          # retried (root backend_retries) -- so a lead's
+#                                          # worst case is several times this. For an HTTP
+#                                          # backend it is a total deadline from sending the
+#                                          # request, checked between reads of the body; a
+#                                          # read already blocked then is bounded per read.
+#                                          # Raise it if compositions are retried mid-run
+#                                          # (logged at WARNING). Must be a positive
+#                                          # integer -- there is no "off", and `yes` is
+#                                          # refused rather than read as 1 second.
 
 # Apply (sub-app #4): stage the rendered CV + a prep packet for a shortlisted
 # lead. served_prefix must stay in sync with cv.served_prefix above (both

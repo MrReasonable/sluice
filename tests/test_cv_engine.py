@@ -7,7 +7,7 @@ from sluice.cv.bundle import build_bundle, bundle_sources
 from sluice.cv.engine import run_one, run_batch
 from sluice.cv.validate import validate
 from sluice.core.backends import (
-    BackendError, Completion, FallbackBackend, OpenAiCompatibleBackend,
+    BackendError, Completion, OpenAiCompatibleBackend, RetryingBackend,
 )
 from sluice.core.leads import StalenessPolicy
 from sluice.core.protocols import CandidateProfile
@@ -1607,24 +1607,22 @@ def test_a_cv_composed_without_a_JD_is_flagged_rather_than_silently_tailored(tmp
     assert res.dossier_failed is True
 
 
-def test_batch_records_error_when_fallback_response_is_truncated():
-    # A truncated fallback response (finish_reason==length) is a hard error, not
-    # a silent partial (see OpenAiCompatibleBackend.complete). Drive this through
-    # a real FallbackBackend + OpenAiCompatibleBackend -- primary down, fallback
-    # truncated -- and prove the batch surfaces "error", never a rendered CV
-    # built from the partial content.
-    class FailingPrimary:
-        last_backend = None
-        def complete(self, prompt):
-            raise BackendError("claude-max invocation failed: ssh down")
+def test_batch_records_error_when_the_response_is_truncated():
+    # A truncated response (finish_reason==length) is a hard error, not a silent
+    # partial (see OpenAiCompatibleBackend.complete). Drive this through a real
+    # RetryingBackend + OpenAiCompatibleBackend and prove the batch surfaces "error",
+    # never a rendered CV built from the partial content -- and that the truncation,
+    # being non-transient, is not retried.
+    calls = []
 
     def truncated_http(url, data, headers, timeout):
+        calls.append(url)
         return ('{"choices":[{"message":{"content":"JANE ROE\\n\\nWORK EXP"},'
                 '"finish_reason":"length"}]}')
 
-    fallback = OpenAiCompatibleBackend("m", base_url="http://x", api_key="k",
-                                       http=truncated_http)
-    backend = FallbackBackend(FailingPrimary(), fallback)
+    backend = RetryingBackend(
+        OpenAiCompatibleBackend("m", base_url="http://x", api_key="k", http=truncated_http),
+        retries=2, label="openai m", sleep=lambda s: None)
 
     notes = [Note({"status": "shortlist", "company": "Acme", "role": "Analyst"})]
     v = FakeVault(ENTRIES, notes=notes)
@@ -1632,6 +1630,7 @@ def test_batch_records_error_when_fallback_response_is_truncated():
     assert len(results) == 1
     assert results[0].status == "error"
     assert v.written == {}   # never marked tailored off a truncated partial
+    assert len(calls) == 1
 
 
 def test_run_one_batch_guard_skips_when_cv_appeared_during_render(monkeypatch):

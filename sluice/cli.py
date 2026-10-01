@@ -761,14 +761,11 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
     exactly the reading that they do, which is how `{'keep': 55, ... 'dismiss': 29}` came
     to be unreadable. It is named as the STAGE it is.
 
-    `report.backend` goes null on three occasions, and only the third is an outage: the
-    judge was never called (`--no-llm`, a classify-only pass, nothing to judge); it judged
-    perfectly well on a backend with no fallback leg to name, since `last_backend` is set
-    by `FallbackBackend` alone (see `Sluice.backend`, which returns a bare provider for
-    `--backend primary`, `--backend fallback`, and `auto` with no fallback configured); or
-    every batch raised and `triage/judge.py` swallowed it. The name is printed only when
-    there is one, and the three cases are told apart by `report.sent_to_judge` rather than
-    by the null.
+    `report.backend` is the judge's "<provider> <model>" label (#333), set whenever a
+    backend was built, and null only when the judge was never called (`--no-llm`, a
+    classify-only pass, nothing to judge). It is printed only beside a count of leads
+    actually judged; a judge that was called and returned nothing is told apart by
+    `report.sent_to_judge`, not by the label.
 
     An empty `report.surfaced` is NOT evidence that nothing is worth looking at. It records
     writes that LANDED, so a `--dry-run` and a re-run that re-judges `research` leads to
@@ -1126,7 +1123,7 @@ def cmd_triage_run(args, config) -> int:
                      if s.strip())
     report = Sluice(config).triage(statuses=statuses, limit=args.limit,
                                    dry_run=args.dry_run, no_llm=args.no_llm,
-                                   backend_role=args.backend)
+                                   backend_override=args.backend)
     # The engine STOPPED before changing any lead (see `TriageReport.stopped`). Handled
     # first: a stopped report can carry the #223 notice with `reverdict_deferred` False,
     # which is the APPLIED arm's condition below. Exit 1, without a traceback.
@@ -1296,18 +1293,30 @@ def cmd_triage_run(args, config) -> int:
 
 
 # ── backend construction ─────────────────────────────────────────────────────
-# `--backend` names a ROLE (auto/primary/fallback), not a provider; the config
-# decides which provider fills each role. Role resolution -- and the provider-
-# construction that used to live here as per-command wrappers -- now lives
-# entirely in Sluice.backend(), which every cmd_* below calls via Sluice(config).
-# This literal is KEPT here so argparse still has its `choices` without importing
-# the moved role/alias tables. MUST stay in sync with Sluice._BACKEND_ROLES +
-# Sluice._BACKEND_ALIASES (sluice/core/app.py) -- those own the roles/aliases,
-# this is only argparse's copy of the same choices.
-_BACKEND_CHOICES = ["auto", "primary", "fallback", "claude-max", "deepseek"]
+def _backend_override(value):
+    """`--backend` names a PROVIDER for this one run (#333), never a role.
+
+    A `type=` validator rather than argparse `choices`, for two reasons. The retired role
+    names get the migration message: a cron still passing `--backend auto` should be told
+    what changed, not that it made a typo. And the provider list is DERIVED from
+    `DEFAULT_MODELS`, the registry's own roster -- the hand-synced literal this replaced had
+    to be kept in step with `core/app.py` and `mcpserver.py` by hand. `core.backends`
+    imports only the standard library at module scope, so this costs no heavy import."""
+    from sluice.core.backends import DEFAULT_MODELS, RETIRED_BACKEND_ROLES
+    if value in RETIRED_BACKEND_ROLES:
+        raise argparse.ArgumentTypeError(
+            f"'{value}' was retired in #333 (no backend roles, no fallback): omit --backend "
+            f"to use the configured backend, or name a provider: {', '.join(DEFAULT_MODELS)}")
+    if value not in DEFAULT_MODELS:
+        raise argparse.ArgumentTypeError(
+            f"unknown backend '{value}' (expected {', '.join(DEFAULT_MODELS)})")
+    return value
+
+
 _BACKEND_HELP = (
-    "which configured backend to use: auto (primary, falling back), primary, or "
-    "fallback. claude-max/deepseek are deprecated aliases for primary/fallback.")
+    "use this provider for this run instead of the configured one. Naming the configured "
+    "provider keeps its configured model; another provider uses its own default model. "
+    "There is no fallback: a failing backend is retried, then the run stops.")
 
 
 # ── cv ────────────────────────────────────────────────────────────────────
@@ -1317,7 +1326,7 @@ def cmd_cv_run(args, config) -> int:
     results = Sluice(config).compose_cv(
         include_stale=args.include_stale,
         lead=args.lead, all_shortlist=args.all_shortlist, limit=args.limit,
-        dry_run=args.dry_run, no_serve=args.no_serve, backend_role=args.backend)
+        dry_run=args.dry_run, no_serve=args.no_serve, backend_override=args.backend)
     if not results and not args.all_shortlist:
         print(f"cv: no shortlist lead matching '{args.lead}'", file=sys.stderr)
         return 1
@@ -1643,7 +1652,7 @@ def cmd_apply_record(args, config) -> int:
 def cmd_track_run(args, config) -> int:
     from sluice.core.app import Sluice
 
-    rep = Sluice(config).track(dry_run=args.dry_run, backend_role=args.backend)
+    rep = Sluice(config).track(dry_run=args.dry_run, backend_override=args.backend)
     if rep.auth_error:
         print("track: google reauth needed (token refresh failed)", file=sys.stderr)
         return 1
@@ -2645,14 +2654,14 @@ def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
         if names:
             print(f"{label + ':':14}{', '.join(names)}")
 
-    # Degraded rows are listed only under `--strict`, where they decide the exit code. A
-    # keyless fallback is a sanctioned degrade at the default -- `auto` runs primary-only
-    # -- so listing it there would put a permanent to-do beside a state the project calls
-    # correct; the one-line pointer below says it exists without making it a task.
+    # Degraded rows that block nothing are listed only under `--strict`, where they decide
+    # the exit code. At the default the run works, so listing one there would put a
+    # permanent to-do beside a state that does not stop anything; the one-line pointer
+    # below says it exists without making it a task.
     # The row headings are deliberately NOT the bucket labels above, all four of them.
     # "Broken" was both, and so was "Degraded";
-    # and a DEAD row that names no capability -- a broken FALLBACK backend, which is dead
-    # but genuinely does not stop its sub-app, since `auto` runs primary-only -- then
+    # and a DEAD row that names no capability -- before #333, a broken FALLBACK backend,
+    # dead but not stopping its sub-app -- then
     # printed `Ready now: <everything>` above a section headed `Broken:`, reading as a
     # contradiction when both halves were true. A row list is a list of rows; only the
     # four lines above are claims about capabilities.
@@ -2660,9 +2669,9 @@ def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
     # Degraded rows come in two kinds and are shown on different terms. One that names a
     # capability it stops is printed ALWAYS -- `classify_camofox`'s `CAMOFOX_USER`
     # mismatch is a run silently driving the wrong cookie profile, which the user must act
-    # on whether or not this run's exit code turns on it. One that names nothing is the
-    # sanctioned keyless-fallback degrade, and appears only under `--strict`, where it
-    # decides the exit code.
+    # on whether or not this run's exit code turns on it. One that names nothing (a
+    # missing Judging Profile, say: the judge falls back to its built-in criteria) appears
+    # only under `--strict`, where it decides the exit code.
     strict_only = [c for c in v.degraded_rows
                    if strict and c not in v.degraded_blocking_rows]
     for heading, rows in (("Still to set up", v.setup_rows),
@@ -2852,7 +2861,7 @@ def _build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--status", default=",".join(_status.DEFAULT_TRIAGE_STATUSES))
     tr.add_argument("--limit", type=int)
     tr.add_argument("--dry-run", action="store_true")
-    tr.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
+    tr.add_argument("--backend", type=_backend_override, default=None,
                     help=_BACKEND_HELP)
     tr.add_argument("--no-llm", action="store_true")
     tr.set_defaults(func=cmd_triage_run)
@@ -2870,7 +2879,7 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="compose for shortlist leads without a tailored_cv")
     cvrun.add_argument("--limit", type=int)
     cvrun.add_argument("--dry-run", action="store_true")
-    cvrun.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
+    cvrun.add_argument("--backend", type=_backend_override, default=None,
                        help=_BACKEND_HELP)
     cvrun.add_argument("--no-serve", action="store_true")
     # #9: `last_seen` only bumps when a lead reappears in a scrape, so narrowing your
@@ -2914,7 +2923,7 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="cmd", required=True)
     trun = track.add_parser("run", help="reconcile the funnel from email + calendar signals")
     trun.add_argument("--dry-run", action="store_true")
-    trun.add_argument("--backend", choices=_BACKEND_CHOICES, default="auto",
+    trun.add_argument("--backend", type=_backend_override, default=None,
                       help=_BACKEND_HELP)
     trun.set_defaults(func=cmd_track_run)
     tconf = track.add_parser("confirm", help="apply a proposed status transition by hand")
@@ -3136,7 +3145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--offline", action="store_true",
                         help="config-only checks; no round-trip")
     doctor.add_argument("--strict", action="store_true",
-                        help="exit non-zero on degraded (e.g. a keyless fallback) too")
+                        help="exit non-zero on degraded (e.g. a missing Judging Profile) too")
     doctor.add_argument("--verbose", "-v", action="store_true",
                         help="print every check, not just the verdict")
     doctor.add_argument("--require", action="append", metavar="CAPABILITY",

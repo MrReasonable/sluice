@@ -268,17 +268,17 @@ def test_call_tool_cv_run_reports_a_real_sdk_error_for_an_invalid_backend(tmp_pa
     duplicating that set here) -- this proves an invalid value comes back as a proper
     tool error rather than crashing the server.
 
-    It does NOT prove the value reaches `Sluice.backend`'s role guard, which this
+    It does NOT prove the value reaches `Sluice.backend`'s override guard, which this
     docstring claimed until #175 measured otherwise. `"bogus"` is rejected by pydantic's
     ARGUMENT VALIDATION against that enum, which never enters the tool body at all --
     which is also why the offending value survives into the message here while
     `list_leads`' unknown-status ValueError above is redacted to "Error executing tool
     list_leads": they are two different SDK paths, not one behaviour with an
-    inconsistency. The role guard is still exercised, at the direct-call layer in
+    inconsistency. The override guard is still exercised, at the direct-call layer in
     tests/test_mcpserver.py, where no schema stands in front of it.
 
     cv.renderer is pointed at 'script' with a real (never-executed) file so compose_cv's
-    renderer construction -- which runs BEFORE the backend role guard -- succeeds without
+    renderer construction -- which runs BEFORE the backend override guard -- succeeds without
     WeasyPrint installed in this environment; the guard then raises before any backend
     credential is ever needed."""
     script = tmp_path / "render.py"
@@ -417,11 +417,15 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
     # Minor #9 (final whole-branch review): `backend` was an unconstrained str,
     # so an invalid value surfaced only as a runtime BackendError -- typing it
-    # Literal[...] (mirroring Sluice._BACKEND_ROLES/_BACKEND_ALIASES, the exact
-    # set cli.py's own --backend argparse `choices` already constrains to) puts
-    # the same constraint into the client-facing schema as a genuine `enum`.
-    assert by_name["cv_run"].input_schema["properties"]["backend"]["enum"] == [
-        "auto", "primary", "fallback", "claude-max", "deepseek"]
+    # Literal[...] puts the constraint into the client-facing schema as a genuine
+    # `enum`. Since #333 it names PROVIDERS (the registry's own roster) and is
+    # optional: omitted, cv uses its configured backend.
+    from sluice.core.backends import DEFAULT_MODELS
+    backend_schema = by_name["cv_run"].input_schema["properties"]["backend"]
+    enums = [branch["enum"] for branch in backend_schema["anyOf"] if "enum" in branch]
+    assert len(enums) == 1 and set(enums[0]) == set(DEFAULT_MODELS)
+    assert {"type": "null"} in backend_schema["anyOf"]
+    assert backend_schema.get("default") is None
     cv_signoff_props = set(by_name["cv_signoff"].input_schema["properties"])
     assert cv_signoff_props == {"lead", "discard", "confirm_token"}
     # decision 13: no default makes promote reachable by omission -- discard's own

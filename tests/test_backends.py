@@ -2,7 +2,7 @@ import subprocess
 import traceback
 import pytest
 from sluice.core.backends import (
-    AnthropicBackend, BackendError, ClaudeMaxBackend, Completion, DEFAULT_MODELS, FallbackBackend, OpenAiCompatibleBackend, _redact, make_backend,
+    AnthropicBackend, BackendError, ClaudeMaxBackend, Completion, DEFAULT_MODELS, OpenAiCompatibleBackend, _redact, make_backend,
 )
 
 
@@ -14,32 +14,6 @@ class _Fake:
         if self.raise_:
             raise BackendError("down")
         return Completion(self.out)
-
-
-def test_fallback_uses_primary_when_ok():
-    p, f = _Fake(out="P"), _Fake(out="F")
-    fb = FallbackBackend(p, f)
-    assert fb.complete("x").text == "P"
-    assert (p.calls, f.calls, fb.last_backend) == (1, 0, "primary")
-
-
-def test_fallback_switches_on_primary_error():
-    p, f = _Fake(raise_=True), _Fake(out="F")
-    fb = FallbackBackend(p, f)
-    assert fb.complete("x").text == "F"
-    assert (p.calls, f.calls, fb.last_backend) == (1, 1, "fallback")
-
-
-def test_fallback_propagates_when_both_fail():
-    # The truncation guard (finish_reason==length / stop_reason==max_tokens now
-    # raising BackendError instead of returning a partial) makes this double-
-    # failure mode reachable in practice: primary down AND fallback truncated.
-    # Both must be tried, and the error must propagate rather than be swallowed.
-    p, f = _Fake(raise_=True), _Fake(raise_=True)
-    fb = FallbackBackend(p, f)
-    with pytest.raises(BackendError):
-        fb.complete("x")
-    assert (p.calls, f.calls) == (1, 1)
 
 
 def test_claudemax_runner_nonzero_raises():
@@ -233,15 +207,11 @@ def test_default_models_cover_every_selector():
 # that runs precisely when the flat-rate primary is down, so a stale alias here
 # is a dead fallback at the worst moment. Pin all three sub-app defaults to the
 # one map so they cannot drift apart or drift back.
-def test_cheap_model_defaults_track_default_models_and_avoid_retired_aliases():
-    from sluice.cv.config import CvConfig
-    from sluice.track.config import TrackConfig
-    from sluice.triage.config import TriageConfig
-
-    retired = {"deepseek-chat", "deepseek-reasoner"}
-    for cfg in (TriageConfig(), CvConfig(), TrackConfig()):
-        assert cfg.cheap_model == DEFAULT_MODELS["deepseek"]
-        assert cfg.cheap_model not in retired
+def test_the_deepseek_default_model_avoids_its_retired_aliases():
+    # `cheap_model` carried this default into all three configs until #333 retired the
+    # key; DEFAULT_MODELS is now the only place it lives, and it is what an override or
+    # a bare `resolve_backend: deepseek` reaches.
+    assert DEFAULT_MODELS["deepseek"] not in {"deepseek-chat", "deepseek-reasoner"}
 
 
 # ── PR-B: make_backend hardening ─────────────────────────────────────────────
@@ -274,21 +244,6 @@ def test_make_backend_claude_max_needs_no_api_key():
 def test_make_backend_unknown_name_still_raises():
     with pytest.raises(BackendError, match="unknown backend"):
         make_backend("not-a-backend", "m", api_key="k")
-
-
-# ── PR-B: FallbackBackend chains the primary error ───────────────────────────
-
-def test_fallback_double_failure_reports_both_causes_and_chains_primary():
-    primary = _Fake(raise_=True)
-    fallback = _Fake(raise_=True)
-    be = FallbackBackend(primary, fallback)
-    with pytest.raises(BackendError) as ei:
-        be.complete("p")
-    # Both legs are named, and the primary's exception stays attached as the cause
-    # -- the primary going down is what put us here, so losing it hides the story.
-    assert "both backends failed" in str(ei.value)
-    assert ei.value.__cause__ is not None
-    assert primary.calls == 1 and fallback.calls == 1
 
 
 # ── PR-B: _urlopen surfaces the provider's error body ────────────────────────

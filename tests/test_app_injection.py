@@ -78,19 +78,19 @@ def test_backend_override_is_honoured():
     # `_overrides`, so the override was silently ignored on every call.
     fake = _Recorder()
     assert Sluice(Config(), backend=fake).backend(
-        "auto", primary_name="claude-max", primary_model="m", effort="low",
-        host=None, claude_path=None, fallback_name="deepseek",
-        fallback_model="c") is fake
+        provider="claude-max", model="m", effort="low", host=None,
+        claude_path=None) is fake
 
 
-def test_backend_override_does_not_bypass_the_role_guard():
+def test_backend_override_does_not_bypass_the_override_guard():
     # THE placement test. Consulting `_overrides` at the top of backend() would make
-    # this return the override instead of raising -- the fix for one quiet-wrong-default
-    # installing another. The guard runs first; the override wins only afterwards.
+    # this return the injected backend instead of raising on a misspelled `--backend` --
+    # the fix for one quiet-wrong-default installing another. The guard runs first; the
+    # injected backend wins only afterwards.
     with pytest.raises(BackendError):
         Sluice(Config(), backend=_Recorder()).backend(
-            "primry", primary_name="claude-max", primary_model="m", effort="low",
-            host=None, claude_path=None, fallback_name="deepseek", fallback_model="c")
+            provider="claude-max", model="m", effort="low", host=None, claude_path=None,
+            override="deepsek")
 
 
 # ── 0.4 override-key validation ───────────────────────────────────────────────

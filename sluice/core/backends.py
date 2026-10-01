@@ -4,9 +4,10 @@ ClaudeMaxBackend shells `claude --print` on a configured host (flat-rate, the
 primary): set `host` to ssh there, or leave it empty to run `claude_path`
 locally. AnthropicBackend calls the Anthropic Messages API directly, and
 OpenAiCompatibleBackend calls an OpenAI-compatible chat/completions endpoint
-(per-token, the fallback). FallbackBackend tries the primary and, if it errors
-(primary host down, timeout, nonzero exit, empty response), falls back
-automatically so a run is never blocked. `make_backend` builds any backend by name -- delegating the
+(per-token). RetryingBackend wraps ONE of them and retries a transient failure on
+that same provider (#333) -- it never switches provider, so a run that cannot reach
+its configured backend fails loudly instead of completing on a model nobody chose.
+`make_backend` builds any backend by name -- delegating the
 per-provider construction to the `backend` seam registry (`sluice/backends/`) so
 selection is config-driven and a new provider is a drop-in module. The subprocess
 runner and HTTP poster are injected, so everything is tested offline.
@@ -104,14 +105,14 @@ class Completion:
 
     The seam used to return a bare `str`, so every provider's `usage` block was parsed past
     and dropped and a run's spend was unobservable (#308). Carrying it on the RESULT rather
-    than on a mutable attribute is what makes it attributable to a specific call --
-    `FallbackBackend.last_backend` is the counter-example, overwritten on every call and so
-    unable to say which leg served which completion.
+    than on a mutable attribute is what makes it attributable to a specific call -- the
+    retired `FallbackBackend.last_backend` was the counter-example, overwritten on every
+    call and so unable to say which leg served which completion.
 
-    `unserved_usage` is spend that happened but did NOT produce this text: a
-    `FallbackBackend` primary that parsed a usage block and then raised, whose tokens were
-    still billed. Without it that spend vanishes inside the fallback's `except`, and a leg
-    that bills on every call while never serving one reads as free.
+    `unserved_usage` is spend that happened but did NOT produce this text: an earlier
+    `RetryingBackend` attempt that parsed a usage block and then raised, whose tokens were
+    still billed. Without it that spend vanishes inside the retry's `except`, and an attempt
+    that bills and fails reads as free.
     """
     text: str
     usage: Usage | None = None
@@ -127,15 +128,15 @@ class BackendError(Exception):
     A transport failure (timeout, HTTP error, missing binary) has no body to parse and leaves
     it None, so `usage is None` here means "no usage was ever seen", never "it was free".
 
-    `unserved_usage` carries the OTHER legs that also billed, mirroring the field of the same
-    name on `Completion`. One call can spend on more than one backend: `FallbackBackend` with
-    both legs reporting usage and then failing is paid for nothing TWICE, which is the worst
-    case for cost and so exactly the one a report must not under-state. A single `usage` field
-    could only carry the first of them, and did -- the first cut of this coalesced the two
-    with `e.usage or fe.usage` and silently dropped the fallback's.
+    `unserved_usage` carries the OTHER attempts that also billed, mirroring the field of the
+    same name on `Completion`. One call can spend more than once: `RetryingBackend` with every
+    attempt reporting usage and then failing is paid for nothing several times, which is the
+    worst case for cost and so exactly the one a report must not under-state. A single
+    `usage` field could only carry the first of them -- the retired FallbackBackend's first
+    cut coalesced its two legs with `e.usage or fe.usage` and silently dropped one.
 
     Every count on this path is unserved by definition (the call raised), so both fields are
-    recorded with `served: false`; which leg each belonged to is in its own `provider`.
+    recorded with `served: false`; which provider each belonged to is in its own `provider`.
     """
 
     def __init__(self, *args, usage: Usage | None = None,
@@ -383,7 +384,7 @@ def _redact(text: str, secrets: dict[str, str]) -> str:
     diagnostic shape without disclosing the host or an absolute path -- both reach
     proc.stderr on an ssh/exec failure (and str(a runner exception)), or proc.stdout
     as the fallback diagnostic source on a non-zero exit (#115), and fan out to
-    WARNING logs (FallbackBackend, judge) and the doctor health report.
+    WARNING logs (RetryingBackend, judge) and the doctor health report.
 
     Matching is TOKEN-AWARE: a value is replaced only where it stands as a whole token
     (`(?<!\\w)value(?!\\w)`), never inside a longer word. That is what lets a genuinely
@@ -765,45 +766,6 @@ class RetryingBackend:
                 continue
             if spent:
                 out = replace(out, unserved_usage=out.unserved_usage + tuple(spent))
-            return out
-
-
-class FallbackBackend:
-    def __init__(self, primary, fallback):
-        self.primary = primary
-        self.fallback = fallback
-        self.last_backend = None
-
-    def complete(self, prompt: str) -> "Completion":
-        try:
-            out = self.primary.complete(prompt)
-            self.last_backend = "primary"
-            return out
-        except BackendError as e:
-            _log.warning("primary backend failed, falling back: %s", e)
-            try:
-                out = self.fallback.complete(prompt)
-            except BackendError as fe:
-                # Both legs are down. Report both causes: the fallback's error alone
-                # is the less interesting half (the primary going down is what put us
-                # here), and chaining from the primary keeps its traceback attached.
-                #
-                # BOTH legs' spend rides along on the raised error: with both down there is
-                # no completion to hang it on, and dropping either would make a leg that bills
-                # then fails look free. Kept as two fields rather than coalesced -- `e.usage
-                # or fe.usage` was the first cut and silently reported only the primary, in
-                # the one case where the user paid twice and got nothing.
-                raise BackendError(
-                    f"both backends failed: primary={e}; fallback={fe}",
-                    usage=e.usage,
-                    unserved_usage=() if fe.usage is None else (fe.usage,)) from e
-            self.last_backend = "fallback"
-            # No provider/model of its own to stamp: the LEG that served already did that,
-            # which is what makes attribution structural here rather than reconstructed.
-            # What this must NOT do is swallow a primary that spent tokens before raising --
-            # those are billed, and this `except` is the only place they are still visible.
-            if e.usage is not None:
-                out = replace(out, unserved_usage=out.unserved_usage + (e.usage,))
             return out
 
 

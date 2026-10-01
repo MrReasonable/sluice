@@ -11,8 +11,7 @@ inline, and printed to stderr. A web UI could not drive that, so "a web UI is a 
 would have been a lie.
 
 `Sluice` is that programmatic API. It resolves every adapter the config names -- store,
-fetcher, renderer, backend (by ROLE: auto/primary/fallback, over the config-selected
-provider) -- and it OWNS the pipeline operations as value-returning methods: `ingest(...)`,
+fetcher, renderer, backend (one per stage, #333) -- and it OWNS the pipeline operations as value-returning methods: `ingest(...)`,
 `triage(...)`, `compose_cv(...)`, `prep(...)`, `record(...)`, `track(...)`,
 `track_confirm(...)`, `track_dismiss(...)`, `normalize_statuses(...)`. It also owns the
 state those operations need that is not itself an adapter: the dossier cache
@@ -515,51 +514,23 @@ def _provider_creds(name):
     return os.environ.get(key_var, ""), os.environ.get(url_var, "")
 
 
-def _make_primary(name, model, *, effort, host, claude_path, timeout=None):
+def _build_backend(name, model, *, effort, host, claude_path, timeout=None):
+    """Construct ONE provider from config plus the environment's credentials.
+
+    The single construction point `Sluice.backend()` uses (#333): there used to be three --
+    a primary builder, a degradable fallback builder and a strict one -- and the degradable
+    one is the shape #333 removes, since it turned a missing key into a quiet change of
+    provider. A missing key now raises here, at construction, like every other seam.
+
+    `Sluice.backend()` has already resolved an omitted timeout to the root
+    `backend_timeout`, while cv passes `cv.compose_timeout` through (#28). make_backend
+    still coalesces None to DEFAULT_TIMEOUT for any direct caller. `host`/`claude_path`
+    reach every factory and only ClaudeMaxBackend reads them."""
     from sluice.core.backends import make_backend
     api_key, base_url = _provider_creds(name)
-    # `Sluice.backend()` has already resolved an omitted timeout to the root
-    # `backend_timeout`, while cv passes cv.compose_timeout through (#28). make_backend
-    # still coalesces None to DEFAULT_TIMEOUT for any direct caller.
     return make_backend(name, model, api_key=api_key, base_url=base_url,
                         effort=effort, claude_host=host, claude_path=claude_path,
                         timeout=timeout)
-
-
-def _make_fallback(name, model, *, host, claude_path, timeout=None):
-    """Build the fallback leg, or None when its credentials are absent.
-
-    A missing key is not fatal: running primary-only (a claude-max setup with no
-    per-token key configured) is legitimate and must keep working. But it *is* a
-    degraded state -- the run has no safety net if the primary dies -- so warn
-    loudly at build time rather than letting it surface as a 401 at the exact
-    moment the primary goes down. When the fallback is explicitly *selected*
-    (`--backend fallback`) there is nothing to degrade to, so make_backend's
-    missing-key error is allowed to propagate; see Sluice.backend.
-
-    `host`/`claude_path` (#117): claude-max is a legitimate name for EITHER role, and
-    there is one `claude_max_host`/`claude_max_path` pair per sub-app config regardless
-    of which role it plays -- so Sluice.backend() threads the same values it gives
-    _make_primary through here too. Harmless for every other provider: make_backend
-    passes claude_host/claude_path to every factory, and only ClaudeMaxBackend reads
-    them (see _make_primary, which already does this unconditionally)."""
-    from sluice.core.backends import make_backend
-    api_key, base_url = _provider_creds(name)
-    if name in _PROVIDER_ENV and not api_key:
-        _log.warning(
-            "fallback backend '%s' has no API key (%s unset): running with no "
-            "fallback -- a primary failure will now fail the run",
-            name, _PROVIDER_ENV[name][0])
-        return None
-    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout,
-                        claude_host=host, claude_path=claude_path)
-
-
-def _make_fallback_strict(name, model, *, host, claude_path, timeout=None):
-    from sluice.core.backends import make_backend
-    api_key, base_url = _provider_creds(name)
-    return make_backend(name, model, api_key=api_key, base_url=base_url, timeout=timeout,
-                        claude_host=host, claude_path=claude_path)
 
 
 class Sluice:
@@ -568,12 +539,6 @@ class Sluice:
     `overrides` lets a caller (a test, or a surface with its own wiring) inject a
     pre-built adapter and skip the registry. It is the seam's test seam.
     """
-
-    # `--backend` names a ROLE, not a provider: which of the two configured backends
-    # to use. The old provider-flavoured values stay as aliases so existing crons and
-    # muscle memory keep working now that selection is config-driven.
-    _BACKEND_ROLES = ("auto", "primary", "fallback")
-    _BACKEND_ALIASES = {"claude-max": "primary", "deepseek": "fallback"}
 
     # `sleep` and `today` are explicit keyword-only params rather than members of
     # **overrides: they are injected VALUES, not adapters resolved by name, and the
@@ -679,34 +644,44 @@ class Sluice:
         # current one.
         return self._resolve(_RENDERER_SEAM, getattr(cvcfg, "renderer", "template"), cvcfg)
 
-    def backend(self, role, *, primary_name, primary_model, effort, host, claude_path,
-                fallback_name, fallback_model, timeout=None):
-        """cli.py's old _select_backend, moved verbatim in behaviour. auto degrades to
-        bare primary (with a warning) when the fallback has no creds; fallback is strict.
-        make_backend stays the provider factory -- an unknown provider name raises
-        BackendError there, unchanged.
+    def backend(self, *, provider, model, effort, host, claude_path, timeout=None,
+                override=None):
+        """The ONE backend a stage uses: retried on itself, never swapped (#333).
+
+        There is no role and no fallback. A provider failure used to send the same prompt to a
+        second provider and model, so a run could complete -- every gate green -- on a model
+        nobody chose for it, with the audit possibly reviewing that model's own draft. Now a
+        transient failure is retried on this backend (`RetryingBackend`, root
+        `backend_retries`) and a persistent one raises, for the stage to report loudly.
+
+        `override` is the one-run `--backend` provider. Naming the provider the stage already
+        uses keeps its configured model -- `--backend claude-max` on a claude-max install must
+        not silently change model. Naming a DIFFERENT provider uses that provider's default
+        model, because the stage's model id belongs to another provider's namespace and would
+        be refused (or worse, mean something else) there.
 
         Unlike store/fetcher/renderer this is not cached on self: each sub-app's config
-        supplies different primary/fallback fields (triage's medium effort vs cv's max,
-        for instance), so there is no single per-Sluice "the" backend to memoize."""
-        from sluice.core.backends import BackendError, FallbackBackend
-        role = self._BACKEND_ALIASES.get(role, role or "auto")
-        # argparse guards the CLI, but this method is called directly too. Without
-        # this an unrecognised choice ("primry") would match neither branch below and
-        # land silently in `auto` -- the same quiet-wrong-default this method exists to
-        # remove, and the opposite of make_backend's fail-at-construction rule.
-        if role not in self._BACKEND_ROLES:
+        supplies different construction params (triage's medium effort vs cv's max, for
+        instance), so there is no single per-Sluice "the" backend to memoize."""
+        from sluice.core.backends import (RETIRED_BACKEND_ROLES, BackendError, DEFAULT_MODELS,
+                                          RetryingBackend)
+        # Validated BEFORE the injected-override check below. Checking the override first
+        # would make `Sluice(cfg, backend=X).backend(..., override="auto")` return X instead
+        # of raising -- a quiet wrong answer to a retired spelling.
+        if override in RETIRED_BACKEND_ROLES:
             raise BackendError(
-                f"unknown backend choice '{role}' (expected "
-                f"{', '.join([*self._BACKEND_ROLES, *self._BACKEND_ALIASES])})")
-        # A constructor override wins -- but only AFTER the role guard above. Checking
-        # first would make `Sluice(cfg, backend=X).backend("primry", ...)` return X
-        # instead of raising, reinstating the exact quiet-wrong-default the guard exists
-        # to remove. Unlike store/fetcher/renderer this cannot go through `_resolve`:
-        # that memoizes per seam, and `backend()` is deliberately uncached because each
-        # sub-app passes different construction params (see the docstring above).
+                f"--backend {override} was retired in #333: sluice no longer has backend "
+                f"roles or a fallback. omit --backend to use the stage's configured backend, "
+                f"or name a provider for this run ({', '.join(DEFAULT_MODELS)})",
+                transient=False)
+        if override and override not in DEFAULT_MODELS:
+            raise BackendError(
+                f"unknown backend '{override}' (expected {', '.join(DEFAULT_MODELS)})",
+                transient=False)
         if _BACKEND_SEAM in self._overrides:
             return self._overrides[_BACKEND_SEAM]
+        if override and override != provider:
+            provider, model = override, ""
         # A caller that names no timeout gets the root `backend_timeout`, so triage and track
         # -- which have no timeout key of their own -- are sized by config rather than by the
         # module constant. Resolved HERE, not at each call site, so a stage added later is
@@ -714,17 +689,13 @@ class Sluice:
         # which wins.
         if timeout is None:
             timeout = self.config.backend_timeout
-        if role == "fallback":
-            # Explicitly asked for it, so a missing key is fatal, not degradable.
-            return _make_fallback_strict(fallback_name, fallback_model, host=host,
-                                         claude_path=claude_path, timeout=timeout)
-        primary = _make_primary(primary_name, primary_model, effort=effort, host=host,
-                                claude_path=claude_path, timeout=timeout)
-        if role == "primary":
-            return primary
-        fallback = _make_fallback(fallback_name, fallback_model, host=host,
-                                  claude_path=claude_path, timeout=timeout)
-        return FallbackBackend(primary, fallback) if fallback else primary
+        inner = _build_backend(provider, model, effort=effort, host=host,
+                               claude_path=claude_path, timeout=timeout)
+        # The label is what a run report prints as the backend that served, so it names the
+        # model ACTUALLY used -- make_backend's default when `model` is empty, not the blank.
+        return RetryingBackend(inner, retries=self.config.backend_retries,
+                               label=f"{provider} {model or DEFAULT_MODELS.get(provider, '')}",
+                               sleep=self._sleep or time.sleep)
 
     def staleness(self, *, include_stale: bool = False):
         """The #9 lead-age rule for one invocation. Built HERE, once, so `leads expire`,
@@ -1574,25 +1545,25 @@ class Sluice:
         return [_one(src) for src in sorted(registry.all_sources(), key=lambda s: s.id)]
 
     def triage(self, *, statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False,
-               no_llm=False, backend_role="auto"):
+               no_llm=False, backend_override=None):
         """Run the triage sub-app end to end: classify, dossier-enrich the kept leads,
         judge them, and write the audit trail. `no_llm` skips backend construction
         entirely (`triage()`'s deterministic classify-only path), preserving the
         offline guarantee `--no-llm` has always given `sluice triage run`.
 
-        The primary/fallback field mapping here (`claude_max_*` for primary,
-        `cheap_model` for fallback) is triage's own config shape -- other sub-apps
-        (cv, apply) have their own `*Config` with their own field names, so this
-        mapping is NOT shared and belongs in this method, not in `Sluice.backend`.
+        The field mapping here (`backend`/`model` plus the `claude_max_*` effort/host/path)
+        is triage's own config shape -- other sub-apps have their own `*Config` with their
+        own field names, so this mapping is NOT shared and belongs in this method, not in
+        `Sluice.backend`.
 
-        #120: a SECOND backend, built independently of `backend_role`, is threaded
-        in as `resolve_backend` when `company_resolve_llm` is on -- tier 3 is bulk
-        extraction over the whole needs_review backlog, not judgement, so it stays
-        pinned to the cheap "fallback" role even when a user picked `--backend
-        primary` for the JUDGE. Its own try/except: `role="fallback"` is STRICT
-        (raises rather than degrading on a missing key), and a best-effort
-        enhancement must not be able to fail a run whose classify+apply path is
-        otherwise fully deterministic.
+        #120: a SECOND backend is threaded in as `resolve_backend` when
+        `company_resolve_llm` is on -- tier 3 is bulk extraction over the whole
+        needs_review backlog, not judgement, so it has its own `resolve_backend`/
+        `resolve_model` keys (#333; it ran on the retired cheap fallback role before) and
+        is NOT moved by `backend_override`, which is the judge's one-run choice. A tier-3
+        backend that cannot be constructed RAISES as `ValueError` (a usage error): the user
+        switched the feature on, and silently disabling it for the run was the quiet
+        degrade #333 removes.
 
         Also threads `sources.get` (#109) into `triage.engine.run` as `get_source`,
         the same lazy, inside-the-method import `ingest()` already uses for
@@ -1611,31 +1582,34 @@ class Sluice:
         # nothing and said nothing. The loader resolves it (env -> config key -> the
         # per-system state root), and that one value is what everything uses.
         audit = AuditLog(tcfg.audit_jsonl)
-        # Shared by both self.backend() calls below -- the judge's (whatever role the
-        # caller picked) and tier 3's resolution backend (always pinned to
-        # "fallback", #120) -- so the two calls differ only in the role string, not
-        # in a hand-copied kwarg list that could silently drift apart between them.
-        _common = dict(
-            primary_name=tcfg.primary_backend, primary_model=tcfg.claude_max_model,
-            effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
-            claude_path=tcfg.claude_max_path, fallback_name=tcfg.fallback_backend,
-            fallback_model=tcfg.cheap_model)
+        # Shared by both self.backend() calls below. Tier 3 differs only in provider and
+        # model, so the effort/host/path stay one dict rather than a hand-copied kwarg list
+        # that could drift between them.
+        _common = dict(effort=tcfg.claude_max_effort, host=tcfg.claude_max_host,
+                       claude_path=tcfg.claude_max_path)
         # METERED HERE, where each backend is constructed, because each serves exactly ONE
         # stage: the judge's, and tier-3 company resolution's. The stage is therefore known at
         # construction and no sub-app has to be handed a log (#308). cv is the exception --
         # see `compose_cv` below.
         usage = self._usage_log()
         backend = None if no_llm else meter(
-            usage, self.backend(backend_role, **_common), "triage-judge")
+            usage, self.backend(provider=tcfg.backend, model=tcfg.model,
+                                override=backend_override, **_common), "triage-judge")
         resolve_backend = None
         if not no_llm and tcfg.company_resolve_llm:
+            # Naming only `resolve_backend` takes that provider's DEFAULT model: triage's
+            # `model` is an id in the judge provider's namespace, not the resolver's.
+            r_provider = tcfg.resolve_backend or tcfg.backend
+            r_model = tcfg.resolve_model or ("" if tcfg.resolve_backend else tcfg.model)
             try:
                 resolve_backend = meter(
-                    usage, self.backend("fallback", **_common), "triage-resolve")
+                    usage, self.backend(provider=r_provider, model=r_model, **_common),
+                    "triage-resolve")
             except BackendError as e:
-                _log.warning(
-                    "company resolution's tier-3 backend unavailable, tier 3 disabled "
-                    "this run: %s", e)
+                raise ValueError(
+                    f"triage: company_resolve_llm is on, but its backend cannot be built "
+                    f"({e}). Fix triage.resolve_backend (or triage.backend), or switch "
+                    f"company_resolve_llm off.") from e
         cache = self.dossier_cache(self._dossier_dir(), tcfg.ttl_days,
                                    self.config.min_jd_chars)
         store = self.store()
@@ -1737,7 +1711,7 @@ class Sluice:
         return f"{kind}:{configured}"
 
     def compose_cv(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
-                    no_serve=False, backend_role="auto", include_stale=False):
+                    no_serve=False, backend_override=None, include_stale=False):
         """Run the cv sub-app: compose (and, unless dry_run, render) a CV for one
         shortlisted lead or for every shortlisted lead. Returns the list of CvResult.
 
@@ -1770,11 +1744,11 @@ class Sluice:
         names", and a dry run that hid it would report success for a pipeline that cannot
         run at all.
 
-        cv's config maps to Sluice.backend's fields via compose_model/compose_effort/
+        cv's config maps to Sluice.backend's fields via backend/model/compose_effort/
         compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
         mapping belongs here, not in Sluice.backend, same reasoning as `triage()`.
 
-        Raises `ValueError` naming the valid choices on an unrecognised `backend_role`
+        Raises `ValueError` naming the valid choices on an unrecognised `backend_override`
         -- `Sluice.backend`'s own `BackendError`, re-raised here (#131: mcpserver.py's
         cv_run passes `backend` straight through with no duplicate copy of the choice
         set, and its own isolation sweep forbids it importing `BackendError` directly,
@@ -1829,10 +1803,9 @@ class Sluice:
             renderer = self.renderer(cvcfg)
         try:
             backend = self.backend(
-                backend_role, primary_name=cvcfg.primary_backend,
-                primary_model=cvcfg.compose_model, effort=cvcfg.compose_effort,
+                provider=cvcfg.backend, model=cvcfg.model, effort=cvcfg.compose_effort,
                 host=cvcfg.compose_host, claude_path=cvcfg.compose_claude_path,
-                fallback_name=cvcfg.fallback_backend, fallback_model=cvcfg.cheap_model,
+                override=backend_override,
                 timeout=cvcfg.compose_timeout)
         except BackendError as e:
             raise ValueError(str(e)) from e
@@ -2408,7 +2381,7 @@ class Sluice:
         return engine.record_one(self.store(), load_apply_config(), lead,
                                  ats=ats, url=url, dry_run=dry_run)
 
-    def track(self, *, dry_run=False, backend_role="auto", client=None, now_iso=None):
+    def track(self, *, dry_run=False, backend_override=None, client=None, now_iso=None):
         """Run the track sub-app: fetch Gmail/Calendar since the last run, classify
         and reconcile each message against the vault's in-flight leads. Returns the
         engine's RunReport.
@@ -2443,10 +2416,9 @@ class Sluice:
             calendar_max_events=tcfg.calendar_max_events)
         from sluice.core.usage import meter
         backend = meter(self._usage_log(), self.backend(
-            backend_role, primary_name=tcfg.primary_backend,
-            primary_model=tcfg.claude_max_model, effort=tcfg.claude_max_effort,
+            provider=tcfg.backend, model=tcfg.model, effort=tcfg.claude_max_effort,
             host=tcfg.claude_max_host, claude_path=tcfg.claude_max_path,
-            fallback_name=tcfg.fallback_backend, fallback_model=tcfg.cheap_model),
+            override=backend_override),
             "track-classify")
         now_iso = now_iso or datetime.now(timezone.utc).isoformat()
         rep = track_engine.run(self.store(), tcfg, client, backend, seen=seen,
@@ -2551,7 +2523,7 @@ class Sluice:
                                 flow_factory=flow_factory)
 
     def doctor(self, *, offline=False, probe=None):
-        """Preflight every configured backend (primary + fallback, per sub-app):
+        """Preflight every configured backend (one per sub-app, plus tier-3 resolve when on):
         is the provider known, is a model resolved, are the credentials present
         in THIS process, and -- unless `offline` -- does a one-token round-trip
         succeed? Also preflights everything else a run depends on that a green
@@ -2601,8 +2573,8 @@ class Sluice:
 
         `probe` is the test seam -- a `callable(backend) -> None` that
         raises `BackendError` on failure; it defaults to the real round-trip.
-        The provider is built DIRECTLY via `make_backend` (not the role
-        composite), so there is no `FallbackBackend` to disentangle, and it is
+        The provider is built DIRECTLY via `make_backend` (not wrapped in
+        `RetryingBackend`), so one probe is one round-trip, and it is
         built ONLY when there is something testable -- a known provider whose
         credentials are satisfied -- so a keyless per-token backend is
         classified from config alone, never by catching a construction error."""

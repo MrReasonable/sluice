@@ -130,13 +130,21 @@ class Config:
     # Seconds each backend attempt may take, for every backend `Sluice.backend()` builds whose
     # caller names no timeout -- every one except cv's, which names `cv.compose_timeout` for
     # its compose, audit and voice calls alike, and `doctor`'s probes, which are built with
-    # their own short limit. Per ATTEMPT: under `auto` a call that fails over gets a fresh
-    # deadline for the fallback leg. ROOT rather than per sub-app because the sub-apps that
+    # their own short limit. Per ATTEMPT: each same-backend retry (`backend_retries`, #333)
+    # gets a fresh deadline of its own. ROOT rather than per sub-app because the sub-apps that
     # read it would otherwise each carry a key with the same meaning. Since #337 an HTTP
     # backend treats it as a TOTAL deadline rather than a per-read one, so a provider that
     # queues a request and then answers slowly fails where it used to finish late, and this
     # is the knob that gives it longer. No "off": 0 would end every call at once.
     backend_timeout: int = DEFAULT_TIMEOUT
+    # How many times a stage retries its ONE backend after a transient failure before the
+    # run fails loudly (#333). Replaced the cross-provider fallback: a retry reaches the
+    # same provider and model, so a run never completes on a model nobody chose. A failure
+    # that would fail identically again (a missing key, a 401) is not retried at all. 0 is
+    # a legitimate value -- one attempt, fail at once -- so unlike `backend_timeout` it has
+    # an "off". Each retry gets a full `backend_timeout`, plus a 2s-then-4s backoff, so the
+    # worst case per call is (retries + 1) times the timeout plus the backoff.
+    backend_retries: int = 2
     # How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
     # in milliseconds, waiting for it to stop changing. It does not pause before the first
     # read -- it reads immediately, then re-reads until two consecutive reads match or this
@@ -643,6 +651,44 @@ def sub_app_block(block: str, loaded: object) -> dict:
     return loaded
 
 
+# Retired by #333 (one backend per stage). The value is the replacement key under the same
+# block, or None when the setting is gone outright. `cheap_model` maps to `resolve_model`
+# under triage only: tier-3 company resolution is the one thing the cheap model did that
+# survives, and it now has keys of its own.
+RETIRED_BACKEND_KEYS = {
+    "triage": {"primary_backend": "backend", "claude_max_model": "model",
+               "fallback_backend": None, "cheap_model": "resolve_model"},
+    "track": {"primary_backend": "backend", "claude_max_model": "model",
+              "fallback_backend": None, "cheap_model": None},
+    "cv": {"primary_backend": "backend", "compose_model": "model",
+           "fallback_backend": None, "cheap_model": None, "audit_model": None},
+}
+
+
+def refuse_retired_backend_keys(block: str, data: dict) -> None:
+    """Raise on the first #333-retired backend key in a sub-app block.
+
+    Refused, not dropped, for `refuse_retired_dossier_dir`'s reason: every sub-app loader
+    filters unknown keys with `hasattr`, so a dropped `fallback_backend` would leave its owner
+    believing a second provider still stands behind the first. There is no deprecation
+    window, on the owner's ruling -- a stage that quietly stopped having a fallback is the
+    surprise #333 exists to remove. Keyed on `in data`, so a retired key sitting BESIDE its
+    replacement still raises rather than lingering as a dead line that reads as live. Never
+    echoes the value, matching the sibling helper below."""
+    for key, new in RETIRED_BACKEND_KEYS[block].items():
+        if key not in data:
+            continue
+        if new:
+            hint = f"Rename it to `{block}.{new}`."
+        elif key == "audit_model":
+            hint = ("It was never read -- the audit runs on cv's own backend and model. "
+                    "Delete the key.")
+        else:
+            hint = ("sluice no longer falls back to a second provider: each stage uses one "
+                    "backend and retries it (root `backend_retries`). Delete the key.")
+        raise ValueError(f"{block}.{key} was retired in #333. {hint}")
+
+
 def refuse_retired_dossier_dir(block: str, data: dict) -> None:
     """Raise if a sub-app block still carries the retired `dossier_dir` key (#80).
 
@@ -859,6 +905,15 @@ def load_config(path: str | None = None) -> Config:
             f"backend_timeout must be a positive integer (seconds), got "
             f"{_safe_scalar_repr(raw_backend_timeout)}")
 
+    # #333. Same bool-first shape; 0 is ALLOWED (one attempt), unlike the timeout above.
+    # `backend_retries: yes` would otherwise load as one retry with no error anywhere.
+    raw_retries = data.get("backend_retries")
+    raw_retries = 2 if raw_retries is None else raw_retries
+    if isinstance(raw_retries, bool) or not isinstance(raw_retries, int) or raw_retries < 0:
+        raise ValueError(
+            f"backend_retries must be a non-negative integer (0 = no retry), got "
+            f"{_safe_scalar_repr(raw_retries)}")
+
     # #228. Identical shape and identical reason: `dossier_settle_ms: yes` is the natural
     # spelling to turn a wait ON, and bool SUBCLASSES int, so without the bool check first it
     # would load as a ONE MILLISECOND budget -- a settle that is off in every way that matters
@@ -931,6 +986,7 @@ def load_config(path: str | None = None) -> Config:
                   lead_layout=raw_layout or "",
                   min_jd_chars=raw_floor,
                   backend_timeout=raw_backend_timeout,
+                  backend_retries=raw_retries,
                   dossier_settle_ms=raw_settle,
                   dossier_concurrency=raw_conc,
                   dossier_allow_hosts=allow)

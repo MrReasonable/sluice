@@ -26,7 +26,7 @@ def _backend_spec_subapps():
     """Every sub-app named in `enumerate_targets`' specs, from the source.
 
     Matched on the tuple's SHAPE -- (subapp, role, ...) where role is one of the two real
-    role names -- rather than on a hand-listed set of sub-app names, which is what a sweep
+    role names, a stage's own `backend` and triage's tier-3 `resolve` (#333) -- rather than on a hand-listed set of sub-app names, which is what a sweep
     meant to catch a NEW sub-app must not depend on.
     """
     with open(os.path.join(_SLUICE, "core", "doctor.py"), encoding="utf-8") as f:
@@ -39,7 +39,7 @@ def _backend_spec_subapps():
             continue
         a, b = node.elts[0], node.elts[1]
         if (isinstance(a, ast.Constant) and isinstance(a.value, str)
-                and isinstance(b, ast.Constant) and b.value in ("primary", "fallback")):
+                and isinstance(b, ast.Constant) and b.value in ("backend", "resolve")):
             out.add(a.value)
     return out
 
@@ -153,7 +153,7 @@ def test_notice_still_reaches_nothing():
 
 
 def test_awaiting_setup_reads_both_row_types_in_report_order():
-    backend = BackendCheck(_target(("triage", "primary")), SETUP, "KEY unset")
+    backend = BackendCheck(_target(("triage", "backend")), SETUP, "KEY unset")
     rep = _report(
         ComponentCheck("store", "vault_dir", OK, "found"),
         ComponentCheck("store", "baseline_rel", SETUP, "not supplied", blocks=("cv",)),
@@ -185,13 +185,11 @@ def test_a_dead_row_moves_its_capability_out_of_setup():
 
 
 def test_an_ok_row_never_blocks_and_a_blocks_less_degraded_row_never_blocks():
-    """The sanctioned degrade must stay out of the verdict entirely.
+    """A sanctioned degrade must stay out of the verdict entirely.
 
-    A keyless fallback is `auto` running primary-only, and `classify`'s DEGRADED row for
-    it carries no `blocks` -- so counting DEGRADED unconditionally would put every default
-    install's triage into a to-do bucket. The real `Judging Profile` row is the same
-    shape: DEGRADED, no `blocks`, because triage falls back to the shipped neutral
-    criteria rather than stopping.
+    The real `Judging Profile` row is DEGRADED with no `blocks`, because triage falls back
+    to the shipped neutral criteria rather than stopping -- so counting DEGRADED
+    unconditionally would put every fresh install's triage into a to-do bucket.
     """
     v = _report(
         ComponentCheck("store", "Judging Profile", DEGRADED, "missing"),
@@ -233,19 +231,36 @@ def test_a_dead_blocker_outranks_a_degraded_one_and_degraded_outranks_setup():
     assert _report(setup_row).verdict().setup == ["tailored CVs"]
 
 
-def test_a_backend_blocks_only_where_it_is_the_primary():
-    """A shared target that is triage's primary and cv's fallback, with its key unset,
-    stops triage and merely degrades cv -- which is what `Sluice.backend()`'s `auto` role
-    does at runtime. Reporting it as blocking cv would overstate the damage on the
-    commonest multi-sub-app config there is."""
-    shared = BackendCheck(_target(("triage", "primary"), ("cv", "fallback")), SETUP, "KEY unset")
+def test_a_keyless_backend_blocks_every_stage_that_uses_it():
+    """#333: one backend per stage, retried on itself and never swapped, so a backend that
+    cannot run stops EVERY stage naming it. The fallback-era rule -- a shared target
+    blocks only where it is the primary and merely degrades the rest -- understated the
+    damage once there was nothing left to degrade onto. Asserted as an exact bucket, so a
+    stage silently dropped from the blocker loop lands in `ready` and reds here."""
+    shared = BackendCheck(
+        _target(("triage", "backend"), ("cv", "backend"), ("track", "backend")),
+        SETUP, "KEY unset")
     v = _report(checks=[shared]).verdict()
-    assert "triage leads" in v.setup
-    assert "tailored CVs" in v.ready
+    assert v.setup == ["triage leads", "tailored CVs", "track replies"]
+    assert v.ready == ["scrape job boards", "send applications"]
 
 
-def test_a_healthy_backend_blocks_nothing_even_as_primary():
-    v = _report(checks=[BackendCheck(_target(("triage", "primary")), OK, "ok")]).verdict()
+def test_a_resolve_backend_blocks_triage_and_nothing_else():
+    """Tier 3's backend blocks triage like triage's own: `Sluice.triage()` refuses to
+    start when `company_resolve_llm` is on and its backend cannot be built. It stops
+    nothing else, so a resolve-only target must leave cv and track ready -- and a DEAD one
+    must make triage BROKEN rather than merely awaiting setup."""
+    resolve_only = _target(("triage", "resolve"))
+    v = _report(checks=[BackendCheck(resolve_only, SETUP, "KEY unset")]).verdict()
+    assert v.setup == ["triage leads"]
+    assert "tailored CVs" in v.ready and "track replies" in v.ready
+    v = _report(checks=[BackendCheck(resolve_only, DEAD, "HTTP 401")]).verdict()
+    assert v.broken == ["triage leads"] and v.setup == []
+
+
+def test_a_healthy_backend_blocks_nothing():
+    v = _report(checks=[BackendCheck(_target(("triage", "backend"), ("triage", "resolve")),
+                                     OK, "ok")]).verdict()
     assert v.setup == [] and v.broken == []
 
 
@@ -293,7 +308,7 @@ def test_the_verdict_and_the_table_can_never_disagree_about_a_row():
 @pytest.fixture
 def _fresh_cli(monkeypatch):
     """The shape a real install has immediately after `job-sluice init`: a `claude` CLI on
-    PATH, no fallback key, and a vault directory that EXISTS.
+    PATH, no per-token API key exported, and a vault directory that EXISTS.
 
     The vault is load-bearing, not incidental. `tests/conftest.py` points `VAULT_DIR` at a
     per-test path and does not create it, and since #243 a vault the user NAMED and that
@@ -381,7 +396,8 @@ def test_strict_shows_the_rows_it_fails_on_and_never_says_nothing_is_broken(
         _fresh_cli, capsys):
     """The footer is a statement about the exit code, so the two must agree.
 
-    A `--strict` run on a fresh install exits 1 on a keyless fallback and nothing is DEAD.
+    A `--strict` run on a fresh install exits 1 on its degraded rows (the Judging Profile
+    nobody has written yet) and nothing is DEAD.
     The first cut of this view keyed its closing line on `broken_rows` alone, so it printed
     "Nothing is broken." and exited 1 -- each half true in isolation, together a
     contradiction on the one command whose job is to tell you where you stand. Worse, the
@@ -396,13 +412,14 @@ def test_strict_shows_the_rows_it_fails_on_and_never_says_nothing_is_broken(
     assert "--strict fails on the degraded rows above" in out
     # ...and the rows are actually there to be read.
     assert "\nWorking, but not properly:\n" in out
-    assert "DEEPSEEK_API_KEY" in out
+    assert "Judging Profile" in out
 
 
 def test_a_plain_run_points_at_the_degraded_rows_without_listing_them(_fresh_cli, capsys):
-    """A keyless fallback is a sanctioned degrade -- `auto` runs primary-only -- so a plain
-    run must not present it as a task. It must not hide that it exists either: `--strict`
-    would fail on it, and a user who never sees it cannot know why."""
+    """A missing Judging Profile is a sanctioned degrade -- triage runs on the shipped
+    neutral criteria -- so a plain run must not present it as a task. It must not hide that
+    it exists either: `--strict` would fail on it, and a user who never sees it cannot know
+    why."""
     from sluice.cli import main
 
     rc = main(["doctor", "--offline"])
@@ -535,9 +552,10 @@ def test_a_missing_claude_cli_is_setup_in_both_modes_not_only_offline(monkeypatc
     monkeypatch.setattr("shutil.which", lambda name: None)
     os.makedirs(os.environ["VAULT_DIR"], exist_ok=True)
     # `probe=` INJECTED, and not optional. `Sluice.doctor` defaults it to a real
-    # `b.complete(...)`, and `tests/conftest.py` does not scrub `DEEPSEEK_API_KEY` --
-    # which the shipped `fallback_backend` uses -- so with a key exported in the ambient
-    # environment the `offline=False` leg opened a real outbound connection. The DNS guard
+    # `b.complete(...)`, and `tests/conftest.py` does not scrub the per-token API keys --
+    # the shipped config named a keyed deepseek fallback when this was written -- so with
+    # a key exported in the ambient environment the `offline=False` leg opened a real
+    # outbound connection. The DNS guard
     # turns that into a hard failure rather than a request, but a test whose outcome
     # depends on whether a developer has a key exported is not hermetic either way. Every
     # other live-mode test in `tests/test_doctor.py` injects a probe; this one was the
@@ -565,7 +583,7 @@ def test_a_claude_path_the_user_named_and_that_is_absent_stays_dead(monkeypatch)
     from sluice.core.app import Sluice
     from sluice.triage.config import load_triage_config
 
-    cfg = dataclasses.replace(load_triage_config(), primary_backend="claude-max",
+    cfg = dataclasses.replace(load_triage_config(), backend="claude-max",
                               claude_max_path="/opt/typo/claude")
     monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: cfg)
     monkeypatch.setattr("shutil.which", lambda name: None)
@@ -576,37 +594,25 @@ def test_a_claude_path_the_user_named_and_that_is_absent_stays_dead(monkeypatch)
     assert report.exit_code() == 1
 
 
-def test_a_fallback_whose_cli_is_absent_is_degraded_so_strict_still_fires():
-    """A fallback that cannot run is a DEGRADE, whatever the reason it cannot run.
+def test_an_absent_default_cli_is_setup_for_every_use_and_strict_ignores_it():
+    """The shipped bare `claude` not on PATH is SETUP whatever the target serves.
 
-    Without this arm the two spellings of one fact got opposite `--strict` verdicts: a
-    keyless per-token fallback failed the build while a claude-max fallback whose binary
-    is simply absent passed it. That is exactly the silently-non-functional fallback
-    `--strict` exists to catch -- the one you believe in and never test until the primary
-    dies. Measured before the fix: `setup`, and `exit_code(strict=True) == 0`.
+    This replaced a pair that forked on ROLE: a fallback whose CLI was absent was DEGRADED
+    (so `--strict` fired) while a primary with identical facts was SETUP. #333 removed the
+    fallback, so there is one answer -- and a role-keyed arm reappearing in `classify`
+    would make a resolve-only or shared target answer differently from a stage's own, which
+    the sweep below reds on. The user-NAMED path is the DEAD half,
+    `test_a_claude_path_the_user_named_and_that_is_absent_stays_dead` above.
     """
-    fallback = BackendCheck(_target(("triage", "fallback")), None, "")
     from sluice.core.doctor import classify
 
-    c = classify(fallback.target, known=True, needs_key=False, key_present=False,
-                 key_var="", cli_present=False, offline=True, probe_error=None)
-    assert c.state == DEGRADED
-    assert "primary-only" in c.detail
-    assert _report(checks=[c]).exit_code(strict=True) == 1
-    assert _report(checks=[c]).exit_code() == 0
-
-
-def test_the_same_facts_on_a_primary_are_setup_not_degraded():
-    """The mirror, so the two arms cannot be collapsed into one. Identical inputs except
-    the ROLE: a primary that cannot run is the fresh-install case and exits 0 even under
-    `--strict`; a fallback that cannot run fails a strict build."""
-    from sluice.core.doctor import classify
-
-    c = classify(_target(("triage", "primary")), known=True, needs_key=False,
-                 key_present=False, key_var="", cli_present=False, offline=True,
-                 probe_error=None)
-    assert c.state == SETUP
-    assert _report(checks=[c]).exit_code(strict=True) == 0
+    for roles in ((("triage", "backend"),), (("triage", "resolve"),),
+                  (("triage", "backend"), ("cv", "backend"), ("triage", "resolve"))):
+        c = classify(_target(*roles), known=True, needs_key=False, key_present=False,
+                     key_var="", cli_present=False, offline=True, probe_error=None)
+        assert c.state == SETUP, roles
+        assert "primary-only" not in c.detail, roles
+        assert _report(checks=[c]).exit_code(strict=True) == 0, roles
 
 
 def test_an_unconfigured_vault_at_the_shipped_default_is_setup_and_exits_zero(

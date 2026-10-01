@@ -90,7 +90,7 @@ def _render_key(leaf, q, value, indent):
 
 def _grouped(answers):
     """Every catalogue key by its top-level YAML block, in ask order. A question can write more
-    than one block (`primary_backend` writes three), so this walks `writes_to`.
+    than one block (`backend` writes three), so this walks `writes_to`.
 
     No `default_vault`: nothing here reads `q.default`. Threading it through was provably inert --
     two `build_plan` calls differing only in that argument returned byte-identical text -- and it is

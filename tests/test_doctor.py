@@ -83,38 +83,37 @@ def _harmless_components(monkeypatch):
 
 
 # ── fakes: minimal config objects with just the fields enumerate reads ────────
+# One backend per stage since #333: `backend` + `model`, and nothing else names a provider.
+# Triage alone carries the tier-3 resolve trio, whose shipped posture is OFF.
 @dataclass
 class _Triage:
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    claude_max_model: str = "claude-sonnet-4-5"
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"
     claude_max_host: str = ""
     claude_max_path: str = "claude"
-    cheap_model: str = "deepseek-v4-flash"
+    company_resolve_llm: bool = False
+    resolve_backend: str = ""
+    resolve_model: str = ""
 
 
 @dataclass
 class _Cv:
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    compose_model: str = "claude-sonnet-4-5"
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"
     compose_host: str = ""
     compose_claude_path: str = "claude"
-    cheap_model: str = "deepseek-v4-flash"
 
 
 @dataclass
 class _Track:
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    claude_max_model: str = "claude-sonnet-4-5"
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"
     claude_max_host: str = ""
     claude_max_path: str = "claude"
-    cheap_model: str = "deepseek-v4-flash"
 
 
 def _target(provider="deepseek", model="deepseek-v4-flash", host="",
-            claude_path="claude", roles=(("triage", "fallback"),)):
+            claude_path="claude", roles=(("triage", "backend"),)):
     return BackendTarget(provider=provider, model=model, host=host,
                          claude_path=claude_path,
                          uses=[RoleUse(s, r) for s, r in roles])
@@ -132,45 +131,95 @@ def _one(checks, subject):
 
 # ── enumerate_targets ─────────────────────────────────────────────────────────
 def test_enumerate_dedupes_shared_backends():
-    # Defaults: all three sub-apps share claude-max@sonnet-4-5 (primary) and
-    # deepseek@v4-flash (fallback) -> exactly two targets, each with three uses.
+    # Defaults: all three sub-apps share claude-max@sonnet-4-5 -> exactly ONE target,
+    # carrying three uses in triage/cv/track order (`format_roles` prints that order, so
+    # it is asserted as a list, not a set). No deepseek anywhere: #333 removed the
+    # fallback that used to make a default install probe a second, keyed provider.
     targets = enumerate_targets(_Triage(), _Cv(), _Track())
-    assert len(targets) == 2
-    by_provider = {t.provider: t for t in targets}
-    assert set(by_provider) == {"claude-max", "deepseek"}
-    assert {u.subapp for u in by_provider["claude-max"].uses} == {"triage", "cv", "track"}
-    assert all(u.role == "primary" for u in by_provider["claude-max"].uses)
-    assert by_provider["claude-max"].is_primary is True
-    assert by_provider["deepseek"].is_primary is False
+    assert len(targets) == 1
+    (shared,) = targets
+    assert (shared.provider, shared.model) == ("claude-max", "claude-sonnet-4-5")
+    assert shared.uses == [RoleUse("triage", "backend"), RoleUse("cv", "backend"),
+                           RoleUse("track", "backend")]
 
 
 def test_enumerate_splits_on_per_subapp_model_override():
     # A cv-only model override must NOT collapse into triage/track's claude-max
     # target -- that is the "live model id, per sub-app" guarantee.
-    cv = _Cv(compose_model="claude-opus-4-1")
+    cv = _Cv(model="claude-opus-4-1")
     targets = enumerate_targets(_Triage(), cv, _Track())
     claude = [t for t in targets if t.provider == "claude-max"]
     assert len(claude) == 2
     models = {t.model for t in claude}
     assert models == {"claude-sonnet-4-5", "claude-opus-4-1"}
+    opus = next(t for t in claude if t.model == "claude-opus-4-1")
+    assert opus.uses == [RoleUse("cv", "backend")]
+
+
+def test_enumerate_probes_no_resolve_target_while_company_resolve_llm_is_off():
+    # Tier 3 runs only under `company_resolve_llm`, so a resolve backend named while the
+    # switch is off is configuration nothing executes -- probing it would spend a round
+    # trip (and, keyless, report a SETUP row) on a backend no run will ever build.
+    tri = _Triage(company_resolve_llm=False, resolve_backend="openai",
+                  resolve_model="gpt-example")
+    targets = enumerate_targets(tri, _Cv(), _Track())
+    assert [t.provider for t in targets] == ["claude-max"]
+    assert all(u.role == "backend" for t in targets for u in t.uses)
+
+
+def test_enumerate_adds_the_resolve_target_only_when_company_resolve_llm_is_on():
+    # The other half of the row above, on otherwise identical config: flipping the switch
+    # is the ONLY difference, so the resolve target's presence is decided by it alone.
+    tri = _Triage(company_resolve_llm=True, resolve_backend="openai",
+                  resolve_model="gpt-example")
+    targets = enumerate_targets(tri, _Cv(), _Track())
+    resolve = [t for t in targets if t.provider == "openai"]
+    assert len(resolve) == 1
+    assert resolve[0].model == "gpt-example"
+    assert resolve[0].uses == [RoleUse("triage", "resolve")]
+
+
+def test_a_resolve_backend_with_no_resolve_model_takes_a_blank_model():
+    # Naming only `resolve_backend` means that provider's DEFAULT model, which the target
+    # carries as "" -- `make_backend`'s spelling of "use the default". Inheriting triage's
+    # `model` instead would hand openai a claude-max model id. `Sluice.triage()` makes the
+    # same derivation; `test_enumerate_matches_operation_backend_wiring` pins the two
+    # together through the real operation.
+    tri = _Triage(company_resolve_llm=True, resolve_backend="openai")
+    targets = enumerate_targets(tri, _Cv(), _Track())
+    resolve = next(t for t in targets if t.provider == "openai")
+    assert resolve.model == ""
+    assert resolve.uses == [RoleUse("triage", "resolve")]
+
+
+def test_enumerate_merges_a_resolve_use_into_the_target_it_shares():
+    # Neither resolve key set: tier 3 runs on triage's own backend and model, with
+    # triage's host/path, so it is the SAME probe and must not be a second target. The
+    # shared target's `uses` keeps the stage order and puts the resolve use last.
+    tri = _Triage(company_resolve_llm=True)
+    targets = enumerate_targets(tri, _Cv(), _Track())
+    assert len(targets) == 1
+    assert targets[0].uses == [RoleUse("triage", "backend"), RoleUse("cv", "backend"),
+                               RoleUse("track", "backend"), RoleUse("triage", "resolve")]
+    assert format_roles(targets[0].uses) == "triage, cv, track; resolve: triage"
 
 
 # ── classify ──────────────────────────────────────────────────────────────────
 def test_classify_unknown_provider_is_dead_even_offline():
-    t = _target(provider="gpt5", roles=(("triage", "fallback"),))
+    t = _target(provider="gpt5")
     c = classify(t, known=False, needs_key=True, key_present=False,
                  key_var="", cli_present=None, offline=True, probe_error=None)
     assert c.state == DEAD
     assert "gpt5" in c.detail
 
 
-def test_classify_keyless_primary_is_setup_not_dead():
+def test_classify_keyless_backend_is_setup_not_dead():
     # #243: an UNSET key is a credential the user has not supplied. A key that IS set
     # and fails its round-trip is `probe_error` below, and stays DEAD -- the two are
     # deliberately different states, so `doctor` can exit 0 on the first and 1 on the
     # second. `test_classify_live_probe_error_is_dead` is that other half; it must
     # keep asserting DEAD or this distinction collapses into "backends never fail".
-    t = _target(provider="deepseek", roles=(("triage", "primary"),))
+    t = _target(provider="deepseek")
     c = classify(t, known=True, needs_key=True, key_present=False,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
                  probe_error=None)
@@ -178,18 +227,23 @@ def test_classify_keyless_primary_is_setup_not_dead():
     assert "DEEPSEEK_API_KEY" in c.detail
 
 
-def test_classify_keyless_fallback_is_degraded():
-    t = _target(provider="deepseek", roles=(("triage", "fallback"),))
-    c = classify(t, known=True, needs_key=True, key_present=False,
-                 key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
-                 probe_error=None)
-    assert c.state == DEGRADED
-    assert "DEEPSEEK_API_KEY" in c.detail
-    assert "primary-only" in c.detail
+def test_classify_keyless_backend_is_setup_whatever_it_serves():
+    # #333: there is no role a keyless backend can hold that degrades instead of
+    # stopping -- the fallback that used to make it DEGRADED ("primary-only") is gone.
+    # Swept over every use shape a target can carry, including a resolve-only target and
+    # one shared by a stage and tier 3, so a role-keyed arm reappearing in `classify`
+    # reds here rather than quietly re-creating the degrade for one of them.
+    for roles in ((("triage", "backend"),), (("triage", "resolve"),),
+                  (("triage", "backend"), ("cv", "backend"), ("triage", "resolve"))):
+        c = classify(_target(provider="deepseek", roles=roles), known=True,
+                     needs_key=True, key_present=False, key_var="DEEPSEEK_API_KEY",
+                     cli_present=None, offline=False, probe_error=None)
+        assert c.state == SETUP, roles
+        assert "primary-only" not in c.detail, roles
 
 
 def test_classify_offline_ok_when_static_checks_pass():
-    t = _target(provider="deepseek", roles=(("triage", "fallback"),))
+    t = _target(provider="deepseek")
     c = classify(t, known=True, needs_key=True, key_present=True,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=True,
                  probe_error=None)
@@ -200,8 +254,7 @@ def test_classify_offline_ok_when_static_checks_pass():
 def test_classify_offline_claude_cli_missing_is_setup_not_dead():
     # #243: not installed yet, so SETUP. An installed CLI that fails to run is
     # `probe_error`, which stays DEAD.
-    t = _target(provider="claude-max", model="claude-sonnet-4-5",
-                roles=(("triage", "primary"),))
+    t = _target(provider="claude-max", model="claude-sonnet-4-5")
     c = classify(t, known=True, needs_key=False, key_present=False,
                  key_var="", cli_present=False, offline=True, probe_error=None)
     assert c.state == SETUP
@@ -209,7 +262,7 @@ def test_classify_offline_claude_cli_missing_is_setup_not_dead():
 
 
 def test_classify_live_probe_error_is_dead():
-    t = _target(provider="deepseek", roles=(("triage", "fallback"),))
+    t = _target(provider="deepseek")
     c = classify(t, known=True, needs_key=True, key_present=True,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
                  probe_error="HTTP 401 from api.deepseek.com: bad key")
@@ -218,7 +271,7 @@ def test_classify_live_probe_error_is_dead():
 
 
 def test_classify_live_ok():
-    t = _target(provider="deepseek", roles=(("triage", "fallback"),))
+    t = _target(provider="deepseek")
     c = classify(t, known=True, needs_key=True, key_present=True,
                  key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
                  probe_error=None)
@@ -247,10 +300,15 @@ def test_exit_code_all_ok_is_zero():
     assert rep.exit_code(strict=True) == 0
 
 
-def test_format_roles_groups_by_role_in_order():
-    uses = [RoleUse("triage", "primary"), RoleUse("cv", "primary"),
-            RoleUse("track", "primary")]
-    assert format_roles(uses) == "primary: triage, cv, track"
+def test_format_roles_lists_sub_apps_in_order_and_names_resolve_apart():
+    uses = [RoleUse("triage", "backend"), RoleUse("cv", "backend"),
+            RoleUse("track", "backend")]
+    assert format_roles(uses) == "triage, cv, track"
+    # Tier 3 is a different job on the same backend, so it is named rather than folded
+    # into the stage list -- "triage" twice in one comma list would read as a typo.
+    assert format_roles(uses + [RoleUse("triage", "resolve")]) == \
+        "triage, cv, track; resolve: triage"
+    assert format_roles([RoleUse("triage", "resolve")]) == "resolve: triage"
 
 
 def test_enumerate_includes_claude_path_in_dedup_key():
@@ -261,35 +319,6 @@ def test_enumerate_includes_claude_path_in_dedup_key():
     targets = enumerate_targets(triage, _Cv(), track)
     claude = [t for t in targets if t.provider == "claude-max"]
     assert {t.claude_path for t in claude} == {"/opt/a/claude", "/opt/b/claude", "claude"}
-
-
-def test_enumerate_merges_and_flags_mixed_primary_fallback_role():
-    # tst-003: a backend used as BOTH primary and fallback (same key) dedupes to
-    # one target that is_primary -- so the strict primary rule applies to it.
-    cfg = _Triage(primary_backend="claude-max", claude_max_model="m",
-                  claude_max_host="", claude_max_path="claude",
-                  fallback_backend="claude-max", cheap_model="m")
-    targets = enumerate_targets(cfg, _Cv(), _Track())
-    merged = [t for t in targets
-              if t.provider == "claude-max" and t.model == "m" and t.host == ""]
-    assert len(merged) == 1
-    assert {u.role for u in merged[0].uses} == {"primary", "fallback"}
-    assert merged[0].is_primary is True
-    assert format_roles(merged[0].uses) == "primary: triage; fallback: triage"
-
-
-def test_classify_keyless_mixed_role_is_setup_not_degraded():
-    # tst-003: is_primary still wins -- a keyless per-token backend used as BOTH roles
-    # is not merely degraded, because a run using it as primary cannot happen. #243
-    # renamed the losing state from DEAD to SETUP (an unset key is unsupplied, not
-    # broken); what this row pins is unchanged, that the PRIMARY use decides.
-    t = _target(provider="deepseek",
-                roles=(("triage", "primary"), ("cv", "fallback")))
-    c = classify(t, known=True, needs_key=True, key_present=False,
-                 key_var="DEEPSEEK_API_KEY", cli_present=None, offline=False,
-                 probe_error=None)
-    assert c.state == SETUP
-    assert c.state != DEGRADED
 
 
 # ── Sluice.doctor (impure wiring, with an injected probe so it stays offline) ──
@@ -323,14 +352,25 @@ def _ok_probe(backend):
 
 def _deepseek_dies_probe(backend):
     """Succeed for claude-max, fail for the per-token (deepseek) backend --
-    the exact 'keyed but silently non-functional fallback' scenario."""
+    the 'keyed but silently non-functional backend' scenario."""
     if isinstance(backend, OpenAiCompatibleBackend):
         raise BackendError("HTTP 401 from api.deepseek.com: invalid key")
     return None
 
 
+def _triage_on_deepseek(monkeypatch, **kw):
+    """Point TRIAGE's one backend at deepseek, leaving cv and track on the shipped
+    claude-max. Since #333 the shipped default names deepseek nowhere, so every row below
+    that needs a per-token backend (keyed or keyless) configures one this way -- the
+    fixture the old keyless FALLBACK used to provide for free. Sluice.doctor does `from
+    sluice.triage.config import load_triage_config` at call time, so patching the module
+    attribute takes effect."""
+    cfg = _Triage(backend="deepseek", model="deepseek-v4-flash", **kw)
+    monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: cfg)
+    return cfg
+
+
 def test_doctor_live_all_ok(monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
     # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
     # when it does not. Before that change `cli_present` was computed only under
@@ -339,48 +379,49 @@ def test_doctor_live_all_ok(monkeypatch):
     # installed and fail in CI, which is exactly backwards.
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
-    states = {c.target.provider: c.state for c in rep.checks}
-    assert states == {"claude-max": OK, "deepseek": OK}
+    # The REAL shipped configs, not the fakes: a default install has exactly one backend
+    # target, claude-max, serving all three stages -- and no deepseek row at all, since
+    # #333 removed the fallback that used to add one.
+    assert [(c.target.provider, c.state) for c in rep.checks] == [("claude-max", OK)]
+    assert format_roles(rep.checks[0].target.uses) == "triage, cv, track"
     assert rep.exit_code() == 0
 
 
-def test_doctor_live_keyed_fallback_broken_is_dead(monkeypatch):
+def test_doctor_live_keyed_backend_broken_is_dead(monkeypatch):
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
-    # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
-    # when it does not. Before that change `cli_present` was computed only under
-    # `--offline`, so live mode probed unconditionally and these rows were hermetic by
-    # accident. Without this line they pass on a developer machine with `claude`
-    # installed and fail in CI, which is exactly backwards.
+    # `shutil.which` pinned, as in `test_doctor_live_all_ok`.
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_deepseek_dies_probe)
     states = {c.target.provider: c.state for c in rep.checks}
     assert states["claude-max"] == OK
-    assert states["deepseek"] == DEAD          # believed-in fallback, actually dead
+    assert states["deepseek"] == DEAD          # keyed, believed in, actually dead
     assert rep.exit_code() == 1                # dead -> non-zero even without --strict
+    assert "triage leads" in rep.verdict().broken
 
 
-def test_doctor_keyless_fallback_is_degraded_not_probed(monkeypatch):
+def test_doctor_keyless_backend_is_not_probed(monkeypatch):
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     calls = []
     rep = Sluice().doctor(probe=lambda b: calls.append(b))
     states = {c.target.provider: c.state for c in rep.checks}
-    assert states["deepseek"] == DEGRADED
-    # the keyless fallback is classified WITHOUT a round-trip (nothing to test)
+    assert states["deepseek"] == SETUP
+    # the keyless backend is classified WITHOUT a round-trip (nothing to test) ...
     assert all(not isinstance(b, OpenAiCompatibleBackend) for b in calls)
-    assert rep.exit_code() == 0
-    assert rep.exit_code(strict=True) == 1
+    # ... while the keyed-or-local one beside it still is, so the line above is not
+    # satisfied by a probe that never ran at all.
+    assert calls, "nothing was probed, so the keyless exclusion above witnesses nothing"
 
 
 def test_doctor_offline_skips_probe_and_checks_claude_cli(monkeypatch):
-    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     calls = []
     rep = Sluice().doctor(offline=True, probe=lambda b: calls.append(b))
     assert calls == []                          # offline never round-trips
     states = {c.target.provider: c.state for c in rep.checks}
-    assert states["claude-max"] == OK           # CLI present
-    assert states["deepseek"] == DEGRADED       # keyless fallback
+    assert states == {"claude-max": OK}         # CLI present; the only shipped backend
     assert rep.exit_code() == 0
 
 
@@ -403,6 +444,10 @@ def test_doctor_offline_dead_when_plugin_unregistered(monkeypatch):
     # make_backend, so `known` must also require registration or offline would
     # report the broken provider `ok`. Simulate deepseek's factory missing from
     # the seam. (CodeRabbit #21: validate registration, not just DEFAULT_MODELS.)
+    # The key is SET so the row cannot be SETUP for the unrelated reason of a missing
+    # credential: what decides DEAD here is registration alone.
+    _triage_on_deepseek(monkeypatch)
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setattr(Sluice, "available", staticmethod(lambda seam: ["claude-max"]))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(offline=True, probe=_ok_probe)
@@ -428,13 +473,11 @@ def test_doctor_never_builds_a_fetcher(monkeypatch):
 
 # tst-002: the elapsed field is printed, so pin when it is set vs None.
 def test_doctor_records_elapsed_on_live_probe_only(monkeypatch):
+    # Two providers, so "every probed target records elapsed" is not satisfied by the one
+    # claude-max row a default install has.
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
-    # `shutil.which` pinned: a LIVE round-trip of claude-max presupposes the CLI exists,
-    # and since #243 `classify` short-circuits to a `setup` row (no probe, no elapsed)
-    # when it does not. Before that change `cli_present` was computed only under
-    # `--offline`, so live mode probed unconditionally and these rows were hermetic by
-    # accident. Without this line they pass on a developer machine with `claude`
-    # installed and fail in CI, which is exactly backwards.
+    # `shutil.which` pinned, as in `test_doctor_live_all_ok`.
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
     by = {c.target.provider: c for c in rep.checks}
@@ -449,20 +492,23 @@ def test_doctor_offline_leaves_elapsed_none(monkeypatch):
     assert all(c.elapsed is None for c in rep.checks)
 
 
-def test_doctor_keyless_fallback_has_no_elapsed(monkeypatch):
+def test_doctor_keyless_backend_has_no_elapsed(monkeypatch):
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
     deepseek = next(c for c in rep.checks if c.target.provider == "deepseek")
-    assert deepseek.elapsed is None             # degraded, never probed
+    assert deepseek.state == SETUP
+    assert deepseek.elapsed is None             # unsupplied, never probed
 
 
-# tst-001: exercise unknown-provider and keyless-primary through the FULL
+# tst-001: exercise unknown-provider and keyless-backend through the FULL
 # Sluice.doctor wiring (not just pure classify) by injecting a sub-app config via
 # the from-imported loader. Sluice.doctor does `from sluice.triage.config import
 # load_triage_config` at call time, so patching the module attribute takes effect.
 def test_doctor_unknown_provider_in_config_is_dead(monkeypatch):
     monkeypatch.setattr("sluice.triage.config.load_triage_config",
-                        lambda: _Triage(fallback_backend="gpt5"))
+                        lambda: _Triage(backend="gpt5"))
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     rep = Sluice().doctor(probe=_ok_probe)      # must not crash on the typo
     gpt5 = next(c for c in rep.checks if c.target.provider == "gpt5")
@@ -470,46 +516,74 @@ def test_doctor_unknown_provider_in_config_is_dead(monkeypatch):
     assert rep.exit_code() == 1
 
 
-def test_doctor_keyless_primary_is_setup_through_wiring(monkeypatch):
-    # The wiring half of `test_classify_keyless_primary_is_setup_not_dead`: #243's
+def test_doctor_keyless_backend_is_setup_through_wiring(monkeypatch):
+    # The wiring half of `test_classify_keyless_backend_is_setup_not_dead`: #243's
     # reclassification has to survive the real `Sluice.doctor` path, not only the pure
-    # classifier, because that is what the exit code is computed from.
-    monkeypatch.setattr("sluice.triage.config.load_triage_config",
-                        lambda: _Triage(primary_backend="deepseek"))
+    # classifier, because that is what the exit code is computed from. And since #333 the
+    # keyless backend BLOCKS the stage it serves -- there is no fallback role whose
+    # failure is a mere degrade -- so triage lands in the setup bucket.
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rep = Sluice().doctor(probe=_ok_probe)
-    assert any(c.state == SETUP and c.target.provider == "deepseek"
-               and c.target.is_primary for c in rep.checks)
+    keyless = [c for c in rep.checks if c.target.provider == "deepseek"]
+    assert len(keyless) == 1 and keyless[0].state == SETUP
+    assert keyless[0].target.uses == [RoleUse("triage", "backend")]
+    assert rep.exit_code() == 0
+    assert "triage leads" in rep.verdict().setup
+
+
+def test_a_keyless_resolve_backend_puts_triage_in_setup_through_wiring(monkeypatch):
+    # Tier 3's backend blocks triage exactly as triage's own does: with
+    # `company_resolve_llm` on, `Sluice.triage()` refuses to start when the resolve
+    # backend cannot be built, so a keyless one stops the whole stage. Triage's OWN
+    # backend is the healthy shipped claude-max here, so the only thing that can put
+    # triage in the setup bucket is the resolve row.
+    monkeypatch.setattr("sluice.triage.config.load_triage_config",
+                        lambda: _Triage(company_resolve_llm=True, resolve_backend="deepseek"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    rep = Sluice().doctor(probe=_ok_probe)
+    by = {c.target.provider: c for c in rep.checks}
+    assert by["claude-max"].state == OK
+    assert by["deepseek"].state == SETUP
+    assert by["deepseek"].target.uses == [RoleUse("triage", "resolve")]
+    assert by["deepseek"].target.model == ""   # resolve_backend named alone: its default
+    v = rep.verdict()
+    assert "triage leads" in v.setup
+    assert "triage leads" not in v.ready
     assert rep.exit_code() == 0
 
 
 def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
     # Doctor must probe the SAME backend a real run builds. Spy on Sluice.backend
     # to capture what each operation feeds it, and assert enumerate_targets derives
-    # the identical primary/fallback per sub-app. DISTINCT sentinel values per
-    # sub-app+field (via dataclasses.replace on the real configs, so unrelated
-    # fields like seen_db stay intact) make this pin the mapping tightly: a
-    # cross-field or cross-sub-app misread yields a value mismatch, not a silent
-    # pass on an equal default. This is the arc-001 drift guard.
+    # the identical backend per sub-app -- and, for triage with tier 3 on, the identical
+    # resolve backend. DISTINCT sentinel values per sub-app+field (via
+    # dataclasses.replace on the real configs, so unrelated fields like seen_db stay
+    # intact) make this pin the mapping tightly: a cross-field or cross-sub-app misread
+    # yields a value mismatch, not a silent pass on an equal default. This is the
+    # arc-001 drift guard.
     import dataclasses
 
     from sluice.cv.config import load_cv_config
     from sluice.track.config import load_track_config
     from sluice.triage.config import load_triage_config
 
-    tri = dataclasses.replace(
-        load_triage_config(), primary_backend="tri-prov", claude_max_model="tri-model",
+    base_tri = dataclasses.replace(
+        load_triage_config(), backend="tri-prov", model="tri-model",
         claude_max_host="tri-host", claude_max_path="tri-path",
-        fallback_backend="tri-fbprov", cheap_model="tri-fbmodel")
+        company_resolve_llm=True, resolve_backend="tri-rprov")
+    # Two triage shapes, because the resolve MODEL has two derivations and either could
+    # drift on its own: named explicitly, and left blank (the provider's default, "").
+    tri_named = dataclasses.replace(base_tri, resolve_model="tri-rmodel")
+    tri_blank = dataclasses.replace(base_tri, resolve_model="")
     cvc = dataclasses.replace(
-        load_cv_config(), primary_backend="cv-prov", compose_model="cv-model",
-        compose_host="cv-host", compose_claude_path="cv-path",
-        fallback_backend="cv-fbprov", cheap_model="cv-fbmodel")
+        load_cv_config(), backend="cv-prov", model="cv-model",
+        compose_host="cv-host", compose_claude_path="cv-path")
     trk = dataclasses.replace(
-        load_track_config(), primary_backend="trk-prov", claude_max_model="trk-model",
-        claude_max_host="trk-host", claude_max_path="trk-path",
-        fallback_backend="trk-fbprov", cheap_model="trk-fbmodel")
-    monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: tri)
+        load_track_config(), backend="trk-prov", model="trk-model",
+        claude_max_host="trk-host", claude_max_path="trk-path")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
     # `**_` and not a bare lambda: `Sluice.track` passes refuse_relocated_seen_db=True
     # (#80), and a stub that does not accept the real signature fails with a TypeError
@@ -520,104 +594,121 @@ def test_enumerate_matches_operation_backend_wiring(monkeypatch, tmp_path):
     class _Stop(Exception):
         pass
 
-    def _capture(run):
-        rec = {}
+    def _capture(run, calls_expected):
+        """Every `Sluice.backend` call `run` makes, stopping the operation at the last one
+        expected. Earlier calls get a stand-in object back so the operation proceeds to
+        build the next backend (triage builds its judge, THEN its resolver)."""
+        rec = []
 
-        def spy(self, role, *, primary_name, primary_model, effort, host,
-                claude_path, fallback_name, fallback_model, timeout=None):
-            rec["primary"] = (primary_name, primary_model, host, claude_path)
-            rec["fallback"] = (fallback_name, fallback_model)
-            # RECORDED, not discarded. Widening this fake to merely ACCEPT the #28
-            # timeout would make the one test that inspects doctor-vs-cv wiring swallow
-            # the new value -- a guard quietly narrowed by the change it was meant to
-            # watch. test_doctor_probe_does_not_inherit_the_compose_timeout reads it.
-            rec["timeout"] = timeout
-            raise _Stop()
+        def spy(self, *, provider, model, effort, host, claude_path, timeout=None,
+                override=None):
+            # `timeout` RECORDED, not discarded. Widening this fake to merely ACCEPT the
+            # #28 timeout would make the one test that inspects doctor-vs-cv wiring
+            # swallow the new value -- a guard quietly narrowed by the change it was meant
+            # to watch. test_doctor_probe_does_not_inherit_the_compose_timeout reads it.
+            rec.append({"key": (provider, model, host, claude_path), "timeout": timeout})
+            if len(rec) == calls_expected:
+                raise _Stop()
+            return object()
 
         monkeypatch.setattr(Sluice, "backend", spy)
         try:
             run()
         except _Stop:
             pass
-        return rec
+        assert len(rec) == calls_expected, f"expected {calls_expected} backends, got {rec}"
+        return [r["key"] for r in rec]
 
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "audit.jsonl"))
-    wired = {
-        "triage": _capture(lambda: Sluice().triage()),
-        "cv": _capture(lambda: Sluice().compose_cv(all_shortlist=True, dry_run=True)),
-        "track": _capture(lambda: Sluice().track(client=object())),
-    }
+    for tri in (tri_named, tri_blank):
+        monkeypatch.setattr("sluice.triage.config.load_triage_config", lambda: tri)
+        wired = {
+            "triage": _capture(lambda: Sluice().triage(), 2),
+            "cv": _capture(lambda: Sluice().compose_cv(all_shortlist=True, dry_run=True), 1),
+            "track": _capture(lambda: Sluice().track(client=object()), 1),
+        }
 
-    targets = enumerate_targets(tri, cvc, trk)
-    derived = {}
-    for t in targets:
-        for u in t.uses:
-            derived[(u.subapp, u.role)] = t
+        derived = {}
+        for t in enumerate_targets(tri, cvc, trk):
+            for u in t.uses:
+                derived[(u.subapp, u.role)] = (t.provider, t.model, t.host, t.claude_path)
+        # The ROSTER first, so a use that enumerate stopped producing cannot pass by
+        # simply being absent from the comparisons below.
+        assert set(derived) == {("triage", "backend"), ("cv", "backend"),
+                                ("track", "backend"), ("triage", "resolve")}
 
-    for subapp, w in wired.items():
-        p = derived[(subapp, "primary")]
-        assert (p.provider, p.model, p.host, p.claude_path) == w["primary"], subapp
-        f = derived[(subapp, "fallback")]
-        assert (f.provider, f.model) == w["fallback"], subapp
-        assert (f.host, f.claude_path) == ("", "claude"), subapp
-
-
-def test_enumerate_reflects_the_real_fallback_host_when_fallback_is_claude_max(monkeypatch):
-    """#117 follow-up (round-3 review of PR #114): `_make_fallback` now forwards
-    host/claude_path when the fallback role IS claude-max (a real remote-host install
-    can name claude-max as either role), so a real run built off `Sluice.backend()`
-    probes that host. `enumerate_targets`'s own spec list hardcoded ("", "claude") for
-    EVERY fallback unconditionally -- true before #117, stale the moment it shipped,
-    and the drift guard above never catches it because none of its three sub-app
-    fixtures configure fallback_backend="claude-max". Doctor exists specifically to
-    catch a silently-non-functional fallback before the primary dies; this is that
-    exact failure class, reintroduced in doctor's own enumeration."""
-    import dataclasses
-
-    from sluice.cv.config import load_cv_config
-    from sluice.track.config import load_track_config
-    from sluice.triage.config import load_triage_config
-
-    tri = dataclasses.replace(
-        load_triage_config(), primary_backend="deepseek",
-        fallback_backend="claude-max", claude_max_host="tri-fallback-host",
-        claude_max_path="tri-fallback-path")
-
-    targets = enumerate_targets(tri, load_cv_config(), load_track_config())
-    fallback = next(t for t in targets for u in t.uses
-                    if u.subapp == "triage" and u.role == "fallback")
-    assert (fallback.host, fallback.claude_path) == \
-        ("tri-fallback-host", "tri-fallback-path")
+        for subapp, calls in wired.items():
+            assert derived[(subapp, "backend")] == calls[0], subapp
+        assert derived[("triage", "resolve")] == wired["triage"][1], tri.resolve_model
 
 
 # ── cmd_doctor / argparse (offline; live exit codes are covered via Sluice) ───
 from sluice.cli import main                    # noqa: E402
 
 
-def test_cli_doctor_offline_degraded_fallback_exits_zero(monkeypatch, capsys):
+def test_cli_doctor_offline_keyless_backend_exits_zero(monkeypatch, capsys):
     # `--verbose`, because the assertions here are about the backend TABLE, which the
     # default view no longer prints (#243). The default view's own contract is
-    # `tests/test_doctor_verdict.py`; this row keeps pinning that a degraded fallback
-    # is reported, named, and exits 0.
+    # `tests/test_doctor_verdict.py`; this row keeps pinning that a keyless backend is
+    # reported, named, called `setup`, and exits 0.
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     rc = main(["doctor", "--offline", "--verbose"])
     out = capsys.readouterr().out
     assert rc == 0
     assert "claude-max" in out and "deepseek" in out
-    assert "degraded" in out
+    assert "DEEPSEEK_API_KEY unset" in out
 
 
 def test_cli_doctor_strict_fails_on_degraded(monkeypatch):
+    """`--strict` promotes DEGRADED and nothing else. The degraded row here is the store's
+    missing Judging Profile -- a backend can no longer be DEGRADED (#333 removed the
+    fallback whose loss was the degrade) -- and the run is otherwise healthy, so the
+    strict exit code turns on that row alone."""
+    class _StoreMissingCriteria:
+        def read_baseline(self):
+            return "# CV\n"
+
+        def read_evidence(self, kind, verified_only=True):
+            return []
+
+        def preflight(self):
+            return {"vault_exists": True, "baseline_exists": True,
+                    "criteria_present": False, "baseline_rel_is_default": True,
+                    "experience_total": 1, "experience_verified": 1,
+                    "skills_total": 0, "skills_verified": 0,
+                    "stories_total": 0, "stories_verified": 0,
+                    "candidate_name_present": True, "candidate_contact_present": True}
+
+    monkeypatch.setattr(Sluice, "store", lambda self: _StoreMissingCriteria())
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
+    rep = Sluice().doctor(offline=True)
+    assert [c.subject for c in rep.components if c.state == DEGRADED] == ["Judging Profile"], \
+        "fixture drifted: the strict verdict below must turn on exactly this row"
+    assert main(["doctor", "--offline"]) == 0
+    assert main(["doctor", "--offline", "--strict"]) == 1
+
+
+def test_cli_doctor_strict_ignores_a_keyless_backend(monkeypatch):
+    # The inverse of the fallback-era rule, where `--strict` failed on a keyless
+    # fallback: a keyless backend is now SETUP, and SETUP never reaches the exit code
+    # under `--strict` either (#243). Without this row a strict cron job would go red on
+    # every install that has simply not exported a key yet.
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
-    assert main(["doctor", "--offline", "--strict"]) == 1
+    rep = Sluice().doctor(offline=True)
+    assert [c.state for c in rep.checks if c.target.provider == "deepseek"] == [SETUP]
+    assert not any(c.state == DEGRADED for c in rep.checks + rep.components), \
+        "fixture drifted: a degraded row would decide the strict exit code instead"
+    assert main(["doctor", "--offline", "--strict"]) == 0
 
 
 def test_cli_doctor_offline_exits_zero_when_claude_is_merely_not_installed(monkeypatch):
     # #243 flipped this from 1 to 0 deliberately, and it is the change that most needs
     # a migration note: a `doctor` in a cron alert used to fire on an uninstalled CLI.
-    # `test_cli_doctor_offline_exits_nonzero_on_a_backend_that_fails` is the row that
+    # `test_cli_doctor_offline_exits_nonzero_on_an_unregistered_provider` is the row that
     # keeps a genuine fault exiting 1, so this pair brackets the new rule.
     monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
     monkeypatch.setattr("shutil.which", lambda name: None)
@@ -630,7 +721,7 @@ def test_cli_doctor_offline_exits_nonzero_on_an_unregistered_provider(monkeypatc
     # so it stays DEAD and still exits 1. Without this row, #243's exit-code change
     # would be indistinguishable from "doctor always exits 0".
     monkeypatch.setattr("sluice.triage.config.load_triage_config",
-                        lambda: _Triage(primary_backend="nonesuch"))
+                        lambda: _Triage(backend="nonesuch"))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
     assert main(["doctor", "--offline"]) == 1
 
@@ -642,7 +733,7 @@ def test_print_doctor_shows_elapsed_for_a_live_probe(capsys):
     from sluice.cli import _print_doctor
 
     target = BackendTarget(provider="claude-max", model="m", host="",
-                           claude_path="claude", uses=[RoleUse("triage", "primary")])
+                           claude_path="claude", uses=[RoleUse("triage", "backend")])
     report = DoctorReport(checks=[BackendCheck(target, OK, "round-trip ok", elapsed=0.4)])
     _print_doctor(report, offline=False)
     out = capsys.readouterr().out
@@ -665,7 +756,7 @@ def test_doctor_probe_does_not_inherit_the_compose_timeout(monkeypatch, tmp_path
     from sluice.cv.config import load_cv_config
 
     cvc = dataclasses.replace(load_cv_config(), compose_timeout=4321,
-                              primary_backend="claude-max", compose_model="m")
+                              backend="claude-max", model="m")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda: cvc)
 
     seen = []
@@ -707,7 +798,7 @@ def test_an_option_like_host_is_reported_dead_not_raised(monkeypatch):
     from sluice.cv.config import CvConfig
 
     cvc = dataclasses.replace(CvConfig(), compose_host="-oProxyCommand=id",
-                              primary_backend="claude-max", compose_model="m")
+                              backend="claude-max", model="m")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
 
     report = Sluice().doctor(offline=False, probe=lambda b: None)
@@ -737,7 +828,7 @@ def test_offline_doctor_also_reports_an_option_like_host_dead(monkeypatch):
     from sluice.cv.config import CvConfig
 
     cvc = dataclasses.replace(CvConfig(), compose_host="-oProxyCommand=id",
-                              primary_backend="claude-max", compose_model="m")
+                              backend="claude-max", model="m")
     monkeypatch.setattr("sluice.cv.config.load_cv_config", lambda *a, **k: cvc)
 
     report = Sluice().doctor(offline=True)
@@ -3363,6 +3454,11 @@ def test_the_live_probe_records_its_own_spend(monkeypatch, tmp_path):
 
     from sluice.core.backends import DEFAULT_MODELS
 
+    # Two providers, so the multiset below has something to tell apart: since #333 a default
+    # install probes ONE backend, and a one-row report cannot distinguish "metered each
+    # target once" from "metered the first target only". Triage moves to deepseek on its
+    # default model, so the expected row is derivable from DEFAULT_MODELS like claude-max's.
+    _triage_on_deepseek(monkeypatch)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
     # tmp_path-derived, like the OFF-path row below: `classify` reads this only for
     # `is not None`, and `tests/**` bars absolute paths. Declined once on #320 on a count

@@ -5,7 +5,8 @@ with no config file at all."""
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.config import (apply_claude_cli_env, refuse_retired_dossier_dir,
+from sluice.core.config import (apply_claude_cli_env, refuse_retired_backend_keys,
+                                refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file, resolve
 
@@ -69,10 +70,10 @@ class TriageConfig:
     # A single rolling digest, named distinctly from the legacy per-lead
     # "Rejected Leads/" folder so the two do not collide in Obsidian.
     rejected_note: str = "Job Applications/Rejected Leads Audit.md"
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    cheap_model: str = "deepseek-v4-flash"
-    claude_max_model: str = "claude-sonnet-4-5"
+    # The ONE backend and model the judge uses (#333). No fallback: a failure is retried on
+    # this same backend (root `backend_retries`) and then fails the run loudly.
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"
     claude_max_effort: str = "medium"
     # Host + claude binary path for the ClaudeMaxBackend this sub-app builds.
     # Empty host runs claude_max_path locally; set a host to shell out over ssh.
@@ -95,6 +96,13 @@ class TriageConfig:
     # STRICTLY narrower than company_resolve_fetch; see load_triage_config's
     # cross-field check below.
     company_resolve_llm: bool = False
+    # Tier 3's own backend and model (#333; it ran on the retired cheap fallback role
+    # before). Empty means triage's `backend`/`model` above. Bulk extraction over a backlog
+    # is the one place a cheaper model than the judge's is worth a second key; naming only
+    # `resolve_backend` takes that provider's default model, since `model` above is an id in
+    # another provider's namespace.
+    resolve_backend: str = ""
+    resolve_model: str = ""
     # Off by default (#305): whether a triage run may FETCH live exchange rates once at
     # its start. The pay floors are denominated in one currency and adverts are not, so
     # `classify` converts before comparing -- but the conversion works from a pinned rate
@@ -119,6 +127,7 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
         with open(path, encoding="utf-8") as f:
             data = sub_app_block("triage", (yaml.safe_load(f) or {}).get("triage"))
         refuse_retired_dossier_dir("triage", data)
+        refuse_retired_backend_keys("triage", data)
         # #309 shipped this under `triage:` and the next release moved it to the ROOT
         # config, so refuse the old spelling rather than let it be dropped in silence.
         #
