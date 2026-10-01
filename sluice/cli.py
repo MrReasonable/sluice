@@ -790,6 +790,11 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
     # `str.capitalize()` would also lower-case everything after the first character.
     lines = ([f"job-sluice triage {alert}", headline[:1].upper() + headline[1:]]
              if alert else [f"job-sluice triage: {headline}"])
+    # #333: second line, straight under the headline, because it is the one thing in this
+    # message that needs doing and there is no fallback provider that already did it.
+    if report.backend_error:
+        lines.append(f"Backend unavailable: {report.backend_error}. Unjudged leads keep "
+                     "their status and the next run retries them.")
 
     # Every non-empty group is guaranteed ONE name before any group may spend the rest of
     # the budget. A single shared budget plus `SURFACED`'s shortlist-first ordering erased
@@ -835,9 +840,10 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
         via = (f"{',' if of_keep else ''} via {report.backend}") if report.backend else ""
         lines.append(f"Judged {report.judged}{of_keep}{via}.")
     elif report.sent_to_judge:
-        # The judge WAS called and returned nothing. `triage/judge.py` swallows every
-        # backend error and parse failure, so a revoked key, an exhausted quota, both legs
-        # down, or a plain TypeError in our own prompt building all land here -- and before
+        # The judge WAS called and returned nothing. Since #333 a backend that is down also
+        # sets `backend_error`, named in its own line above; this arm still covers every
+        # batch coming back unparseable, or a plain TypeError in our own prompt building --
+        # and before
         # `sent_to_judge` existed this arm said "no judge ran", which is the opposite of
         # what happened, on the one channel an unattended install reads.
         lines.append(f"The judge was called for {report.sent_to_judge} lead(s) and "
@@ -1289,6 +1295,11 @@ def cmd_triage_run(args, config) -> int:
                  "`--no-llm`), which takes every lead at `dismiss`, including ones you "
                  "dismissed yourself.")
     _notify_reporting(body, config=config, label="triage-summary")
+    if report.backend_error:
+        # After the digest, so the leads that WERE judged before the outage still reach the
+        # reader; the exit code is what tells a cron the run did not finish (#333).
+        print(f"triage: backend unavailable -- {report.backend_error}", file=sys.stderr)
+        return 1
     return 0
 
 
