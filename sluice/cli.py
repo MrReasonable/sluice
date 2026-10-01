@@ -1667,6 +1667,20 @@ def cmd_track_run(args, config) -> int:
     if rep.auth_error:
         print("track: google reauth needed (token refresh failed)", file=sys.stderr)
         return 1
+    if rep.backend_error:
+        # #333: the run stopped at the outage and left every unclassified message unseen,
+        # so nothing is lost -- but nothing more will be classified until the backend is
+        # back, and under cron only the push is read. A dry run still exits 1 and pushes
+        # nothing, matching the failure notify below.
+        print(f"track: backend unavailable -- {rep.backend_error}. Unclassified messages "
+              "stay unseen and the next run retries them.", file=sys.stderr)
+        if not args.dry_run:
+            _notify_reporting(
+                f"job-sluice track: backend unavailable after {rep.classified} of "
+                f"{rep.msgs} message(s); the rest stay unseen and the next run retries "
+                "them. Check the configured backend.",
+                config=config, label="track-failure")
+        return 1
     print(f"track: msgs={rep.msgs} classified={rep.classified} auto={rep.auto} "
           f"proposed={rep.proposed} calendar_added={rep.calendar_added} "
           f"receipts_recorded={rep.receipts_recorded} "

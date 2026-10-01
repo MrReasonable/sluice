@@ -537,6 +537,7 @@ def test_a_truncated_search_HOLDS_the_lastrun_watermark(tmp_path, monkeypatch):
 
     class _Rep:
         auth_error = False
+        backend_error = ""
         deadletter_error = False
         search_truncated = True
         failures = []
@@ -567,6 +568,7 @@ def test_a_complete_search_still_ADVANCES_the_watermark(tmp_path, monkeypatch):
 
     class _Rep:
         auth_error = False
+        backend_error = ""
         deadletter_error = False
         search_truncated = False
         failures = []
@@ -629,6 +631,7 @@ def test_the_config_keys_are_THREADED_into_the_client(tmp_path, monkeypatch):
 
     class _Rep:
         auth_error = deadletter_error = search_truncated = False
+        backend_error = ""
         failures = []
         open_proposals = []
 
