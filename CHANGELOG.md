@@ -40,6 +40,28 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [2.19.0](https://github.com/MrReasonable/sluice/compare/v2.18.0...v2.19.0) (2026-10-01)
+
+
+### Features
+
+* **config:** size triage and track backend calls with backend_timeout ([75b009d](https://github.com/MrReasonable/sluice/commit/75b009df97e2a08b870aec1dfb30c2fa5ad4c53e))
+
+  New root setting `backend_timeout` (seconds, default `300`): how long each backend attempt may take for every backend call except CV composition's, which keeps `cv.compose_timeout`, and `job-sluice doctor`'s probes. It covers triage's judge, triage's company resolution and track's email classification, which until now had no setting at all. Under the default `auto` role a call that fails over gets a fresh limit for the second backend. `yes`, `0` and negative values are refused when the config loads. With the key unset nothing changes. See the fix below for why you might need to raise it.
+
+  `docs/CONFIGURATION.md` now documents every setting, and a test keeps it that way. Three existing settings had no entry until now: `triage.claude_max_effort`, `track.claude_max_effort`, and `track.claude_max_host` / `track.claude_max_path`.
+
+
+### Bug Fixes
+
+* **backends:** end an HTTP backend call within its timeout in total ([#337](https://github.com/MrReasonable/sluice/issues/337)) ([61b23a3](https://github.com/MrReasonable/sluice/commit/61b23a3d3af1dec5d8bb3e54e57e2824e7f530a1))
+
+  The `anthropic`, `openai` and `deepseek` backends' timeout used to apply to each socket read, so a provider that held a request in its queue while sending keep-alive bytes could keep a call, and the stage running it, going for many minutes. It is now a deadline counted from when the request is sent. A call still receiving a reply when it passes fails with `no complete response from <url> within <n>s`, and the stage's normal failure handling takes over (the fallback backend, triage's breaker). What this means for you:
+  - **Triage and track's email classification** give each call `backend_timeout` seconds in total (above). A request that waits in a provider's queue and then takes minutes to answer can now fail where it used to finish late; raise `backend_timeout` if you see that error.
+  - **CV composition** treats `cv.compose_timeout` the same way. If compositions now fall back to the second backend mid-run (logged at WARNING), raise it.
+  - **`job-sluice doctor`** gives each backend probe 60 seconds, so a queueing or unreachable provider shows as a failed check instead of hanging the command.
+  - **Error messages** that name a backend URL no longer include credentials or a query string from a configured `base_url`.
+
 ## [2.18.0](https://github.com/MrReasonable/sluice/compare/v2.17.2...v2.18.0) (2026-09-30)
 
 
