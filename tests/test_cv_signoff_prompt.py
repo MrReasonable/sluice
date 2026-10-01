@@ -97,3 +97,13 @@ def test_framing_prints_under_its_own_heading_and_is_never_counted_as_a_claim(ca
         f"  - {concerns_line}\n"
         "cv signoff: slug has 1 unsupported claim(s):\n"
         "  - unsupported\tMotivated by placeholder\tNONE\n")
+
+
+def test_an_unaudited_entry_says_the_audit_never_ran_and_is_not_a_claim(capsys):
+    # #333: a hold whose audit could not run must not read as the audit having FOUND
+    # something -- there is nothing for the reviewer to look up, only a check to do by hand.
+    _print_signoff_claims("slug", ["unaudited\tdeepseek m: HTTP 503 after 3 attempts",
+                                   "unsupported\tclaim"])
+    err = capsys.readouterr().err
+    assert "NOT audited" in err and "HTTP 503" in err
+    assert "1 unsupported claim(s)" in err

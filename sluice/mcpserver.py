@@ -506,6 +506,9 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> di
     # per-lead diagnostic files (cv/artefacts.py) exist.
     out = {"outcome": r.status, "served": r.served, "dossier_failed": r.dossier_failed,
            "skills_unreadable": r.skills_unreadable, "artefacts_failed": r.artefacts_failed}
+    # #333: why a `backend-unavailable` outcome failed. Sparse like the lists below.
+    if r.error:
+        out["error"] = r.error
     if r.violations:
         out["violations"] = r.violations
     if r.audit_flags:
