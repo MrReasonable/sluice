@@ -7,6 +7,8 @@ import os
 import stat
 from datetime import date, datetime
 
+from sluice.core.paths import open_for_owner
+
 
 def _is_reject(entry: dict) -> bool:
     return entry.get("decision") == "reject" or entry.get("verdict") == "dismiss"
@@ -17,8 +19,10 @@ class AuditLog:
         self.path = path
 
     def append(self, entry: dict) -> None:
-        os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
-        with open(self.path, "a", encoding="utf-8") as f:
+        # Through `open_for_owner`, so what this creates its owner can use whatever the umask,
+        # which is what lets `cannot_append` read permissions only on what already exists
+        # (#332; the helper's docstring has the measurements).
+        with open_for_owner(self.path, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     def cannot_append(self) -> str:
@@ -33,7 +37,10 @@ class AuditLog:
         Nothing is created, deliberately. `core/paths.py`'s `_LEGACY` warns about a
         left-behind `./triage-audit.jsonl` only while this path does NOT exist, and a run that
         rejects nothing leaves no file behind. So this reads permissions on the file, or on
-        the nearest ancestor that exists, and creates nothing.
+        the nearest ancestor that exists, and creates nothing. What does not exist yet it
+        does not read at all: `append` gives its owner read, write and search on each
+        directory it creates, and read and write on the log, whatever the umask (#332), so
+        nothing about the umask is predicted here.
 
         `os.access` answers for the real user, root included, and can still disagree with
         `open`. It does not see every reason a write fails -- a full disk, a quota, an I/O
@@ -71,7 +78,7 @@ class AuditLog:
                 break
             path = os.path.join(os.path.dirname(path), os.readlink(path))
         if path != self.path and not os.path.lexists(path):
-            # ...and ONLY the target: `append`'s `makedirs` runs on the link's own directory,
+            # ...and ONLY the target: `append`'s directory creation runs on the link's own directory,
             # which exists, so a target whose directory is missing is never created.
             parent = os.path.dirname(path) or "."
             if not os.path.lexists(parent):
@@ -100,7 +107,7 @@ class AuditLog:
             return f"{cur} is not writable"
         if os.pardir in stripped:
             # `dirname` strips a `..` as text, so the walk above stepped down past it, while
-            # `open` resolves it only after `makedirs` has created the directories before it.
+            # `open` resolves it only after `append` has created the directories before it.
             # Where it then lands is not predicted: the path is refused.
             return f"{path} has a `..` after a directory that does not exist yet"
         return ""

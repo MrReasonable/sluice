@@ -285,28 +285,140 @@ def _answer(log):
     return box["reason"]
 
 
+# Umasks under which `append` creates what it needs: the ordinary one, and the two that strip the
+# owner's OWN write and search bits (#332). Under those, `os.makedirs` created a directory the log
+# could not be opened in, and `open` created a log the next append could not open, while the
+# check -- which reads permissions on what already exists -- said yes to both.
+_UMASKS = [None, 0o200, 0o100]
+
+
+@pytest.mark.parametrize("umask", _UMASKS, ids=lambda m: "umask-unchanged" if m is None
+                         else f"umask-{m:04o}")
 @pytest.mark.parametrize("shape", _SHAPES)
 def test_the_check_says_an_append_would_fail_exactly_when_it_does(tmp_path, monkeypatch, request,
-                                                                  shape):
+                                                                  shape, umask):
     """The check stands in for `append`, so it is pinned to `append` rather than to
     `os.access`: each shape is asked first, then really appended to, and the two must agree.
     The permission shapes are skipped under root, which writes through permission bits, so
     `os.access` rightly says the append would succeed, and on Windows, as the repo's other
-    mode-bit tests are; every other shape holds for root."""
+    mode-bit tests are; every other shape holds for root.
+
+    Appended TWICE, because a run appends a line per rejected lead, each after that lead's
+    write: a log the first append creates and the second cannot open fails one lead late,
+    which is the failure the check exists to stop. The umask is set only around the check and
+    the appends, so `_seat` builds the same shape under every umask."""
     if shape in _PERMISSION_SHAPES and (
             os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0):
         pytest.skip("mode bits bind neither uid 0 nor Windows")
     log = AuditLog(str(_seat(tmp_path, shape, monkeypatch, request)))
+    previous = None if umask is None else os.umask(umask)
     try:
         reason = _answer(log)
         try:
             log.append({"slug": "a", "ts": "2026-07-07"})
+            log.append({"slug": "b", "ts": "2026-07-07"})
         except (OSError, ValueError):     # ValueError: a path `open` refuses outright
             appended = False
         else:
             appended = True
     finally:
+        if previous is not None:
+            os.umask(previous)
         for locked in ("ro", "nx"):
             if (tmp_path / locked).exists():
                 (tmp_path / locked).chmod(0o755)
     assert (reason == "") is appended, (shape, reason)
+
+
+def test_a_log_the_append_creates_reads_back_under_a_umask_that_strips_the_owners_read(tmp_path):
+    """A run reads its own log back, mid-run to de-duplicate a role_type conflict and at its end
+    to render the Rejected Leads note, so a log `append` creates must be readable by its owner
+    too. Measured before #332: under umask 0400 the appends worked and `read_recent` raised."""
+    log = AuditLog(str(tmp_path / "state" / "triage-audit.jsonl"))
+    previous = os.umask(0o400)
+    try:
+        log.append({"slug": "a", "ts": "2026-07-07"})
+        entries = log.read_recent(30, clock=lambda: date(2026, 7, 8))
+    finally:
+        os.umask(previous)
+    assert [e["slug"] for e in entries] == ["a"]
+
+
+def test_append_leaves_the_mode_of_a_log_that_already_exists_alone(tmp_path):
+    """Only what `append` creates is given its owner's bits: an existing log keeps the mode it
+    was given. Write-only, so a non-root append still succeeds and a change would show."""
+    if os.name == "nt":
+        pytest.skip("mode bits do not bind on Windows")
+    path = tmp_path / "triage-audit.jsonl"
+    path.write_text("", encoding="utf-8")
+    path.chmod(0o200)
+    try:
+        AuditLog(str(path)).append({"slug": "a", "ts": "2026-07-07"})
+        assert path.stat().st_mode & 0o777 == 0o200
+    finally:
+        path.chmod(0o600)
+
+
+
+# Each sibling writes somewhere the audit log's path passes through: into its own directory,
+# or -- the dossier cache, under configured paths -- beside it under a parent that does not
+# exist yet either.
+def _usage_writes(root, monkeypatch):
+    from sluice.core.usage import UsageLog
+    UsageLog(str(root / "state" / "sluice" / "usage.jsonl")).append({"stage": "triage-judge"})
+    return (root / "state" / "sluice" / "usage.jsonl").exists()
+
+
+def _marker_writes(root, monkeypatch):
+    from sluice.triage import reverdict
+    return reverdict.acknowledge("vault:example", str(root / "state" / "sluice" / "ack.json"))
+
+
+def _dossier_writes(root, monkeypatch):
+    from sluice.core.dossier import DossierCache
+    cache = DossierCache(str(root / "cache" / "sluice" / "dossiers"), ttl_days=7,
+                         fetcher=lambda lead: {"jd": {"markdown": "x" * 900}})
+    cache.get_or_build({"company": "Example Co", "role": "Analyst"})
+    return bool(os.listdir(cache.dir))
+
+
+def _fx_writes(root, monkeypatch):
+    from sluice.core import fx
+
+    class _Rates:
+        def fetch(self, timeout):
+            return {"EUR": 0.5}
+
+    monkeypatch.setenv("SLUICE_FX_CACHE", str(root / "state" / "sluice" / "fx-rates.json"))
+    monkeypatch.setattr(fx, "_cache", None)
+    return fx.refresh(_Rates())
+
+
+@pytest.mark.parametrize("umask", [0o200, 0o100], ids=["umask-0200", "umask-0100"])
+@pytest.mark.parametrize("sibling", [_usage_writes, _marker_writes, _dossier_writes, _fx_writes],
+                         ids=["usage-log", "marker", "dossier-cache", "fx-cache"])
+def test_a_sibling_writer_creating_a_directory_leaves_the_log_appendable(
+        tmp_path, monkeypatch, umask, sibling):
+    """A triage run writes these into or beside the audit log's directory, most of them AFTER
+    the pre-write check, so whichever writer creates a directory decides whether the audit
+    append can land. Measured before #332's second half: under these umasks a sibling's plain
+    `makedirs` left a directory the owner could not write or search, so the check -- yes before
+    the sibling wrote -- refused after it, and the appends failed. For the writers that run
+    after the check that is a lead written and its audit line lost; for the fx refresh, which
+    runs before it, a run refused every time. So: yes before, yes after, the sibling's own
+    write landed, and both appends land."""
+    root = tmp_path / "x"
+    log = AuditLog(str(root / "state" / "sluice" / "triage-audit.jsonl"))
+    previous = os.umask(umask)
+    try:
+        before = _answer(log)
+        wrote = sibling(root, monkeypatch)
+        after = _answer(log)
+        assert (before, after) == ("", "")
+        assert wrote
+        log.append({"slug": "a", "ts": "2026-07-07"})
+        log.append({"slug": "b", "ts": "2026-07-07"})
+    finally:
+        os.umask(previous)
+    lines = (root / "state" / "sluice" / "triage-audit.jsonl").read_text(encoding="utf-8")
+    assert len(lines.splitlines()) == 2

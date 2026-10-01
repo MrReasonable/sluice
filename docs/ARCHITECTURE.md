@@ -112,7 +112,11 @@ Shared by every sub-app:
   performs no writes, so RESOLVING a path cannot touch the disk; the writer
   that needs a parent creates it. That is a claim about `resolve` only, and not
   about a `--dry-run` as a whole, which does still write: `ingest run --dry-run`
-  records per-source health. Reads `XDG_*` per call, never at import, because
+  records per-source health. Every writer into the state and cache
+  directories that a triage run reaches creates its parents through
+  `open_for_owner` here, which gives the owner usable bits on what it creates
+  whatever the umask, because the audit pre-write check reads permissions only
+  on what already exists (#332). Reads `XDG_*` per call, never at import, because
   an import-time snapshot is unpatchable by tests. It also holds the table of
   where each path lived BEFORE the sweep, so the migration has one home and
   the cwd-relative literals survive in exactly one module.

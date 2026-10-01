@@ -2539,6 +2539,56 @@ def test_a_dotdot_after_a_missing_directory_stops_the_run_with_a_refusal_not_a_f
     assert (tmp_path / "triage-audit.jsonl").exists()
 
 
+@pytest.mark.parametrize("state_dir_exists, umask", [
+    (False, 0o200), (False, 0o100), (True, 0o200)],
+    ids=["missing-dirs-umask-0200", "missing-dirs-umask-0100", "existing-dir-umask-0200"])
+def test_a_run_under_a_umask_stripping_the_owners_bits_writes_every_lead_and_its_audit_line(
+        tmp_path, state_dir_exists, umask):
+    """#332, end to end: a run whose audit log does not exist yet. Measured before the fix, the
+    pre-write check passed and the run raised from `append` after a lead's dismiss had landed:
+    at the first audit line where `makedirs` had to create directories, and at the SECOND where
+    only the log was missing, since `open` had created it read-only, so the second lead was
+    dismissed with no audit line. `append` now gives its owner the bits it needs on what it
+    creates."""
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _plain_reject_fields())
+    _note(v, "beta.md", _plain_reject_fields())
+    state = tmp_path / "state" / "sluice"
+    if state_dir_exists:
+        state.mkdir(parents=True)
+    audit = AuditLog(str(state / "triage-audit.jsonl"))
+    previous = os.umask(umask)
+    try:
+        report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    finally:
+        os.umask(previous)
+    assert not report.stopped
+    assert sorted(n.status for n in v.read_leads()) == ["dismiss", "dismiss"]
+    assert sorted(e["slug"] for e in audit.read_recent(9999)) == ["acme", "beta"]
+
+
+def test_a_pending_notice_under_a_umask_stripping_the_owners_bits_is_recorded_not_crashed(
+        tmp_path):
+    """#332's second half, end to end. The #223 marker shares the audit log's state directory
+    and is written after the pre-write check. Measured before the fix, under umask 0200 with
+    that directory missing: the check passed, `acknowledge` created the directory unwritable
+    and failed, the run proceeded as it must when the marker cannot land, dismissed a lead,
+    and raised from the audit append. Now the marker lands and the run defers, writing no
+    lead."""
+    v = Vault(str(tmp_path / "vault"))
+    _note(v, "acme.md", _legacy_fields())
+    state = os.path.dirname(reverdict._path())
+    assert not os.path.exists(state)        # the shape: the directory is created by the run
+    audit = AuditLog(os.path.join(state, "triage-audit.jsonl"))
+    previous = os.umask(0o200)
+    try:
+        report = run(v, _floors(), _Backend(), _cache(tmp_path), audit, statuses=("new",))
+    finally:
+        os.umask(previous)
+    assert not report.stopped and report.reverdict_deferred is True
+    assert v.read_leads()[0].status == "new"
+
+
 def test_a_dry_run_is_not_stopped_by_an_audit_log_it_never_writes(tmp_path):
     v = Vault(str(tmp_path / "vault"))
     _note(v, "acme.md", _plain_reject_fields())

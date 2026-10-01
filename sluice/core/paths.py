@@ -8,7 +8,9 @@ That order is the repo's documented config layering (code default < YAML < env) 
 from the other end, and it is stated once here rather than repeated at each call site.
 
 `resolve` performs NO WRITES: it never creates a directory, so RESOLVING a path cannot
-touch the disk; the writer that needs a parent creates it. It does read -- the
+touch the disk; the writer that needs a parent creates it -- through `open_for_owner` below,
+for every writer into sluice's state and cache directories that a triage run reaches (#332).
+It does read -- the
 environment, and (when `legacy` is given) whether the legacy path, the resolved path and
 each known companion exist -- so this is "no writes", not "no I/O". The XDG variables are read per call, never snapshotted at import,
 because an import-time snapshot is unpatchable by tests.
@@ -66,6 +68,7 @@ second a path written down for later. That is the whole distinction.
 """
 import os
 import shlex
+import stat
 import urllib.parse
 
 from sluice.core.log import get_logger
@@ -234,6 +237,76 @@ def existing_db_uri(path: str) -> str:
     """
     return ("file://" + urllib.parse.quote(os.path.join(os.getcwd(), path))
             + "?mode=rw")
+
+
+def open_for_owner(path: str, mode: str):
+    """`open(path, mode, encoding="utf-8")` after creating its missing parent directories,
+    where whatever this creates its owner can use, whatever the umask (#332).
+
+    Each directory it creates gets the owner's read, write and search bits, and a file it
+    creates the owner's read and write. Nothing that already existed is touched, and under an
+    ordinary umask nothing is changed at all. A plain `os.makedirs` then `open` let a umask
+    that strips the owner's OWN bits through: measured under 0200 or 0100, the first
+    directory `makedirs` created refused the next one or the file; under 0200 with only the
+    file missing, the file `open` created refused the next open; under 0400 the file could not
+    be read back.
+
+    It matters most where a check stands in for the write. `triage/audit.py::AuditLog`'s
+    `cannot_append` reads permissions only on what already exists, while a triage run creates
+    directories from several writers -- the audit log itself, and siblings such as the #223
+    marker (`triage/reverdict.py::acknowledge`), the usage log and the dossier cache, which
+    write after the check into the audit log's directory or a parent it shares. A directory
+    any of them created under such a umask was one the audit append could not write into,
+    after a lead's write had landed. So each writer a triage run reaches opens through here,
+    and the check reads no umask: the umask can only be read by setting it, process-wide.
+    """
+    _makedirs_for_owner(os.path.dirname(path) or ".")
+    # `exists` follows a link, so a dangling link counts as absent: `open` creates its target,
+    # which is what the descriptor below names. Windows before Python 3.13 takes no descriptor
+    # for `chmod`, so the path, which names the same file barring a race, stands in there.
+    created = not os.path.exists(path)
+    f = open(path, mode, encoding="utf-8")
+    if created:
+        try:
+            _grant_owner(f.fileno() if os.chmod in os.supports_fd else path,
+                         stat.S_IRUSR | stat.S_IWUSR)
+        except BaseException:
+            f.close()
+            raise
+    return f
+
+
+def _grant_owner(target, bits: int) -> None:
+    """Add `bits` to the owner's permissions on `target`, a path or a descriptor, when the umask
+    stripped them. Untouched otherwise."""
+    mode = os.stat(target).st_mode
+    if mode & bits != bits:
+        os.chmod(target, stat.S_IMODE(mode) | bits)
+
+
+def _makedirs_for_owner(name: str) -> None:
+    """`os.makedirs(name, exist_ok=True)`, following CPython's own steps, except that each
+    directory it creates is given its owner's read, write and search bits. The same steps so
+    that `AuditLog.cannot_append`, written against `makedirs`, still describes it -- a match
+    traced call for call in review, not pinned by a test. A plain `makedirs` cannot be fixed up
+    afterwards: under umask 0200 it fails creating the second level inside the first."""
+    head, tail = os.path.split(name)
+    if not tail:
+        head, tail = os.path.split(head)
+    if head and tail and not os.path.exists(head):
+        try:
+            _makedirs_for_owner(head)
+        except FileExistsError:
+            pass
+        if tail == os.curdir:
+            return
+    try:
+        os.mkdir(name)
+    except OSError:
+        if not os.path.isdir(name):
+            raise
+    else:
+        _grant_owner(name, stat.S_IRWXU)
 
 
 def _something_is_there(path: str) -> bool:

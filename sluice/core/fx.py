@@ -35,7 +35,7 @@ import math
 import os
 import time
 
-from sluice.core.paths import resolve
+from sluice.core.paths import open_for_owner, resolve
 
 # GBP per 1 unit of the quoted currency, i.e. multiply a foreign amount by this to get GBP.
 # Captured 2026-09-09 from ECB reference rates via api.frankfurter.dev. Deliberately stored
@@ -335,12 +335,20 @@ def refresh(source, timeout: int = _TIMEOUT) -> bool:
         return False
     try:
         path = _cache_path()
-        # `or "."`: a bare filename in SLUICE_FX_CACHE gives an empty dirname, and
-        # `makedirs("")` raises FileNotFoundError, so the refresh failed silently for a
-        # path that was perfectly writable.
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        # Through `open_for_owner` (#332), which also covers a bare filename in
+        # SLUICE_FX_CACHE (an empty dirname, which a plain `makedirs("")` refused). This
+        # cache shares the triage state directory with the audit log, and a directory it
+        # created under a umask stripping the owner's own bits made the audit pre-write
+        # check refuse every later run. `os.replace` carries the temp file's mode across.
         tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
+        # A temp left by a refresh that died before `os.replace` is this function's own
+        # scratch, and `open_for_owner` grants bits only on what it CREATES: reused, one left
+        # unreadable became an unreadable cache while this returned True.
+        try:
+            os.remove(tmp)
+        except FileNotFoundError:
+            pass
+        with open_for_owner(tmp, "w") as fh:
             json.dump({"fetched_at": time.time(), "rates": usable}, fh)
         os.replace(tmp, path)
     except Exception:

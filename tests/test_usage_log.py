@@ -633,3 +633,19 @@ def test_a_row_reporting_nothing_at_all_is_the_only_silent_one():
     t = summarize([_shape_row(None, None, None)]).total
     assert (t.unmeasured, t.partial, t.incomplete) == (1, 0, 1)
     assert (t.input_calls, t.output_calls, t.cache_calls) == (0, 0, 0)
+
+
+@pytest.mark.parametrize("umask", [0o200, 0o100], ids=["umask-0200", "umask-0100"])
+def test_every_row_lands_under_a_umask_stripping_the_owners_bits(tmp_path, umask, caplog):
+    """#332. The usage log swallows a failed write, so a plain `makedirs` under these umasks
+    lost every row with only a warning -- and left the shared state directory unwritable for
+    the triage audit append, which does raise."""
+    log = UsageLog(str(tmp_path / "state" / "sluice" / "usage.jsonl"))
+    previous = os.umask(umask)
+    try:
+        log.append({"stage": "triage-judge", "n": 1})
+        log.append({"stage": "triage-judge", "n": 2})
+    finally:
+        os.umask(previous)
+    assert [json.loads(line)["n"] for line in open(log.path, encoding="utf-8")] == [1, 2]
+    assert "could not write the usage log" not in caplog.text

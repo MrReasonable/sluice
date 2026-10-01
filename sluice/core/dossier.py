@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 from urllib.parse import urlsplit
 
+from sluice.core.paths import open_for_owner
 from sluice.core.roletype import observe_role_type
 
 
@@ -265,8 +266,11 @@ class DossierCache:
         # no later run can get past. The FRESHLY FETCHED dossier is still returned, never
         # the rejected cached one, so the caller can answer `jd_arrived` on what it holds.
         if self.jd_arrived(dossier):
-            os.makedirs(self.dir, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
+            # Through `open_for_owner` (#332): a triage run writes here after the audit
+            # pre-write check, and where the cache and the audit log share a parent that does
+            # not exist yet, a plain `makedirs` under a umask stripping the owner's own bits
+            # created that parent unusable for the audit append.
+            with open_for_owner(path, "w") as f:
                 json.dump(dossier, f, ensure_ascii=False)
         return dossier
 

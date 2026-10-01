@@ -647,3 +647,44 @@ def test_a_relative_seen_db_round_trips(monkeypatch, tmp_path):
     SeenDb().save([Lead(title="t", company="c", url="https://example.invalid/1",
                         source="s", search="q")])
     assert SeenDb().load() == {"https://example.invalid/1"}
+
+
+@pytest.mark.parametrize("umask", [0o400, 0o200, 0o100, 0o700],
+                         ids=["umask-0400", "umask-0200", "umask-0100", "umask-0700"])
+def test_open_for_owner_gives_the_owner_its_bits_on_what_it_creates(tmp_path, umask):
+    """#332: read, write and search on each directory it creates, read and write on the file,
+    whatever the umask -- each bit named, so dropping any one of them is seen here rather than
+    only through whichever writer happens to need it."""
+    if os.name == "nt":
+        pytest.skip("mode bits do not bind on Windows")
+    target = tmp_path / "a" / "b" / "file.jsonl"
+    previous = os.umask(umask)
+    try:
+        with paths.open_for_owner(str(target), "a") as f:
+            f.write("x\n")
+    finally:
+        os.umask(previous)
+    for created in (tmp_path / "a", tmp_path / "a" / "b"):
+        assert created.stat().st_mode & 0o700 == 0o700, (created, oct(created.stat().st_mode))
+    assert target.stat().st_mode & 0o600 == 0o600, oct(target.stat().st_mode)
+
+
+def test_open_for_owner_closes_the_file_when_granting_its_bits_fails(tmp_path, monkeypatch):
+    """The grant runs on an open file, so a failure there must close it before raising rather
+    than leave the descriptor to the garbage collector."""
+    opened = []
+    real_open = open
+
+    def recording_open(*args, **kwargs):
+        f = real_open(*args, **kwargs)
+        opened.append(f)
+        return f
+
+    def refuse(target, bits):
+        raise PermissionError("refused")
+
+    monkeypatch.setattr(paths, "open", recording_open, raising=False)
+    monkeypatch.setattr(paths, "_grant_owner", refuse)
+    with pytest.raises(PermissionError):
+        paths.open_for_owner(str(tmp_path / "new.jsonl"), "a")
+    assert len(opened) == 1 and opened[0].closed

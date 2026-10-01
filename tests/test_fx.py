@@ -12,6 +12,7 @@ the network. The provider that really does talk to a service has its own file,
 tests for a response's base and inversion are no longer here.
 """
 import json
+import os
 import time
 
 import pytest
@@ -395,3 +396,16 @@ def test_an_unusable_pinned_rate_abstains_instead_of_reaching_to_gbp(monkeypatch
     assert fx.rate("ZZZ") is None
     assert fx.to_gbp(100_000, "ZZZ") is None
 
+
+
+def test_a_temp_left_unreadable_by_a_dead_refresh_does_not_become_the_cache(cache):
+    """A refresh that died before its `os.replace` leaves `<cache>.tmp` behind. Reused as it
+    stood, one an earlier run left write-only became the cache: `refresh` said True and the
+    rates could not be read back (#332's review)."""
+    if os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0:
+        pytest.skip("mode bits bind neither uid 0 nor Windows")
+    stale = cache.parent / (cache.name + ".tmp")
+    stale.write_text("{}", encoding="utf-8")
+    stale.chmod(0o200)
+    assert fx.refresh(_Source({"EUR": 0.5})) is True
+    assert fx.to_gbp(100_000, "EUR") == 50_000

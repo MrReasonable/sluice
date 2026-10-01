@@ -29,11 +29,10 @@ loud direction by construction, so it takes no part in the #81 relocation machin
 """
 import hashlib
 import json
-import os
 from datetime import date
 
 from sluice.core.log import get_logger
-from sluice.core.paths import resolve
+from sluice.core.paths import open_for_owner, resolve
 
 _log = get_logger("triage.reverdict")
 
@@ -122,10 +121,23 @@ def acknowledge(scope: str, path: str | None = None, *, today=None) -> bool:
         except (OSError, ValueError):
             shown = {}
         shown[_key(scope)] = (today or date.today()).isoformat()
-        os.makedirs(os.path.dirname(target) or ".", exist_ok=True)
-        with open(target, "w", encoding="utf-8") as f:
+        # Through `open_for_owner` (#332): this marker shares the triage state directory
+        # with the audit log and is written AFTER the audit pre-write check, so a directory
+        # created here under a umask stripping the owner's own bits was one the audit
+        # append then failed in, after a lead's write. Under 0400 the marker was written
+        # but unreadable, so `acknowledged` said no every run while this said it landed,
+        # and `run()` returned early for good.
+        with open_for_owner(target, "w") as f:
             json.dump(shown, f)
-        return True
+        # Landed means the NEXT run will read it, so ask that question rather than assume
+        # it from a write that did not raise: a marker that already existed write-only (an
+        # older run under umask 0400, a hand chmod) is written and unreadable, and saying
+        # True for it returns `run()` early on every run (#332).
+        if acknowledged(scope, target):
+            return True
+        _log.warning("triage: wrote the role_type re-verdict notice at %s but cannot read it "
+                     "back, so it is not recorded", target)
+        return False
     except OSError as e:
         _log.warning("triage: could not record the role_type re-verdict notice at %s "
                      "(%s)", target, e)
