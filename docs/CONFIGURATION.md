@@ -149,7 +149,7 @@ the Candidate Profile section that follows this table.
 | `cheap_model` | `"deepseek-v4-flash"` | |
 | `audit_model` | `"claude-sonnet-4-5"` | |
 | `compose_host` / `compose_claude_path` | `""` / `"claude"` | same shape as `triage.claude_max_host` |
-| `compose_timeout` | `300` | **seconds per invocation per leg.** The engine composes up to twice then audits (3 invocations), and under `auto` each may try primary then fallback — worst case per lead is **6×** this value. Must be a positive integer; there is no "off", and `yes` is refused rather than read as 1 second |
+| `compose_timeout` | `300` | **seconds per invocation per leg.** For an HTTP backend it is a total deadline from when the request is sent, checked between reads of the response body, so a provider that keeps sending is ended while a read already blocked when it passes is bounded by this value per read; for `claude-max` it bounds the whole process. The engine composes up to twice then audits, and under `auto` each invocation may try primary then fallback, so a lead's worst case is several times this value. Must be a positive integer; there is no "off", and `yes` is refused rather than read as 1 second |
 
 ## Candidate Profile (vault note)
 

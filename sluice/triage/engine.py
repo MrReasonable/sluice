@@ -53,11 +53,18 @@ _log = get_logger("triage.engine")
 
 # #120: after this many CONSECUTIVE tier-3 backend errors in one run, stop
 # attempting tier 3 for the REST of this run. 107 candidate leads x
-# resolve_backend's own timeout (DEFAULT_TIMEOUT=300s, core/backends.py) is up to
+# resolve_backend's own timeout (DEFAULT_TIMEOUT, core/backends.py) is up to
 # ~9 hours if the backend is simply down -- this bounds that to
 # _LLM_BREAKER_THRESHOLD failed attempts, reported ONCE, with every remaining
 # candidate lead abstaining through resolve_company's OWN existing
-# "resolve_backend is None" gate rather than a second gate here.
+# "resolve_backend is None" gate rather than a second gate here. That budget per
+# attempt holds for the HTTP backends only since #337: urllib's timeout bounds each
+# socket read, so a provider holding a queued request open with keep-alive bytes kept
+# an attempt running far past it, and the attempt reached this breaker only when the
+# provider let go. `_urlopen` now enforces it as a total deadline from when the request
+# is sent, checked between body reads, so a provider that keeps sending is ended; a
+# read already blocked when it passes, like connecting and the header lines, is
+# bounded by the per-read timeout alone.
 _LLM_BREAKER_THRESHOLD = 3
 
 # How far back to look for an already-recorded role_type disagreement (#223 §2.5). Long,
