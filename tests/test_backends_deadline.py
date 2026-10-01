@@ -192,6 +192,11 @@ def test_doctor_probes_every_backend_with_its_own_short_deadline(monkeypatch, tm
     from sluice.core.backends import DEFAULT_TIMEOUT, PROBE_TIMEOUT
     monkeypatch.setenv("DEEPSEEK_API_KEY", "not-a-real-key")
     monkeypatch.setattr("shutil.which", lambda name: str(tmp_path / "claude"))
+    # Two providers, so the sweep below covers both construction shapes (CLI and HTTP): the
+    # shipped defaults put every stage on claude-max alone since #333 removed the fallback.
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text("track:\n  backend: deepseek\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
     seen = []
 
     Sluice().doctor(probe=lambda b: seen.append((b.provider, b.timeout)))

@@ -4,7 +4,8 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.timeouts import DEFAULT_TIMEOUT
-from sluice.core.config import (apply_claude_cli_env, refuse_retired_dossier_dir,
+from sluice.core.config import (apply_claude_cli_env, refuse_retired_backend_keys,
+                                refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file
 from sluice.core.log import get_logger
@@ -105,12 +106,10 @@ class CvConfig:
     served_dir: str = "./cv-served"
     vault_cv_dir: str = "My CV/tailored"
     neutral_filename: str = "CV.pdf"
-    primary_backend: str = "claude-max"
-    fallback_backend: str = "deepseek"
-    compose_model: str = "claude-sonnet-4-5"  # proven on the configured claude-max host's CLI (2.1.202); claude-sonnet-5 is NOT accepted there
+    # The ONE backend and model cv uses for compose, audit and voice alike (#333).
+    backend: str = "claude-max"
+    model: str = "claude-sonnet-4-5"  # proven on the configured claude-max host's CLI (2.1.202); claude-sonnet-5 is NOT accepted there
     compose_effort: str = "max"
-    cheap_model: str = "deepseek-v4-flash"
-    audit_model: str = "claude-sonnet-4-5"
     # Host + claude binary path for the ClaudeMaxBackend this sub-app builds.
     # Empty host runs claude_path locally; set a host to shell out over ssh.
     compose_host: str = ""
@@ -118,21 +117,15 @@ class CvConfig:
     # Seconds one backend invocation may take before it gives up (#28). Defaults to the
     # value that was hardcoded, so making it reachable retunes nobody's runtime.
     #
-    # PER INVOCATION PER LEG, and both multipliers are real. The engine composes up to
-    # twice (the one gate-failure retry) and then runs the audit through the SAME backend
-    # -- three invocations. Under the default `auto` role that backend is a
-    # FallbackBackend, whose `complete` tries the primary and THEN the fallback when the
-    # primary raises, and a timeout raises. So a lead's worst case is six times this, not
-    # three: an earlier version of this comment said three and was wrong, having counted
-    # the invocations but not the legs.
+    # PER ATTEMPT, and both multipliers are real. The engine composes up to twice (the one
+    # gate-failure retry) and then runs the audit through the SAME backend -- three
+    # invocations -- and each invocation may be retried on that backend (root
+    # `backend_retries`, #333), a timeout being exactly the transient failure that is. So a
+    # lead's worst case is the invocations times the attempts, not the invocations alone.
     #
-    # It reaches both legs. Threading it into the primary alone (the first shape of this
-    # knob) left the fallback pinned at the shipped default and made `--backend fallback`
-    # ignore the knob entirely, with nothing logged to say so.
-    #
-    # Raise it if compositions degrade to the fallback mid-run -- an agent shelling over
-    # ssh at `--effort max` against a large bundle is the slow case, and the swap is
-    # logged at WARNING but easy to miss.
+    # Raise it if compositions are retried mid-run -- an agent shelling over ssh at
+    # `--effort max` against a large bundle is the slow case, and each retry is logged at
+    # WARNING but easy to miss.
     compose_timeout: int = DEFAULT_TIMEOUT
 
 
@@ -184,6 +177,7 @@ def _load_cv_config_from_file(path: str | None = None) -> CvConfig:
     # this codebase's rule precisely because a quiet wrong default is the bug class it
     # most consistently engineers out.
     refuse_retired_dossier_dir("cv", data)
+    refuse_retired_backend_keys("cv", data)
 
     if "baseline_rel" in data:
         raise ValueError(

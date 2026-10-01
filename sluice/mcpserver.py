@@ -449,22 +449,17 @@ def _confirm_token(slug: str, pending: str, claims: list) -> str:
     return hmac.new(_CONFIRM_TOKEN_SECRET, canonical.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-# The exact value set Sluice.backend() accepts (sluice/core/app.py's
-# _BACKEND_ROLES + _BACKEND_ALIASES) -- mirrors cli.py's own _BACKEND_CHOICES,
-# which constrains argparse's `--backend` the identical way for the identical
-# reason. Typing cv_run's `backend` parameter with this (Minor #9, final
-# whole-branch review) puts the same constraint into the MCP tool's
-# client-facing JSON schema (an `enum`), rather than relying solely on
-# compose_cv's own runtime BackendError->ValueError translation to catch a
-# schema-validated client's mistake. A THIRD hand-synced copy of the
-# same choice set, not an import of either existing one: cli.py already
-# accepts this cost for the same reason (a bare literal is not worth crossing
-# a module boundary for) -- MUST stay in sync with Sluice._BACKEND_ROLES/
-# _BACKEND_ALIASES and cli.py's _BACKEND_CHOICES by hand if either changes.
-_BackendRole = Literal["auto", "primary", "fallback", "claude-max", "deepseek"]
+# The provider names `cv_run`'s `backend` may override cv's configured backend with for
+# one call (#333; it named a ROLE before roles and the fallback were retired). Typed as a
+# `Literal` so the constraint reaches the MCP client's JSON schema as an `enum`, rather than
+# relying solely on compose_cv's runtime BackendError->ValueError translation. A hand-synced
+# copy of the backend registry's names, not an import of `DEFAULT_MODELS`: this module's
+# isolation sweep confines it to `Sluice` methods. `tests/test_mcpserver.py` pins it EQUAL
+# to that registry, so a provider added there without one here goes red.
+_BackendName = Literal["claude-max", "deepseek", "anthropic", "openai"]
 
 
-def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
+def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> dict:
     """Compose (and render) a CV for ONE shortlisted lead via Sluice.compose_cv --
     the ONLY route past cv/engine.py's fabrication gate (decision 2). Always a REAL
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
@@ -489,11 +484,11 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendRole = "auto") -> dict:
     module importing the lower-level `BackendError` type itself -- the isolation
     sweep below (`test_mcpserver_imports_from_sluice_only_within_an_explicit_
     allow_list`) confines this module to `Sluice` methods for exactly this
-    reason. `_BackendRole`'s `Literal` enum already stops a schema-validated MCP
+    reason. `_BackendName`'s `Literal` enum already stops a schema-validated MCP
     client from sending an invalid value at all; the translation only guards the
     direct-call path (tests, or another in-process caller) that bypasses that
     schema."""
-    results = sluice.compose_cv(lead=lead, backend_role=backend)
+    results = sluice.compose_cv(lead=lead, backend_override=backend)
     if not results:
         oos = out_of_scope_verdict(sluice.store().read_leads(), lead,
                                    matcher=slug_matches, accepted=frozenset({"shortlist"}))
@@ -891,8 +886,10 @@ def build_server(config, write: bool = False):
             return apply_record(sluice, lead, ats=ats, url=url)
 
         @mcp_server.tool(name="cv_run")
-        def cv_run_tool(lead: str, backend: _BackendRole = "auto") -> dict:
-            """Compose and render a CV for one shortlisted lead. The composed text
+        def cv_run_tool(lead: str, backend: _BackendName | None = None) -> dict:
+            """Compose and render a CV for one shortlisted lead. `backend` overrides cv's
+            configured provider for this call only; omit it to use the configured one.
+            There is no fallback provider. The composed text
             itself is never returned, only violations/audit_flags/slop/voice_flags/
             served/dossier_failed/skills_unreadable/artefacts_failed."""
             return cv_run(sluice, lead, backend=backend)

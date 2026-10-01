@@ -47,13 +47,11 @@ def test_load_defaults_when_no_config(monkeypatch):
     assert load_track_config().auto_reject_min == 0.9
 
 
-def test_config_exposes_backend_selectors():
-    # track had no selectors while its backend was hardcoded; config-driven
-    # construction needs them, and they must match the other two sub-apps
-    # (triage, cv). Carried over from the retired test_cli_backend_selection.py.
+def test_config_exposes_its_one_backend():
+    # track had no selector while its backend was hardcoded; config-driven construction
+    # needs one, matching the other two sub-apps (triage, cv). One backend since #333.
     c = TrackConfig()
-    assert c.primary_backend == "claude-max"
-    assert c.fallback_backend == "deepseek"
+    assert (c.backend, c.model) == ("claude-max", "claude-sonnet-4-5")
 
 
 def test_safety_denylist_overrides_merge_over_shipped_defaults(tmp_path):

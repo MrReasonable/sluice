@@ -78,7 +78,7 @@ def test_the_backend_choices_match_the_registry():
     """Hand-listing a name-keyed registry is a second copy of it: register a fifth backend and the
     wizard silently cannot offer it. Same discovery shape as the fan-out sweep (#63)."""
     from sluice.core.app import Sluice
-    q = {x.key: x for x in catalogue(default_vault=VAULT)}["primary_backend"]
+    q = {x.key: x for x in catalogue(default_vault=VAULT)}["backend"]
     assert set(q.parse.allowed) == set(Sluice.available("backend"))
 
 
@@ -274,12 +274,12 @@ def test_every_value_bearing_question_states_its_consequence():
     lower-case answer makes every `cv run` skip every lead. Silent, permanent, and the report never
     mentioned the key at all. Exempted keys are named, not pattern-matched, so a new question
     cannot join them by accident."""
-    # These four configure the tool rather than gating leads: the vault is a location, and the
+    # These configure the tool rather than gating leads: the vault is a location, and the
     # provider names are reported by `sluice doctor`, not by a lead-level consequence. cv_name/
     # cv_contact used to be exempted here too -- #133/#107 removed both from the catalogue
     # entirely (identity moved to the vault's Candidate Profile note), so there is no longer a
     # key for this set to name.
-    exempt = {"vault_dir", "primary_backend", "fallback_backend", "renderer"}
+    exempt = {"vault_dir", "backend", "renderer"}
     missing = [q.key for q in catalogue(default_vault=VAULT)
                if q.key not in exempt and not q.consequence]
     assert not missing, f"these answers change behaviour but the report never says so: {missing}"

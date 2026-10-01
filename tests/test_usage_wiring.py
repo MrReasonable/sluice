@@ -71,10 +71,9 @@ _STAGES = {
 # out of, and wrapping it would double-count or recurse. Deliberately not counted here: an
 # earlier version of this comment said "three" when there were two.
 #
-#   core/backends.py::complete  x3  FallbackBackend delegating to its own two legs, and
-#                                   RetryingBackend (#333) delegating to its one provider. The
-#                                   wrapper sits OUTSIDE both, so the inner call is the same
-#                                   call already counted; metering here would record it twice.
+#   core/backends.py::complete  x1  RetryingBackend (#333) delegating to its one provider. The
+#                                   wrapper sits OUTSIDE it, so the inner call is the same call
+#                                   already counted; metering here would record it twice.
 #   core/usage.py::complete         MeteredBackend itself, delegating inward. Metering it would
 #                                   be the recursion.
 #
@@ -83,7 +82,7 @@ _STAGES = {
 # pass unnoticed (see `_complete_call_sites`).
 _CALL_SITES = {
     ("core/app.py", "doctor"): ("doctor-probe", 1),
-    ("core/backends.py", "complete"): (None, 3),
+    ("core/backends.py", "complete"): (None, 1),
     ("core/usage.py", "complete"): (None, 1),
     ("cv/audit.py", "run_audit"): ("cv-audit", 1),
     ("cv/compose.py", "compose"): ("cv-compose", 1),

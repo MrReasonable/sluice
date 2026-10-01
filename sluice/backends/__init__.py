@@ -12,7 +12,7 @@ each class a name the registry can dispatch on.
 
 **Backend factory contract.** Unlike the store/fetcher/renderer seams -- whose factories
 take the loaded config object and are resolved through `Sluice._resolve(seam, name, cfg)`
--- a backend is parameterised by more than the config: the per-role model, effort, host,
+-- a backend is parameterised by more than the config: the stage's model, effort, host,
 and resolved credentials that `Sluice.backend()` computes. So a backend factory is NOT a
 `factory(config)` and does NOT go through `_resolve`; it takes the resolved construction
 params and returns a backend:
@@ -23,8 +23,9 @@ params and returns a backend:
 Every factory accepts this full signature (the union `make_backend` forwards) and reads
 only its own subset. `http`/`runner`/`timeout` are omitted when None so the backend class
 default applies -- the same forward-or-omit idiom `make_backend` uses for `max_tokens`.
-Role selection (auto/primary/fallback) and credential resolution stay above this seam, in
-`Sluice.backend()`; a factory only ever sees an already-resolved key.
+Provider selection (the stage's configured backend, or a one-run `--backend` override),
+credential resolution and the `RetryingBackend` wrap all stay above this seam, in
+`Sluice.backend()` (#333); a factory only ever sees an already-resolved key.
 
 `timeout` defaults to None here rather than to a number, and that is load-bearing: a
 factory-local default is INERT on the seam path (`make_backend` coalesces None before any

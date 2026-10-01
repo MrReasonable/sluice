@@ -12,6 +12,7 @@ import pytest
 import yaml
 
 from sluice.apply.config import ApplyConfig
+from sluice.core.config import RETIRED_BACKEND_KEYS as _RETIRED
 from sluice.cv.config import CvConfig
 from sluice.track.config import TrackConfig
 from sluice.triage.config import TriageConfig
@@ -127,6 +128,12 @@ _ROWS_WITHOUT_A_FIELD = {
     ("## Root", "locations"): "retired; setting it raises, and the row says what replaced it",
     ("## `triage:`", "dossier_concurrency"): "retired marker pointing at the root key",
 }
+# #333's retired backend keys each keep a row saying what replaced them. Derived from the
+# loader's own refusal table rather than hand-listed, so a key added to (or dropped from)
+# that table moves its exemption with it.
+_ROWS_WITHOUT_A_FIELD.update({
+    (f"## `{block}:`", key): "retired by #333; loading it raises, and the row names the fix"
+    for block, keys in _RETIRED.items() for key in keys})
 # A config class with no section of its own, and where its fields ARE documented instead.
 _DOCUMENTED_ELSEWHERE = {
     "SourceConfig": "one entry of the root `sources` mapping, documented in that key's row",

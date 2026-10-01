@@ -1051,7 +1051,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
                          system_prompt=system_prompt)
         report.judged = len(verdicts)
-        report.backend = getattr(backend, "last_backend", None)
+        report.backend = getattr(backend, "label", None)
         # #329: every verdict is repaired or rejected HERE, before anything reads it --
         # `judged_ids` below, the apply loop, the counts clamp and the audit entry all used to
         # read the model's raw dict, and one wrong-typed field raised out of this function and

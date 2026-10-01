@@ -473,7 +473,7 @@ def test_an_unconfigured_install_hands_each_stage_a_BARE_backend(tmp_path, monke
     app = _app(tmp_path, monkeypatch)
 
     sentinel = object()
-    monkeypatch.setattr(app, "backend", lambda role, **kw: sentinel)
+    monkeypatch.setattr(app, "backend", lambda **kw: sentinel)
     seen = {}
 
     def fake_run(vault, cfg, backend, cache, audit, **kw):
@@ -481,7 +481,7 @@ def test_an_unconfigured_install_hands_each_stage_a_BARE_backend(tmp_path, monke
         return TriageReport()
 
     monkeypatch.setattr("sluice.triage.engine.run", fake_run)
-    app.triage(backend_role="primary")
+    app.triage()
 
     assert seen["judge_backend"] is sentinel, (
         "an unconfigured install wrapped the judge's backend in a MeteredBackend; the opt-in is "

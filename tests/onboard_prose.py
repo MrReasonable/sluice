@@ -149,7 +149,7 @@ def terminal_transcript():
         TtyAsker(stdin=io.StringIO(f"{bad}\n90\n"), stdout=err).ask(
             next(q for q in questions if q.key == key))
     TtyAsker(stdin=io.StringIO("not-a-backend\nanthropic\n"), stdout=err).ask(
-        next(q for q in questions if q.key == "primary_backend"))
+        next(q for q in questions if q.key == "backend"))
     try:
         NoInputAsker(presets={}).ask(next(q for q in questions if q.key == "vault_dir"))
     except MissingAnswer as exc:                       # printed on every --no-input run w/o --vault

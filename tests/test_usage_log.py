@@ -38,7 +38,7 @@ class _Fake:
     def __init__(self, *, usage=None, unserved=(), error=None, error_usage=None):
         self.usage, self.unserved = usage, unserved
         self.error, self.error_usage = error, error_usage
-        self.last_backend = "primary"
+        self.label = "p m"
 
     def complete(self, prompt):
         if self.error is not None:
@@ -125,9 +125,9 @@ def test_a_completion_with_no_usage_is_skipped_SILENTLY(tmp_path, caplog):
 
 
 def test_unserved_usage_from_the_completion_is_recorded_as_its_own_row(tmp_path):
-    """A FallbackBackend primary that billed and then raised arrives here on the completion.
-    It must not be folded into the serving leg's row -- that would attribute one leg's spend
-    to another -- and it must not be dropped, which is what made it invisible before #308."""
+    """A RetryingBackend attempt that billed and then raised arrives here on the completion.
+    It must not be folded into the serving attempt's row -- that would merge two calls' spend
+    into one -- and it must not be dropped, which is what made it invisible before #308."""
     p = str(tmp_path / "u.jsonl")
     burned = _u(provider="openai", model="p-model", input_tokens=100)
     served = _u(input_tokens=90)
@@ -167,24 +167,24 @@ def test_a_non_backend_exception_propagates_untouched_and_records_nothing(tmp_pa
     assert not os.path.exists(p)
 
 
-def test_last_backend_reads_through_the_wrapper(tmp_path):
-    """Without the delegating property this is None, which `cli.py`'s triage digest renders
-    as "the judge was never called" -- an outage report indistinguishable from the real
-    thing, produced as a side effect of turning metering on."""
+def test_label_reads_through_the_wrapper(tmp_path):
+    """Without the delegating property this is None, and `cli.py`'s triage digest silently
+    drops the "via <provider> <model>" clause -- the one line naming which model judged, lost
+    as a side effect of turning metering on (#333)."""
     inner = _Fake(usage=_u())
-    inner.last_backend = "fallback"
-    assert meter(UsageLog(str(tmp_path / "u.jsonl")), inner, "triage-judge").last_backend \
-        == "fallback"
+    inner.label = "deepseek m1"
+    assert meter(UsageLog(str(tmp_path / "u.jsonl")), inner, "triage-judge").label \
+        == "deepseek m1"
 
 
-def test_a_wrapper_over_a_backend_with_no_last_backend_reports_None_not_an_error(tmp_path):
-    """`Sluice.backend` returns a BARE provider for `--backend primary`/`fallback`, and those
-    have no `last_backend` at all -- the attribute is FallbackBackend's alone."""
+def test_a_wrapper_over_a_backend_with_no_label_reports_None_not_an_error(tmp_path):
+    """A test double, or a provider handed in through the backend seam override, need not
+    carry a `label`; reading it through the wrapper must not raise."""
     class _Bare:
         def complete(self, prompt):
             return Completion("t")
 
-    assert meter(UsageLog(str(tmp_path / "u.jsonl")), _Bare(), "x").last_backend is None
+    assert meter(UsageLog(str(tmp_path / "u.jsonl")), _Bare(), "x").label is None
 
 
 # ------------------------------------------------------------------ a write that fails
@@ -469,8 +469,8 @@ def test_a_broken_usage_row_cannot_replace_the_error_it_was_recording(tmp_path, 
 
     A `BackendError` whose `unserved_usage` holds a non-`Usage` made the recording loop raise
     `AttributeError` and the original error was GONE. That is worse than losing a message: an
-    AttributeError does not satisfy `except BackendError`, so `FallbackBackend` would not have
-    fallen back and every caller's error handling would have been bypassed -- by telemetry.
+    AttributeError does not satisfy `except BackendError`, so `RetryingBackend` would not have
+    retried and every caller's error handling would have been bypassed -- by telemetry.
     """
     p = str(tmp_path / "u.jsonl")
 

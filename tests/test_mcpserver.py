@@ -973,29 +973,52 @@ def test_cv_run_tool_bad_backend_raises_value_error_naming_valid_choices(tmp_pat
     `Sluice.backend` must not leak past this tool as a second exception type --
     the design doc's Error Handling section states cv_run's bad backend joins
     `ValueError`, matching every other malformed-input field in this file.
-    `Sluice.backend`'s role guard runs BEFORE checking a constructor override
+    `Sluice.backend`'s override guard runs BEFORE checking a constructor override
     (see its own docstring), so this raises even through `_cv_app`'s
     FakeBackend/FakeRenderer overrides -- used here only so the renderer
     construction that `compose_cv` also runs does not require WeasyPrint."""
+    from sluice.core.backends import DEFAULT_MODELS
     app = _cv_app(Vault(str(tmp_path)))
     with pytest.raises(ValueError) as exc_info:
         cv_run(app, "nothing here", backend="bogus")
     message = str(exc_info.value)
     assert "bogus" in message
-    for choice in ("auto", "primary", "fallback", "claude-max", "deepseek"):
+    for choice in DEFAULT_MODELS:
         assert choice in message
 
 
-def test_cv_run_tool_accepts_every_valid_backend_choice(tmp_path):
-    """Companion to the bad-backend test above: every value `_BackendRole`'s
-    `Literal` enum advertises to a schema-validated MCP client must actually pass
-    `Sluice.backend`'s role guard, or the schema would be lying about what the
-    tool accepts. `_cv_app`'s FakeBackend constructor override short-circuits
-    AFTER the role guard (`Sluice.backend`'s own ordering), so this proves the
-    guard accepts every value without needing real backend credentials."""
+@pytest.mark.parametrize("role", ["auto", "primary", "fallback"])
+def test_cv_run_tool_refuses_a_retired_role_as_a_value_error(tmp_path, role):
+    # #333: a direct caller still passing a role gets the migration message, typed like
+    # every other malformed input here.
     app = _cv_app(Vault(str(tmp_path)))
-    for choice in ("auto", "primary", "fallback", "claude-max", "deepseek"):
+    with pytest.raises(ValueError, match="retired in #333"):
+        cv_run(app, "nothing here", backend=role)
+
+
+def test_cv_run_tool_accepts_every_valid_backend_choice(tmp_path):
+    """Companion to the bad-backend test above: every value `_BackendName`'s
+    `Literal` enum advertises to a schema-validated MCP client must actually pass
+    `Sluice.backend`'s override guard, or the schema would be lying about what the
+    tool accepts. `_cv_app`'s FakeBackend constructor override short-circuits
+    AFTER the guard (`Sluice.backend`'s own ordering), so this proves the guard
+    accepts every value without needing real backend credentials. `None` is the
+    omitted argument: cv's configured backend."""
+    import typing
+    from sluice.mcpserver import _BackendName
+    app = _cv_app(Vault(str(tmp_path)))
+    for choice in (*typing.get_args(_BackendName), None):
         assert cv_run(app, "nothing here", backend=choice) == {"outcome": "not_found"}
+
+
+def test_the_advertised_backend_names_are_exactly_the_registry():
+    """`_BackendName` is a hand-synced copy (this module may not import the registry), so
+    THIS is what keeps it honest: a provider added to `DEFAULT_MODELS` without one here
+    would be refused by the schema, and one removed would be advertised and then fail."""
+    import typing
+    from sluice.core.backends import DEFAULT_MODELS
+    from sluice.mcpserver import _BackendName
+    assert set(typing.get_args(_BackendName)) == set(DEFAULT_MODELS)
 
 
 # ── cv_signoff ───────────────────────────────────────────────────────────────

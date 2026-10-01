@@ -19,8 +19,8 @@ parse reading it is caught). A row where both readings agree would certify nothi
 import pytest
 
 from sluice.core.backends import (
-    AnthropicBackend, BackendError, ClaudeMaxBackend, Completion, FallbackBackend,
-    OpenAiCompatibleBackend, Usage, anthropic_usage, openai_usage,
+    AnthropicBackend, BackendError, ClaudeMaxBackend, Completion,
+    OpenAiCompatibleBackend, RetryingBackend, Usage, anthropic_usage, openai_usage,
 )
 
 
@@ -246,85 +246,59 @@ def test_a_transport_failure_attaches_no_usage_because_there_is_no_body():
 
 # ---------------------------------------------------- attribution through the fallback
 
-class _Leg:
-    """A backend leg that either answers or raises, with its own provider/model stamped --
-    the point being that FallbackBackend adds nothing of its own, so what reaches the log is
-    whatever the serving leg said it was."""
+class _Attempts:
+    """A provider whose successive calls raise or answer as scripted, each with its own
+    usage -- the point being that RetryingBackend adds no Usage of its own, so what reaches
+    the log is whatever the provider said each attempt cost."""
 
-    def __init__(self, provider, *, text=None, error=None, usage=None):
-        self.provider, self.text, self.error, self.usage = provider, text, error, usage
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
 
     def complete(self, prompt):
-        if self.error is not None:
-            raise BackendError(self.error, usage=self.usage)
-        return Completion(self.text, usage=self.usage)
+        kind, usage = self.outcomes.pop(0)
+        if kind == "raise":
+            raise BackendError("down", usage=usage)
+        return Completion("t", usage=usage)
 
 
-def test_usage_is_attributed_to_the_leg_that_actually_served():
-    """Measured on BOTH legs rather than one: a test that only exercises the primary cannot
-    tell a passed-through Usage from one the wrapper stamped itself."""
-    p_usage = Usage(provider="claude-max", model="p-model", input_tokens=1)
-    f_usage = Usage(provider="deepseek", model="f-model", input_tokens=2)
-
-    served_by_primary = FallbackBackend(_Leg("claude-max", text="a", usage=p_usage),
-                                        _Leg("deepseek", text="b", usage=f_usage))
-    assert served_by_primary.complete("p").usage == p_usage
-
-    served_by_fallback = FallbackBackend(_Leg("claude-max", error="down"),
-                                         _Leg("deepseek", text="b", usage=f_usage))
-    assert served_by_fallback.complete("p").usage == f_usage
+def _retrying(inner):
+    return RetryingBackend(inner, retries=2, label="p m", sleep=lambda s: None)
 
 
-def test_a_primary_that_burned_tokens_before_failing_is_not_swallowed():
-    """#308's third requirement. The primary parsed a usage block and THEN raised, so those
-    tokens were billed; the fallback's `except` is the last place they are visible, and
-    dropping them there makes a leg that bills on every call read as free."""
-    burned = Usage(provider="openai", model="p-model", input_tokens=100, output_tokens=5)
-    served = Usage(provider="deepseek", model="f-model", input_tokens=90)
-    b = FallbackBackend(_Leg("openai", error="truncated", usage=burned),
-                        _Leg("deepseek", text="b", usage=served))
-    c = b.complete("p")
+def test_usage_is_the_serving_attempts_own_not_a_wrapper_stamp():
+    served = Usage(provider="deepseek", model="f-model", input_tokens=2)
+    assert _retrying(_Attempts(("ok", served))).complete("p").usage == served
+
+
+def test_an_attempt_that_burned_tokens_before_failing_is_not_swallowed():
+    """#308's third requirement, on the retry path (#333). The attempt parsed a usage block
+    and THEN raised, so those tokens were billed; the retry's `except` is the last place they
+    are visible, and dropping them there makes a call that bills and fails read as free."""
+    burned = Usage(provider="openai", model="m", input_tokens=100, output_tokens=5)
+    served = Usage(provider="openai", model="m", input_tokens=90)
+    c = _retrying(_Attempts(("raise", burned), ("ok", served))).complete("p")
     assert c.usage == served
     assert c.unserved_usage == (burned,)
 
 
-def test_a_primary_that_failed_without_spending_adds_no_unserved_record():
+def test_an_attempt_that_failed_without_spending_adds_no_unserved_record():
     """A host that is simply down reports no usage, and an empty `unserved_usage` is what
     says so. A zero-valued record here would be a claim that a call happened and cost
     nothing."""
-    b = FallbackBackend(_Leg("claude-max", error="ssh: connect failed"),
-                        _Leg("deepseek", text="b"))
-    assert b.complete("p").unserved_usage == ()
+    c = _retrying(_Attempts(("raise", None), ("ok", None))).complete("p")
+    assert c.unserved_usage == ()
 
 
-def test_when_both_legs_fail_every_leg_that_billed_rides_on_the_error():
+def test_when_every_attempt_fails_every_one_that_billed_rides_on_the_error():
     """There is no completion to hang it on, so the raised error carries it -- otherwise the
-    worst case (paid for nothing, twice) is the one case that records nothing at all.
-
-    BOTH legs, not just the primary. The first cut coalesced them (`e.usage or fe.usage`) and
-    reported only the first, which under-states the bill in exactly the case a user most wants
-    the number -- and both HTTP providers DO attach a Usage on their refusal paths, so it is
-    reachable rather than theoretical. The two legs carry different providers here so a
-    coalesce is caught: with one provider on both, the assertion would hold either way."""
-    p_burned = Usage(provider="openai", model="p-model", input_tokens=100)
-    f_burned = Usage(provider="deepseek", model="f-model", input_tokens=40)
-    b = FallbackBackend(_Leg("openai", error="truncated", usage=p_burned),
-                        _Leg("deepseek", error="also truncated", usage=f_burned))
+    worst case (paid for nothing, several times) is the one case that records nothing.
+    Distinct counts per attempt so a coalesce that kept only one is caught."""
+    a1 = Usage(provider="openai", model="m", input_tokens=100)
+    a3 = Usage(provider="openai", model="m", input_tokens=40)
+    b = _retrying(_Attempts(("raise", a1), ("raise", None), ("raise", a3)))
     with pytest.raises(BackendError) as e:
         b.complete("p")
-    assert e.value.usage == p_burned
-    assert e.value.unserved_usage == (f_burned,)
-
-
-def test_a_fallback_leg_that_failed_without_billing_adds_no_second_record():
-    """An empty tuple says "the fallback spent nothing", which is what a host that is simply
-    down reports. A zero-valued entry would claim a call happened and cost nothing."""
-    p_burned = Usage(provider="openai", model="p-model", input_tokens=100)
-    b = FallbackBackend(_Leg("openai", error="truncated", usage=p_burned),
-                        _Leg("deepseek", error="ssh: connect failed"))
-    with pytest.raises(BackendError) as e:
-        b.complete("p")
-    assert (e.value.usage, e.value.unserved_usage) == (p_burned, ())
+    assert (e.value.usage, e.value.unserved_usage) == (a1, (a3,))
 
 
 # ------------------------------------------- the provider label cannot drift from the name

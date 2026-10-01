@@ -207,14 +207,12 @@ def catalogue(*, default_vault: str = "") -> tuple:
         Question("relevance_drop", "Discard titles containing these words?", parse_csv,
                  ("relevance_drop",), "Cost", consequence="discard titles containing: {value}"),
 
-        Question("primary_backend", f"Primary LLM backend -- {', '.join(backends)}?",
+        Question("backend", f"LLM backend -- {', '.join(backends)}?",
                  parse_choice(*backends),
-                 ("triage.primary_backend", "cv.primary_backend", "track.primary_backend"),
-                 "Providers", hint="Set once; written into all three blocks that take one."),
-        Question("fallback_backend", f"Fallback LLM backend -- {', '.join(backends)}?",
-                 parse_choice(*backends),
-                 ("triage.fallback_backend", "cv.fallback_backend", "track.fallback_backend"),
-                 "Providers"),
+                 ("triage.backend", "cv.backend", "track.backend"),
+                 "Providers", hint="Set once; written into all three blocks that take one. "
+                                   "There is no fallback: a failing backend is retried, then "
+                                   "the run stops and says so."),
         Question("renderer", f"CV renderer -- {', '.join(renderers)}?", parse_choice(*renderers),
                  ("cv.renderer",), "Providers",
                  hint="template fills a Jinja2 template. It uses the packaged default "

@@ -142,10 +142,9 @@ def test_answers_become_active_keys(tmp_path):
 
 
 def test_one_backend_answer_fans_out_to_every_block(tmp_path):
-    path = _written(tmp_path, {"primary_backend": "openai", "fallback_backend": "anthropic"})
+    path = _written(tmp_path, {"backend": "openai"})
     for loader in (load_triage_config, load_cv_config, load_track_config):
-        assert loader(path).primary_backend == "openai"
-        assert loader(path).fallback_backend == "anthropic"
+        assert loader(path).backend == "openai"
 
 
 def test_the_fan_out_covers_every_config_declaring_a_backend():
@@ -158,9 +157,9 @@ def test_the_fan_out_covers_every_config_declaring_a_backend():
     from tests.test_sluice_neutral_defaults import _discover_config_dataclasses
     declared = {cls.__module__.split(".")[1]
                 for cls in _discover_config_dataclasses().values()
-                if "primary_backend" in {f.name for f in dataclasses.fields(cls)}}
-    assert declared, "the sweep found no config declaring primary_backend"
-    q = {x.key: x for x in catalogue(default_vault=VAULT)}["primary_backend"]
+                if "backend" in {f.name for f in dataclasses.fields(cls)}}
+    assert declared, "the sweep found no config declaring backend"
+    q = {x.key: x for x in catalogue(default_vault=VAULT)}["backend"]
     assert {d.split(".")[0] for d in q.writes_to} == declared
 
 

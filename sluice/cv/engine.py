@@ -761,7 +761,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             # prompt, and need to look like the same kind of instruction to it.
             retry_msgs = hard_msgs + style_msgs + [f"VOICE: {f}" for f in voice_flags]
 
-        backend_used = getattr(backend, "last_backend", None)
+        backend_used = getattr(backend, "label", None)
         if best is None:
             # No attempt was EVER hard-clean, which is the same fact the pre-#167 loop
             # tested for: it broke on the first clean attempt, so a non-empty gate list

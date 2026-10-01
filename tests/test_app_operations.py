@@ -2,6 +2,8 @@ import io
 import json
 import os
 
+import pytest
+
 from sluice.apply.engine import PrepResult
 from sluice.core.app import Sluice
 from sluice.core.config import Config
@@ -161,16 +163,14 @@ def test_triage_threads_the_triage_config_into_the_backend(tmp_path, monkeypatch
     calls = []
     # A LIST of calls, not a last-call-wins dict (#120): a second `self.backend()`
     # call -- the gated tier-3 resolution backend, built after the judge's -- would
-    # otherwise silently overwrite a dict-shaped spy's `role` key and this
-    # assertion would keep passing for the WRONG reason. The list makes each
-    # call's own arguments inspectable regardless of how many `self.backend()`
-    # calls a future change adds.
-    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)))
-    app.triage(backend_role="primary")
-    assert calls[0][0] == "primary"
-    assert calls[0][1]["primary_model"] == "claude-sonnet-4-5"   # triage uses claude_max_model
-    assert calls[0][1]["effort"] == "medium"                     # ...and claude_max_effort
-    assert calls[0][1]["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+    # otherwise silently overwrite a dict-shaped spy's keys and this assertion would
+    # keep passing for the WRONG reason.
+    monkeypatch.setattr(app, "backend", lambda **kw: calls.append(kw))
+    app.triage(backend_override="deepseek")
+    assert calls[0]["override"] == "deepseek"       # the one-run override reaches the judge
+    assert calls[0]["provider"] == "claude-max"     # triage.backend
+    assert calls[0]["model"] == "claude-sonnet-4-5"  # triage.model
+    assert calls[0]["effort"] == "medium"           # ...and claude_max_effort
     assert len(calls) == 1   # company_resolve_llm defaults to False -- no second call
 
 
@@ -188,23 +188,59 @@ def test_triage_builds_no_resolution_backend_when_the_llm_tier_is_off(tmp_path, 
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
     app = Sluice(Config())
     calls = []
-    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)) or None)
+    monkeypatch.setattr(app, "backend", lambda **kw: calls.append(kw) or None)
     app.triage()      # company_resolve_llm defaults to False -- no config file at all
     assert len(calls) == 1, "the LLM tier is off; only the judge backend should be built"
 
 
-def test_triage_builds_the_resolution_backend_on_the_fallback_role_whatever_backend_was_asked_for(
+def test_triage_builds_the_resolution_backend_from_its_own_keys_whatever_backend_was_asked_for(
         tmp_path, monkeypatch):
+    """#333: tier 3 has its own `resolve_backend`/`resolve_model`, and the judge's one-run
+    `--backend` override does not move it."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text("triage:\n  company_resolve_fetch: true\n  company_resolve_llm: true\n"
+                    "  resolve_backend: deepseek\n  resolve_model: cheap-one\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+    app = Sluice(Config())
+    calls = []
+    monkeypatch.setattr(app, "backend", lambda **kw: calls.append(kw) or None)
+    app.triage(backend_override="openai")
+    assert len(calls) == 2
+    assert calls[0]["override"] == "openai"
+    assert (calls[1]["provider"], calls[1]["model"]) == ("deepseek", "cheap-one")
+    assert calls[1].get("override") is None
+
+
+def test_the_resolution_backend_defaults_to_triages_own(tmp_path, monkeypatch):
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
     _triage_llm_config(tmp_path, monkeypatch)
     app = Sluice(Config())
     calls = []
-    monkeypatch.setattr(app, "backend", lambda role, **kw: calls.append((role, kw)) or None)
-    app.triage(backend_role="primary")
-    assert [role for role, kw in calls] == ["primary", "fallback"]
-    assert calls[1][1]["fallback_model"] == "deepseek-v4-flash"   # cheap_model, always
+    monkeypatch.setattr(app, "backend", lambda **kw: calls.append(kw) or None)
+    app.triage()
+    assert (calls[1]["provider"], calls[1]["model"]) == ("claude-max", "claude-sonnet-4-5")
+
+
+def test_naming_only_resolve_backend_takes_that_providers_default_model(tmp_path, monkeypatch):
+    # triage.model is an id in the JUDGE provider's namespace; carrying it to another
+    # provider would send it a model id it does not know.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
+    monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
+    cfgp = tmp_path / "cfg.yaml"
+    cfgp.write_text("triage:\n  company_resolve_fetch: true\n  company_resolve_llm: true\n"
+                    "  resolve_backend: deepseek\n")
+    monkeypatch.setenv("SLUICE_CONFIG", str(cfgp))
+    app = Sluice(Config())
+    calls = []
+    monkeypatch.setattr(app, "backend", lambda **kw: calls.append(kw) or None)
+    app.triage()
+    assert (calls[1]["provider"], calls[1]["model"]) == ("deepseek", "")
 
 
 def test_no_llm_threads_no_resolution_backend_into_the_engine(tmp_path, monkeypatch):
@@ -220,21 +256,22 @@ def test_no_llm_threads_no_resolution_backend_into_the_engine(tmp_path, monkeypa
     assert hasattr(report, "resolved")
 
 
-def test_a_resolution_backend_that_fails_to_construct_degrades_rather_than_crashes(
-        tmp_path, monkeypatch):
+def test_a_resolution_backend_that_fails_to_construct_is_a_usage_error(tmp_path, monkeypatch):
+    """#333: it used to warn and run with tier 3 silently off. The user switched the feature
+    on, so a backend that cannot be built for it is reported, not degraded around."""
     from sluice.core.backends import BackendError
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setenv("TRIAGE_AUDIT", str(tmp_path / "a.jsonl"))
     monkeypatch.setenv("DOSSIER_DIR", str(tmp_path / "d"))
     _triage_llm_config(tmp_path, monkeypatch)
     app = Sluice(Config())
-    def _backend(role, **kw):
-        if role == "fallback":
+    def _backend(**kw):
+        if "override" not in kw:          # the resolve call; the judge's carries `override`
             raise BackendError("no api key")
-        return None       # the judge role succeeds
+        return None
     monkeypatch.setattr(app, "backend", _backend)
-    report = app.triage()      # must not raise
-    assert hasattr(report, "counts")
+    with pytest.raises(ValueError, match="company_resolve_llm.*no api key"):
+        app.triage()
 
 
 def test_triage_threads_get_source_into_engine_run(tmp_path, monkeypatch):
@@ -288,9 +325,10 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
 
     judge_sentinel = _Sentinel("judge-provider")
     resolve_sentinel = _Sentinel("resolve-provider")
+    # The judge's call carries the one-run `override`; tier 3's deliberately does not.
     monkeypatch.setattr(
         app, "backend",
-        lambda role, **kw: resolve_sentinel if role == "fallback" else judge_sentinel)
+        lambda **kw: judge_sentinel if "override" in kw else resolve_sentinel)
     seen = {}
     def fake_run(vault, cfg, backend, cache, audit, **kw):
         seen["judge_backend"] = backend
@@ -301,7 +339,7 @@ def test_triage_threads_the_resolve_backend_into_engine_run(tmp_path, monkeypatc
         from sluice.triage.engine import TriageReport
         return TriageReport()
     monkeypatch.setattr("sluice.triage.engine.run", fake_run)
-    app.triage(backend_role="primary")
+    app.triage()
     # Each backend arrives METERED (#308), so the identity is asserted through the wrapper
     # rather than against it. The STAGE is asserted too, which this test could not do before
     # and which closes the other half of the same confusion: two backends threaded into the
@@ -341,11 +379,11 @@ def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch
     _mc(_V(str(tmp_path)))
     app = Sluice(Config())
     seen = {}
-    monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(**kw) or object())
-    app.compose_cv(lead="x", dry_run=True)
-    assert seen["primary_model"] == "claude-sonnet-4-5"   # cv uses compose_model
+    monkeypatch.setattr(app, "backend", lambda **kw: seen.update(**kw) or object())
+    app.compose_cv(lead="x", dry_run=True, backend_override="deepseek")
+    assert (seen["provider"], seen["model"]) == ("claude-max", "claude-sonnet-4-5")  # cv's own
     assert seen["effort"] == "max"                        # ...and compose_effort
-    assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+    assert seen["override"] == "deepseek"
 
 
 def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
@@ -570,11 +608,12 @@ def test_track_threads_the_track_config_into_the_backend(tmp_path, monkeypatch):
     _track_config(tmp_path, monkeypatch)
     app = Sluice(Config())
     seen = {}
-    monkeypatch.setattr(app, "backend", lambda role, **kw: seen.update(role=role, **kw) or object())
-    app.track(dry_run=True, client=_FakeGoogle(), now_iso="2026-07-15T00:00:00+00:00")
-    assert seen["primary_model"] == "claude-sonnet-4-5"   # track uses claude_max_model
+    monkeypatch.setattr(app, "backend", lambda **kw: seen.update(**kw) or object())
+    app.track(dry_run=True, client=_FakeGoogle(), now_iso="2026-07-15T00:00:00+00:00",
+              backend_override="deepseek")
+    assert (seen["provider"], seen["model"]) == ("claude-max", "claude-sonnet-4-5")
     assert seen["effort"] == "medium"                     # ...and claude_max_effort
-    assert seen["fallback_model"] == "deepseek-v4-flash"  # ...and cheap_model for fallback
+    assert seen["override"] == "deepseek"
 
 
 def test_normalize_statuses_dry_run_on_empty_vault(tmp_path, monkeypatch):
