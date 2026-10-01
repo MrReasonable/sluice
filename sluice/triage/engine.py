@@ -46,7 +46,7 @@ from sluice.triage.apply import (apply_classification, apply_verdict, clamp_verd
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
 from sluice.core.config import DOSSIER_CONCURRENCY_MAX
-from sluice.triage.judge import judge
+from sluice.triage.judge import JudgeAborted, judge
 from sluice.triage.prompt import build_system_prompt_from
 
 _log = get_logger("triage.engine")
@@ -89,12 +89,17 @@ class TriageReport:
         "needs_review": 0, "skipped": 0, "unjudgeable": 0})
     judged: int = 0
     # How many dossiers were HANDED to the judge, as against `judged`, which counts the
-    # verdicts that came back. Two numbers because `triage/judge.py` swallows every backend
-    # error and parse failure and returns a short list, so `judged == 0` alone cannot say
+    # verdicts that came back. Two numbers because `triage/judge.py` skips a batch it
+    # cannot parse (and, since #333, stops at a backend outage) and returns a short list, so `judged == 0` alone cannot say
     # whether the judge was never called or was called and failed outright. The digest says
     # opposite things in those two cases, and said the wrong one before this existed.
     sent_to_judge: int = 0
     backend: str | None = None
+    # Set when a backend this run depends on stayed unavailable after its own retries
+    # (#333): the judge's, or tier 3's once its breaker trips. A RUN failure rather than a
+    # line in `failures`, because the CLI exits non-zero on it -- there is no fallback
+    # provider to have absorbed it, and a cron must see the run fail.
+    backend_error: str = ""
     failures: list = field(default_factory=list)
     # #120: which tier actually filled a blank/placeholder company, counted only where the
     # write LANDED (or would have, under dry_run) -- the same discipline `_audit`
@@ -748,6 +753,12 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                             f"company-resolve tier3: {_LLM_BREAKER_THRESHOLD} "
                             "consecutive backend errors -- tier 3 disabled for the "
                             "rest of this run")
+                        # #333: each of those errors came after the backend's own retries,
+                        # so the user's opted-in feature is down for the run -- the run
+                        # fails, it is not a footnote. The judge's error, if any, wins.
+                        report.backend_error = report.backend_error or (
+                            f"company-resolve tier 3: {_LLM_BREAKER_THRESHOLD} "
+                            "consecutive backend errors")
                 else:
                     _llm_consecutive_errors = 0
             resolved = res.company
@@ -1048,8 +1059,15 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # if it is missing.
         system_prompt = build_system_prompt_from(vault.read_criteria())
         report.sent_to_judge = len(dossiers)
-        verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
-                         system_prompt=system_prompt)
+        try:
+            verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
+                             system_prompt=system_prompt)
+        except JudgeAborted as e:
+            # The completed batches' verdicts still apply; every lead after the outage is
+            # counted unjudged by the reconciliation below and keeps its status, so the
+            # next run picks it up.
+            verdicts = e.verdicts
+            report.backend_error = str(e.cause)
         report.judged = len(verdicts)
         report.backend = getattr(backend, "label", None)
         # #329: every verdict is repaired or rejected HERE, before anything reads it --

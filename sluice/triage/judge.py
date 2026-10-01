@@ -1,6 +1,10 @@
 """Batched LLM judgment over the ambiguous (kept) leads. Each batch is one backend
 call returning a JSON verdict array; parsing tolerates surrounding prose. A batch
-that will not parse after one retry is skipped rather than aborting the whole run;
+that will not parse after one retry is skipped rather than aborting the whole run.
+A TRANSIENT backend failure is different (#333): it arrives after `RetryingBackend` has
+already retried the same backend, so it is an outage for this run, and `JudgeAborted`
+stops the remaining batches rather than spending a timeout on each of them. A
+non-transient one is that batch's own, and skips it like a parse failure. Either way,
 this function holds no reference to the report, so `triage/engine.py` reconciles
 `len(verdicts)` against the dossiers it sent and records the shortfall in
 `report.failures`. Without that, a total outage returned `[]` here and read
@@ -8,11 +12,24 @@ downstream as a run with nothing to do."""
 import json
 import re
 
+from sluice.core.backends import BackendError
 from sluice.core.log import get_logger
 from sluice.core.dossier import slim
 from sluice.triage.prompt import SYSTEM_PROMPT
 
 _log = get_logger("triage.judge")
+
+
+class JudgeAborted(Exception):
+    """The judge's backend is unavailable for the rest of this run (#333).
+
+    Carries the verdicts from batches that DID complete, so they are applied rather than
+    thrown away with the run, and the `BackendError` that stopped it, for the report."""
+
+    def __init__(self, verdicts, cause):
+        super().__init__(str(cause))
+        self.verdicts = verdicts
+        self.cause = cause
 
 
 def parse_verdicts(text: str):
@@ -63,6 +80,19 @@ def judge(dossiers, backend, *, batch_size=5, system_prompt=SYSTEM_PROMPT):
         for attempt in (1, 2):  # one retry on parse failure
             try:
                 parsed = parse_verdicts(backend.complete(prompt).text)
+            except BackendError as e:
+                if not e.transient:
+                    # This BATCH's own failure (a truncation, a 400 on an over-long prompt):
+                    # skipped like an unparseable reply, and not re-sent, since the identical
+                    # prompt fails identically. Aborting on it would fail every run at the
+                    # same leads for good.
+                    _log.warning("batch %d rejected by the backend: %s", n, e)
+                    parsed = None
+                    break
+                # Not retried here: the backend has already retried itself, so a second
+                # round on top would double the calls an outage costs and still fail.
+                _log.warning("batch %d backend unavailable: %s -- stopping the judge", n, e)
+                raise JudgeAborted(verdicts, e) from e
             except Exception as e:
                 _log.warning("batch %d backend error: %s", n, e)
                 parsed = None
