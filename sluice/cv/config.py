@@ -3,7 +3,7 @@ Every field has a sane default so cv runs with no config file. Secrets via env."
 import os
 from dataclasses import dataclass, field
 
-from sluice.core.backends import DEFAULT_TIMEOUT
+from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.config import (apply_claude_cli_env, refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file

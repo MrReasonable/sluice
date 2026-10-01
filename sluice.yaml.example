@@ -70,6 +70,16 @@ baseline_rel: My CV/CV.md
 # an entry exists.
 # min_jd_chars: 200   # <- uncomment and set YOUR OWN
 
+# Seconds each backend attempt may take, for every backend call except cv's (sized by
+# cv.compose_timeout below, for its compose, audit and voice calls alike) and doctor's
+# probes (their own short limit). Per attempt: under the default `auto` role a call that
+# fails over gets a fresh deadline for the fallback, so it can take about twice this.
+# For an HTTP backend it is a TOTAL deadline from sending the request, checked
+# between reads of the body, so a provider that holds a queued request open with
+# keep-alive bytes is ended rather than waited on. Raise it if those calls fail with
+# "no complete response ... within". Must be a positive integer; there is no "off".
+# backend_timeout: 300
+
 # How long the dossier fetch may keep POLLING a CLIENT-RENDERED posting's body (#228),
 # in milliseconds, waiting for it to stop changing. It does not pause before the first
 # read -- it reads immediately, then re-reads until two reads match or the budget is

@@ -6,7 +6,9 @@ nothing. That is exactly how `strong_model` survived in the example while being
 read by no config class at all.
 """
 import pathlib
+import re
 
+import pytest
 import yaml
 
 from sluice.apply.config import ApplyConfig
@@ -107,3 +109,109 @@ def test_the_config_reference_lists_dossier_concurrency_under_root():
     assert triage_rows, "the retired marker is gone from the triage: table"
     assert "retired" in triage_rows[0].lower(), (
         f"the triage: table documents dossier_concurrency as live: {triage_rows[0]!r}")
+
+
+# The reference doc's section heading for each config class, keyed by class name. The ROOT class
+# is read by `load_config`; the other four by their own loaders, from a top-level block of the
+# same file.
+_REFERENCE_SECTIONS = {
+    "Config": "## Root",
+    "TriageConfig": "## `triage:`",
+    "CvConfig": "## `cv:`",
+    "ApplyConfig": "## `apply:`",
+    "TrackConfig": "## `track:`",
+}
+# Rows that name no field, each for a stated reason. Any OTHER such row is a key the doc
+# advertises and no loader reads -- how `strong_model` outlived its field.
+_ROWS_WITHOUT_A_FIELD = {
+    ("## Root", "locations"): "retired; setting it raises, and the row says what replaced it",
+    ("## `triage:`", "dossier_concurrency"): "retired marker pointing at the root key",
+}
+# A config class with no section of its own, and where its fields ARE documented instead.
+_DOCUMENTED_ELSEWHERE = {
+    "SourceConfig": "one entry of the root `sources` mapping, documented in that key's row",
+}
+
+
+def _is_dataclass_decorator(dec):
+    """`@dataclass`, `@dataclass(frozen=True)`, `@dataclasses.dataclass` and
+    `@dataclasses.dataclass(...)` alike: the decorator's NAME after unwrapping a call and an
+    attribute. Matching the source text instead found only the bare spelling, so a class
+    declared any other way was invisible to both sides of the roster check below."""
+    import ast
+    if isinstance(dec, ast.Call):
+        dec = dec.func
+    if isinstance(dec, ast.Attribute):
+        return dec.attr == "dataclass"
+    return isinstance(dec, ast.Name) and dec.id == "dataclass"
+
+
+def _config_classes():
+    """Every `*Config` dataclass under sluice/, DISCOVERED rather than listed, so a new one
+    fails the guard below until it is given a section or a named exemption."""
+    import ast
+    import importlib
+    found = {}
+    for path in (EXAMPLE.parent / "sluice").rglob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.ClassDef) and node.name.endswith("Config")
+                    and any(_is_dataclass_decorator(d) for d in node.decorator_list)):
+                mod = ".".join(path.relative_to(EXAMPLE.parent).with_suffix("").parts)
+                found[node.name] = getattr(importlib.import_module(mod), node.name)
+    return found
+
+
+def _reference_rows(text, heading):
+    """The keys named in the FIRST cell of each table row under `heading`, up to the next
+    `## ` heading -- the first cell, not anywhere in the section, so a field mentioned only in
+    another key's prose does not count as documented."""
+    start = text.index(heading)
+    end = text.find("\n## ", start + len(heading))
+    keys = set()
+    for line in text[start:end if end != -1 else None].splitlines():
+        if line.startswith("| `"):
+            keys.update(re.findall(r"`([a-z_]+)`", line.split("|")[1]))
+    return keys
+
+
+def test_every_config_field_has_a_row_in_its_own_reference_section():
+    """The reverse of `test_every_example_key_binds_to_a_real_config_field`: a field with no
+    row is a knob a user cannot find. `sluice.yaml.example` is a partial catalogue by design,
+    so the complete list lives in docs/CONFIGURATION.md and is asserted there."""
+    import dataclasses
+
+    classes = _config_classes()
+    assert set(classes) == set(_REFERENCE_SECTIONS) | set(_DOCUMENTED_ELSEWHERE), (
+        f"config classes {sorted(classes)} do not match the sections "
+        f"{sorted(_REFERENCE_SECTIONS)} plus the exemptions {sorted(_DOCUMENTED_ELSEWHERE)}: "
+        "give a new class its own section of docs/CONFIGURATION.md, or say where it is documented")
+    text = (EXAMPLE.parent / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
+    missing, swept = {}, 0
+    for cls, heading in _REFERENCE_SECTIONS.items():
+        names = {f.name for f in dataclasses.fields(classes[cls])}
+        rows = _reference_rows(text, heading)
+        assert rows, f"no table rows found under {heading!r}: the section parse is broken"
+        swept += len(names)
+        gap = sorted(names - rows)
+        if gap:
+            missing[heading] = gap
+        stale = sorted(k for k in rows - names if (heading, k) not in _ROWS_WITHOUT_A_FIELD)
+        if stale:
+            missing[f"{heading} (rows naming no field)"] = stale
+    assert swept > 50, f"swept only {swept} fields: the class roster is broken"
+    assert not missing, (
+        f"docs/CONFIGURATION.md and the config classes disagree: {missing}. A field with no row "
+        "needs one; a row naming no field is stale, or belongs in _ROWS_WITHOUT_A_FIELD")
+
+
+@pytest.mark.parametrize("spelling, matched", [
+    ("@dataclass", True),
+    ("@dataclass(frozen=True)", True),
+    ("@dataclasses.dataclass", True),
+    ("@dataclasses.dataclass(slots=True)", True),
+    ("@functools.cache", False),
+])
+def test_the_class_discovery_matches_every_dataclass_spelling(spelling, matched):
+    import ast
+    tree = ast.parse(f"{spelling}\nclass ExampleConfig:\n    x: int = 0\n")
+    assert _is_dataclass_decorator(tree.body[0].decorator_list[0]) is matched

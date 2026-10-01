@@ -518,9 +518,9 @@ def _provider_creds(name):
 def _make_primary(name, model, *, effort, host, claude_path, timeout=None):
     from sluice.core.backends import make_backend
     api_key, base_url = _provider_creds(name)
-    # timeout=None means "the caller expressed no preference", and make_backend coalesces
-    # it to the shipped default -- so a sub-app that has no timeout knob keeps exactly the
-    # behaviour it had, while cv can pass cv.compose_timeout through (#28).
+    # `Sluice.backend()` has already resolved an omitted timeout to the root
+    # `backend_timeout`, while cv passes cv.compose_timeout through (#28). make_backend
+    # still coalesces None to DEFAULT_TIMEOUT for any direct caller.
     return make_backend(name, model, api_key=api_key, base_url=base_url,
                         effort=effort, claude_host=host, claude_path=claude_path,
                         timeout=timeout)
@@ -707,6 +707,13 @@ class Sluice:
         # sub-app passes different construction params (see the docstring above).
         if _BACKEND_SEAM in self._overrides:
             return self._overrides[_BACKEND_SEAM]
+        # A caller that names no timeout gets the root `backend_timeout`, so triage and track
+        # -- which have no timeout key of their own -- are sized by config rather than by the
+        # module constant. Resolved HERE, not at each call site, so a stage added later is
+        # covered without remembering to thread it. `compose_cv` names `cv.compose_timeout`,
+        # which wins.
+        if timeout is None:
+            timeout = self.config.backend_timeout
         if role == "fallback":
             # Explicitly asked for it, so a missing key is fatal, not degradable.
             return _make_fallback_strict(fallback_name, fallback_model, host=host,

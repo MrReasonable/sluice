@@ -21,6 +21,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 
 from sluice.core.log import get_logger
+from sluice.core.timeouts import DEFAULT_TIMEOUT  # re-exported: callers import it from here
 
 _log = get_logger("core.backends")
 
@@ -42,13 +43,7 @@ DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
 }
 
-# Seconds any one backend invocation may take. ONE spelling, deliberately: this value had
-# grown three independent copies (the seam, a factory-local constant, and cv's config
-# default), and a factory-local one was measurably INERT -- rebinding it changed nothing,
-# because the seam coalesced None before the factory ever saw it, so a maintainer raising
-# it for slow composes would have got a silent no-op. Every provider class default, the
-# seam, and `CvConfig.compose_timeout` now read this name.
-DEFAULT_TIMEOUT = 300
+# DEFAULT_TIMEOUT lives in `core/timeouts.py`, imported above; see that module for why.
 
 # Seconds `doctor` gives each backend's round trip (#337). Its own value because `doctor` is the
 # command run BECAUSE something is wrong: a provider queueing the request, or a dead host, must
