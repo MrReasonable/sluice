@@ -1373,6 +1373,21 @@ def cmd_cv_run(args, config) -> int:
     # Scoped to the single-lead path, mirroring the line above: --all-shortlist reports the
     # twins it skipped and legitimately composed for every other lead, so its exit code is
     # not this branch's business.
+    # #333: an outage is a failure on BOTH call shapes -- unlike the ambiguity below,
+    # --all-shortlist cannot have legitimately composed the rest, since the batch stopped at
+    # it. Printed before anything else: it is why the other leads were not attempted.
+    unavailable = [r for r in results if r.status == "backend-unavailable"]
+    if unavailable:
+        print(f"cv: backend unavailable -- {unavailable[0].error}. The batch stopped there; "
+              "the remaining leads are untouched and the next run retries them.",
+              file=sys.stderr)
+    # A named lead that ERRORED composed nothing, so it exits non-zero like the no-match and
+    # ambiguous arms (#333: the single-lead path now reports a non-transient backend failure
+    # as an `error` result rather than a traceback). Scoped to `--lead` for their reason: a
+    # batch isolates one lead's error and composes the rest.
+    errored = [r for r in results if r.status == "error"] if not args.all_shortlist else []
+    for r in errored:
+        print(f"cv: error {r.lead}" + (f" -- {r.error}" if r.error else ""), file=sys.stderr)
     ambiguous = [str(r.lead) for r in results if r.status == "skipped-ambiguous"]
     if ambiguous and not args.all_shortlist:
         print(f"cv: ambiguous: {' | '.join(ambiguous)} -- retype a longer fragment "
@@ -1479,7 +1494,7 @@ def cmd_cv_run(args, config) -> int:
         _notify_reporting("job-sluice cv: " + "; ".join(
             f"{r.served} (audit flags: {len(r.audit_flags)})" for r in rendered),
             config=config, label="cv-summary")
-    return 0
+    return 1 if unavailable or errored else 0
 
 
 def _print_signoff_claims(slug: str, claims: list) -> None:
@@ -1520,12 +1535,23 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
               file=sys.stderr)
         for line in framing:
             print(f"  - {line}", file=sys.stderr)
-    fabrication, style = [], []
+    # `unaudited\t<reason>` (#333) is the audit that could not RUN: neither a fabrication
+    # finding (nothing was found) nor a style one, so counting it as an "unsupported claim"
+    # would tell the reviewer the audit flagged something when it never looked.
+    fabrication, style, unaudited = [], [], []
     for c in claims:
         text = str(c)
         kind, sep, rest = text.partition("\t")
-        (style if sep and kind == "style" else fabrication).append(
-            rest if sep and kind == "style" else text)
+        if sep and kind == "style":
+            style.append(rest)
+        elif sep and kind == "unaudited":
+            unaudited.append(rest)
+        else:
+            fabrication.append(text)
+    if unaudited:
+        print(f"cv signoff: {slug} was NOT audited -- the audit could not run "
+              f"({unaudited[0]}). Check the CV against your evidence yourself.",
+              file=sys.stderr)
     if fabrication:
         print(f"cv signoff: {slug} has {len(fabrication)} unsupported claim(s):",
               file=sys.stderr)

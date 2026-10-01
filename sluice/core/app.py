@@ -1856,6 +1856,18 @@ class Sluice:
         try:
             return [run_one(notes[0], store, cvcfg, backend, cache, renderer=renderer,
                             dry_run=dry_run, policy=policy, usage=usage)]
+        except BackendError as e:
+            # #333: a RESULT either way, in run_batch's own vocabulary, so the CLI and the MCP
+            # tool report both paths alike and `cv run --lead` never ends in a traceback. An
+            # outage (a transient error that outlived the backend's own retries) is
+            # `backend-unavailable`; a non-transient one (a truncation, a 400) is this lead's
+            # own `error`, and saying "backend unavailable" there would send the user to wait
+            # for a backend that is up.
+            return [CvResult(notes[0].ref,
+                             "backend-unavailable" if e.transient else "error",
+                             error=str(e),
+                             dossier_failed=getattr(e, "dossier_failed", False),
+                             artefacts_failed=getattr(e, "artefacts_failed", False))]
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising it (see

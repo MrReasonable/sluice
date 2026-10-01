@@ -34,6 +34,7 @@ from datetime import date
 from functools import partial
 
 from sluice.core import status as _status
+from sluice.core.backends import BackendError
 from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import (FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
                                framing_entries, index_by_slug)
@@ -78,7 +79,10 @@ class CvResult:
     contact block is emitted verbatim, and a composer complying with the prompt as
     given produces a header no STRUCTURAL guard can distinguish from a genuine one),
     dry-run, error (a single lead's exception caught by run_batch -- see run_batch --
-    so one bad lead never aborts the rest of the batch)."""
+    so one bad lead never aborts the rest of the batch),
+    backend-unavailable (#333: the backend stayed down after its own retries; run_batch
+    stops at the first one rather than spending a retry budget on every remaining lead,
+    and `error` carries the reason. The CLI and the MCP tool both report it as a failure)."""
     lead: str
     status: str
     violations: list = field(default_factory=list)
@@ -136,6 +140,10 @@ class CvResult:
     # by mcpserver.py's cv_run. Always False for a lead refused before composition, which
     # writes nothing and so has nothing to fail.
     artefacts_failed: bool = False
+    # Why a backend failure ended this lead (#333): set on `backend-unavailable`, and on the
+    # `error` the single-lead path returns for a non-transient BackendError. Empty otherwise.
+    # A message rather than the exception, so a result stays a plain value to print.
+    error: str = ""
 
 
 def _slug(company: str, role: str) -> str:
@@ -806,15 +814,20 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # one line up.
         cv_text, style_msgs, voice_flags = best
 
-        # The audit is advisory only (see audit.py: "NEVER blocks"). A backend error or
-        # timeout here must not prevent a CV that already passed the HARD gate from
-        # rendering -- swallow and log, never propagate.
+        # The audit is advisory to the MODEL (see audit.py: "NEVER blocks"), so a failure here
+        # never prevents a CV that already passed the HARD gate from rendering. But whether
+        # it RAN is not advisory (#333): an audit that could not run has checked nothing, so
+        # under `cv.require_signoff` the CV is HELD below exactly as an `unsupported` flag
+        # would hold it, instead of being written send-ready as if it had passed. Before
+        # #333 this failed open, and with no fallback provider any more an outage here is
+        # the commonest way to reach it.
+        audit_unavailable = ""
         try:
             _report, audit_flags = run_audit(
                 meter(usage, backend, "cv-audit", lead=note.slug), cv_text, audit_bundle_text)
         except Exception as e:
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
-            audit_flags = []
+            audit_flags, audit_unavailable = [], str(e)
         if dry_run:
             # `slop=style_msgs, voice_flags=voice_flags` here and at every remaining
             # CvResult(...) call below (Task 16): both describe the RETAINED draft (the
@@ -843,9 +856,9 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                   if cvcfg.served_dir else None)
         # An `unsupported` audit flag WITHHOLDS the send-ready pointer until a human signs off
         # (#60). The audit stays advisory to the model; only this consequence is new, and only
-        # `unsupported` (never `paraphrase`, which is legitimate tailoring) blocks. Fail-open:
-        # an audit backend error already yields no flags above, so a possibly-fabricated CV
-        # still serves -- the gate is best-effort, never harder than the audit ran.
+        # `unsupported` (never `paraphrase`, which is legitimate tailoring) blocks. An audit
+        # that could not run holds too (#333), as an `unaudited\t<reason>` entry: it used to
+        # fail open, serving a possibly-fabricated CV unreviewed.
         #
         # A surviving STYLE finding earns the SAME consequence under `cv.style_hold`
         # (#167, Task 15) -- deliberately a SEPARATE gate, not folded into
@@ -880,8 +893,9 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # stays `blockers`.
         style_blockers = ([f"style\t{msg}" for msg in style_msgs + voice_flags]
                           if cvcfg.style_hold else [])
+        unaudited = [f"unaudited\t{audit_unavailable}"] if audit_unavailable else []
         blockers = (
-            (unsupported_claims(audit_flags) if cvcfg.require_signoff else [])
+            (unsupported_claims(audit_flags) + unaudited if cvcfg.require_signoff else [])
             + style_blockers)
         if served and blockers:
             # Record what to promote (pending_cv) and what to review (needs_signoff, a
@@ -1044,6 +1058,19 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
                                    renderer=renderer, dry_run=dry_run,
                                    guard_existing_cv=True, policy=policy, usage=usage))
         except Exception as e:
+            if isinstance(e, BackendError) and e.transient:
+                # A TRANSIENT backend error reaching here has outlived the backend's own
+                # retries: the backend is down (#333). Every remaining lead would spend a
+                # full retry budget failing the same way, so the batch stops and says so. A
+                # NON-transient one (a truncation, a 400) is a property of this lead's
+                # prompt, and stays a per-lead `error` below like any other exception.
+                _log.warning("cv: backend unavailable at %s, stopping the batch: %s",
+                             note.ref, e)
+                results.append(CvResult(note.ref, "backend-unavailable", error=str(e),
+                                        dossier_failed=getattr(e, "dossier_failed", False),
+                                        artefacts_failed=getattr(e, "artefacts_failed",
+                                                                 False)))
+                break
             _log.warning("cv run failed for %s: %s", note.ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising (see
             # its own comment) precisely so this catch-all -- which must stay a

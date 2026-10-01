@@ -1333,10 +1333,10 @@ def test_retry_happens_exactly_once():
     assert backend.calls == 2   # audit is never reached on skipped-gate, so this
                                 # counts compose calls exactly
 
-def test_advisory_audit_failure_does_not_block_render(monkeypatch):
+def test_advisory_audit_failure_does_not_block_render_but_holds_the_cv(monkeypatch):
     # The audit is explicitly advisory ("NEVER blocks", audit.py). A backend error
     # or timeout during the audit call must not prevent a CV that already passed
-    # the HARD citation gate from rendering -- it must be swallowed and logged.
+    # the HARD citation gate from rendering -- it is caught and logged.
     import sluice.cv.render as _render_mod
     monkeypatch.setattr(_render_mod, "render",
                         lambda *a, **k: "/tmp/x/Jane Roe CV.pdf")
@@ -1358,14 +1358,17 @@ def test_advisory_audit_failure_does_not_block_render(monkeypatch):
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     be = AuditRaisingBackend(CLEAN_CV)
-    # _cfg() carries require_signoff's default (True), so this ALSO pins the #60 fail-open:
-    # when the audit backend errors, run_audit swallows it -> no blockers -> the pointer is
-    # STILL set and the CV serves. The gate is best-effort, never harder than the audit ran.
-    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
-    assert r.status == "rendered"
+    # _cfg() carries require_signoff's default (True). Before #333 this pinned the #60
+    # FAIL-OPEN -- no flags, so the pointer was set and the CV served unreviewed. An audit
+    # that could not run has checked nothing, so it now HOLDS the CV like an `unsupported`
+    # flag: rendered and served, but withheld from send-ready until a human signs off.
+    rend = FakeRenderer()
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=rend)
+    assert rend.rendered == [CLEAN_CV], "an audit failure must not stop the render"
+    assert r.status == "needs-signoff"
     assert r.audit_flags == []
-    assert be.audited, "the audit was never invoked; the fail-open assertion would be vacuous"
-    assert note.ref in v.written, "fail-open must still set the send-ready pointer (#60)"
+    assert be.audited, "the audit was never invoked; the hold assertion would be vacuous"
+    assert note.ref not in v.written, "an unaudited CV must not get the send-ready pointer"
 
 
 # --- #60 sign-off gate: engine behaviour (withhold, sticky, require_signoff) ---
