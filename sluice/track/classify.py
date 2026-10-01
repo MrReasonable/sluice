@@ -6,6 +6,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from sluice.core.backends import BackendError
 from sluice.core.leads import slug_matches
 from sluice.core.log import get_logger
 
@@ -166,6 +167,22 @@ def classify(msg, leads, backend, cfg, ics=None) -> Event:
             # way it once was -- this fallback now covers a message with no usable host
             # evidence at all, not merely "the lead had already advanced".
             ev.llm_lead_slug, ev.llm_candidates = _resolve_lead(data.get("lead"), leads)
+    except BackendError as e:
+        # A TRANSIENT error here has outlived the backend's own retries: an outage, not a
+        # property of this message (#333). Turning it into an `unknown` proposal marked the
+        # message seen, so it was never classified again, and filled the dead-letter store
+        # with one "review manually" row per message in the outage window. Raised instead,
+        # so `engine.run` stops the run and leaves the message unseen for the next one.
+        #
+        # A NON-transient one (a truncation, a 400 on an over-long body) IS this message's
+        # own and fails identically every run, so it takes the #40 arm below: raised, it
+        # would hold the watermark at this message for good -- the poisoned-message freeze
+        # `engine.run`'s failure arm warns about.
+        if e.transient:
+            raise
+        _log.warning("classify failed for message %s: %s", msg.get("message_id", ""), e)
+        return Event(message_id=msg.get("message_id", ""), thread_id=msg.get("thread_id", ""),
+                     ics=ics, type="unknown")
     except Exception:
         # A classification we could NOT make is not evidence of "not a job" (#40). The default
         # Event.type is `not_job`, and reconcile silently SKIPS an unmatched not_job/update --

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 
 from sluice.core import status as _status
+from sluice.core.backends import BackendError
 from sluice.core.leads import ambiguous_slug_warnings, index_by_slug, slug_matches
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
@@ -194,6 +195,11 @@ class RunReport:
     results: list = field(default_factory=list)
     open_proposals: list = field(default_factory=list)  # every currently-open dead-letter Entry
     auth_error: bool = False
+    # The classifier's backend stayed unavailable after its own retries (#333). Like
+    # `auth_error` it ends the loop, holds the lastrun watermark (`app.py`'s `_save_lastrun`
+    # gate) and fails the run, and for the same reason: every message from here on is
+    # left unseen, inside the query window, for a later run to classify.
+    backend_error: str = ""
     deadletter_error: bool = False  # this run must NOT advance the lastrun watermark. Two
                                      # causes, and the name records only the first: a
                                      # dead-letter WRITE raised, or the message FETCH failed
@@ -618,6 +624,18 @@ def run(vault, cfg, client, backend, *, seen, deadletter, now_iso, since_iso=Non
                 seen.add(mid)
         except GoogleAuthError:
             rep.auth_error = True
+            break
+        # BEFORE the generic arm below, which would otherwise take it first: that arm
+        # dead-letters a per-message failure, and an outage is not one. Nothing is recorded
+        # and `seen.add` is skipped, so this message and every later one is classified by the
+        # next run -- one backend call spent here, not a timeout per remaining message.
+        # Only a TRANSIENT error reaches here from `classify` (a non-transient one is that
+        # message's own, and classify reports it as `unknown`); the guard repeats that rule
+        # for any other call in this loop that might raise one.
+        except BackendError as exc:
+            if not exc.transient:
+                raise
+            rep.backend_error = str(exc)
             break
         except Exception as exc:
             rep.failures.append(TrackFailure(message_id=mid,

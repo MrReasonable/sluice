@@ -2394,9 +2394,11 @@ class Sluice:
         Save-on-success mirrors cli.py's old cmd_track_run exactly: `_save_seen`
         runs on every non-dry-run call (the seen set is safe to persist even after
         an auth error -- it only ever grew by ids actually processed before the
-        break), but `_save_lastrun` is additionally gated on `not rep.auth_error
-        and not rep.deadletter_error`: advancing the lastrun watermark past a run
-        that never got to classify anything (auth_error), or past a message whose
+        break), but `_save_lastrun` is additionally gated on `rep.auth_error`,
+        `rep.backend_error`, `rep.deadletter_error` and `rep.search_truncated` all being
+        unset: advancing the lastrun watermark past a run that never got to classify
+        anything (auth_error), past messages left unclassified by a backend outage
+        (backend_error, #333), or past a message whose
         dead-letter write failed and so was never persisted (deadletter_error),
         would silently skip that message next time (#49's write-path silent loss)."""
         from datetime import datetime, timezone
@@ -2441,7 +2443,8 @@ class Sluice:
             # Gmail returns newest-first, so holding cannot starve NEW mail -- it is always
             # inside the cap. This is not the `deadletter_error` shape, which is a per-message
             # stall that no operator action clears.
-            if not (rep.auth_error or rep.deadletter_error or rep.search_truncated):
+            if not (rep.auth_error or rep.backend_error or rep.deadletter_error
+                    or rep.search_truncated):
                 _save_lastrun(lastrun_path, now_iso)
         return rep
 
