@@ -14,7 +14,9 @@ runner and HTTP poster are injected, so everything is tested offline.
 import json
 import re
 import subprocess
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, replace
 
@@ -47,6 +49,13 @@ DEFAULT_BASE_URLS = {
 # it for slow composes would have got a silent no-op. Every provider class default, the
 # seam, and `CvConfig.compose_timeout` now read this name.
 DEFAULT_TIMEOUT = 300
+
+# Seconds `doctor` gives each backend's round trip (#337). Its own value because `doctor` is the
+# command run BECAUSE something is wrong: a provider queueing the request, or a dead host, must
+# come back as a failed check, not hold the command for `DEFAULT_TIMEOUT`. The trade-off is that a
+# backend slower than this to answer a two-token prompt reports as failed: measured 2026-10-01, a
+# local `claude` CLI at `effort=max` answered it in well under a quarter of this, cold start included.
+PROBE_TIMEOUT = 60
 
 
 @dataclass(frozen=True)
@@ -246,22 +255,105 @@ def option_like(value) -> bool:
     return isinstance(value, str) and value.startswith("-")
 
 
-def _urlopen(url, data, headers, timeout):
+# How much one read may take from the socket. Small enough that a trickle of keep-alive bytes
+# returns control often; `read1` returns as soon as ANY bytes are there, so this is a cap, not a
+# wait.
+_READ_CHUNK = 65536
+
+
+def _display_url(url: str) -> str:
+    """`url` as an error message may carry it: scheme, host, port and path, without any
+    credentials in the userinfo or any key in the query string. Those reach WARNING logs and
+    `doctor`'s report through a BackendError, and a configured `base_url` may hold either."""
+    parts = urllib.parse.urlsplit(url)
+    # The netloc after its last "@", not `hostname` + `port`: that keeps an IPv6 literal's
+    # brackets, without which its address cannot be told from its port.
+    host = parts.netloc.rpartition("@")[2]
+    return urllib.parse.urlunsplit((parts.scheme, host, parts.path, "", ""))
+
+
+# How much of an error response's body is read for the message: the provider's complaint is in
+# its first few hundred bytes, and the message keeps only the first 500 characters of it.
+_ERROR_BODY_CAP = 4096
+
+
+def _read_error_body(e, deadline, clock) -> bytes:
+    """Best-effort: up to `_ERROR_BODY_CAP` bytes of an error response, stopping at the request's
+    deadline. A provider trickling an error body must not hold the call open any more than a
+    successful one, and the HTTP status is worth reporting with whatever detail had arrived."""
+    chunks, size = [], 0
+    while size < _ERROR_BODY_CAP:
+        chunk = e.read1(_ERROR_BODY_CAP - size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+        if deadline is not None and clock() >= deadline:
+            break
+    return b"".join(chunks)
+
+
+def _urlopen(url, data, headers, timeout, *, clock=time.monotonic):
+    """POST `data` and return the response body, within a deadline of `timeout` seconds that runs
+    from when the request is sent and is enforced while the body is read (#337).
+
+    `urllib`'s own `timeout` bounds each blocking socket read, and every byte that arrives resets
+    it. A provider that holds a queued request open with keep-alive bytes after its headers --
+    DeepSeek documents sending empty lines for up to ten minutes -- therefore kept a call far past
+    `timeout`, and a call that never raises reaches none of the failure handling after it. So the
+    body is read in chunks against a wall-clock deadline, and a call still unfinished when it
+    passes raises BackendError naming it. `read1` and not `read(n)`: a sized read waits to fill
+    its buffer and would sit through the whole trickle, never returning control to the check.
+
+    What it does not enforce: connecting, the TLS handshake and the header lines are each a socket
+    read under urllib's per-read `timeout` alone, though the time they take is spent from the same
+    deadline. It is checked BETWEEN body reads, so a read already blocked when it passes is bounded
+    only by urllib's per-read `timeout` -- and one `read1` on a chunked body also reads the chunk's
+    framing line, which can itself take several socket reads. What the deadline ends is a provider
+    that keeps SENDING, which is the incident; a silent one was already ended by urllib.
+
+    A finished body is returned even past the deadline, since the call has been paid for: one
+    whose declared length has all arrived, at once, and one with no declared length (chunked, or
+    ended by the connection closing) when one further read returns nothing. That further read is
+    an ordinary blocking one: a non-blocking probe cannot see bytes already held in the response's
+    buffer or in TLS's, so it would refuse exactly the finished body it exists to return. Anything
+    it does return means the body was not finished. A connection that closes with declared bytes
+    still owed raises rather than returning the part that arrived. An error response's body is read
+    for its message under the same deadline, capped, and best-effort. `timeout=None` means no
+    deadline, as it does for urllib; `make_backend` never passes it, coalescing None to
+    DEFAULT_TIMEOUT first."""
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    deadline = None if timeout is None else clock() + timeout
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.read().decode()
+            chunks = []
+            while True:
+                chunk = r.read1(_READ_CHUNK)
+                if not chunk:
+                    owed = getattr(r, "length", None)
+                    if owed:
+                        raise BackendError(
+                            f"response from {_display_url(url)} ended {owed} bytes short")
+                    return b"".join(chunks).decode()
+                chunks.append(chunk)
+                if getattr(r, "length", None) == 0:
+                    return b"".join(chunks).decode()
+                if deadline is not None and clock() >= deadline:
+                    if getattr(r, "length", None) is None and not r.read1(_READ_CHUNK):
+                        return b"".join(chunks).decode()
+                    raise BackendError(
+                        f"no complete response from {_display_url(url)} within {timeout}s")
     except urllib.error.HTTPError as e:
         # The provider's actual complaint -- unknown model id, bad key, rate limit
         # -- is in the response *body*. urllib does not put it in str(e), so
         # without this every 4xx/5xx collapses to "HTTP Error 400: Bad Request"
         # and the real cause is lost. Read it once and attach it.
         try:
-            detail = e.read().decode(errors="replace").strip()
+            detail = _read_error_body(e, deadline, clock).decode(errors="replace").strip()
         except Exception:  # body already consumed / not readable; fall back to the reason
             detail = ""
         raise BackendError(
-            f"HTTP {e.code} from {url}: {detail[:500] or e.reason}") from e
+            f"HTTP {e.code} from {_display_url(url)}: {detail[:500] or e.reason}") from e
 
 
 def _redact(text: str, secrets: dict[str, str]) -> str:

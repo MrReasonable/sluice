@@ -2604,7 +2604,7 @@ class Sluice:
 
         from sluice.apply.config import load_apply_config
         from sluice.core import doctor as _doctor
-        from sluice.core.backends import DEFAULT_MODELS, BackendError, make_backend
+        from sluice.core.backends import DEFAULT_MODELS, PROBE_TIMEOUT, BackendError, make_backend
         from sluice.core.usage import meter
         from sluice.core.protocols import RenderDependencyError, RenderError
         from sluice.cv.config import load_cv_config
@@ -2700,9 +2700,11 @@ class Sluice:
                     # round trip. Borrowing a raised compose timeout would make `doctor`
                     # -- the command you run BECAUSE something is wrong -- sit on a dead
                     # host for as long as the knob says, which is the opposite of its job.
+                    # It takes PROBE_TIMEOUT instead, shorter than the shipped default, so
+                    # a provider queueing the request is a failed check, not a hang (#337).
                     backend = make_backend(
                         t.provider, t.model, api_key=api_key, base_url=base_url,
-                        claude_host=t.host, claude_path=t.claude_path)
+                        claude_host=t.host, claude_path=t.claude_path, timeout=PROBE_TIMEOUT)
                     start = time.monotonic()
                     probe(backend)
                     elapsed = time.monotonic() - start

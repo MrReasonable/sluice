@@ -30,6 +30,11 @@ Shared by every sub-app:
   endpoint; `FallbackBackend` tries the first and falls back to the second
   on error; `make_backend` builds any of them by name. `complete()` returns a
   `Completion` (text plus optional `Usage`), not a bare string, since #308.
+  The HTTP backends' default transport (`_urlopen`) treats `timeout` as a total
+  deadline from when the request is sent, enforced while the body is read (#337), since
+  urllib's own resets on every byte and a provider's keep-alive bytes held a
+  call open for as long as it liked; a replacement `http=` transport must keep
+  that meaning.
 - `usage.py`: per-call token accounting (#308), OFF by default. `MeteredBackend` decorates
   the backend seam and appends one JSONL row per call -- stage, provider, model, the counts the
   provider reported, and on the three `cv-*` stages the lead's SLUG, which is why the feature is
