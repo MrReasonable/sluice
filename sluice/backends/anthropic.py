@@ -13,7 +13,8 @@ def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=Non
           provider=""):
     if not api_key:
         raise BackendError(
-            "backend 'anthropic' requires an api_key (set the provider's API key env var)")
+            "backend 'anthropic' requires an api_key (set the provider's API key env var)",
+            transient=False)
     extra = {} if http is None else {"http": http}
     # OMIT when None so the class default applies -- the seam's existing
     # 'no preference' idiom, the same one `http`/`runner`/`max_tokens` use.

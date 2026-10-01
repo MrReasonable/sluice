@@ -32,6 +32,12 @@ DEFAULT_MODELS = {
     "openai": "gpt-4o",
 }
 
+# The `--backend` values that named a ROLE before #333 removed roles along with the fallback.
+# ONE home, read by `Sluice.backend()` and by `cli.py`'s `--backend` validator alike, so the two
+# refusals cannot drift apart. Refused by name rather than reported as an unknown provider, so a
+# cron still passing `--backend auto` is told what changed instead of being told it made a typo.
+RETIRED_BACKEND_ROLES = ("auto", "primary", "fallback")
+
 # Each per-token provider's default API root, overridable per-deployment via the
 # provider's *_BASE_URL env var. Named here rather than inlined at each call site
 # so the endpoint has one definition to audit and change -- and so tests can pin
@@ -133,10 +139,18 @@ class BackendError(Exception):
     """
 
     def __init__(self, *args, usage: Usage | None = None,
-                 unserved_usage: tuple = ()):
+                 unserved_usage: tuple = (), transient: bool = True):
         super().__init__(*args)
         self.usage = usage
         self.unserved_usage = unserved_usage
+        # Whether the SAME call could succeed if repeated (#333) -- read by
+        # `RetryingBackend`. True by default because every transport failure (a timeout, a
+        # dropped connection, a 5xx, a 429) is the retryable case, so a raise site that
+        # forgets to classify itself fails toward one bounded retry rather than toward none.
+        # A site that fails identically every time -- a missing key, a 401, a truncation of
+        # the same prompt -- says `transient=False`, or a retry triples a certain failure
+        # and sleeps for nothing.
+        self.transient = transient
 
 
 def _int_or_none(value):
@@ -317,7 +331,16 @@ def _urlopen(url, data, headers, timeout, *, clock=time.monotonic):
     for its message under the same deadline, capped, and best-effort. `timeout=None` means no
     deadline, as it does for urllib; `make_backend` never passes it, coalescing None to
     DEFAULT_TIMEOUT first."""
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    except ValueError:
+        # urllib refuses a url with no scheme by quoting it WHOLE, userinfo and query
+        # included, and a backend error reaches stderr and MCP's `error` field (#333).
+        # `from None` so a rendered traceback does not chain the raw message back in. A
+        # configuration fault, so never transient: every retry would fail the same way.
+        raise BackendError(
+            f"unusable backend url {_display_url(url)!r} -- a base_url needs a scheme, "
+            f"e.g. https://", transient=False) from None
     deadline = None if timeout is None else clock() + timeout
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -347,8 +370,12 @@ def _urlopen(url, data, headers, timeout, *, clock=time.monotonic):
             detail = _read_error_body(e, deadline, clock).decode(errors="replace").strip()
         except Exception:  # body already consumed / not readable; fall back to the reason
             detail = ""
+        # 408/429 and every 5xx are the provider saying "not now"; every other 4xx is a
+        # complaint about the REQUEST (bad key, unknown model, malformed body), which the
+        # identical retry would repeat.
         raise BackendError(
-            f"HTTP {e.code} from {_display_url(url)}: {detail[:500] or e.reason}") from e
+            f"HTTP {e.code} from {_display_url(url)}: {detail[:500] or e.reason}",
+            transient=e.code in (408, 429) or e.code >= 500) from e
 
 
 def _redact(text: str, secrets: dict[str, str]) -> str:
@@ -426,8 +453,8 @@ class ClaudeMaxBackend:
                     f"claude-max {field} must not begin with '-': {value!r}. ssh and the "
                     f"shelled binary both read a leading '-' as an OPTION rather than a "
                     f"{'destination' if field == 'host' else 'command'}, which turns this "
-                    f"config value into argument injection (e.g. -oProxyCommand=...)."
-                )
+                    f"config value into argument injection (e.g. -oProxyCommand=...).",
+                    transient=False)
         self.model = model
         self.provider = provider
         self.host = host
@@ -623,14 +650,17 @@ class OpenAiCompatibleBackend:
             # fail loudly, not slip through as a truncated CV -- mirror the
             # AnthropicBackend guards below.
             if reason not in (None, "stop"):
+                # Not transient: the same prompt reaches the same length/filter limit.
                 raise BackendError(
                     f"openai-compatible response incomplete (finish_reason={reason})",
-                    usage=usage)
+                    usage=usage, transient=False)
             text = choice["message"]["content"].strip()
             if not text:
+                # Not transient: an empty answer to a clean stop is a refusal of THIS prompt,
+                # and a retry gets the same refusal (#333).
                 raise BackendError(
                     f"openai-compatible returned no text (finish_reason={reason})",
-                    usage=usage)
+                    usage=usage, transient=False)
             return Completion(text, usage=usage)
         except BackendError:
             raise
@@ -671,20 +701,71 @@ class AnthropicBackend:
             usage = (anthropic_usage(data, provider=self.provider, model=self.model)
                      or Usage(provider=self.provider, model=self.model))
             if data.get("stop_reason") == "max_tokens":
+                # Not transient: the same prompt truncates at the same max_tokens again.
                 raise BackendError("anthropic response truncated (stop_reason=max_tokens)",
-                                   usage=usage)
+                                   usage=usage, transient=False)
             text = "\n".join(
                 b.get("text", "") for b in data.get("content", [])
                 if b.get("type") == "text" and b.get("text")).strip()
             if not text:
+                # Not transient, as for the sibling above: a refusal repeats on retry.
                 raise BackendError(
                     f"anthropic returned no text (stop_reason={data.get('stop_reason')})",
-                    usage=usage)
+                    usage=usage, transient=False)
             return Completion(text, usage=usage)
         except BackendError:
             raise
         except Exception as e:
             raise BackendError(f"anthropic call failed: {e}") from e
+
+
+class RetryingBackend:
+    """ONE provider, retried on itself -- never swapped for another (#333).
+
+    Replaces FallbackBackend, which answered a primary failure by sending the prompt to a
+    DIFFERENT provider and model: a run could complete on a model nobody chose, with the
+    audit possibly reviewing that model's own draft. Here a failed call is retried only when
+    the error says it may be TRANSIENT (`BackendError.transient`), because a missing key or a
+    401 fails identically every time.
+
+    Spend from attempts that billed and then failed is carried forward rather than dropped:
+    on a later success it rides as `unserved_usage`, and on final failure it rides on the
+    raised error -- the only carrier `MeteredBackend` has when there is no return value.
+
+    `label` ("<provider> <model>") is what a run report prints as the backend that served,
+    and is prefixed onto the final error so a digest names WHICH backend gave up.
+    """
+
+    def __init__(self, inner, *, retries: int, label: str, sleep=time.sleep,
+                 base_delay: float = 2.0):
+        self.inner, self.retries, self.label = inner, retries, label
+        self._sleep, self._base_delay = sleep, base_delay
+
+    def complete(self, prompt: str) -> "Completion":
+        spent: list = []
+        attempts = self.retries + 1
+        for attempt in range(attempts):
+            try:
+                out = self.inner.complete(prompt)
+            except BackendError as e:
+                if e.usage is not None:
+                    spent.append(e.usage)
+                spent.extend(e.unserved_usage)
+                if not e.transient or attempt == attempts - 1:
+                    tried = f" after {attempt + 1} attempts" if attempt else ""
+                    raise BackendError(
+                        f"{self.label}: {e}{tried}",
+                        usage=spent[0] if spent else None,
+                        unserved_usage=tuple(spent[1:]),
+                        transient=e.transient) from e
+                delay = self._base_delay * (2 ** attempt)
+                _log.warning("%s failed (%s); retrying the same backend in %.0fs",
+                             self.label, e, delay)
+                self._sleep(delay)
+                continue
+            if spent:
+                out = replace(out, unserved_usage=out.unserved_usage + tuple(spent))
+            return out
 
 
 class FallbackBackend:
@@ -753,7 +834,8 @@ def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run,
 
     if name not in DEFAULT_MODELS:
         raise BackendError(
-            f"unknown backend '{name}' (expected {', '.join(DEFAULT_MODELS)})")
+            f"unknown backend '{name}' (expected {', '.join(DEFAULT_MODELS)})",
+            transient=False)
     model = model or DEFAULT_MODELS[name]
     try:
         factory = plugins.get("backend", name)
@@ -763,7 +845,7 @@ def make_backend(name, model="", *, http=_urlopen, runner=subprocess.run,
         # loudly as BackendError -- the fail-at-construction contract callers rely on --
         # rather than the KeyError-flavoured UnknownAdapter. The registry-completeness
         # test is what stops this reaching a user in the first place.
-        raise BackendError(str(e)) from e
+        raise BackendError(str(e), transient=False) from e
     # Coalesce None HERE, at the one choke point every provider crosses, so a future
     # provider that forgets the factory-level idiom is still covered. An explicit
     # `timeout=None` reaching an HTTP provider ends at `urlopen(timeout=None)`, which
