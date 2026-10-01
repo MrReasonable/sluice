@@ -40,6 +40,36 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [3.0.0](https://github.com/MrReasonable/sluice/compare/v2.19.1...v3.0.0) (2026-10-01)
+
+
+### ⚠ BREAKING CHANGES
+
+* **backends:** one backend per stage, retried on itself ([#333](https://github.com/MrReasonable/sluice/issues/333)). **Breaking config change: there is no fallback backend any more.** Each of `triage:`, `cv:` and `track:` now names ONE backend, and sluice retries it (root `backend_retries`, default 2) instead of switching provider. A config still carrying a retired key will not load; the error names the fix:
+  * rename `primary_backend` to `backend`, and `claude_max_model` (triage/track) or `compose_model` (cv) to `model`;
+  * rename triage's `cheap_model` to `resolve_model` if you use `company_resolve_llm`; tier-3 company resolution now has its own `resolve_backend`/`resolve_model`, defaulting to triage's own;
+  * delete `fallback_backend`, `cheap_model` under `cv:`/`track:`, and `cv.audit_model` (it was never read).
+
+  `--backend auto|primary|fallback` is gone: omit the flag to use the configured backend, or name a provider (`--backend deepseek`) for one run. A stage whose backend stays down after its retries now exits non-zero: triage stops judging, track leaves the affected messages unseen for the next run, and a cv batch stops. A cv audit that could not run holds the CV for sign-off instead of serving it.
+
+### Features
+
+* **backends:** one backend per stage, retried on itself ([#333](https://github.com/MrReasonable/sluice/issues/333)) ([19424be](https://github.com/MrReasonable/sluice/commit/19424beffd11eba0dec9dd78fa09da4630adf410))
+* **backends:** retry a transient failure on the same backend ([5dcb4f1](https://github.com/MrReasonable/sluice/commit/5dcb4f145f72f03eb7acc2de145fd15c91bb427e))
+
+
+### Bug Fixes
+
+* **cv:** hold an unaudited CV and stop a batch when the backend is down ([1c0d0cf](https://github.com/MrReasonable/sluice/commit/1c0d0cf05096b2e13bbdee589f274f7584bd476c))
+* **track:** leave a message unseen when its classification hits a backend outage ([282f1b5](https://github.com/MrReasonable/sluice/commit/282f1b586e73cc8856a8ca622f85064cfd581839))
+* **triage:** exit non-zero when the judge's backend is unavailable ([196ee4d](https://github.com/MrReasonable/sluice/commit/196ee4d2941f2834e9a9a60f9c2b3d5b288ba5d9))
+
+
+### Documentation
+
+* describe one backend per stage ([#333](https://github.com/MrReasonable/sluice/issues/333)) ([8859cb2](https://github.com/MrReasonable/sluice/commit/8859cb234f4f746f084fc259baff8690b55b3ca6))
+* plan one backend per stage ([#333](https://github.com/MrReasonable/sluice/issues/333)) ([630cd78](https://github.com/MrReasonable/sluice/commit/630cd78323dc9be872c26a231c19c86d3dcd1b6d))
+
 ## [2.19.1](https://github.com/MrReasonable/sluice/compare/v2.19.0...v2.19.1) (2026-10-01)
 
 
