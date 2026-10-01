@@ -235,3 +235,41 @@ def test_the_default_home_is_the_xdg_state_directory():
     resolved = reverdict._path()
     assert resolved.startswith(paths._xdg_path("state", "", warn=False).rstrip("/"))
     assert resolved.endswith("role_type_reverdict_ack.json")
+
+
+@pytest.mark.parametrize("umask", [0o200, 0o100, 0o400],
+                         ids=["umask-0200", "umask-0100", "umask-0400"])
+def test_the_marker_lands_and_reads_back_under_a_umask_stripping_the_owners_bits(
+        tmp_path, umask):
+    """#332. Under 0200 or 0100 a plain `makedirs` created a state directory the marker could
+    not be written into, so it did not land. Under 0400 it landed unreadable: `acknowledge`
+    said True while `acknowledged` said False on every later run, so `run()` returned early
+    for good -- the loop `acknowledge`'s docstring exists to prevent."""
+    path = str(tmp_path / "state" / "sluice" / "ack.json")
+    previous = os.umask(umask)
+    try:
+        landed = reverdict.acknowledge(_VAULT, path)
+        told = reverdict.acknowledged(_VAULT, path)
+    finally:
+        os.umask(previous)
+    assert landed is True and told is True
+
+
+def test_a_marker_written_but_unreadable_is_reported_as_not_landed(tmp_path, caplog):
+    """`acknowledge` answers whether the NEXT run will read the marker. One that already
+    existed write-only -- an older run under umask 0400, or a hand chmod -- is written and
+    still unreadable: before #332 that said True while `acknowledged` said False, and `run()`
+    returned early on every run. False lets the run proceed, as it does for any marker that
+    cannot land."""
+    if os.name == "nt" or getattr(os, "geteuid", lambda: -1)() == 0:
+        pytest.skip("mode bits bind neither uid 0 nor Windows")
+    path = tmp_path / "ack.json"
+    path.write_text("{}", encoding="utf-8")
+    path.chmod(0o200)
+    try:
+        with caplog.at_level("WARNING"):
+            landed = reverdict.acknowledge(_VAULT, str(path))
+    finally:
+        path.chmod(0o600)
+    assert landed is False
+    assert "cannot read it back" in caplog.text

@@ -11,7 +11,9 @@ WHY IT MIRRORS `triage/audit.py::AuditLog` INSTEAD OF SHARING IT. Two reasons, a
 is structural: `AuditLog` lives in a sub-app, and everything in `sluice/` sits ON `core/`, so
 importing it here inverts the layering. The second is that the two do not have the same
 append contract -- `UsageLog.append` swallows an OSError (see its own docstring) and the audit
-log must not -- so the shared part would be the read half alone.
+log must not -- so what they can share is the read half and the creating open. The open IS
+shared, from core rather than from either class: `core/paths.py::open_for_owner` (#332). Each
+caller still decides for itself whether a failed write raises.
 
     THE WIRING, in one place so it does not have to be reconstructed from call sites:
 
@@ -51,11 +53,11 @@ log must not -- so the shared part would be the read half alone.
     `sluice/` against every stage `meter` is called with.
 """
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from sluice.core.log import get_logger
+from sluice.core.paths import open_for_owner
 
 _log = get_logger("core.usage")
 
@@ -128,9 +130,12 @@ class UsageLog:
         # corrupted, and no lock on the hot path of every LLM call. Building the string before
         # opening the file is part of that -- two writes could interleave where one cannot.
         try:
-            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
             line = json.dumps(entry, ensure_ascii=False) + "\n"
-            with open(self.path, "a", encoding="utf-8") as f:
+            # Through `open_for_owner` (#332): by default this log shares the triage state
+            # directory with the audit log and is written after its pre-write check, so a
+            # directory created here under a umask stripping the owner's own bits failed the
+            # audit append -- which does raise -- after a lead's write.
+            with open_for_owner(self.path, "a") as f:
                 f.write(line)
         except OSError as e:
             # Once per failure, not once per call: a broken path fails on every call of a
