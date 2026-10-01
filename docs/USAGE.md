@@ -149,7 +149,7 @@ Classify leads.
 |---|---|---|
 | `--status` | `new,research,unjudgeable` | comma-separated statuses to consider |
 | `--limit` | none | cap the number processed |
-| `--backend` | `auto` | `auto`, `primary`, `fallback` (`claude-max`/`deepseek` are deprecated role aliases). Selects the JUDGE's backend only -- tier-3 company resolution (`triage.company_resolve_llm`) always runs on the cheap `fallback` role regardless of this flag |
+| `--backend` | none | a provider (`claude-max`, `anthropic`, `deepseek`, `openai`) to judge with for this run instead of `triage.backend`. The configured provider keeps `triage.model`; another provider uses its own default model. Tier-3 company resolution (`triage.company_resolve_llm`) keeps its own `triage.resolve_backend` regardless of this flag. The values `auto`, `primary` and `fallback` were retired with the fallback provider (#333) and are refused |
 | `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
@@ -201,14 +201,20 @@ where that lands. The check does not see every reason a write can fail -- a full
 quota, an I/O error or a name the filesystem refuses among them. A write that hits one still
 fails: the run exits 1 with a traceback, and leads written before it stay written.
 
+There is no fallback provider (#333). A backend call that fails transiently is retried on the
+same backend (root `backend_retries`); if the judge's backend is still down after that, the
+judge stops -- verdicts from batches that completed are applied, every other lead keeps its
+status for the next run -- and the run prints `triage: backend unavailable -- <reason>` and
+**exits 1**. A tripped tier-3 company-resolution breaker fails the run the same way.
+
 The Telegram notification is a **separate, human-readable digest**, not a copy of that
 line: it is read on a phone, where a dict of seven mostly-zero rows names none of the
 leads it counts. It names the surfaced roles under a per-verdict heading carrying that
 verdict's count, capped, with the unnamed remainder counted; spells the other non-zero
 counts out and omits the zero ones; reports `keep` as the pre-gate stage it is rather
-than as a verdict, and only when it differs from the judged count; names the backend only
-when there is one to name, since a run with no fallback leg configured reports none while
-judging perfectly well; distinguishes a judge that was never called from one that was
+than as a verdict, and only when it differs from the judged count; names the backend
+(`<provider> <model>`) beside the judged count; puts a `Backend unavailable:` line straight
+under the headline when the judge's backend stayed down after its retries; distinguishes a judge that was never called from one that was
 called and returned nothing; and gives a `--dry-run` its own headline. Its empty-handed
 headline says "nothing **new**", never "nothing surfaced": a re-judge that does not move a
 lead writes nothing and so cannot establish the latter. Built by `_format_triage_digest`
@@ -257,7 +263,10 @@ second when any CV was composed without the Skills Inventory because the corpus 
 not be read, and a third when any run's diagnostic artefacts (below) could not all be written
 or cleared.
 **Exit 1**
-if: `--lead` matched no shortlist lead; `--lead` was ambiguous; or any result is
+if: `--lead` matched no shortlist lead; `--lead` was ambiguous; the `--lead` result is `error`
+(the lead's own failure, such as a truncated reply, printed with its reason); any result is
+`backend-unavailable` (#333: the backend was still down after its retries -- a batch stops at
+that lead and leaves the rest for the next run, and the reason is printed); or any result is
 `skipped-config` (the candidate's derived name or contact block — from `Job Applications/
 Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).
 **Exit 2** if the vault cannot compose at all: the baseline CV at `baseline_rel` is missing,
@@ -267,8 +276,8 @@ are reported differently -- a read failure carries the underlying error rather t
 file is not there. That is a config problem rather than a per-lead outcome,
 so it is refused once for the whole run, before the renderer, the backend or any dossier fetch,
 and it reports through `main`'s usage-error path like a malformed config key. Otherwise exit 0,
-including when a result is `needs-signoff` (the advisory audit withheld the send-ready pointer
-— see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
+including when a result is `needs-signoff` (the advisory audit withheld the send-ready pointer,
+or could not run at all -- see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
 
 **Diagnostic artefacts.** Every run that reaches composition leaves what it needs to be
 diagnosed later in the lead's working directory, `<cv.output_dir>/<slug>/`, beside the PDF and
@@ -311,7 +320,8 @@ compose a lead without framing.
 Releases or discards a CV that composed clean against the hard fabrication gate but was held
 back by the softer advisory audit (`cv.require_signoff`, on by default). Without `--yes`,
 prompts interactively: lists the triage notes the CV was composed with (context, not claims)
-and the unsupported claims, prints the served path, then `sign off <slug>? [y/N] `.
+and the unsupported claims -- or says the CV was NOT audited, when the audit could not run
+(#333) -- prints the served path, then `sign off <slug>? [y/N] `.
 `--discard` rejects the held CV instead, freeing a fresh compose.
 The held run's diagnostic artefacts (see `cv run` above) stay in place for as long as the
 hold does: `cv signoff` never touches them, and `cv run` refuses a held lead before composing,
@@ -394,8 +404,11 @@ written the run says so on its own `WARNING:` line and holds the watermark inste
 the only reason the message stays reachable at all. `--dry-run` records nothing and sends
 nothing.
 
-Exit 1 only on a Google reauth failure (`track: google reauth needed (token refresh
-failed)`); otherwise exit 0 — including a run with failures. A run that could not WRITE the
+Exit 1 on a Google reauth failure (`track: google reauth needed (token refresh
+failed)`), or when the classifier's backend is still down after its retries (`track: backend
+unavailable -- <reason>`, #333): the run stops there, every message it had not classified stays
+unseen for the next run, nothing is filed for manual review, and the lastrun watermark is held.
+Otherwise exit 0 — including a run with failures. A run that could not WRITE the
 dead-letter store prints a `WARNING:` line saying the lastrun watermark is being held, since
 that silently widens the Gmail query window on every subsequent run. A run whose Gmail search
 hit its cap prints a `WARNING:` too — it did NOT see every matching message, and the ones it
@@ -792,9 +805,8 @@ is a different claim from one that was never observed. The rate is computed over
 reported *both* counts, not by dividing the two column totals: a call reporting one and not the
 other would otherwise push it above 100%.
 
-A second footnote appears when a call was **billed without serving an answer** -- a primary
-backend that spent tokens and then failed, whose spend would otherwise vanish inside the
-fallback. Those tokens *are* in the totals, because they were billed.
+A second footnote appears when a call was **billed without serving an answer** -- an attempt
+that spent tokens and then failed, whose spend would otherwise vanish inside the retry. Those tokens *are* in the totals, because they were billed.
 
 `--days` defaults to 30, matching the triage audit log's own window; `0` reports today only, and a negative value is a usage error (exit 2) rather than an empty report, which would read as "you spent nothing". `--json` prints the same
 totals machine-readably, with `hit_rate` null (not 0.0) where the table shows a dash, and

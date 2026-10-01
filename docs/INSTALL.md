@@ -100,16 +100,16 @@ Compose reads an optional `.env` beside it for backend credentials; the file dec
 `required: false`, so an absent one is not an error.
 
 **Choose a backend before running anything that reaches an LLM.** `claude-max` is the shipped
-default for `primary_backend`, and the image does not carry the `claude` CLI it shells out to —
+default for each stage's `backend`, and the image does not carry the `claude` CLI it shells out to —
 that CLI is a ~325MB self-contained binary, and bundling it would more than double the image for a
 backend not everyone chooses. `job-sluice doctor` says so plainly rather than failing later:
 
 ```text
-claude-max  claude-sonnet-4-5  dead  primary: triage, cv, track  CLI 'claude' not on PATH
+claude-max  claude-sonnet-4-5    setup     triage, cv, track  CLI 'claude' not on PATH
 ```
 
-Two ways out. **An API-key provider** is the simpler one: set `primary_backend` to `anthropic`,
-`openai` or `deepseek` and put the matching variable from
+Two ways out. **An API-key provider** is the simpler one: set `backend` to `anthropic`,
+`openai` or `deepseek` in each of the `triage:`, `cv:` and `track:` blocks and put the matching variable from
 [Backend credentials](#backend-credentials) in `.env`. Or keep the flat rate by pointing the
 container at the CLI already on your machine — see below.
 
@@ -493,8 +493,9 @@ works without it.
 
 ## Backend credentials
 
-Which credentials you need depends on which providers you configured as `primary_backend` and
-`fallback_backend`, so there is nothing to set up until you have chosen:
+Which credentials you need depends on which provider each stage's `backend` names (and
+`triage.resolve_backend`, if you use tier-3 company resolution), so there is nothing to set up
+until you have chosen:
 
 | Provider | Needs |
 |---|---|
@@ -503,8 +504,8 @@ Which credentials you need depends on which providers you configured as `primary
 | `openai` | `OPENAI_API_KEY` |
 | `deepseek` | `DEEPSEEK_API_KEY` |
 
-`triage run --no-llm` needs none of them. A keyless *fallback* backend is a sanctioned degrade;
-a keyless *primary* is not. `job-sluice doctor` tells you which you have.
+`triage run --no-llm` needs none of them. There is no fallback provider: a stage whose backend has
+no key cannot run, and `job-sluice doctor` names it as still to set up.
 
 ## Google access for `track`
 

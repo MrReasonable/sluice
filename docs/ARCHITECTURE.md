@@ -27,8 +27,9 @@ Shared by every sub-app:
 - `backends.py`: LLM clients. `ClaudeMaxBackend` shells out to a `claude`
   CLI, local or over SSH; `AnthropicBackend` calls the Anthropic Messages
   API directly; `OpenAiCompatibleBackend` calls any OpenAI-compatible HTTP
-  endpoint; `FallbackBackend` tries the first and falls back to the second
-  on error; `make_backend` builds any of them by name. `complete()` returns a
+  endpoint; `RetryingBackend` wraps ONE of them and retries a transient
+  failure on that same provider, never switching provider (#333);
+  `make_backend` builds any of them by name. `complete()` returns a
   `Completion` (text plus optional `Usage`), not a bare string, since #308.
   The HTTP backends' default transport (`_urlopen`) treats `timeout` as a total
   deadline from when the request is sent, enforced while the body is read (#337), since
@@ -502,7 +503,8 @@ whichever neighbour it was written next to:
    tier 0, a free URL-pattern tier 1, an opt-in, no-LLM page-visit tier 2,
    then -- also opt-in, and only when tiers 0-2 all abstain -- an LLM
    read of that SAME page data, tier 3, on a SEPARATE backend from the
-   judge's (always the cheap "fallback" role, regardless of `--backend`)
+   judge's (`triage.resolve_backend`/`resolve_model`, default triage's own,
+   regardless of `--backend`)
    -- so "for free" no longer describes the WHOLE classify pass
    unconditionally: a blank/placeholder-company lead can trigger a real page visit when
    `triage.company_resolve_fetch` is on, and an LLM call when
@@ -1072,8 +1074,8 @@ Two modules and a composition root make the seams real:
   markdown filename in four separate modules, and that is what pinned the store
   to a filesystem.
 - `core/app.py`: `Sluice(config)`, the composition root. Resolves the adapters
-  config names -- store, fetcher, renderer, and backend (by ROLE: auto/primary/
-  fallback, over whichever provider config selects) -- and OWNS the pipeline
+  config names -- store, fetcher, renderer, and backend (one per stage, retried on
+  itself, #333) -- and OWNS the pipeline
   operations as value-returning methods: `ingest()`, `triage()`, `compose_cv()`,
   `prep()`, `record()`, `track()`, `track_confirm()`, `track_dismiss()`,
   `normalize_statuses()`, `expire_report()`, `expire()`. It also owns the state
@@ -1976,12 +1978,15 @@ sentence cannot be.
 - **backend**: `sluice/backends/`, selected by provider name through the adapter
   registry (`make_backend` is now a thin shim over `plugins.get("backend", name)`).
   Implementations: `claude-max` (flat-rate `claude --print` CLI), `anthropic` (direct
-  Messages API), `deepseek` and `openai` (OpenAI-compatible). Role selection
-  (`auto`/`primary`/`fallback`) sits ABOVE the provider seam, in `Sluice.backend()`:
-  the config picks which provider fills each role, the role picks which backend runs.
+  Messages API), `deepseek` and `openai` (OpenAI-compatible). Each stage names ONE
+  provider and model (`triage.backend`/`model`, likewise cv and track; triage's tier 3
+  has its own `resolve_backend`/`resolve_model`), and `Sluice.backend()` wraps it in
+  `RetryingBackend`, which retries a `BackendError(transient=True)` on that same
+  provider (root `backend_retries`) and never switches provider (#333). A one-run
+  `--backend` override names a provider, never a role.
   `tests/conformance/test_backend_contract.py` asserts the portable contract over every
   registered provider — an empty/whitespace response and a transport failure both raise
-  `BackendError` (the property `FallbackBackend` relies on), a valid response returns as
+  `BackendError` (the property `RetryingBackend` relies on), a valid response returns as
   its text, and (since #308) that response is a `Completion` whose `Usage` IDENTIFIES the
   call — so a new provider passes it or does not ship, exactly as the store bullet's
   conformance suite does.
@@ -1996,9 +2001,9 @@ sentence cannot be.
   claim the call was free. `provider` is threaded down from `make_backend`, never written as
   a literal in a factory, so a module copied to add a provider cannot keep the original's
   label. Spend from a call that billed and then RAISED rides on `BackendError.usage` (the
-  only carrier left where there is no return value), and `FallbackBackend` threads a burned
-  primary leg's usage onto the served completion's `unserved_usage` rather than swallowing it
-  in its `except`.
+  only carrier left where there is no return value), and `RetryingBackend` carries every
+  failed attempt's burned usage forward -- onto the served completion's `unserved_usage`, or
+  onto the final error -- rather than swallowing it in its `except`.
 
   Where the metering is WRAPPED is a separate decision from where the call happens, and the
   two are in different modules on purpose. `core/app.py` wraps at the application boundary,
@@ -2248,7 +2253,8 @@ sentence cannot be.
   at the moment `searches_for` picks a side.
 
 `job-sluice doctor` is a read-only preflight over the whole pipeline, not only the backend
-seam: it enumerates every configured backend (primary and fallback, per sub-app) and
+seam: it enumerates every configured backend (one per sub-app, plus triage's tier-3 resolve
+backend when `company_resolve_llm` is on) and
 classifies each as `ok`/`degraded`/`dead`/`setup`, then does the same for a second table of
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
@@ -2283,10 +2289,8 @@ the store branch but is gated on the same condition) are skipped, and the report
 otherwise full -- the store's Candidate
 Profile row, track/Google, camofox and every other sub-app's gate rows are unrelated to
 `cv_cfg` and still run. Backend
-classification is role-aware -- a keyless fallback degrades (the sanctioned
-primary-only path, exit 0), a keyless PRIMARY is `setup` (see the state model below),
-and a keyed-but-broken backend is `dead` regardless of
-role, the silently-non-functional fallback the tool exists to catch. Component
+classification has no roles since #333: a keyless backend is `setup` (see the state model
+below) and a keyed-but-broken one is `dead`, and either blocks every sub-app that uses it. Component
 classification adds a fifth state, `notice`, for the gate-posture rows -- and, since
 #165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
 verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
@@ -2408,14 +2412,12 @@ where a run drove the wrong cookie profile and a board returned zero rows for da
 remedy shown nowhere; and, the other way, a DEAD row carrying NO `blocks` changes no bucket, so an
 unbuildable store printed four capabilities as ready. Those two rows in `core/app.py` now name
 `ALL_CAPABILITIES`, derived from the roster rather than spelled out. A DEGRADED row with an empty
-`blocks` still blocks nothing, which is what keeps the sanctioned keyless-fallback degrade out of
-the verdict entirely.
+`blocks` still blocks nothing.
 
 The verdict re-derives nothing: it reads the states the classifiers already assigned, so the
-default view and `--verbose` cannot disagree about a row. Backend rows block only where the target
-is that sub-app's PRIMARY -- a shared target that is triage's primary and cv's fallback, with its
-key unset, stops triage and merely degrades cv, which is what `Sluice.backend()`'s `auto` role
-does at runtime.
+default view and `--verbose` cannot disagree about a row. A backend row blocks every sub-app it
+serves: with one backend per stage (#333) there is nothing to degrade to, so a backend that cannot
+run stops each stage that names it.
 
 `CAPABILITIES` is the one hand-written roster here (a label is not derivable: `cv` is the package
 name, "tailored CVs" is what the user came for, and nothing in `sluice/` enumerates the sub-apps

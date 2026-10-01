@@ -94,8 +94,9 @@ change makes that test's assertions weaker, that is Critical on its own.
 ## Also yours
 
 **Fail loudly at construction.** An unknown backend/adapter name must raise and list the valid
-names, never fall through to a default (`_select_backend` in `cli.py`). A silent fallback to
-`auto` is the same bug class as the four above. High.
+names, never fall through to a default (`Sluice.backend`'s override guard in `core/app.py`). A
+silent fallback -- to a default name, or to a second provider -- is the same bug class as the four
+above. High.
 
 **Silent failures.** The bug class is a swallow that lets a *failed* gate, a *failed* write, or a
 *failed* transition be reported as success. That is Critical.
