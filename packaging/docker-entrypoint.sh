@@ -1,7 +1,7 @@
 #!/bin/sh
 # Container entrypoint (#209): prepare SSH for the claude-max backend, then run the CLI.
 #
-# WHY THIS EXISTS AT ALL. `claude-max` is the shipped default for primary_backend and shells out
+# WHY THIS EXISTS AT ALL. `claude-max` is the shipped default for every stage's backend and shells out
 # to the `claude` CLI, which this image deliberately does not carry. `ClaudeMaxBackend` reaches
 # one on another host with plain `ssh <host> <argv>` -- no flags of its own -- so everything ssh
 # needs must already be in place: a key it will find, a username, and a known_hosts policy.

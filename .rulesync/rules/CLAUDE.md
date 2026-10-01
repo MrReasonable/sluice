@@ -267,17 +267,31 @@ abstains. `--role-type`'s accepted set is DERIVED from `roletype._ALIASES` (expo
 honours are aliases, so pinning the pair made the CLI reject `perm` and `freelance`, which the MCP
 tool over the same facade accepts.
 
-**Backends are selected by role, not provider.** `--backend` takes `auto|primary|fallback`
-(`claude-max`/`deepseek` survive as deprecated aliases). Which provider fills each role is config
-(`primary_backend`, `fallback_backend`). `auto` degrades to primary-only when the fallback has no API
-key, and warns loudly; `--backend fallback` hard-errors instead, because there is nothing to degrade
-to. Construction failures are raised at build time, not at first call. See `_select_backend` in
-`cli.py`.
+**One backend per stage, retried on itself, never swapped (#333).** Each of `triage:`, `cv:` and
+`track:` names one `backend` and `model`; triage's tier-3 company resolution has its own
+`resolve_backend`/`resolve_model` (empty = triage's own). There is no fallback provider: it used to
+answer a failure by sending the prompt to a second provider and model, so a run could complete with
+every gate green on a model nobody chose, and the audit could review that model's own draft.
+`Sluice.backend()` wraps the one provider in `RetryingBackend`, which retries a
+`BackendError(transient=True)` (root `backend_retries`, default 2) and never one marked
+non-transient -- a missing key, a 4xx other than 408/429, a truncation, which fail identically every
+time. A TRANSIENT failure that outlives the retries is an outage: triage stops judging, track
+stops classifying (leaving the rest unseen) and a cv batch stops, each reported loudly with a
+non-zero exit. A NON-transient one is the item's own -- that batch, message or lead -- and is
+handled per item, never as an outage, or one over-long email would hold track's watermark for
+good. cv's advisory audit is the narrower case: an audit that could not run HOLDS the CV for
+sign-off under `cv.require_signoff` (the exit code is unchanged, the CV having composed), and with
+that switched off it is served unaudited exactly as an `unsupported` flag would be. `--backend` (and MCP `cv_run`'s `backend`) names a PROVIDER for one run --
+the configured one keeps its model, another uses its `DEFAULT_MODELS` entry -- and the retired role
+names `auto`/`primary`/`fallback` are refused with a migration message. The retired config keys
+(`core/config.py::RETIRED_BACKEND_KEYS`) REFUSE to load rather than being dropped by the
+`hasattr`-filtered loaders, on the owner's ruling, with no deprecation window. Construction failures
+are raised at build time, not at first call.
 
 **`complete()` returns a `Completion`, not a string (#308), and `Usage.input_tokens` is DEFINED
 rather than copied.** The seam carries the text plus an optional `Usage`, so a call's cost belongs
-to that call -- `FallbackBackend.last_backend` is the counter-example the widening was argued
-against, overwritten per call and unable to say which leg served which completion. `input_tokens`
+to that call -- the retired `FallbackBackend.last_backend` was the counter-example the widening
+was argued against, overwritten per call and unable to say which leg served which completion. `input_tokens`
 means the TOTAL input including anything served from cache, and each provider's parse normalises
 INTO that definition: Anthropic's own `input_tokens` counts uncached tokens only, with
 `cache_read_input_tokens`/`cache_creation_input_tokens` beside it rather than inside it, so copying
@@ -290,7 +304,8 @@ would leave its calls anonymous in the log. `provider` is threaded down from `ma
 written as a literal in each factory -- that is a third spelling of something the module already
 states twice, so a module copied to add a provider would keep the original's label and mislabel
 every row silently. Spend from a call that billed and then RAISED rides on `BackendError.usage`,
-the only carrier where there is no return value.
+the only carrier where there is no return value -- and `RetryingBackend` carries every failed
+attempt's spend forward, onto the eventual success as `unserved_usage` or onto the final error.
 
 **Metering is wrapped where a backend is HANDED to a stage, not where it is called.** `meter(log,
 backend, stage, lead=None)` (`core/usage.py`) returns the backend unchanged when there is no log --
@@ -689,7 +704,8 @@ human-facing layer (#60, on by default via `cv.require_signoff`): an advisory LL
 (`cv/audit.py`) catches the qualitative fabrication the deterministic gate cannot, and an
 `unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (via
 `Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking
-rendering. The hold is recorded in two frontmatter keys, `pending_cv` and `needs_signoff`; the
+rendering. An audit that could not RUN holds the same way (#333, an `unaudited` entry): it used to
+fail open, serving a CV nothing had reviewed. The hold is recorded in two frontmatter keys, `pending_cv` and `needs_signoff`; the
 note's `status` stays `shortlist`, so never-regress is untouched. `needs-signoff` is the
 `CvResult` RUN-REPORT label for that outcome, never a `status`-key value — `docs/ARCHITECTURE.md`
 states the same distinction, and this file used to contradict it. `cv.style_hold` (#167, off by default) gives a surviving STYLE/VOICE finding the SAME
@@ -1007,7 +1023,7 @@ up executing it.
 
 **Fail loudly at construction.** An unknown backend/adapter name raises and lists the valid names
 rather than falling through to a default. A quiet wrong default is the bug class this codebase most
-consistently engineers out; see `_select_backend`'s guard in `cli.py`.
+consistently engineers out; see `Sluice.backend`'s override guard in `core/app.py`.
 
 **Terminal output is escaped at two chokepoints, both applying one policy function (#280).**
 `sluice` prints scraped board text and LLM output about a composed CV verbatim, so a terminal
@@ -1113,10 +1129,9 @@ turning the one documented machine-readable channel unparseable on a single scra
 - The adapter seams (backend, store, renderer, fetcher, rates — the config keys, and the
   `_SEAMS` roster in `core/app.py`, which is what a guard test pins -- state no COUNT of
   them here, that sentence has gone stale once already) are each a name-keyed
-  registry resolved via `plugins.get`. The backend seam has four self-registering provider
-  implementations (`anthropic`/`openai`/`claude-max`/`deepseek` in `sluice/backends/` — the names a
-  config `primary_backend`/`fallback_backend` selects; `claude-max`/`deepseek` ALSO survive as
-  deprecated `--backend` role aliases, which is the separate role concern below, not a second registry);
+  registry resolved via `plugins.get`. The backend seam's self-registering provider
+  implementations live in `sluice/backends/` — their names are what each stage's `backend` key and
+  a one-run `--backend` select, and `DEFAULT_MODELS` in `core/backends.py` is their roster;
   the RENDERER seam has two self-registering
   production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
   default, via WeasyPrint; `pip install -e '.[render]'`) and `script` (the external shell-out
@@ -1144,8 +1159,8 @@ turning the one documented machine-readable channel unparseable on a single scra
   verdicts, keeping classification in `core/doctor.py` where the backend rules already live. The
   selection is also exercised in tests — `tests/harness/` registers a fake fetcher
   (`browser.py`) and renderer (`renderer.py`) and resolves them through the same seam. The backend seam
-  differs in shape, though: a role layer (auto/primary/fallback, in
-  `Sluice.backend()`) sits above the provider lookup, and its factory takes resolved construction params
+  differs in shape, though: `Sluice.backend()` resolves the stage's provider (or a one-run override)
+  and wraps it in `RetryingBackend`, and its factory takes resolved construction params
   (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
   other three do. Route new implementations through those seams (a self-registering module) rather than
   around them.

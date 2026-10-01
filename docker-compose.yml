@@ -23,16 +23,16 @@
 x-sluice: &sluice
   image: ghcr.io/mrreasonable/job-sluice:${JOB_SLUICE_TAG:-latest}
 
-  # Backend credentials. Which variables matter depends on which providers you configured as
-  # `primary_backend`/`fallback_backend`, so they are deliberately NOT enumerated here: a list
+  # Backend credentials. Which variables matter depends on which provider each stage's `backend`
+  # names, so they are deliberately NOT enumerated here: a list
   # in this file would be a second source of truth that goes stale the moment a provider is
   # added. Put whatever your configured providers need in `.env`.
   #
-  # `claude-max` is the SHIPPED DEFAULT for primary_backend and needs no API key -- but it shells
-  # out to the `claude` CLI, which this image does not carry. You have two options, and doing
-  # neither leaves `doctor` reporting it `dead` with triage/cv/track blocked:
+  # `claude-max` is the SHIPPED DEFAULT for every stage's `backend` and needs no API key -- but it
+  # shells out to the `claude` CLI, which this image does not carry. You have two options, and
+  # doing neither leaves `doctor` reporting it `setup` with triage/cv/track blocked:
   #
-  #   1. Configure `primary_backend` as `anthropic`, `openai` or `deepseek` and put that
+  #   1. Configure each stage's `backend` as `anthropic`, `openai` or `deepseek` and put that
   #      provider's key in `.env`. Simplest; costs per token rather than the flat rate.
   #   2. Point it at the `claude` CLI on your HOST over ssh -- the four SLUICE_CLAUDE_* variables
   #      below. Keeps the flat rate. See docs/INSTALL.md's "claude-max from a container".

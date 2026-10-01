@@ -28,7 +28,7 @@ FROM python:3.14-slim@sha256:caaf356f40667c496d405780745b9ac25771c189a51dfcc4243
 # makeable into one.
 #
 # `openssh-client` is here for the `claude-max` backend (#209), which is the SHIPPED DEFAULT for
-# primary_backend. It shells out to the `claude` CLI, and this image deliberately does not carry
+# every stage's `backend`. It shells out to the `claude` CLI, and this image deliberately does not carry
 # that CLI -- it is a ~325MB self-contained binary and bundling it would more than double the
 # image for a backend many users do not choose. `ClaudeMaxBackend` already knows how to reach one
 # elsewhere (`cmd_template = ["ssh", host] + base` when a host is configured), so what was missing

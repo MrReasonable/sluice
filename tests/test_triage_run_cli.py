@@ -701,10 +701,8 @@ def test_the_push_says_no_judge_ran_rather_than_backend_none(monkeypatch, tmp_pa
 
 
 def test_the_push_names_the_backend_that_judged(monkeypatch, tmp_path):
-    # The other arm: when there IS a name, it is printed. Note what this does NOT prove --
-    # `FallbackBackend.last_backend` is overwritten on every call, so it reports the leg
-    # that served the LAST batch, not whether the primary failed earlier in the run. It is
-    # an identifier, not a health signal.
+    # The other arm: when there IS a name, it is printed. It is an identifier (the
+    # `<provider> <model>` label, #333), not a health signal -- `backend_error` is that.
     body = _push(monkeypatch, tmp_path,
                  counts={"keep": 3, "shortlist": 1, "research": 0, "dismiss": 2,
                          "needs_review": 0, "skipped": 0},
@@ -894,12 +892,10 @@ def test_the_push_still_shows_the_pre_gate_total_when_it_differs(monkeypatch, tm
 
 
 def test_the_push_does_not_name_a_backend_called_None(monkeypatch, tmp_path):
-    """`report.backend` is `getattr(backend, "last_backend", None)`, and `last_backend` is
-    defined by ONE class -- `FallbackBackend`. `Sluice.backend()` returns a bare provider
-    for `--backend primary`, for `--backend fallback`, and for `auto` when no fallback is
-    configured, which `_make_fallback`'s own docstring calls legitimate and supported.
+    """`report.backend` is `getattr(backend, "label", None)`, and a backend handed in through
+    the seam override (a test double, an embedding caller) need not carry a `label`.
 
-    So a judge run that made 12 real calls reports `backend=None`, and gating the wording
+    So a judge run that made 12 real calls can report `backend=None`, and gating the wording
     on `judged` rather than on `backend` rendered "Judged 12 via None." -- a sentence
     asserting a backend of that name, which is worse than the bare null it replaced.
     """

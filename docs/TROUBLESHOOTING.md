@@ -331,23 +331,20 @@ sets it itself to read past the first page of 25 results.
 
 ## A backend is `setup`, `dead` or `degraded` in `doctor`'s output
 
-- **`setup`, `<KEY_VAR> unset`** on a role used as *primary* anywhere: set the key
-  (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`DEEPSEEK_API_KEY`), or switch that role to
+- **`setup`, `<KEY_VAR> unset`**: a stage's `backend` (or `triage.resolve_backend`, when tier-3
+  company resolution is on) has no key, so every stage listed beside it cannot run. Set the key
+  (`ANTHROPIC_API_KEY`/`OPENAI_API_KEY`/`DEEPSEEK_API_KEY`), or switch that stage to
   `claude-max`, which needs no key — it shells out to a local or SSH-reachable `claude` CLI.
-- **`degraded`, `<KEY_VAR> unset - primary-only`**: the *fallback* role has no key. This is a
-  sanctioned degrade — `auto` still runs on the primary alone — but `doctor --strict` fails the
-  build on it, and `--backend fallback` (an explicit, non-`auto` request) hard-errors rather
-  than degrading, since there's nothing left to fall back to.
+  There is no fallback provider to cover it (#333).
 - **`CLI '<path>' not on PATH`**: the `claude` binary isn't found locally. The STATE depends on
   whether you named the path, and so does the exit code. Left at the shipped default `claude`,
   it is `setup` (exit 0) — you have not installed it yet. If you set `claude_max_path` /
   `compose_claude_path` to a path of your own and it isn't there, that is `dead` (exit 1): you
   told sluice where the binary is and it isn't. Either install/alias it there or point
   `claude_max_host` at a machine where it is. Checked in both `--offline` and live runs, so the
-  two modes agree. On a role used only as *fallback* it is `degraded` instead — `auto` still
-  runs primary-only — which `--strict` fails on.
-- **`dead`, `unknown backend '<name>'`**: a typo'd `primary_backend`/`fallback_backend`. Valid
-  names are listed in the error.
+  two modes agree.
+- **`dead`, `unknown backend '<name>'`**: a typo'd `backend`/`resolve_backend`. Valid names are
+  listed in the error.
 
 A live (non-`--offline`) `doctor` round-trips one token per distinct backend to confirm it
 actually answers, not just that a key is present.

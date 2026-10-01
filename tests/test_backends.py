@@ -203,10 +203,9 @@ def test_default_models_cover_every_selector():
 
 
 # DeepSeek retired the `deepseek-chat` / `deepseek-reasoner` aliases on
-# 2026-07-24; they hard-fail after that. cheap_model is the per-token fallback
-# that runs precisely when the flat-rate primary is down, so a stale alias here
-# is a dead fallback at the worst moment. Pin all three sub-app defaults to the
-# one map so they cannot drift apart or drift back.
+# 2026-07-24; they hard-fail after that. DEFAULT_MODELS["deepseek"] is what a
+# bare `backend: deepseek` or `--backend deepseek` reaches, so a stale alias here
+# fails a stage that named no model.
 def test_the_deepseek_default_model_avoids_its_retired_aliases():
     # `cheap_model` carried this default into all three configs until #333 retired the
     # key; DEFAULT_MODELS is now the only place it lives, and it is what an override or

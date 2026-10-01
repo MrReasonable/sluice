@@ -6,10 +6,11 @@ parametrized suite, so a new provider passes it or does not ship.
 
 The drift this prevents has already happened twice in one class. ClaudeMaxBackend shipped
 WITHOUT the empty-response guard both siblings had, and its transport wrapper
-(except -> BackendError) was pinned by no test. Both are properties FallbackBackend depends
-on: it catches BackendError ONLY, so an empty response handed back as "" -- or a raw OSError
-escaping the primary -- would feed a useless string downstream / CRASH the run instead of
-degrading to the fallback. A per-class test named ONE implementation; this names the
+(except -> BackendError) was pinned by no test. Both are properties RetryingBackend and every
+stage's error handling depend on: they catch BackendError ONLY, so an empty response handed back
+as "" -- or a raw OSError escaping the provider -- would feed a useless string downstream / CRASH
+the run instead of being retried and reported (#333; the retired FallbackBackend depended on the
+same two). A per-class test named ONE implementation; this names the
 CONTRACT, so the next provider inherits it.
 
 The asymmetry that makes this more than a bare parametrize: backends inject differently.
@@ -179,7 +180,7 @@ def test_payload_tables_cover_the_registry():
 def test_empty_or_whitespace_response_returns_nothing_so_raises(name, kind):
     """complete() never hands back a falsy string. An empty OR whitespace-only response is a
     FAILED call wearing a successful one's clothes; it must raise BackendError so
-    FallbackBackend degrades to the fallback (it catches BackendError only). claude-max shipped
+    RetryingBackend retries it and the stage reports it (both catch BackendError only). claude-max shipped
     WITHOUT this guard and stayed green its whole life because only bespoke per-class tests
     covered it (#39). Exercised over BOTH shapes the name claims -- `whitespace` (also pins the
     .strip()-before-check) and `blank` (the truly-empty response; anthropic's is a distinct
@@ -193,9 +194,9 @@ def test_empty_or_whitespace_response_returns_nothing_so_raises(name, kind):
 @pytest.mark.parametrize("name", _BACKENDS)
 def test_transport_failure_surfaces_as_BackendError_not_a_raw_exception(name, kind):
     """A transport failure (from the runner/poster) must surface as BackendError, never the raw
-    exception. This is the ONE property FallbackBackend depends on: it catches BackendError
-    ONLY, so a timeout or an ssh failure escaping raw would CRASH the run instead of degrading
-    to the fallback -- the exact opposite of what the module docstring promises, and the second
+    exception. This is the ONE property RetryingBackend depends on: it catches BackendError
+    ONLY, so a timeout or an ssh failure escaping raw would CRASH the run instead of being
+    retried -- the exact opposite of what the module docstring promises, and the second
     drift PR #37 fixed one line above the first. (This docstring carries the rationale migrated
     from the pruned test_claudemax_transport_failure_raises_backend_error.) Exercised over both
     a `timeout` (subprocess.TimeoutExpired for the CLI backend -- the hung-host case -- and a

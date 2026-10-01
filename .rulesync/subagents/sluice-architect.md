@@ -47,8 +47,9 @@ the contracts.
 
 The BACKEND is the one that does not resolve through `Sluice._resolve` — every other seam
 takes the config object, so one generic lookup serves them, while `Sluice.backend()` resolves
-its own because a role layer (auto/primary/fallback) sits above the provider lookup and the
-factory takes resolved construction params (model/key/base_url) rather than the config.
+its own because it picks the stage's provider (or a one-run `--backend` override) and wraps it in
+`RetryingBackend`, and the factory takes resolved construction params (model/key/base_url) rather
+than the config. There is no role layer and no fallback provider since #333.
 `core/app.py` says so verbatim beside the code, and item 5 below repeats it. Stating it as an
 EXCEPTION rather than as a fraction is deliberate: a fraction goes stale every time a seam is
 added, which is the kind of false claim about the codebase this agent exists to catch.
@@ -86,8 +87,8 @@ testable against golden fixtures with no browser. Critical if crossed.
    Shared concerns belong in `core/`. Cross-sub-app imports are a smell.
 5. **Premature abstraction — but the established seams are past that point.** By-name selection between
    real implementations is LIVE, so "a registry appeared" is not by itself a finding on them:
-   `sluice/backends/` holds four self-registering providers (`anthropic`, `openai`, `claude-max`,
-   `deepseek`), chosen by config `primary_backend`/`fallback_backend`; `sluice/renderers/` holds two
+   `sluice/backends/` holds the self-registering providers, chosen by each stage's `backend` key
+   (one per stage since #333); `sluice/renderers/` holds two
    (`template`, `script`), chosen by `cv.renderer`. Store and fetcher have one production
    implementation each (`vault`, `camofox`) and resolve through the identical registry —
    `tests/harness/` registers a fake fetcher and renderer and gets them back the same way, which is
@@ -95,10 +96,11 @@ testable against golden fixtures with no browser. Critical if crossed.
    the registry already exists (constructing a renderer, store or backend directly instead of
    resolving it), or that grows a SECOND selection mechanism beside it (an `if`/`elif` on a config
    string, a bespoke factory for one seam). A new implementation should be a self-registering module
-   and nothing else. The backend seam is the one with extra shape, deliberately: a role layer
-   (auto/primary/fallback, in `Sluice.backend()`) sits above the provider lookup and its factory
-   takes resolved construction params rather than the config object, so it does not go through
-   `Sluice._resolve` like the others — that is existing design, not drift.
+   and nothing else. The backend seam is the one with extra shape, deliberately: `Sluice.backend()`
+   wraps the stage's one provider in `RetryingBackend` and its factory takes resolved construction
+   params rather than the config object, so it does not go through `Sluice._resolve` like the
+   others — that is existing design, not drift. A change that reintroduces a second provider behind
+   the first (a fallback) is drift: #333 removed exactly that.
 
    The premature-abstraction check still bites OUTSIDE the seams: do not let a PR add a factory,
    registry or strategy interface for a single implementation of something that is not a seam.
