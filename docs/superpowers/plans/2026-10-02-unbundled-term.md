@@ -1458,9 +1458,9 @@ GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main
 git log --oneline origin/main..HEAD
 ```
 
-Expected: five commits, in this order:
+Expected, in this order:
 
-1. `docs(spec)` ×2
+1. `docs(spec)` ×2, then `docs(plan)` (plus `docs(spec)`/`docs(plan)` revisions, if any)
 2. `test(cv)`
 3. `fix(cv)`
 4. `feat(cv): report terms CV prose names but no evidence carries (#194)`
