@@ -622,7 +622,8 @@ inside the write transform via `require_blank` -- unlike `leads expire`'s equiva
 refusal, which is still decided from a snapshot.
 
 **Empty config means abstain, not match-nothing.** Every preference gate (`accept_titles`,
-`target_locations`, `reject_companies`, `relevance_keep`/`relevance_drop`, pay floors) defaults to
+`target_locations`, `reject_companies`, `relevance_keep`/`relevance_drop`, `listing_languages`, pay
+floors) defaults to
 empty/zero, and an unconfigured gate passes every lead through. Getting this backwards silently bins
 someone's entire job hunt — it has happened once already (`672ad2a`), and
 `tests/test_sluice_neutral_defaults.py` now fails the build if it recurs. `lead_ttl_days` (#9) is

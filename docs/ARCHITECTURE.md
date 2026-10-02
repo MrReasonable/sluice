@@ -196,13 +196,14 @@ Shared by every sub-app:
   the one tolerated empty: that is a real first-run state.
 - `resilience.py`: retry-with-backoff, hard timeout, and rate-limit
   precheck helpers that wrap each source's I/O.
-- `health.py`, `dossier.py`, `leads.py`, `log.py`, `relevance.py`, `safeout.py`:
+- `health.py`, `dossier.py`, `language.py`, `leads.py`, `log.py`, `relevance.py`, `safeout.py`:
   health reporting, per-lead dossier assembly (`DossierCache`, keyed on a stable url
   hash rather than the company/role slug so a #109 mid-run company mutation
   does not double-fetch; also captures `page_title`/`structured_data` for
   triage's tier-2 AND tier-3 company resolution, both excluded from what
-  `slim()` sends the judge), the source-agnostic `Lead` model, logging, and
-  the relevance gate. `safeout.py` (#280) is the terminal output escaping
+  `slim()` sends the judge), the listing-language gate (#312: drops a title in a
+  non-Latin script none of `listing_languages` writes -- script, never language), the
+  source-agnostic `Lead` model, logging, and the relevance gate. `safeout.py` (#280) is the terminal output escaping
   policy: the control-character class, and the stream wrapper `cli.py::main`
   installs.
   Re-keying `cache_key` makes every dossier cached before this version
@@ -317,7 +318,8 @@ whichever neighbour it was written next to:
 
 1. **ingest** (`sluice/ingest/`): declarative sources (`base.Source`, split
    into an impure `fetch` and a pure `parse`) driven by `engine.run()`,
-   which dedups via `core.seendb`, gates via `core.relevance`, and writes
+   which dedups via `core.seendb`, gates via `core.relevance` and `core.language` (one
+   predicate, `ingest/engine.py::_keep_lead`, so a title is judged in one place), and writes
    through a sink (vault or JSON) to the lead store.
 
    Per-source **health** (`core/health.py`) is a run history + drift

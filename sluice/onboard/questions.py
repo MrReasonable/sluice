@@ -51,6 +51,16 @@ def parse_csv(raw: str) -> list:
     return [s.strip() for s in raw.split(",") if s.strip()]
 
 
+def parse_languages(raw: str) -> list:
+    """Comma-separated ISO 639-1 codes, checked by the SAME function the config loader uses, so
+    `init` cannot write a `listing_languages` the loader then refuses (#312)."""
+    from sluice.core.language import parse_listing_languages
+    try:
+        return parse_listing_languages(parse_csv(raw))
+    except ValueError as e:
+        raise BadAnswer(str(e)) from None
+
+
 def parse_int(raw: str) -> int:
     text = raw.strip()
     if text.lower() in _BOOL_WORDS:
@@ -206,6 +216,16 @@ def catalogue(*, default_vault: str = "") -> tuple:
                              "(everything else dropped before triage)"),
         Question("relevance_drop", "Discard titles containing these words?", parse_csv,
                  ("relevance_drop",), "Cost", consequence="discard titles containing: {value}"),
+        Question("listing_languages",
+                 "Languages you read job adverts in, as ISO 639-1 codes, comma-separated?",
+                 parse_languages, ("listing_languages",), "Cost",
+                 hint="Drops a listing whose TITLE uses a non-Latin script none of these "
+                      "languages is written in (e.g. Chinese or Arabic for an English-only "
+                      "reader), before anything else runs. Latin letters never cause a drop, and "
+                      "languages sharing an alphabet cannot be told apart, so `en` keeps a "
+                      "German title. Leave blank to keep every language.",
+                 consequence="drop listings whose title uses a script none of these is written "
+                             "in: {value}"),
 
         Question("backend", f"LLM backend -- {', '.join(backends)}?",
                  parse_choice(*backends),
