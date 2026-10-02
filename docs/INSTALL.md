@@ -285,13 +285,18 @@ job-sluice --version
 
 Use the **fully-qualified** name. Homebrew 6 requires explicit trust for non-official taps, and
 installing a fully-qualified formula is what grants trust to that one item — it taps and installs
-in a single command. Installing by short name needs the trust granted first:
+in a single command. Installing by short name needs the trust granted first; grant it before
+tapping:
 
 ```bash
-brew tap mrreasonable/tap
 brew trust --formula mrreasonable/tap/job-sluice
+brew tap mrreasonable/tap
 brew install job-sluice
 ```
+
+`brew trust` accepts a formula whose tap is not there yet. Tapping first works on current stable
+Homebrew, but a development build has been seen to refuse the tap itself with `Refusing to load
+formula ... from untrusted tap`, leaving no tap behind; trusting first avoided that.
 
 The formula installs every extra and declares its own `python@3.x`, `pango` and the rest, so PDF
 rendering works with no further setup and **no `DYLD_FALLBACK_LIBRARY_PATH` export** — see
