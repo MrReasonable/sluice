@@ -167,6 +167,15 @@ baseline_rel: My CV/CV.md
 relevance_keep: ['horticultural consultant']   # keep only titles containing one of these
 relevance_drop: ['sport and exercise psychologist']   # ...then drop any containing one of these
 
+# Languages you read job adverts in, as ISO 639-1 codes (#312). A listing whose TITLE carries
+# letters in a non-Latin script none of them is written in is dropped at ingest, with the
+# relevance filter above -- so `[en]` drops a Chinese, Arabic or Cyrillic title, and `[en, zh]`
+# keeps Chinese ones. It reads the script, not the language: `[en]` KEEPS a German or French
+# title, and Latin letters never cause a drop (tech names are Latin everywhere). Empty by default
+# -> every language kept. An unknown code fails to load. Quote Norwegian ('no'): YAML reads a bare
+# `no` as false.
+# listing_languages: [en]   # <- uncomment and set YOUR OWN
+
 # Words that decorate a location without locating it (a work-mode, a board's furniture),
 # subtracted before #5 decides whether two same-title postings are the same job. Empty by
 # default -> nothing subtracted. Uncomment to, e.g., merge a "Remote" and a city listing.

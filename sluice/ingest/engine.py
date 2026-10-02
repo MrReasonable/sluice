@@ -15,6 +15,7 @@ from sluice.core.health import (
     login_wall,
 )
 from sluice.core.log import get_logger
+from sluice.core.language import is_readable
 from sluice.core.relevance import is_relevant
 from sluice.core.resilience import run_with_timeout, with_retry
 from sluice.ingest.base import searches_for
@@ -26,6 +27,14 @@ _log = get_logger("engine")
 # from 0 to 1, which is noise, not signal. Measured (#156): a floor-less version false-
 # alarmed 40-74% of wttj's healthy 30-run windows; at this floor, ~0-2%.
 _RATE_ROW_FLOOR = 8
+
+
+def _keep_lead(lead, cfg) -> bool:
+    """The ingest-time title gates, each abstaining when unconfigured: the coarse relevance
+    filter, then the listing-language filter (#312). One predicate, so a title is judged in one
+    place in the run loop and a third title gate has an obvious home."""
+    return (is_relevant(lead.title, cfg)
+            and is_readable(lead.title, getattr(cfg, "listing_languages", None)))
 
 
 def _lead_rates(leads) -> dict:
@@ -280,7 +289,7 @@ def _run_source(source, ctx, seen_keys, fresh, result, fetch_timeout, retries):
                 explained.setdefault(key, signals[key])
         for lead in leads:
             key = lead.dedup_key
-            if key in seen_keys or not is_relevant(lead.title, ctx.config):
+            if key in seen_keys or not _keep_lead(lead, ctx.config):
                 continue
             seen_keys.add(key)  # de-dup within the run too, across searches/sources
             fresh.append(lead)

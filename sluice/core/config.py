@@ -8,6 +8,7 @@ import os
 from dataclasses import dataclass, field, fields
 
 from sluice.core.timeouts import DEFAULT_TIMEOUT
+from sluice.core.language import parse_listing_languages
 from sluice.core.leads import LEAD_LAYOUTS, Lead
 from sluice.core.paths import config_file
 from sluice.core.urlguard import parse_allow_hosts
@@ -93,6 +94,11 @@ class Config:
     relevance_keep: list = field(default_factory=list,
         metadata={"gate_role": "abstain"})
     relevance_drop: list = field(default_factory=list,
+        metadata={"gate_role": "abstain"})
+    # Languages the user reads listings in, as ISO 639-1 codes (#312): a title carrying a letter
+    # in a script none of them writes is dropped at ingest (`core/language.py`). Personal, so
+    # empty by default, and empty keeps everything -- a wrong default would bin a whole market.
+    listing_languages: list = field(default_factory=list,
         metadata={"gate_role": "abstain"})
     # Words that decorate a location without locating it, subtracted before #5 compares
     # two postings for a split. Empty by default -> nothing subtracted (abstain).
@@ -978,6 +984,7 @@ def load_config(path: str | None = None) -> Config:
                                            "relevance_keep"),
                   relevance_drop=_str_list(data.get("relevance_drop"),
                                            "relevance_drop"),
+                  listing_languages=parse_listing_languages(data.get("listing_languages")),
                   location_noise_words=_str_list(data.get("location_noise_words"),
                                                  "location_noise_words"),
                   dedupe_title_noise_words=_str_list(data.get("dedupe_title_noise_words"),

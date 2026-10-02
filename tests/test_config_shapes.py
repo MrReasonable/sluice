@@ -336,7 +336,7 @@ def test_every_container_field_in_every_loader_is_guarded(tmp_path):
     # 0 for it would be indistinguishable from discovery breaking, so its coverage is the
     # assertion below instead -- if it ever gains one, this dict grows a key and the
     # per-block floors here stop describing reality.
-    expected = {"root": 7, "triage": 5, "cv": 5, "track": 2}
+    expected = {"root": 8, "triage": 5, "cv": 5, "track": 2}
     assert seen == expected, (
         f"container-field discovery changed: {seen} != {expected}.\n"
         "If a field was ADDED, update this map. If a block VANISHED, discovery has broken "
