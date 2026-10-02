@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [3.1.0](https://github.com/MrReasonable/sluice/compare/v3.0.0...v3.1.0) (2026-10-02)
+
+
+### Features
+
+* **ingest:** drop listings whose title is in a script the user does not read ([0c38010](https://github.com/MrReasonable/sluice/commit/0c380102e7cdc7f826f370fa561b38f8d0af581a))
+
+
+### Documentation
+
+* **install:** trust the formula before tapping on the short-name Homebrew route ([209de62](https://github.com/MrReasonable/sluice/commit/209de62bf140e52f8f4d04bfa0c73708873045e9))
+
 ## [3.0.0](https://github.com/MrReasonable/sluice/compare/v2.19.1...v3.0.0) (2026-10-01)
 
 
