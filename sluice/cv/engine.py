@@ -407,9 +407,9 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                      dossier_failed=dossier_failed, skills_unreadable=skills_unreadable)
 
         retry_msgs, cv_text, violations, slop_err = None, "", [], []
-        # The last attempt that cleared the HARD gate, as `(cv_text, style_msgs,
-        # voice_flags)`, or None if no attempt ever did. Retaining it is what lets a
-        # STYLE or VOICE finding drive the retry WITHOUT being able to bin a lead
+        # The hard-clean attempt with the FEWEST style/voice findings (ties go to the later
+        # one), as `(cv_text, style_msgs, voice_flags)`, or None if no attempt ever did.
+        # Retaining it is what lets a STYLE or VOICE finding drive the retry WITHOUT being able to bin a lead
         # (#167): attempt 2 is an unconstrained, non-deterministic compose, so a loop
         # that threw away a hard-clean draft to chase a phrase would lose the lead
         # whenever the retry came back worse -- a CV that renders today. The findings
@@ -756,9 +756,18 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                         _log.warning("voice check for %s failed (%s); treating as "
                                      "clean", note.ref, e)
                         voice_flags = []
-                best = (cv_text, style_msgs, voice_flags)
-                # Beside `best`, so the two cannot disagree about which attempt was kept.
-                record.retained(attempt)
+                # Keep the hard-clean draft with FEWER style/voice findings, not merely the
+                # LAST one (#194, spec §2.3). Reassigning on every hard-clean attempt let a
+                # style-WORSE retry replace a cleaner attempt 1, and with `style_hold` off
+                # nothing then flagged it. A TIE keeps the later draft: it was composed with
+                # the earlier findings in front of it, and keeping it is the pre-#194
+                # behaviour, so only a strictly worse retry is refused.
+                found = len(style_msgs) + len(voice_flags)
+                if best is None or found <= len(best[1]) + len(best[2]):
+                    best = (cv_text, style_msgs, voice_flags)
+                    # Inside the same condition, so `run.json`'s `retained_attempt` names
+                    # the draft actually kept rather than the last one examined.
+                    record.retained(attempt)
                 if not style_msgs and not voice_flags:
                     break
             # ALL THREE tiers reach the composer. A style or voice finding is worth one

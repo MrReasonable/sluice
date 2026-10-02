@@ -20,8 +20,8 @@ from datetime import datetime
 from sluice.core.backends import BackendError, Completion
 from sluice.cv.engine import run_batch, run_one
 from tests.test_cv_engine import (
-    CLEAN_CV, ENTRIES, HARD_DIRTY_CV, STYLE_DIRTY_CV, FakeCache, FakeRenderer, FakeVault,
-    Note, _cfg)
+    CLEAN_CV, ENTRIES, HARD_DIRTY_CV, STYLE_DIRTIER_CV, STYLE_DIRTY_CV, FakeCache,
+    FakeRenderer, FakeVault, Note, _cfg)
 
 _LEAD_FM = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}
 # `cv/engine.py::_slug` of the company and role above: the per-lead working directory the
@@ -222,6 +222,24 @@ def test_the_rendered_text_is_the_retained_draft_even_when_a_later_attempt_was_w
 
     lead = _lead_dir(tmp_path)
     assert _text(lead / "cv.attempt-2.md") == HARD_DIRTY_CV
+    assert _text(lead / "cv.rendered.md") == STYLE_DIRTY_CV
+    run = _run_record(tmp_path)
+    assert run["attempt_count"] == 2
+    assert run["retained_attempt"] == 1
+
+
+def test_retained_attempt_names_the_draft_kept_when_a_hard_clean_retry_is_style_worse(
+        tmp_path):
+    """Both attempts clear the HARD gate, and attempt 2 carries MORE style findings, so
+    the engine keeps attempt 1 (#194, spec §2.3). `retained_attempt` must name that draft,
+    not the last hard-clean one EXAMINED: the HARD-dirty row above cannot tell the two
+    apart, because a HARD-dirty attempt is never a retention candidate at all."""
+    r, _be, rend = _run(tmp_path, [STYLE_DIRTY_CV, STYLE_DIRTIER_CV])
+    assert r.status == "rendered"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+
+    lead = _lead_dir(tmp_path)
+    assert _text(lead / "cv.attempt-2.md") == STYLE_DIRTIER_CV
     assert _text(lead / "cv.rendered.md") == STYLE_DIRTY_CV
     run = _run_record(tmp_path)
     assert run["attempt_count"] == 2
