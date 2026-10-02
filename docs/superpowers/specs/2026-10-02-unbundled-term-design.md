@@ -414,6 +414,13 @@ not reported by this check. Row 2 still reports the SKILLS one.
   never a demand to supply one, which is what separates it from the LOCATION refusal.
 - **The plural fold is English-shaped.** A non-English CV gets less suppression and more
   retries, never fewer findings.
+- **The plural fold is one-directional.** It only removes a trailing `s` from the CV's
+  candidate, so a bundle carrying `Examplequerys` and a CV naming `Examplequery` reports the
+  singular. It costs one retry and never a lead.
+- **Quote and ellipsis-character boundaries read as mid-sentence.** A capitalised word after
+  a closing quote (`"done." Then`) or after the single-character ellipsis (U+2026) is not
+  seen as sentence-initial, so it is reported as an arm (iii) candidate. Three ASCII dots end
+  in `.` and do read as a sentence end. It costs one retry and never a lead.
 - **Spelling variants fire** (dotted vs undotted, hyphenated vs joined). They are answerable
   by adopting the bundle's spelling.
 - **Abbreviations with internal capitals and a missing space after a full stop also fire.**

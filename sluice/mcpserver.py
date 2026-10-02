@@ -77,21 +77,23 @@ _LIST_LEADS_CONTENT_WARNING = (
 # #167 Task 16 widens this to cover `slop` and `voice_flags` too, both new readers of
 # CvResult fields the retry loop already computed. `voice_flags` is the easy call --
 # it is an LLM's own prose about the CV, exactly `violations`/`audit_flags`'s shape.
-# `slop` is less obvious: cv/slop.py's matcher is a plain regex, not a model call, so
-# it is NOT model-derived in the sense the OTHER three are. But `violations` already
-# sets the precedent that matters here -- cv/validate.py's STRUCTURAL checks are just
-# as deterministic and already carry this same warning, because what makes a finding
-# worth warning about is not whether ITS OWN classifier used an LLM, but whether the
-# VALUE it embeds does: every `slop` entry embeds an `[:80]`-truncated, verbatim
-# snippet of the LLM-composed CV text (cv/slop.py's `check_hard`/`check_phrases`), the
-# very text an attacker-controlled job description could have steered. A deterministic
-# detector wrapped around untrusted LLM output is still handing untrusted LLM output to
-# the caller -- so `slop` gets the identical warning, not a separate or absent one.
+# `slop` and `terms` (#194) are less obvious: cv/slop.py's and cv/terms.py's matchers are
+# plain code, not a model call, so neither is model-derived in the sense `audit_flags` and
+# `voice_flags` are. But `violations` already sets the precedent that matters here --
+# cv/validate.py's STRUCTURAL checks are just as deterministic and already carry this same
+# warning, because what makes a finding worth warning about is not whether ITS OWN
+# classifier used an LLM, but whether the VALUE it embeds does: every `slop` and `terms`
+# entry embeds a truncated, verbatim snippet of the LLM-composed CV text (cv/slop.py's
+# `check_hard`/`check_phrases`, and the term snippet cv/terms.py reports), the very text an
+# attacker-controlled job description could have steered. A deterministic detector wrapped
+# around untrusted LLM output is still handing untrusted LLM output to the caller -- so
+# `slop` and `terms` get the identical warning, not a separate or absent one.
 #
 # #329: `cv_signoff`'s framing entries are neither scraped nor LLM-composed page text, and
 # carry `_CV_SIGNOFF_FRAMING_WARNING` below instead.
 _CV_RUN_CONTENT_WARNING = (
-    f"Composed CV violations/audit_flags/slop/voice_flags {UNTRUSTED_DERIVED_CONTENT_WARNING}")
+    f"Composed CV violations/audit_flags/slop/voice_flags/terms "
+    f"{UNTRUSTED_DERIVED_CONTENT_WARNING}")
 _CV_SIGNOFF_CONTENT_WARNING = (
     f"The flagged claims {UNTRUSTED_DERIVED_CONTENT_WARNING}")
 
@@ -464,8 +466,8 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> di
     the ONLY route past cv/engine.py's fabrication gate (decision 2). Always a REAL
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
     (decision 14). The composed CV text itself is never returned in the response,
-    only violations/audit_flags/slop/voice_flags/served/dossier_failed/skills_unreadable/
-    artefacts_failed -- it's an LLM
+    only violations/audit_flags/slop/voice_flags/terms/served/dossier_failed/
+    skills_unreadable/artefacts_failed -- it's an LLM
     document derived from an attacker-controlled job description, and echoing it back
     would be a large, unnecessary step past what the response needs to convey. Write
     tool.
@@ -523,7 +525,11 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> di
         out["slop"] = r.slop
     if r.voice_flags:
         out["voice_flags"] = r.voice_flags
-    if r.violations or r.audit_flags or r.slop or r.voice_flags:
+    # #194: cv/terms.py's unbundled-term findings, their own CvResult field and so their
+    # own key, sparse like the rest.
+    if r.terms:
+        out["terms"] = r.terms
+    if r.violations or r.audit_flags or r.slop or r.voice_flags or r.terms:
         out["content_warning"] = _CV_RUN_CONTENT_WARNING
     return out
 
@@ -894,7 +900,7 @@ def build_server(config, write: bool = False):
             configured provider for this call only; omit it to use the configured one.
             There is no fallback provider. The composed text
             itself is never returned, only violations/audit_flags/slop/voice_flags/
-            served/dossier_failed/skills_unreadable/artefacts_failed."""
+            terms/served/dossier_failed/skills_unreadable/artefacts_failed."""
             return cv_run(sluice, lead, backend=backend)
 
         @mcp_server.tool(name="cv_signoff")

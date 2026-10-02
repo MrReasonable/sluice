@@ -1,12 +1,15 @@
 # sluice/cv/engine.py
 """CV tailoring orchestrator: select -> bundle -> compose -> gate -> render -> serve
 -> record -> notify. Composition is a bounded backend call over the closed verified
-bundle. The gate has two tiers: a HARD one (fabrication, structure, the renderer's own
-precheck, em dashes) and a SCOPED STYLE one (#167: AI-slop phrases, in PROFILE prose and
-WORK bullets only). Either triggers exactly one retry with the findings fed back, and the
-loop RETAINS the last HARD-clean draft -- so the lead is skipped (never rendered ungated)
-when no attempt ever cleared the hard tier, and never merely over a phrase. dry_run
-computes and reports, and writes nothing to the store, the renderer or served_dir.
+bundle. The gate has two tiers: a HARD one (fabrication, structure, the renderer's own precheck, em
+dashes) and a SCOPED STYLE one (#167: AI-slop phrases and unbundled terms, #194, in PROFILE
+prose and WORK bullets only). Either triggers exactly one retry with the findings fed back,
+and the loop RETAINS the HARD-clean draft with the fewest style/voice findings (a tie keeps
+the later draft, and an attempt whose voice check failed never displaces one whose voice was
+measured) -- so the
+lead is skipped (never rendered ungated) when no attempt ever cleared the hard tier, and
+never merely over a phrase. dry_run computes and reports, and writes nothing to the store,
+the renderer or served_dir.
 
 It DOES write the run's diagnostic artefacts (cv/artefacts.py), and that is decided rather
 than inherited. A dry run already spends a composition and an audit call per lead; the
@@ -15,9 +18,9 @@ but never the draft they were found in; and `output_dir` is a scratch workspace 
 downstream reads, so no pipeline state moves. run.json records `dry_run: true`, and a dry run
 clears and replaces an earlier real run's artefacts for the same slug like any later run.
 
-An OPT-IN third signal (`cv.voice_check`, cv/voice.py) rides the same retry once the HARD
+An OPT-IN model-judged check (`cv.voice_check`, cv/voice.py) rides the same retry once the HARD
 tier is clean: a model judgment of the draft's VOICE, for the AI-tell phrasing a fixed
-phrase list cannot catch. It is the SECOND HALF of the STYLE tier and is scoped the same
+phrase list cannot catch. It is a member of the STYLE tier and is scoped the same
 way -- the model is shown the same PROFILE/WORK lines the phrase list is handed, never
 the whole document. Off by default and fails open on a backend error -- see the comment
 at its call site below.
@@ -53,6 +56,7 @@ from sluice.cv.audit import run_audit, unsupported_claims
 # certificate or education line is answerable only by renaming the thing it names.
 from sluice.cv.slop import check_hard as _slop_hard
 from sluice.cv.slop import check_phrases as _slop_phrases
+from sluice.cv.terms import unbundled_terms as _unbundled_terms
 from sluice.cv.validate import section_spans, validate as _validate
 from sluice.cv.voice import run_voice
 
@@ -86,18 +90,18 @@ class CvResult:
     lead: str
     status: str
     violations: list = field(default_factory=list)
-    # `slop`: the deterministic slop-linter's OWN findings (cv/slop.py's HARD tier --
-    # em dash / "--" -- plus the scoped STYLE tier of AI-tell phrases), each already
-    # formatted "SLOP <label>: <snippet>" so a reader never has to know which tier
-    # produced it. On skipped-gate this is the LAST attempt's findings (both tiers,
-    # mirroring `violations`/`slop_err` in that branch's own comment); on every other
-    # status it is the RETAINED (hard-clean) draft's STYLE tier alone -- its HARD tier
-    # is empty by construction, since `best` is only set once `hard_msgs` (which
-    # includes the HARD slop entries) is empty. Distinct from `audit_flags`, which is
-    # the model-judged FABRICATION verdict, and from `voice_flags` below, which is the
-    # model-judged VOICE verdict -- three different judges, kept apart rather than
-    # merged (#167, Task 16: this field had NO reader from the day it was added,
-    # which is the same "computed and discarded" defect #167 opened over).
+    # `slop`: cv/slop.py's OWN findings, all `SLOP <label>: <snippet>` -- its HARD tier
+    # (em dash / "--") plus its phrase stems, the deterministic STYLE tier. On
+    # skipped-gate this is the LAST attempt's findings (both tiers, mirroring
+    # `violations`/`slop_err` in that branch's own comment); on every other status it is
+    # the RETAINED (hard-clean) draft's phrase findings alone -- its HARD tier is empty by
+    # construction, since `best` is only set once `hard_msgs` (which includes the HARD
+    # slop entries) is empty. Distinct from `audit_flags`, which is the model-judged
+    # FABRICATION verdict, from `voice_flags` below, which is the model-judged VOICE
+    # verdict, and from `terms` below, cv/terms.py's unbundled-term findings -- separate
+    # judges, kept apart rather than merged (#167, Task 16: this field had NO reader
+    # from the day it was added, which is the same "computed and discarded" defect #167
+    # opened over).
     slop: list = field(default_factory=list)
     audit_flags: list = field(default_factory=list)
     # The model-judged VOICE check's findings (cv/voice.py, opt-in via `cv.voice_check`)
@@ -108,6 +112,12 @@ class CvResult:
     # cleared, or the model found nothing -- an empty list here does not by itself
     # prove the reader works; see the populated-case tests instead.
     voice_flags: list = field(default_factory=list)
+    # cv/terms.py's unbundled-term findings (#194), `UNBUNDLED TERM '<term>': ...`, for
+    # the same draft `slop` describes: the RETAINED one, or on skipped-gate the LAST
+    # attempt. Its OWN field rather than riding in `slop` behind a message prefix, for
+    # the reason `voice_flags` is: a reader would otherwise parse a string back into a
+    # kind. Empty whenever `cv.term_check` is off.
+    terms: list = field(default_factory=list)
     served: str | None = None
     backend: str | None = None
     # #18: set when the lead's job description did not arrive, and composition proceeded
@@ -390,6 +400,11 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # Before the loop because `bundle_sources` raises on a malformed bundle, and a
         # fault knowable here must not cost an LLM compose first.
         sources = _bundle.bundle_sources(b)
+        # The unbundled-term check's vocabulary (#194), from the SAME `b`, beside
+        # `sources` for the reason given above. A separate value and never a
+        # `BundleSources` field: it carries the Skills Inventory framing, which no HARD row
+        # may license -- see `cv/bundle.py::mention_vocab`.
+        vocab = _bundle.mention_vocab(b)
 
         # Composition starts here, and so do the run's diagnostic artefacts. The working
         # directory is bound NOW rather than beside the render call, because the runs that
@@ -407,22 +422,29 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                      dossier_failed=dossier_failed, skills_unreadable=skills_unreadable)
 
         retry_msgs, cv_text, violations, slop_err = None, "", [], []
-        # The hard-clean attempt with the FEWEST style/voice findings (ties go to the later
-        # one), as `(cv_text, style_msgs, voice_flags)`, or None if no attempt ever did.
-        # Retaining it is what lets a STYLE or VOICE finding drive the retry WITHOUT being able to bin a lead
-        # (#167): attempt 2 is an unconstrained, non-deterministic compose, so a loop
-        # that threw away a hard-clean draft to chase a phrase would lose the lead
-        # whenever the retry came back worse -- a CV that renders today. The findings
-        # ride along with the draft they were found IN, because they describe that text
-        # and no other; re-deriving them later from whatever `cv_text` happens to hold
-        # is the mistake the rebind below exists to prevent.
+        # The hard-clean attempt with the FEWEST style/voice findings (ties go to the
+        # later one, and an attempt whose voice check failed never displaces one whose
+        # voice was measured), as `(cv_text, slop_msgs, term_msgs, voice_flags)`, or None
+        # if no attempt ever did. Retaining it is what lets a STYLE or VOICE finding drive the
+        # retry WITHOUT being able to bin a lead (#167): attempt 2 is an unconstrained,
+        # non-deterministic compose, so a loop that threw away a hard-clean draft to
+        # chase a phrase would lose the lead whenever the retry came back worse -- a CV
+        # that renders today. The findings ride along with the draft they were found IN,
+        # because they describe that text and no other; re-deriving them later from
+        # whatever `cv_text` happens to hold is the mistake the rebind below exists to
+        # prevent. Slop and term findings are SEPARATE members (#194) because a
+        # `style_hold` hold tags each kind differently, and only the loop knows which is
+        # which.
         #
-        # `voice_flags` is a THIRD tuple element, not folded into `style_msgs` with a
+        # `voice_flags` is its OWN tuple element, not folded into `style_msgs` with a
         # distinguishing prefix (Task 16 needs the two apart as `CvResult.voice_flags`
         # vs. the deterministic slop findings, the same way `audit_flags` already means
         # fabrication and nothing else -- prefixing would make Task 16 parse a string
         # back into a verdict, which is the fragile direction).
         best = None
+        # Whether `best`'s voice check RAN and returned, as opposed to being off, skipped
+        # on blank prose, or raising. Read only by the retention comparison below.
+        best_voice_measured = False
         # Numbered from 1 because the number is user-facing: it names the attempt's
         # artefact files (prompt.attempt-1.txt, cv.attempt-1.md) and run.json's
         # `retained_attempt`.
@@ -705,8 +727,16 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             # certificate lines (see the comment block above).
             profile_lines, work_lines, _skills_lines = section_spans(cv_text)
             scoped_lines = sorted(dict(profile_lines + work_lines).items())
-            style_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
-                          in _slop_phrases(scoped_lines, allow=cvcfg.slop_allow)]
+            slop_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
+                         in _slop_phrases(scoped_lines, allow=cvcfg.slop_allow)]
+            # The unbundled-term check (#194, cv/terms.py) over the SAME scoped lines: a
+            # term this prose names that nothing the composer was shown carries. Kept in
+            # its OWN list so a `style_hold` hold can tag it `term\t` from what the engine
+            # already knows, rather than re-parsing a message prefix later.
+            term_msgs = ([f"UNBUNDLED TERM {term!r}: named nowhere in your evidence: {snip}"
+                          for _ln, term, snip in _unbundled_terms(scoped_lines, vocab)]
+                         if cvcfg.term_check else [])
+            style_msgs = slop_msgs + term_msgs
             # The SAME scoped lines the deterministic half of the STYLE tier just read,
             # rejoined into a document for the model to judge (#167). Both halves of one
             # tier must see one set of lines: the scoping above exists because a style
@@ -726,7 +756,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             # that repeats `PROFILE` after `WORK EXPERIENCE` (see section_spans) does not
             # show the model the same line twice.
             scoped_text = "\n".join(text for _ln, text in scoped_lines)
-            voice_flags = []
+            voice_flags, voice_failed, voice_measured = [], False, False
             if not hard_msgs:
                 # Model-judged VOICE check (#167, cv/voice.py): a fixed phrase list
                 # cannot catch a novel AI-tell clause, which is the issue's own point
@@ -752,19 +782,41 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                     try:
                         _report, voice_flags = run_voice(
                             meter(usage, backend, "cv-voice", lead=note.slug), scoped_text)
+                        voice_measured = True
                     except Exception as e:
                         _log.warning("voice check for %s failed (%s); treating as "
                                      "clean", note.ref, e)
-                        voice_flags = []
+                        voice_flags, voice_failed = [], True
                 # Keep the hard-clean draft with FEWER style/voice findings, not merely the
                 # LAST one (#194, spec §2.3). Reassigning on every hard-clean attempt let a
                 # style-WORSE retry replace a cleaner attempt 1, and with `style_hold` off
                 # nothing then flagged it. A TIE keeps the later draft: it was composed with
                 # the earlier findings in front of it, and keeping it is the pre-#194
                 # behaviour, so only a strictly worse retry is refused.
+                #
+                # A voice check that RAISED failed open to no flags above, which counts as
+                # zero voice findings although nothing was judged. Left to the count, a
+                # retry whose check fell over would out-rank a draft whose voice findings
+                # were really MEASURED, and a style-worse draft could replace a cleaner one
+                # behind an outage. So an unmeasured attempt never replaces a measured one.
+                # With `voice_check` off neither side is ever measured, and the count alone
+                # decides, exactly as before.
+                #
+                # The guard is deliberately ONE-WAY. A MEASURED retry facing an UNMEASURED
+                # retained draft is judged on the count like any other draft: it wins with
+                # no more findings and loses with more. Refusing it outright would keep a
+                # draft nobody voice-judged over one that was, and preferring it outright
+                # would let a style-worse draft in on the strength of the other's outage.
+                # The count is the one fact both drafts genuinely have. `best_voice_measured`
+                # is set only once `run_voice` has RETURNED, so a raised check, a disabled one
+                # and an empty scoped region all read as unmeasured: when BOTH checks raised,
+                # the guard stays out of the way and the count decides there too.
                 found = len(style_msgs) + len(voice_flags)
-                if best is None or found <= len(best[1]) + len(best[2]):
-                    best = (cv_text, style_msgs, voice_flags)
+                if best is None or (
+                        found <= len(best[1]) + len(best[2]) + len(best[3])
+                        and not (voice_failed and best_voice_measured)):
+                    best = (cv_text, slop_msgs, term_msgs, voice_flags)
+                    best_voice_measured = voice_measured
                     # Inside the same condition, so `run.json`'s `retained_attempt` names
                     # the draft actually kept rather than the last one examined.
                     record.retained(attempt)
@@ -782,8 +834,8 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         if best is None:
             # No attempt was EVER hard-clean, which is the same fact the pre-#167 loop
             # tested for: it broke on the first clean attempt, so a non-empty gate list
-            # here meant every attempt had failed. `violations`, `slop_err` and
-            # `style_msgs` still describe the LAST attempt, exactly as `violations`
+            # here meant every attempt had failed. `violations`, `slop_err`, `slop_msgs`
+            # and `term_msgs` still describe the LAST attempt, exactly as `violations`
             # and `slop_err` did before -- this branch is reached only when no draft
             # was ever worth retaining, so there is no other attempt they could
             # sensibly describe.
@@ -798,7 +850,8 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             # `best is None` means that branch never ran to completion on any attempt.
             return CvResult(note.ref, "skipped-gate", violations=violations,
                             slop=[f"SLOP {lbl}: {snip}" for _ln, lbl, snip in slop_err]
-                                 + style_msgs,
+                                 + slop_msgs,
+                            terms=term_msgs,
                             voice_flags=voice_flags, backend=backend_used,
                             dossier_failed=dossier_failed,
                             skills_unreadable=skills_unreadable)
@@ -815,13 +868,13 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # one NAME; keep it that way rather than passing `best[0]` at a call site, which
         # is what would let a reader added later quietly miss it.
         #
-        # `style_msgs` and `voice_flags` are rebound with it, and have to be: each
+        # `slop_msgs`, `term_msgs` and `voice_flags` are rebound with it, and have to be: each
         # describes the retained draft and no other, so anything that gives a surviving
         # style or voice finding a consequence (Task 15's `cv.style_hold`, Task 16's
-        # `CvResult.voice_flags`) must read the retained TRIPLE. Taking either from
+        # `CvResult.voice_flags`) must read the retained tuple. Taking any of them from
         # whatever the loop's last iteration left behind would be the identical defect,
         # one line up.
-        cv_text, style_msgs, voice_flags = best
+        cv_text, slop_msgs, term_msgs, voice_flags = best
 
         # The audit is advisory to the MODEL (see audit.py: "NEVER blocks"), so a failure here
         # never prevents a CV that already passed the HARD gate from rendering. But whether
@@ -838,13 +891,14 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             _log.warning("advisory audit failed for %s: %s", note.ref, e)
             audit_flags, audit_unavailable = [], str(e)
         if dry_run:
-            # `slop=style_msgs, voice_flags=voice_flags` here and at every remaining
-            # CvResult(...) call below (Task 16): both describe the RETAINED draft (the
+            # `slop=slop_msgs, terms=term_msgs, voice_flags=voice_flags` here and at every
+            # remaining CvResult(...) call below (Task 16): all describe the RETAINED draft (the
             # rebind above), the same one `style_blockers` reads a few lines down for
             # `cv.style_hold` -- a dry run reports what a real run would have found, not
             # an empty placeholder. The HARD slop tier is not repeated here because it is
             # empty by construction on this path (see `slop`'s own field comment).
-            return CvResult(note.ref, "dry-run", slop=style_msgs, voice_flags=voice_flags,
+            return CvResult(note.ref, "dry-run", slop=slop_msgs, terms=term_msgs,
+                            voice_flags=voice_flags,
                             audit_flags=audit_flags, backend=backend_used,
                             dossier_failed=dossier_failed,
                             skills_unreadable=skills_unreadable)
@@ -874,14 +928,14 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # `require_signoff`: that flag's True default was chosen for FABRICATION, and
         # riding it would mean an unconfigured install withholds tailored_cv on ~40
         # case-insensitive stems out of the box (see CvConfig.style_hold's own comment).
-        # `style_msgs` and `voice_flags` both describe the RETAINED draft (the rebind
-        # above), and both are the STYLE tier (slop phrase matches plus the opt-in
-        # model-judged voice check, Task 14) -- a voice-only finding must hold exactly
-        # like a slop-phrase one, so both lists feed this the same way. One inherited
-        # note from Task 13: the loop keeps the LAST hard-clean draft, so a retry that is
-        # hard-clean but carries MORE style findings than a cleaner attempt 1 supersedes
-        # it here too -- not a safety issue (both cleared the hard gate), but it means
-        # this hold can fire on a draft that was not the least-style-dirty one composed.
+        # `slop_msgs`, `term_msgs` and `voice_flags` all describe the RETAINED draft (the
+        # rebind above), and all are the STYLE tier (slop phrase matches, the
+        # unbundled-term findings, #194, and the opt-in model-judged voice check, Task
+        # 14) -- a voice-only or term-only finding must hold exactly
+        # like a slop-phrase one, so every one of those lists feeds this the same way. The retained
+        # draft is the hard-clean one with the FEWEST such findings (#194; a tie keeps the later
+        # draft, and an attempt whose voice check failed never displaces one whose voice was
+        # measured), so this hold fires on the retained draft, never on a worse retry.
         #
         # Each finding becomes its own entry in the SAME flat claims array the
         # fabrication hold already writes -- hold_for_signoff's `claims` parameter stays
@@ -889,18 +943,22 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # core/app.py reads it back as `parsed if isinstance(parsed, list) else
         # [str(parsed)]`. A wrapped `{"kind": ..., "claims": [...]}` object would
         # therefore collapse into ONE bogus claim string -- the kind has to live on each
-        # ENTRY instead, as a "style\t" prefix. An entry with NEITHER that prefix nor
-        # #329's "framing\t" tag is exactly the shape every hold stamped before this
-        # change used (a raw audit verdict line, e.g. "unsupported\t..."), and
-        # sluice/cli.py's sign-off prompt keeps today's wording for it unchanged -- a
-        # pre-existing hold must not be re-described by this upgrade.
+        # ENTRY instead, as a kind tag prefixing the entry (`style\t` above, among
+        # others). `sluice/cli.py::_print_signoff_claims` is where the tags are split, and
+        # it is the roster of them. An entry carrying none of those tags is exactly the
+        # shape every hold stamped before tagging existed (a raw audit verdict line, e.g.
+        # "unsupported\t..."), and the sign-off prompt keeps today's wording for it
+        # unchanged -- a pre-existing hold must not be re-described by this upgrade.
         #
         # #329's `framing\t` entries (core/leads.py::framing_entries) are the triage notes
         # the composer was given, appended AFTER the blockers. They come from the same
         # `framing` tuple the compose call received, never a re-read of `fm`, so the
         # reviewer is shown what the composer saw. They never cause a hold: the condition
         # stays `blockers`.
-        style_blockers = ([f"style\t{msg}" for msg in style_msgs + voice_flags]
+        # `term\t` (#194) names a probable INVENTION, which the sign-off prompt must not
+        # describe as a "style/voice concern"; cli.py prints it under its own heading.
+        style_blockers = ([f"style\t{msg}" for msg in slop_msgs + voice_flags]
+                          + [f"term\t{msg}" for msg in term_msgs]
                           if cvcfg.style_hold else [])
         unaudited = [f"unaudited\t{audit_unavailable}"] if audit_unavailable else []
         blockers = (
@@ -918,12 +976,12 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                 note.ref, pending=f"{served} ({date.today().isoformat()})",
                 claims=json.dumps(blockers + framing_entries(framing)))
             if not held:
-                return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
-                                voice_flags=voice_flags, audit_flags=audit_flags,
+                return CvResult(note.ref, "skipped-has-cv", slop=slop_msgs,
+                                terms=term_msgs, voice_flags=voice_flags, audit_flags=audit_flags,
                                 backend=backend_used, dossier_failed=dossier_failed,
                                 skills_unreadable=skills_unreadable)
-            return CvResult(note.ref, "needs-signoff", slop=style_msgs,
-                            voice_flags=voice_flags, audit_flags=audit_flags,
+            return CvResult(note.ref, "needs-signoff", slop=slop_msgs,
+                            terms=term_msgs, voice_flags=voice_flags, audit_flags=audit_flags,
                             served=served, backend=backend_used, dossier_failed=dossier_failed,
                                 skills_unreadable=skills_unreadable)
         if served:
@@ -934,11 +992,12 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                 # A CV appeared for this lead during our compose+render window; do not clobber
                 # it. The served PDF we rendered is left in served_dir (it passed the gate);
                 # only the note pointer is withheld. See #16 cv long-window.
-                return CvResult(note.ref, "skipped-has-cv", slop=style_msgs,
-                                voice_flags=voice_flags, audit_flags=audit_flags,
+                return CvResult(note.ref, "skipped-has-cv", slop=slop_msgs,
+                                terms=term_msgs, voice_flags=voice_flags, audit_flags=audit_flags,
                                 backend=backend_used, dossier_failed=dossier_failed,
                                 skills_unreadable=skills_unreadable)
-        return CvResult(note.ref, "rendered", slop=style_msgs, voice_flags=voice_flags,
+        return CvResult(note.ref, "rendered", slop=slop_msgs, terms=term_msgs,
+                        voice_flags=voice_flags,
                         audit_flags=audit_flags, served=served, backend=backend_used,
                         dossier_failed=dossier_failed,
                         skills_unreadable=skills_unreadable)

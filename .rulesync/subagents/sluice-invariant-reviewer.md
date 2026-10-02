@@ -71,8 +71,9 @@ normalized or overwritten instead of passed through untouched.
 number in a bullet appears in a cited entry. A non-empty violation list **blocks rendering**.
 The engine retries composition exactly once, feeding back the HARD violations plus any
 surviving STYLE/VOICE finding (#167) -- and skips the lead only when **no** attempt ever
-cleared the HARD tier; the retry loop retains the last HARD-clean draft, so a hard-dirty
-second attempt renders that retained draft rather than skipping it.
+cleared the HARD tier; the retry loop retains the HARD-clean draft with the fewest STYLE/VOICE
+findings (a tie keeps the later draft, and an attempt whose voice check failed never displaces one
+whose voice was measured), so a hard-dirty second attempt renders that retained draft rather than skipping it.
 
 **Critical if:** any path renders, serves, or stages a CV with violations; the gate is
 downgraded to a warning; the retry becomes unbounded; the gate is made non-deterministic or

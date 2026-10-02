@@ -328,7 +328,8 @@ def test_call_tool_cv_run_round_trips_slop_and_voice_flags_through_real_json(
         "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
         served="Example_CV_deadbeef.pdf",
         slop=["SLOP leverage: I leverage strong delivery patterns."],
-        voice_flags=["flag\tThis reads like a press release."])
+        voice_flags=["flag\tThis reads like a press release."],
+        terms=["UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: x"])
     monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
 
     async def _run():
@@ -343,6 +344,8 @@ def test_call_tool_cv_run_round_trips_slop_and_voice_flags_through_real_json(
     payload = json.loads(out.content[0].text)
     assert payload["slop"] == ["SLOP leverage: I leverage strong delivery patterns."]
     assert payload["voice_flags"] == ["flag\tThis reads like a press release."]
+    assert payload["terms"] == [
+        "UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: x"]
     assert UNTRUSTED_DERIVED_CONTENT_WARNING in payload["content_warning"]
 
 

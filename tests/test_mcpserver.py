@@ -948,6 +948,27 @@ def test_cv_run_tool_carries_slop_and_voice_flags_under_the_untrusted_warning(
     assert UNTRUSTED_DERIVED_CONTENT_WARNING in out["content_warning"]
 
 
+def test_cv_run_tool_carries_terms_under_the_untrusted_warning(monkeypatch, tmp_path):
+    """F6: the unbundled-term findings are their own `CvResult.terms` field, projected
+    like `voice_flags` -- sparse, and under the SAME warning, since each embeds a verbatim
+    snippet of the LLM-composed CV. The result carries terms ALONE, so the warning cannot
+    be present only because some other list was populated."""
+    from sluice.cv.engine import CvResult
+
+    term = "UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: on Examplequery"
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf", terms=[term])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    app = _cv_app(Vault(str(tmp_path)))
+    out = cv_run(app, "Example Foundry - Analyst")
+    assert out["terms"] == [term]
+    assert "slop" not in out
+    assert out["content_warning"] == mcpserver_mod._CV_RUN_CONTENT_WARNING
+    assert "terms" in mcpserver_mod._CV_RUN_CONTENT_WARNING
+
+
 @pytest.mark.parametrize("failed", [True, False])
 def test_cv_run_tool_reports_whether_the_runs_artefacts_were_written(
         monkeypatch, tmp_path, failed):

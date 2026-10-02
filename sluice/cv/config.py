@@ -69,6 +69,13 @@ class CvConfig:
     # source-material vector (the composer is told to reuse the bundle's wording), one
     # phrase in an Experience Library entry would hold EVERY lead composed from it.
     style_hold: bool = False
+    # Whether the unbundled-term check runs (#194, cv/terms.py): a term CV prose names that
+    # appears nowhere in what the composer was shown drives the one retry. ON by default,
+    # deliberately unlike voice_check: it is pure and deterministic and spends nothing
+    # unless it fires, the slop stems' cost profile. The escape exists for a THIN vault --
+    # precision rests on the baseline CV carrying the user's ordinary vocabulary. No
+    # allow-list: a term the candidate really holds belongs in their evidence.
+    term_check: bool = True
     # Phrases from slop._PHRASES this candidate legitimately uses in their own voice.
     # NB this is NOT abstain-shaped: it SUBTRACTS from a hardcoded list, so empty means
     # FULL enforcement -- the dossier_allow_hosts polarity. What makes the shipped

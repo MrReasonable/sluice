@@ -334,6 +334,10 @@ triage:
 #   # a hard-clean CV containing any of ~40 case-insensitive AI-tell stems (see
 #   # sluice/cv/slop.py) has tailored_cv withheld until you fix the source wording.
 #   style_hold: false
+#   # Whether a term CV prose names but nothing in your evidence carries drives the
+#   # composer's one retry (#194). ON by default; it never bins a lead. Turn it off if a
+#   # thin vault (a short baseline CV) makes it fire on ordinary words.
+#   term_check: true
 #   # Phrases from slop._PHRASES you legitimately use in your own voice. NOT
 #   # abstain-shaped like the lists above: it SUBTRACTS from a hardcoded list, so EMPTY
 #   # means FULL enforcement, not "nothing checked" -- the dossier_allow_hosts polarity.

@@ -686,20 +686,25 @@ re-admits two narrow PROFILE-pool widenings the old positional parse excluded as
 its own bugs: a `=== 2020 Highlights ===`-shaped BASELINE line now permits its digits in PROFILE
 prose, and an id-shaped baseline line's own digit (the `9` of a stray `[ZZ9]`) does too — see
 `docs/ARCHITECTURE.md` for the mechanism. The SCOPED STYLE tier
-(#167) has TWO halves and neither blocks: `cv/slop.py`'s ~40 AI-tell stems and the opt-in
+(#167) has these members, and none of them blocks: `cv/slop.py`'s ~40 AI-tell stems,
+`cv/terms.py`'s unbundled-term check (#194, on by default via `cv.term_check`; its findings are
+`CvResult.terms`, reported apart from the phrase stems' `slop`), and the opt-in
 model-judged `cv/voice.py` check (`cv.voice_check`). The scoping is a property of the TIER, so it
-covers both — `cv/engine.py` matches the stems against, and shows the model, exactly the
+covers all of them — `cv/engine.py` matches the stems against, and shows the model, exactly the
 PROFILE-prose/WORK-bullet lines — two of the THREE regions `cv/validate.py`'s own `section_spans`
 yields (#168's Task 3 added a SKILLS region alongside them, deliberately excluded here) — never the
 whole document, because a complaint naming an employer, certificate or education line is answerable
-only by renaming the thing it names. A surviving finding from either ALSO drives the
-retry: the engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding
-survives, feeding every finding back, and RETAINS the last HARD-clean draft across that retry so a
-worse or failed second attempt can never bin a lead the first one already cleared — a phrase may never
-cost a lead. At shipped defaults (`cv.slop_allow` empty, `cv.style_hold` off) the retry still fires on
-a phrase hit, so a hard-clean draft using one of the ~40 stems in prose costs a second compose call;
-`compose.py`'s own prompt bans the identical list (rendered from `cv/slop.py`'s `_PHRASES`, so the two
-cannot drift), which is what keeps that cost the exception rather than the rule. See
+only by renaming the thing it names. A surviving finding from any of them ALSO drives the retry: the
+engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding survives,
+feeding every finding back, and RETAINS the HARD-clean draft with the fewest STYLE/VOICE findings
+across that retry (a tie keeps the later one, and an attempt whose voice check failed never displaces
+one whose voice was measured), so a worse or failed second attempt can never bin a
+lead the first one already cleared, and a style-worse retry never replaces a cleaner first draft — a
+phrase may never cost a lead. At shipped defaults (`cv.slop_allow` empty, `cv.style_hold` off) the
+retry still fires on a phrase hit, so a hard-clean draft using one of the ~40 stems in prose costs a
+second compose call; `compose.py`'s own prompt bans the identical list (rendered from `cv/slop.py`'s
+`_PHRASES`, so the two cannot drift), which is what keeps that cost the exception rather than the
+rule. See
 `docs/ARCHITECTURE.md` for the full two-tier mechanics. Above the hard gate sits a softer,
 human-facing layer (#60, on by default via `cv.require_signoff`): an advisory LLM audit
 (`cv/audit.py`) catches the qualitative fabrication the deterministic gate cannot, and an
@@ -747,7 +752,9 @@ that shipped while leaving the one that must not ship unnamed. What makes someth
 path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carries TWO flags since #165, because
 the questions stopped having one answer: `read_by_composer` says the corpus reaches the composer's
 prompt, `cited_by_gate` says the fabrication gate may LICENSE its content. `experience` is both,
-`skills` is the first only (shown as framing, licensed by nothing), `stories` is neither, and
+`skills` is the first only (shown as framing, licensed by nothing: it is RECOGNISED by
+`cv/bundle.py::mention_vocab`, so the unbundled-term check does not report a declared skill (unless a
+negative names it), but nothing LICENSES it), `stories` is neither, and
 `__post_init__` refuses `cited_by_gate` without `read_by_composer` since the gate cannot license
 what the composer never emitted. Every user-facing message that says what `verify` buys is keyed on
 `cited_by_gate` rather than asserting citability for all three -- keying it on the wrong flag
