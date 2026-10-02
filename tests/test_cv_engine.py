@@ -151,8 +151,12 @@ class FakeBackend:
         # first call = compose, later audit; return CV then audit
         return Completion(self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out)
 
+# `CI` in the body is load-bearing (#194): CLEAN_CV's `- CI [EF1]` bullet names it, and the
+# unbundled-term check reports a capitalised term the bundle never carries. Without it every
+# test composing CLEAN_CV would get a retry it does not credit, which in review MASKED the
+# slop-driven retry eight tests exist to witness. No digit added, so no allowlist moves.
 ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "delivery",
-            "category": "people", "metrics": "3 8", "body": "Grew 3 to 8."}]
+            "category": "people", "metrics": "3 8", "body": "Grew 3 to 8 with CI."}]
 
 def _cfg():
     from sluice.cv.config import CvConfig

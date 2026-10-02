@@ -1304,7 +1304,7 @@ def test_a_skills_marker_the_gate_certifies_clean_is_never_refused_here(marker, 
     governing bug class this whole file exists to catch, now on the SKILLS axis.
     """
     from tests.test_cv_engine import CLEAN_CV
-    # "Grew" is sourced via ENTRIES[0]'s own body ("Grew 3 to 8.") in the bundle
+    # "Grew" is sourced via ENTRIES[0]'s own body ("Grew 3 to 8 with CI.") in the bundle
     # `_gate_verdict` builds -- see that helper's docstring -- so row 2 (containment)
     # licenses it regardless of which marker or spacing precedes it.
     entry_line = f"{marker}{space}Grew"
