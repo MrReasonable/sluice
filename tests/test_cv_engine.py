@@ -154,7 +154,7 @@ class FakeBackend:
 # `CI` in the body is load-bearing (#194): CLEAN_CV's `- CI [EF1]` bullet names it, and the
 # unbundled-term check reports a capitalised term the bundle never carries. Without it every
 # test composing CLEAN_CV would get a retry it does not credit, which in review MASKED the
-# slop-driven retry eight tests exist to witness. No digit added, so no allowlist moves.
+# slop-driven retry other tests exist to witness. No digit added, so no allowlist moves.
 ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "delivery",
             "category": "people", "metrics": "3 8", "body": "Grew 3 to 8 with CI."}]
 
@@ -1865,6 +1865,19 @@ STYLE_DIRTY_CV = CLEAN_CV.replace(
     "I build reliable systems.",
     "I leverage the same delivery patterns across teams.")
 
+# Two STYLE findings where STYLE_DIRTY_CV has one (#194 retention, spec §2.3): `leverage`
+# and `seamless` are both slop._PHRASES stems, on the same PROFILE line. Hard-clean like
+# its sibling -- only the prose changes.
+STYLE_DIRTIER_CV = CLEAN_CV.replace(
+    "I build reliable systems.",
+    "I leverage seamless delivery patterns across teams.")
+
+# ONE finding, like STYLE_DIRTY_CV, but different text -- so a tie between the two is
+# observable in what renders.
+STYLE_DIRTY_B_CV = CLEAN_CV.replace(
+    "I build reliable systems.",
+    "I foster the same delivery patterns across teams.")
+
 # HARD-dirty and nothing else: an em dash, slop.HARD's blocking tier. The bullet keeps
 # its citation and gains no number, so validate() still reports nothing -- the ONLY thing
 # wrong with this draft is the HARD slop rule, which is what makes it a clean
@@ -1915,6 +1928,8 @@ _CV_WITH_SLOPPY_SKILL = STYLE_DIRTY_CV.replace(
 _DRAFTS = {
     "clean": CLEAN_CV,
     "hard-clean-style-dirty": STYLE_DIRTY_CV,
+    "hard-clean-style-dirtier": STYLE_DIRTIER_CV,
+    "hard-clean-style-dirty-b": STYLE_DIRTY_B_CV,
     "hard-dirty": HARD_DIRTY_CV,
     "employer-phrase": EMPLOYER_PHRASE_CV,
     "doubled-profile": DOUBLED_PROFILE_CV,
@@ -1954,6 +1969,8 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
     for name, text, hard, style in [
         ("clean", CLEAN_CV, False, False),
         ("hard-clean-style-dirty", STYLE_DIRTY_CV, False, True),
+        ("hard-clean-style-dirtier", STYLE_DIRTIER_CV, False, True),
+        ("hard-clean-style-dirty-b", STYLE_DIRTY_B_CV, False, True),
         ("hard-dirty", HARD_DIRTY_CV, True, False),
         ("employer-phrase", EMPLOYER_PHRASE_CV, False, True),
         ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
@@ -1981,6 +1998,22 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
     assert check_phrases([(1, "Example Leverage")]), (
         "'Example Leverage' no longer matches a slop._PHRASES stem, so the scoping "
         "test below would pass without the engine scoping anything")
+
+
+def test_the_retention_fixtures_carry_the_finding_counts_they_claim():
+    """PREMISE of the two retention tests below: a 'fewer findings' comparison means
+    nothing unless the fixtures really differ in count, and a stem leaving
+    slop._PHRASES would silently collapse them to a tie."""
+    from sluice.cv.slop import check_phrases
+    from sluice.cv.validate import section_spans
+
+    def count(text):
+        profile, work, _skills = section_spans(text)
+        return len(check_phrases(profile + work))
+
+    assert count(STYLE_DIRTY_CV) == 1
+    assert count(STYLE_DIRTY_B_CV) == 1
+    assert count(STYLE_DIRTIER_CV) == 2
 
 
 class _SequenceBackend:
@@ -2102,6 +2135,29 @@ def test_a_hard_clean_draft_is_rendered_even_when_the_retry_comes_back_dirty(mon
     assert len(be.compose_prompts) == 2, "the STYLE finding never reached the retry"
     assert rend.rendered == [STYLE_DIRTY_CV], (
         "the retained HARD-clean draft is what must ship")
+
+
+def test_a_retry_with_MORE_style_findings_does_not_replace_a_cleaner_draft(monkeypatch):
+    """#194, spec §2.3. Both drafts are hard-clean; attempt 2 is style-WORSE. The loop used
+    to keep whichever hard-clean draft came LAST, so the dirtier retry shipped. With
+    `style_hold` off (the default) nothing then flagged it, and an unbundled-term finding is
+    a probable invention -- so keeping the worse draft is the failure this rule removes."""
+    res, be, rend = _run_sequence(
+        monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirtier"])
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 2, "the style finding never reached the retry"
+    assert rend.rendered == [STYLE_DIRTY_CV], "the cleaner attempt-1 draft must ship"
+    # The audit reads the same retained draft the renderer got (the engine's rebind).
+    assert be.audited == [STYLE_DIRTY_CV]
+
+
+def test_a_tie_in_style_findings_keeps_the_later_draft(monkeypatch):
+    """A tie keeps attempt 2: it was composed with attempt 1's findings in front of it,
+    and keeping it is the pre-#194 behaviour, so a tie changes nothing."""
+    res, _be, rend = _run_sequence(
+        monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirty-b"])
+    assert res.status == "rendered"
+    assert rend.rendered == [STYLE_DIRTY_B_CV]
 
 
 def test_the_audit_runs_over_the_RENDERED_draft_not_the_discarded_one(monkeypatch):
@@ -2364,6 +2420,78 @@ def test_a_voice_finding_reaches_the_retry(monkeypatch):
     assert res.status == "rendered"
     assert be.calls.count("compose") == 2, "the VOICE finding never reached the retry"
     assert "VOICE: flag\tThis reads like a press release." in be.compose_prompts[1]
+
+
+# ── #194: retention counts VOICE findings too ────────────────────────────────────────
+#
+# The fewest-findings comparison (spec §2.3) sums slop AND voice findings, on BOTH sides
+# of the comparison. The style-only retention rows above drive no voice check, so a
+# comparison that dropped either voice term would leave them green. Each row below is
+# decided by a voice count alone, and asserts the retained draft through the result's
+# own findings, which describe that draft and no other.
+
+# Hard-clean, slop-clean, and differing from CLEAN_CV on TWO in-scope lines -- a PROFILE
+# line and a WORK bullet -- so a reactive voice judge can flag two lines of THIS draft
+# and none of STYLE_DIRTY_CV's. No digit and no new citation: the HARD gate is untouched.
+_VOICE_TWO_LINE_CV = CLEAN_CV.replace(
+    "I build reliable systems.", "I build reliable systems for every team.", 1).replace(
+    "- Shipped [EF1]", "- Shipped the reporting layer [EF1]", 1)
+_VOICE_TWO_MARKS = ("for every team", "the reporting layer")
+
+
+def _run_voice_rendered(monkeypatch, backend):
+    """run_one with `cv.voice_check` on over a prepared backend, returning (result,
+    renderer) so a row can assert what SHIPPED as well as the findings it carries."""
+    _served(monkeypatch)
+    rend = FakeRenderer()
+    cfg = _cfg()
+    cfg.voice_check = True
+    res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                        "role": "Analyst"}),
+                  FakeVault(ENTRIES), cfg, backend, FakeCache(), renderer=rend)
+    return res, rend
+
+
+def test_the_voice_retention_fixture_is_hard_and_slop_clean_and_marks_only_itself():
+    """PREMISE of the voice-retention rows: the two-line draft is slop-free, each mark
+    hits exactly one of its lines, and neither mark hits STYLE_DIRTY_CV -- otherwise the
+    voice counts below are not the ones the rows claim."""
+    from sluice.cv.slop import check_hard, check_phrases
+    from sluice.cv.validate import section_spans
+
+    profile, work, _skills = section_spans(_VOICE_TWO_LINE_CV)
+    assert not check_hard(_VOICE_TWO_LINE_CV)
+    assert not check_phrases(profile + work)
+    assert _voice_judge(_VOICE_TWO_LINE_CV, _VOICE_TWO_MARKS).count("flag\t") == 2
+    assert _voice_judge(STYLE_DIRTY_CV, _VOICE_TWO_MARKS) == ""
+
+
+def test_a_voice_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(monkeypatch):
+    """Attempt 1: zero slop, ONE voice finding. Attempt 2: ONE slop finding, zero voice.
+    A tie, so attempt 2 is kept. This row is what sees the RETAINED draft's voice count:
+    dropped from the comparison, attempt 1 reads as cleaner and wrongly survives. The
+    row below sees the NEW attempt's voice count."""
+    be = _VoiceBackend(["clean", "hard-clean-style-dirty"],
+                       voice_marks=("I build reliable systems.",))
+    res, rend = _run_voice_rendered(monkeypatch, be)
+    assert res.status == "rendered"
+    assert be.calls.count("voice") == 2, "both attempts must have been voice-judged"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert res.voice_flags == []
+
+
+def test_a_retry_with_MORE_voice_findings_does_not_replace_a_cleaner_draft(monkeypatch):
+    """Attempt 1: ONE slop finding, zero voice. Attempt 2: zero slop, TWO voice findings.
+    Attempt 2 is strictly worse only once its OWN voice findings are counted, so
+    attempt 1 ships."""
+    be = _VoiceBackend(["hard-clean-style-dirty", "voice-two-line"],
+                       voice_marks=_VOICE_TWO_MARKS)
+    monkeypatch.setitem(_DRAFTS, "voice-two-line", _VOICE_TWO_LINE_CV)
+    res, rend = _run_voice_rendered(monkeypatch, be)
+    assert res.status == "rendered"
+    assert be.calls.count("voice") == 2, "both attempts must have been voice-judged"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert res.voice_flags == []
 
 
 # ── #167: the STYLE tier's scoping covers BOTH its halves ────────────────────────────
