@@ -164,7 +164,8 @@ class RunArtefacts:
         self._write_record(status=result.status, backend=result.backend,
                            violations=list(result.violations),
                            audit_flags=list(result.audit_flags), slop=list(result.slop),
-                           voice_flags=list(result.voice_flags), served=result.served,
+                           voice_flags=list(result.voice_flags), terms=list(result.terms),
+                           served=result.served,
                            error=None)
 
     def finish_error(self, exc):
@@ -172,10 +173,11 @@ class RunArtefacts:
         run_batch's word for that outcome. The finding lists are null rather than empty:
         the run never got as far as settling them, and an empty list would read as clean."""
         self._write_record(status="error", backend=None, violations=None, audit_flags=None,
-                           slop=None, voice_flags=None, served=None, error=_describe(exc))
+                           slop=None, voice_flags=None, terms=None, served=None,
+                           error=_describe(exc))
 
     def _write_record(self, *, status, backend, violations, audit_flags, slop, voice_flags,
-                      served, error):
+                      terms, served, error):
         if self.out_dir is None:
             return
         record = {
@@ -196,6 +198,7 @@ class RunArtefacts:
             "audit_flags": audit_flags,
             "slop": slop,
             "voice_flags": voice_flags,
+            "terms": terms,
             "rendered_pdf": self._rendered_pdf,
             "served": served,
             "error": error,

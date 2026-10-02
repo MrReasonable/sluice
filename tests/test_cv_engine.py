@@ -672,6 +672,14 @@ def test_clean_cv_is_actually_clean():
         entries=ENTRIES, baseline="BASELINE", negatives=[],
         jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
     assert validate(CLEAN_CV, sources) == []
+    # #194: the premise extends to the unbundled-term check. CLEAN_CV composing clean
+    # under it is what keeps every test below crediting the retry it means to.
+    from sluice.cv.bundle import mention_vocab
+    from sluice.cv.terms import unbundled_terms
+    from sluice.cv.validate import section_spans
+    profile, work, _skills = section_spans(CLEAN_CV)
+    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
+    assert unbundled_terms(sorted(dict(profile + work).items()), vocab) == []
 
 
 def test_application_owned_lead_is_refused():
@@ -1925,8 +1933,23 @@ NO_SCOPED_PROSE_CV = (CLEAN_CV
 _CV_WITH_SLOPPY_SKILL = STYLE_DIRTY_CV.replace(
     "CERTIFICATES", "SKILLS\n- Example Synergy\n\nCERTIFICATES", 1)
 
+# A hard-clean draft whose PROFILE names a term no source carries (#194). Only the prose
+# changes, so the HARD gate is untouched; `Examplequery` is mid-sentence, so arm (iii)
+# admits it.
+UNBUNDLED_TERM_CV = CLEAN_CV.replace(
+    "I build reliable systems.", "I build reliable systems on Examplequery.")
+
+# STYLE_DIRTY_CV's ONE slop finding plus ONE unbundled term (#194): a draft whose
+# findings are split across BOTH deterministic members of the retained tuple, so the
+# retention comparison can only rank it correctly by counting the term member too.
+STYLE_DIRTY_WITH_TERM_CV = CLEAN_CV.replace(
+    "I build reliable systems.",
+    "I leverage the same delivery patterns across teams on Examplequery.")
+
 _DRAFTS = {
     "clean": CLEAN_CV,
+    "unbundled-term": UNBUNDLED_TERM_CV,
+    "style-dirty-with-term": STYLE_DIRTY_WITH_TERM_CV,
     "hard-clean-style-dirty": STYLE_DIRTY_CV,
     "hard-clean-style-dirtier": STYLE_DIRTIER_CV,
     "hard-clean-style-dirty-b": STYLE_DIRTY_B_CV,
@@ -1975,6 +1998,8 @@ def test_the_sequence_fixtures_are_the_tiers_they_claim():
         ("employer-phrase", EMPLOYER_PHRASE_CV, False, True),
         ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
         ("no-scoped-prose", NO_SCOPED_PROSE_CV, False, False),
+        ("unbundled-term", UNBUNDLED_TERM_CV, False, False),
+        ("style-dirty-with-term", STYLE_DIRTY_WITH_TERM_CV, False, True),
     ]:
         assert validate(text, sources) == [], f"{name} is no longer gate-clean"
         assert bool(check_hard(text)) is hard, f"{name}'s HARD tier drifted"
@@ -2014,6 +2039,29 @@ def test_the_retention_fixtures_carry_the_finding_counts_they_claim():
     assert count(STYLE_DIRTY_CV) == 1
     assert count(STYLE_DIRTY_B_CV) == 1
     assert count(STYLE_DIRTIER_CV) == 2
+
+
+def test_the_unbundled_term_fixture_carries_exactly_one_term():
+    from sluice.cv.bundle import mention_vocab
+    from sluice.cv.terms import unbundled_terms
+    from sluice.cv.validate import section_spans
+    profile, work, _skills = section_spans(UNBUNDLED_TERM_CV)
+    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
+    assert [t for _ln, t, _s in unbundled_terms(sorted(dict(profile + work).items()), vocab)] \
+        == ["Examplequery"]
+
+
+def test_the_style_dirty_with_term_fixture_carries_one_slop_and_one_term():
+    """PREMISE of the term-counting retention row below: one finding in EACH member."""
+    from sluice.cv.bundle import mention_vocab
+    from sluice.cv.slop import check_phrases
+    from sluice.cv.terms import unbundled_terms
+    from sluice.cv.validate import section_spans
+    profile, work, _skills = section_spans(STYLE_DIRTY_WITH_TERM_CV)
+    scoped = sorted(dict(profile + work).items())
+    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
+    assert len(check_phrases(scoped)) == 1
+    assert [t for _ln, t, _s in unbundled_terms(scoped, vocab)] == ["Examplequery"]
 
 
 class _SequenceBackend:
@@ -2492,6 +2540,84 @@ def test_a_retry_with_MORE_voice_findings_does_not_replace_a_cleaner_draft(monke
     assert be.calls.count("voice") == 2, "both attempts must have been voice-judged"
     assert rend.rendered == [STYLE_DIRTY_CV]
     assert res.voice_flags == []
+
+
+class _SecondVoiceCallRaises(_VoiceBackend):
+    """A voice check that is measured on attempt 1 and RAISES on attempt 2 -- the outage
+    shape `_VoiceBackend`'s all-or-nothing `voice_raises` cannot script."""
+
+    def complete(self, prompt):
+        if (prompt.splitlines()[0].startswith("You are judging the VOICE")
+                and self.calls.count("voice") == 1):
+            self.calls.append("voice")
+            raise RuntimeError("voice backend down")
+        return super().complete(prompt)
+
+
+def test_a_retry_whose_voice_check_FAILED_does_not_replace_a_measured_draft(monkeypatch):
+    """F5. A voice check that raised fails open to no flags, which counts as zero voice
+    findings -- so without a guard, a retry nobody voice-judged out-ranks an attempt 1 whose
+    one voice finding was really measured. Attempt 2 here is also slop-clean, so its
+    unmeasured zero is the only thing that could make it win."""
+    clean_b = CLEAN_CV.replace("I build reliable systems.", "I build dependable systems.", 1)
+    assert clean_b != CLEAN_CV, "the replace no-opped"
+    monkeypatch.setitem(_DRAFTS, "clean-b", clean_b)
+    be = _SecondVoiceCallRaises(["clean", "clean-b"],
+                                voice_marks=("I build reliable systems.",))
+    res, rend = _run_voice_rendered(monkeypatch, be)
+    assert res.status == "rendered"
+    assert be.calls.count("voice") == 2, "attempt 2's voice check must have been attempted"
+    assert rend.rendered == [CLEAN_CV], "the voice-MEASURED attempt 1 must ship"
+    assert len(res.voice_flags) == 1, res.voice_flags
+
+
+class _FirstVoiceCallRaises(_VoiceBackend):
+    """The mirror of `_SecondVoiceCallRaises`: attempt 1's voice check RAISES, attempt 2's
+    is measured."""
+
+    def complete(self, prompt):
+        if (prompt.splitlines()[0].startswith("You are judging the VOICE")
+                and self.calls.count("voice") == 0):
+            self.calls.append("voice")
+            raise RuntimeError("voice backend down")
+        return super().complete(prompt)
+
+
+# The symmetric case of F5 (#194 cleanup C4). An attempt 1 whose voice check raised AND
+# carried no style finding is never followed by a retry -- the loop stops on a draft with
+# no findings -- so attempt 1 here carries ONE term finding, which is what makes a retry
+# happen at all. A MEASURED retry is then judged on the count alone, both ways.
+
+def test_a_measured_retry_with_no_more_findings_replaces_an_unmeasured_draft(monkeypatch):
+    be = _FirstVoiceCallRaises(["unbundled-term", "clean"],
+                               voice_marks=("I build reliable systems.",))
+    res, rend = _run_voice_rendered(monkeypatch, be)
+    assert be.calls.count("voice") == 2, "both attempts' voice checks must have run"
+    assert res.status == "rendered"
+    assert rend.rendered == [CLEAN_CV], "a tie keeps the later, MEASURED draft"
+    assert len(res.voice_flags) == 1 and res.terms == [], (res.voice_flags, res.terms)
+
+
+def test_a_measured_retry_with_MORE_findings_does_not_replace_an_unmeasured_draft(
+        monkeypatch):
+    be = _FirstVoiceCallRaises(["unbundled-term", "hard-clean-style-dirty"],
+                               voice_marks=("I leverage the same",))
+    res, rend = _run_voice_rendered(monkeypatch, be)
+    assert be.calls.count("voice") == 2, "both attempts' voice checks must have run"
+    assert res.status == "rendered"
+    assert rend.rendered == [UNBUNDLED_TERM_CV], (
+        "attempt 1 counts one finding, attempt 2 a slop plus a voice flag")
+    assert res.voice_flags == [], res.voice_flags
+
+
+def test_a_retry_whose_voice_check_failed_still_replaces_an_UNMEASURED_draft(monkeypatch):
+    """Pins `best_voice_measured`'s `not voice_failed`: when BOTH checks raised, neither
+    draft was voice-judged, so the count alone decides and the cleaner retry ships. Were a
+    raised attempt 1 recorded as measured, the outage guard would refuse attempt 2."""
+    res, rend = _run_voice_rendered(
+        monkeypatch, _VoiceBackend(["hard-clean-style-dirty", "clean"], voice_raises=True))
+    assert res.status == "rendered"
+    assert rend.rendered == [CLEAN_CV]
 
 
 # ── #167: the STYLE tier's scoping covers BOTH its halves ────────────────────────────
@@ -3217,3 +3343,170 @@ def test_the_voice_check_call_is_metered_as_its_own_stage(monkeypatch, tmp_path)
     # One row per call, each under its OWN stage -- not three rows under one label.
     assert [r["stage"] for r in rows] == ["cv-compose", "cv-voice", "cv-audit"]
     assert all(r["lead"] == note.slug for r in rows)
+
+
+def test_an_unbundled_term_drives_exactly_one_retry_with_the_finding(monkeypatch):
+    res, be, rend = _run_sequence(monkeypatch, ["unbundled-term", "clean"])
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 2
+    assert "UNBUNDLED TERM 'Examplequery'" in be.compose_prompts[1]
+    assert rend.rendered == [CLEAN_CV], "the clean retry is the fewer-findings draft"
+
+
+def test_a_persisting_unbundled_term_still_renders_with_style_hold_off(monkeypatch):
+    res, _be, rend = _run_sequence(monkeypatch, ["unbundled-term", "unbundled-term"])
+    assert res.status == "rendered", "a STYLE finding must never bin a lead"
+    assert rend.rendered == [UNBUNDLED_TERM_CV]
+    assert any(m.startswith("UNBUNDLED TERM 'Examplequery'") for m in res.terms)
+
+
+def test_term_findings_ride_in_terms_and_never_in_slop(monkeypatch):
+    """`CvResult.terms` carries the unbundled-term findings and `slop` the phrase findings,
+    each on its own field like `voice_flags` (F6): a reader telling the kinds apart by a
+    message prefix is the encoding the engine already rejects for voice. The draft carries
+    ONE of each, so both fields are populated and each must hold only its own kind."""
+    res, _be, rend = _run_sequence(
+        monkeypatch, ["style-dirty-with-term", "style-dirty-with-term"])
+    assert res.status == "rendered"
+    assert rend.rendered == [STYLE_DIRTY_WITH_TERM_CV]
+    assert [m.split(":", 1)[0] for m in res.terms] == ["UNBUNDLED TERM 'Examplequery'"]
+    assert [m.split(":", 1)[0] for m in res.slop] == ["SLOP leverage"]
+
+
+def test_a_skipped_gate_result_splits_the_last_attempts_terms_from_its_slop(monkeypatch):
+    """On `skipped-gate`, `slop` keeps the HARD slop entries plus the last attempt's phrase
+    findings, and `terms` takes that attempt's term findings -- never folded into `slop`."""
+    hard_dirty_term = STYLE_DIRTY_WITH_TERM_CV.replace(
+        "- Coached [EF1]", "- Coached — and mentored [EF1]")
+    assert hard_dirty_term != STYLE_DIRTY_WITH_TERM_CV, "the replace no-opped"
+    monkeypatch.setitem(_DRAFTS, "hard-dirty-term", hard_dirty_term)
+    res, _be, _rend = _run_sequence(monkeypatch, ["hard-dirty-term", "hard-dirty-term"])
+    assert res.status == "skipped-gate"
+    assert [m.split(":", 1)[0] for m in res.terms] == ["UNBUNDLED TERM 'Examplequery'"]
+    assert any(m.startswith("SLOP EM-DASH:") for m in res.slop), res.slop
+    assert any(m.startswith("SLOP leverage:") for m in res.slop), res.slop
+    assert not any("UNBUNDLED TERM" in m for m in res.slop), res.slop
+
+
+def test_term_check_off_sends_no_term_finding_to_the_retry(monkeypatch):
+    _served(monkeypatch)
+    be, rend = _SequenceBackend(["unbundled-term", "clean"]), FakeRenderer()
+    cfg = _cfg(); cfg.term_check = False
+    res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                        "role": "Analyst"}), FakeVault(ENTRIES), cfg, be, FakeCache(),
+                  renderer=rend)
+    assert res.status == "rendered"
+    assert len(be.compose_prompts) == 1, "with the check off, the draft is clean"
+
+
+def test_a_style_hold_tags_an_unbundled_term_as_a_term_not_a_style_concern(monkeypatch):
+    """Spec §4: the engine KNOWS the kind when it builds the message, so it tags it --
+    never re-parsing a message prefix later."""
+    import json
+    _served(monkeypatch)
+    be, rend = _SequenceBackend(["unbundled-term", "unbundled-term"]), FakeRenderer()
+    cfg = _cfg(); cfg.style_hold = True
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    res = run_one(note, v, cfg, be, FakeCache(), renderer=rend)
+    # The engine stamps `needs_signoff` as a JSON array string (hold_for_signoff's
+    # `claims`), which FakeVault applies to the fresh note -- the same accessor the
+    # other style_hold tests in this file read.
+    claims = json.loads(note.fm["needs_signoff"])
+    assert any(c.startswith("term\tUNBUNDLED TERM 'Examplequery'") for c in claims), claims
+    assert not any(c.startswith("style\tUNBUNDLED TERM") for c in claims), claims
+    assert res.status == "needs-signoff"
+    # The needs-signoff RESULT carries the finding on its own field too, not only the hold.
+    assert any(m.startswith("UNBUNDLED TERM 'Examplequery'") for m in res.terms), res.terms
+    assert not any("UNBUNDLED TERM" in m for m in res.slop), res.slop
+
+
+def _assert_term_split(res):
+    """`terms` carries the term finding and `slop` excludes it, on any result kind."""
+    assert any(m.startswith("UNBUNDLED TERM 'Examplequery'") for m in res.terms), (
+        res.status, res.terms)
+    assert not any("UNBUNDLED TERM" in m for m in res.slop), (res.status, res.slop)
+
+
+def test_a_dry_run_result_carries_the_term_finding_in_terms(monkeypatch):
+    _served(monkeypatch)
+    be = _SequenceBackend(["unbundled-term", "unbundled-term"])
+    res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
+                        "role": "Analyst"}), FakeVault(ENTRIES), _cfg(), be, FakeCache(),
+                  renderer=FakeRenderer(), dry_run=True)
+    assert res.status == "dry-run"
+    _assert_term_split(res)
+
+
+def test_a_skipped_has_cv_result_from_a_refused_hold_carries_the_term_finding(monkeypatch):
+    """The hold arm's `skipped-has-cv`: style_hold wants a hold, but the lead already has a
+    send-ready CV, so hold_for_signoff abstains."""
+    _served(monkeypatch)
+    be = _SequenceBackend(["unbundled-term", "unbundled-term"])
+    cfg = _cfg(); cfg.style_hold = True
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                 "tailored_cv": "CV_real.pdf (2026-07-24)"})
+    res = run_one(note, FakeVault(ENTRIES, notes=[note]), cfg, be, FakeCache(),
+                  renderer=FakeRenderer())
+    assert res.status == "skipped-has-cv"
+    assert "needs_signoff" not in note.fm, "the hold must have abstained, not stamped"
+    _assert_term_split(res)
+
+
+def test_a_skipped_has_cv_result_from_the_render_race_carries_the_term_finding(monkeypatch):
+    """The pointer-write arm's `skipped-has-cv` (#16 long window): a CV appeared on the
+    FRESH note while this one composed, so only_if_absent refuses the write."""
+    _served(monkeypatch)
+    be = _SequenceBackend(["unbundled-term", "unbundled-term"])
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    fresh = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                  "tailored_cv": "PREEXISTING.pdf (2026-07-10)"}, path=note.ref)
+    res = run_one(note, FakeVault(ENTRIES, notes=[fresh]), _cfg(), be, FakeCache(),
+                  renderer=FakeRenderer(), guard_existing_cv=True)
+    assert res.status == "skipped-has-cv"
+    _assert_term_split(res)
+
+
+def test_a_headerless_draft_puts_the_hard_violation_first(monkeypatch):
+    """Review Focus 1: without `WORK EXPERIENCE`, section_spans reads the whole body as
+    PROFILE, so headers and company words become term candidates. The HARD reason must
+    still lead the retry prompt -- the composer reads that list in order."""
+    headerless = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
+    _DRAFTS["headerless"] = headerless
+    try:
+        res, be, _rend = _run_sequence(monkeypatch, ["headerless", "clean"])
+    finally:
+        del _DRAFTS["headerless"]
+    retry = be.compose_prompts[1]
+    # The engine's own missing-header violation text, not the bare header name: the
+    # compose prompt's instructions name `WORK EXPERIENCE` too, so a bare find would
+    # locate the prompt's template rather than the violation.
+    hard_at = retry.find("lacks the exact 'WORK EXPERIENCE' header")
+    term_at = retry.find("UNBUNDLED TERM")
+    assert hard_at != -1, "the missing-header violation never reached the retry"
+    assert term_at != -1, (
+        "no UNBUNDLED TERM reached the retry, so the ordering check below is vacuous")
+    assert hard_at < term_at
+
+
+def test_a_term_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(monkeypatch):
+    """#194 retention over the 4-tuple: attempt 1's ONE finding is a term, attempt 2's ONE
+    is a slop phrase. A tie keeps the later draft -- which holds only if the comparison
+    counts the retained draft's TERM member; without it attempt 1 reads as zero findings
+    and wins."""
+    res, _be, rend = _run_sequence(monkeypatch, ["unbundled-term", "hard-clean-style-dirty"])
+    assert res.status == "rendered"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+
+
+def test_a_retry_adding_a_term_finding_does_not_replace_a_cleaner_draft(monkeypatch):
+    """#194 retention: attempt 2 carries attempt 1's slop finding PLUS a term, so it is
+    strictly worse. Counting only slop and voice would score the two as a tie and keep
+    attempt 2."""
+    res, _be, rend = _run_sequence(monkeypatch,
+                                   ["hard-clean-style-dirty", "style-dirty-with-term"])
+    assert res.status == "rendered"
+    assert rend.rendered == [STYLE_DIRTY_CV]
+    # The retained attempt carried no term; a rebind that left the LAST attempt's findings
+    # in `term_msgs` would report one here.
+    assert res.terms == []

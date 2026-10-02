@@ -2374,6 +2374,12 @@ _CV_IDENTITY_RE = re.compile(r"\bExample [A-Z][A-Za-z]+")
 # Defined HERE, above `_CV_IDENTITY_EXEMPT`, so that set can be DERIVED from this one
 # rather than hand-listing the same values a second time -- see it immediately below.
 _REVIEWED_SKILL_VALUES = frozenset({
+    # Invented for #194 (tests/test_cv_mention_vocab.py): single-token, Example-prefixed
+    # names, because that file asserts on the case-folded single token a one-word term
+    # becomes in `mention_vocab`.
+    "Examplebus",
+    "Examplelang",
+    "Examplemesh",
     # Invented for #168, not drawn from any real skill inventory, and shaped to the
     # `Example <Word>` convention this file's own failure message prescribes.
     "Example Framework",

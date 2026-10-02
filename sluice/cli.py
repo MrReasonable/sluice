@@ -1397,7 +1397,7 @@ def cmd_cv_run(args, config) -> int:
     for r in results:
         print(f"cv: {r.status} {r.lead} served={r.served} "
               f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
-              f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} "
+              f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} terms={len(r.terms)} "
               f"dossier_failed={r.dossier_failed} "
               f"skills_unreadable={r.skills_unreadable} "
               f"artefacts_failed={r.artefacts_failed}",
@@ -1431,15 +1431,17 @@ def cmd_cv_run(args, config) -> int:
         # (cv/validate.py's UNSOURCED SKILL / INVENTED METRIC / ..., cv/engine.py's
         # STRUCTURAL, renderers/template.py's FORMAT, whose `precheck` docstring says it
         # chose that prefix to match "the shape the engine's other gate messages take"),
-        # and `r.slop` entries their own "SLOP <label>: <snippet>" (cv/engine.py);
+        # `r.slop` entries their own "SLOP <label>: <snippet>" (cv/engine.py), and
+        # `r.terms` entries their own "UNBUNDLED TERM ..." (built in cv/engine.py from
+        # cv/terms.py's findings, #194);
         # `audit_flags` (cv/audit.py's raw "<verdict>\t<claim>\t<cited-id>") and
         # `voice_flags` (cv/voice.py's raw "flag\t...") do not, so a label is added here
-        # to make the four read alike. Mirrors _print_signoff_claims's
+        # to make every list read alike. Mirrors _print_signoff_claims's
         # content-not-just-count discipline for the same judges at `cv signoff`.
         #
-        # The three counts these expand stay on the summary line: it is the one-line,
+        # The counts these expand stay on the summary line: it is the one-line,
         # greppable row a script keys on, and #167's own reason for putting the detail
-        # BELOW it rather than in it holds unchanged for the two added here.
+        # BELOW it rather than in it holds unchanged for every kind listed here.
         #
         # ESCAPED, at the stream rather than here (#280). These lines embed a raw slice of the
         # composed CV -- LLM output derived from an attacker-controlled job description, which
@@ -1463,6 +1465,8 @@ def cmd_cv_run(args, config) -> int:
             print(f"  {s}", file=sys.stderr)
         for vf in r.voice_flags:
             print(f"  VOICE: {vf}", file=sys.stderr)
+        for t in r.terms:
+            print(f"  {t}", file=sys.stderr)
     # #18: a job description that did not arrive does not stop composition (cv/engine.py
     # proceeds either way so the fabrication gate still runs), so "rendered" alone would
     # silently hide that some of these CVs were composed against no real job description
@@ -1509,12 +1513,14 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     line's own internal tabs from being mistaken for the new tag.
 
     A `framing\\t` entry (#329, `core/leads.py::split_framing`) is printed apart under its
-    own heading. An entry with NEITHER tag keeps EXACTLY today's "unsupported claim(s)"
-    wording -- a hold stamped before this change must not be re-described by this
-    upgrade, and a style/voice finding must not be announced as a fabrication risk it
-    is not. Each group prints only when non-empty (sparse, mirroring _print_report's own
-    discipline elsewhere in this file): a hold carrying just one kind gets exactly one
-    block, not a "0 unsupported claim(s)" line nobody asked for.
+    own heading. A `term\\t` entry (#194, cv/terms.py) prints under its own "possible
+    invention" heading: it is a term nothing in the user's evidence carries, which
+    "style/voice" would understate. An entry with no recognised tag keeps EXACTLY today's
+    "unsupported claim(s)" wording -- a hold stamped before this change must not be
+    re-described by this upgrade, and a style/voice finding must not be announced as a
+    fabrication risk it is not. Each group prints only when non-empty (sparse, mirroring
+    _print_report's own discipline elsewhere in this file): a hold carrying just one kind
+    gets exactly one block, not a "0 unsupported claim(s)" line nobody asked for.
 
     `str(c)`, not `c.partition(...)`: `needs_signoff` is hand-editable YAML and
     `Sluice.sign_off_cv` passes a parsed JSON array through element-wise (`parsed if
@@ -1538,12 +1544,16 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     # `unaudited\t<reason>` (#333) is the audit that could not RUN: neither a fabrication
     # finding (nothing was found) nor a style one, so counting it as an "unsupported claim"
     # would tell the reviewer the audit flagged something when it never looked.
-    fabrication, style, unaudited = [], [], []
+    fabrication, style, term, unaudited = [], [], [], []
     for c in claims:
         text = str(c)
         kind, sep, rest = text.partition("\t")
         if sep and kind == "style":
             style.append(rest)
+        elif sep and kind == "term":
+            # #194: an unbundled term is a probable INVENTION, not a style concern --
+            # printed under its own heading so a reviewer does not read it as wording.
+            term.append(rest)
         elif sep and kind == "unaudited":
             unaudited.append(rest)
         else:
@@ -1561,6 +1571,11 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
         print(f"cv signoff: {slug} has {len(style)} style/voice concern(s):",
               file=sys.stderr)
         for c in style:
+            print(f"  - {c}", file=sys.stderr)
+    if term:
+        print(f"cv signoff: {slug} has {len(term)} term(s) named nowhere in your evidence "
+              f"(possible invention):", file=sys.stderr)
+        for c in term:
             print(f"  - {c}", file=sys.stderr)
 
 

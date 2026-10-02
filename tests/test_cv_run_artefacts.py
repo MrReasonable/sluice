@@ -20,8 +20,8 @@ from datetime import datetime
 from sluice.core.backends import BackendError, Completion
 from sluice.cv.engine import run_batch, run_one
 from tests.test_cv_engine import (
-    CLEAN_CV, ENTRIES, HARD_DIRTY_CV, STYLE_DIRTIER_CV, STYLE_DIRTY_CV, FakeCache,
-    FakeRenderer, FakeVault, Note, _cfg)
+    CLEAN_CV, ENTRIES, HARD_DIRTY_CV, STYLE_DIRTIER_CV, STYLE_DIRTY_CV,
+    STYLE_DIRTY_WITH_TERM_CV, FakeCache, FakeRenderer, FakeVault, Note, _cfg)
 
 _LEAD_FM = {"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}
 # `cv/engine.py::_slug` of the company and role above: the per-lead working directory the
@@ -146,6 +146,7 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     assert run["audit_flags"] == r.audit_flags
     assert run["slop"] == r.slop
     assert run["voice_flags"] == r.voice_flags
+    assert run["terms"] == r.terms
     assert r.served and run["served"] == r.served
     assert os.path.basename(run["rendered_pdf"]) == "CV.pdf"
     assert run["error"] is None
@@ -244,6 +245,18 @@ def test_retained_attempt_names_the_draft_kept_when_a_hard_clean_retry_is_style_
     run = _run_record(tmp_path)
     assert run["attempt_count"] == 2
     assert run["retained_attempt"] == 1
+
+
+def test_the_run_record_keeps_term_findings_apart_from_slop(tmp_path):
+    """`terms` is its own CvResult field (F6), so run.json records it under its own key,
+    and a draft carrying one finding of each kind leaves each key holding only its own."""
+    r, _be, _rend = _run(tmp_path, [STYLE_DIRTY_WITH_TERM_CV, STYLE_DIRTY_WITH_TERM_CV])
+    assert r.status == "rendered"
+    assert r.terms and r.slop, "premise: the draft carries one finding of each kind"
+    run = _run_record(tmp_path)
+    assert run["terms"] == r.terms
+    assert run["slop"] == r.slop
+    assert not any("UNBUNDLED TERM" in m for m in run["slop"]), run["slop"]
 
 
 def test_a_retry_whose_compose_raised_is_recorded_against_that_attempt(tmp_path):
@@ -477,6 +490,10 @@ def test_a_run_that_raises_after_composing_records_the_error(tmp_path):
     run = _run_record(tmp_path)
     assert run["status"] == "error"
     assert "renderer boom" in run["error"]
+    # Never settled, so null rather than an empty list that would read as clean -- the
+    # same rule for every finding list, `terms` included.
+    assert all(run[k] is None for k in ("violations", "audit_flags", "slop", "voice_flags",
+                                        "terms")), run
     # What the renderer was handed, which is the first thing to look at when it fails.
     assert _text(_lead_dir(tmp_path) / "cv.rendered.md") == CLEAN_CV
 

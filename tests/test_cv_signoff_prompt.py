@@ -107,3 +107,25 @@ def test_an_unaudited_entry_says_the_audit_never_ran_and_is_not_a_claim(capsys):
     err = capsys.readouterr().err
     assert "NOT audited" in err and "HTTP 503" in err
     assert "1 unsupported claim(s)" in err
+
+
+def test_a_term_entry_is_announced_as_a_possible_invention(capsys):
+    """#194: an unbundled term is a probable INVENTED technology, so it must not be filed
+    under 'style/voice concern(s)', which would understate it to the person signing off."""
+    _print_signoff_claims("slug", ["term\tUNBUNDLED TERM 'Examplequery': named nowhere"])
+    err = capsys.readouterr().err
+    assert "slug has 1 term(s) named nowhere in your evidence (possible invention):" in err
+    assert "UNBUNDLED TERM 'Examplequery'" in err
+    assert "style/voice" not in err
+    assert "unsupported claim" not in err
+
+
+def test_a_hold_with_no_term_entry_prints_exactly_what_it_did_before_194(capsys):
+    """A hold stamped before #194 carries no `term\\t` entry and must not be re-described."""
+    _print_signoff_claims("slug", ["unsupported\tMotivated by placeholder\tNONE",
+                                   "style\tSLOP leverage: x"])
+    assert capsys.readouterr().err == (
+        "cv signoff: slug has 1 unsupported claim(s):\n"
+        "  - unsupported\tMotivated by placeholder\tNONE\n"
+        "cv signoff: slug has 1 style/voice concern(s):\n"
+        "  - SLOP leverage: x\n")

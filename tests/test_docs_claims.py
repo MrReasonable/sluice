@@ -1947,8 +1947,8 @@ def test_the_cv_summary_key_extraction_is_not_vacuous():
     everything, so a regex that stopped matching would certify the doc against nothing, and a
     floor would let one key silently replace another."""
     assert _printed_cv_summary_keys() == {
-        "served", "violations", "audit_flags", "slop", "voice_flags", "dossier_failed",
-        "skills_unreadable", "artefacts_failed"}, (
+        "served", "violations", "audit_flags", "slop", "voice_flags", "terms",
+        "dossier_failed", "skills_unreadable", "artefacts_failed"}, (
         "the cv per-result line changed. Update this set AND the `Per-result line to stderr` "
         "paragraph in docs/USAGE.md that it guards.")
 
@@ -2006,7 +2006,7 @@ def test_usage_md_documents_the_label_each_finding_kind_actually_gets():
     # SCOPE, as an equality: a fifth finding kind printed without a table row must redden here,
     # and one kind silently replacing another must not slip past a floor.
     assert labels == {"violations": "  ", "audit_flags": "  AUDIT: ", "slop": "  ",
-                      "voice_flags": "  VOICE: "}, (
+                      "voice_flags": "  VOICE: ", "terms": "  "}, (
         f"cmd_cv_run's per-finding lines changed to {labels}. Update this set AND the "
         f"finding-kind table in docs/USAGE.md that it guards.")
 

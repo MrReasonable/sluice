@@ -310,3 +310,18 @@ def test_slop_allow_still_rejects_an_inflection_regardless_of_case(tmp_path):
     with pytest.raises(ValueError) as e:
         load_cv_config(str(p))
     assert "Leveraged" in str(e.value)
+
+
+def test_term_check_round_trips_off_through_the_cv_block(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("cv:\n  term_check: false\n", encoding="utf-8")
+    assert load_cv_config(str(p)).term_check is False
+
+
+def test_a_quoted_term_check_is_refused_rather_than_read_as_true(tmp_path):
+    # `"false"` is a non-empty STRING, truthy -- read as-is it would leave the check ON
+    # while the file plainly says off. The loader's generic bool-field check refuses it.
+    p = tmp_path / "config.yaml"
+    p.write_text('cv:\n  term_check: "false"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="term_check"):
+        load_cv_config(str(p))

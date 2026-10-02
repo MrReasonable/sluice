@@ -246,7 +246,7 @@ Compose, gate, render and sign off a tailored CV.
 | `--dry-run` | compose, gate and audit (so the backend calls are still spent) and write the diagnostic artefacts below, but render nothing, serve nothing and change nothing in the vault |
 
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
-slop=<N> voice_flags=<N> dossier_failed=<bool> skills_unreadable=<bool>
+slop=<N> voice_flags=<N> terms=<N> dossier_failed=<bool> skills_unreadable=<bool>
 artefacts_failed=<bool>`, followed by one
 indented line per finding, in that line's own field order and empty on a clean run (so
 nothing extra prints):
@@ -255,8 +255,9 @@ nothing extra prints):
 |---|---|---|
 | `violations` | `<CATEGORY> ...` | the HARD fabrication gate's own findings. Each already opens with its producer's own ALL-CAPS category (`UNSOURCED SKILL`, `INVENTED METRIC`, `UNCITED BULLET`, `STRUCTURAL`, the `template` renderer's `FORMAT`, ...), so no label is added. A `skipped-gate` result rendered no CV, and these are what say why (#258) |
 | `audit_flags` | `AUDIT: <verdict>\t<claim>\t<cited-id>` | the advisory model-judged fabrication audit; `unsupported` is the verdict that withholds the send-ready pointer (`cv.require_signoff`) |
-| `slop` | `SLOP <label>: <snippet>` | the deterministic slop linter, already prefixed |
+| `slop` | `SLOP <label>: <snippet>` | the deterministic linter `cv/slop.py`, already prefixed |
 | `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
+| `terms` | `UNBUNDLED TERM '<term>': named nowhere in your evidence: <snippet>` | `cv/terms.py`'s check for a term the CV names that no evidence carries, already prefixed (`cv.term_check`, on by default) |
 
 A summary line follows when any dossier fetch failed and composition proceeded blind, a
 second when any CV was composed without the Skills Inventory because the corpus could
@@ -291,7 +292,7 @@ role, lowercased, with each run of characters other than `a-z` and `0-9` turned 
 | `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: everything the composer was shown, of which only the source bundle is citable. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
 | `cv.attempt-N.md` | the text attempt N's compose returned, before any gate ruled on it |
 | `cv.rendered.md` | the text handed to the renderer; absent when nothing was rendered |
-| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
+| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
 
 There is no history: a later run for the same lead deletes this set (by name, leaving the PDF
 and any other file alone) and writes its own. `run.json`'s `files` lists every other file the
@@ -318,10 +319,13 @@ compose a lead without framing.
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 
 Releases or discards a CV that composed clean against the hard fabrication gate but was held
-back by the softer advisory audit (`cv.require_signoff`, on by default). Without `--yes`,
+back by the softer advisory audit (`cv.require_signoff`, on by default) or by a style or
+term finding (`cv.style_hold`, off by default). Without `--yes`,
 prompts interactively: lists the triage notes the CV was composed with (context, not claims)
 and the unsupported claims -- or says the CV was NOT audited, when the audit could not run
 (#333) -- prints the served path, then `sign off <slug>? [y/N] `.
+A hold placed by `cv.style_hold` also lists its style/voice concerns and any "possible
+invention" terms (from `cv.term_check`) under their own headings.
 `--discard` rejects the held CV instead, freeing a fresh compose.
 The held run's diagnostic artefacts (see `cv run` above) stay in place for as long as the
 hold does: `cv signoff` never touches them, and `cv run` refuses a held lead before composing,

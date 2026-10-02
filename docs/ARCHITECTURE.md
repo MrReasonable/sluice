@@ -661,6 +661,9 @@ whichever neighbour it was written next to:
    Non-citability is structural rather than parsed: `bundle_sources` walks
    `bundle["entries"]` and never touches `bundle["skills"]`, so a skills figure
    is licensed in neither the per-entry allowlist nor the wider PROFILE pool.
+   `cv/bundle.py::mention_vocab` RECOGNISES the framing, so the unbundled-term
+   check does not report a declared skill (unless a negative names it), but
+   nothing LICENSES it.
    Two flags on `EvidenceKind` carry the distinction the single old one cannot:
    `read_by_composer` (the corpus reaches the prompt) and `cited_by_gate` (the
    gate may license its content), and `__post_init__` refuses the incoherent
@@ -799,15 +802,17 @@ whichever neighbour it was written next to:
    `test_a_group_heading_while_work_is_live_still_ends_the_run`.
 
    The STYLE tier
-   (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems)
-   never blocks; it is also SCOPED, unlike the hard tier --
+   (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems,
+   alongside `cv/terms.py`'s unbundled-term check, #194, on by default via
+   `cv.term_check`, whose findings are reported apart from the phrase ones as
+   `CvResult.terms`) never blocks; it is also SCOPED, unlike the hard tier --
    `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
    so nothing keeps a second copy) yields the PROFILE-prose and WORK-bullet
    lines -- two of the THREE regions the function now returns, since #168's
    Task 3 added a SKILLS region alongside them, deliberately left out here --
    since the only way to answer a phrase complaint about an employer,
    certificate or education line is to rename the thing it names. An OPT-IN
-   third signal (`cv.voice_check`, off by default, `cv/voice.py`) rides the
+   model-judged check (`cv.voice_check`, off by default, `cv/voice.py`) rides the
    same retry once the hard tier is clean: a model judgment of the draft's
    VOICE, for an AI-tell clause a fixed phrase list cannot catch -- it fails
    open on a backend error, like the advisory audit below. It is scoped by
@@ -822,9 +827,12 @@ whichever neighbour it was written next to:
    already forbids judging content. EITHER a HARD finding OR a surviving
    STYLE/VOICE finding triggers
    exactly one retry with the findings fed back, and the loop RETAINS the
-   last HARD-clean draft across it, so a retry that comes back hard-dirty
-   (or simply fails) never bins a lead a style phrase alone would otherwise
-   have cost -- a phrase may never cost a lead. At shipped defaults
+   HARD-clean draft with the fewest STYLE/VOICE findings across it (a tie
+   keeps the later one, and an attempt whose voice check failed never displaces one whose
+   voice was measured), so a retry that comes back hard-dirty (or simply
+   fails) never bins a lead the first attempt already cleared, and a
+   style-worse retry never replaces a cleaner first draft -- a phrase may
+   never cost a lead. At shipped defaults
    (`cv.style_hold` off, `cv.slop_allow` empty -- full enforcement of every
    stem) that retry is the one real cost change: a hard-clean draft still
    using one of the ~40 stems in prose costs a second compose call,

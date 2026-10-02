@@ -814,6 +814,24 @@ def test_the_example_config_ships_voice_check_and_style_hold_commented():
     assert "style_hold" not in cv_block, "style_hold must ship COMMENTED, not active"
 
 
+# ── #194: cv.term_check ships ON ──────────────────────────────────────────────
+# Unlike voice_check it spends nothing per lead: it is pure and deterministic, and costs
+# one extra compose only when it fires (the slop stems' profile, also on by default). It is
+# not a job preference -- it says nothing about which jobs are good and never bins a lead.
+# Pinned as `is True` on the dataclass, so a flip to False goes red here; the example-config
+# row beside it checks only that the key is documented and ships commented.
+def test_term_check_dataclass_default_is_on():
+    assert CvConfig().term_check is True
+
+
+def test_the_example_config_documents_term_check_commented():
+    import yaml
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "term_check:" in text, "term_check must be documented at all"
+    cv_block = (yaml.safe_load(text) or {}).get("cv") or {}
+    assert "term_check" not in cv_block, "term_check must ship COMMENTED, not active"
+
+
 def test_the_example_config_ships_slop_allow_commented():
     import yaml
     text = _EXAMPLE_PATH.read_text(encoding="utf-8")

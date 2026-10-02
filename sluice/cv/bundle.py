@@ -313,9 +313,11 @@ def _framing_lines(skill: dict) -> list[str]:
 
     Deliberately NOT named `_skills_block`. In this module `_entry_block` and
     `_baseline_block` carry a stated contract -- every line returned is a SOURCE the
-    fabrication gate may license -- and these lines are the opposite of that. Nothing
-    harvests from here: `bundle_sources` walks `bundle["entries"]` and never touches
-    `bundle["skills"]`, which is what makes a skills figure licensed nowhere. Folding
+    fabrication gate may license -- and these lines are the opposite of that. Nothing that
+    LICENSES reads these lines: `bundle_sources` walks `bundle["entries"]` and
+    never touches `bundle["skills"]`, which is what makes a skills figure licensed nowhere.
+    `mention_vocab` (#194) does read them, to RECOGNISE a declared skill as not invented --
+    a STYLE-tier question, kept off `BundleSources` so it cannot become a licence. Folding
     these into `_entry_block`, or teaching `bundle_sources` to read them, licenses every
     skills digit at once; `test_a_skills_digit_is_licensed_in_neither_pool` catches that.
 
@@ -599,3 +601,45 @@ def bundle_sources(bundle: dict) -> BundleSources:
     # reason for a guard. `source_tokens` is the field that genuinely does need one, and
     # it has one -- in `validate()`, see its own comment above.
     return BundleSources(entries, baseline, tuple(b for b in blocks if b))
+
+
+def mention_vocab(bundle: dict) -> frozenset[str]:
+    """Every case-folded token the composer was SHOWN as source or framing, minus the
+    negatives: what the unbundled-term check (cv/terms.py, #194) RECOGNISES.
+
+    A STYLE-tier pool, and deliberately NOT a `BundleSources` field. That type is the
+    hard gate's licensing contract, and this set carries the two things the contract
+    excludes -- each entry's heading line and the Skills Inventory framing -- because the
+    question here is different: not "is this claim supported" (row 2, cv/audit.py) but "did
+    the composer INVENT this term". A declared skill was not invented, and flagging it
+    would make the only answer "delete a true skill". Keeping the pool off the licensing
+    type is what stops a later HARD row reading it by accident
+    (`tests/test_cv_mention_vocab.py::test_the_vocabulary_cannot_widen_the_hard_gate`).
+
+    Built from STRUCTURE through the same per-section emitters the prompt uses, never by
+    re-reading rendered text (#174), so a presentation header's words are not in it.
+
+    The negatives are SUBTRACTED by term, not merely left out as a source: "never claim X"
+    reports X even when an inventory note also names it -- PROVIDED X is written
+    name-shaped in the negative itself, because only a negative's own CANDIDATE tokens
+    (`cv/terms.py::candidates`) are subtracted. "never claim Examplelang" qualifies (arm
+    (iii), mid-sentence); "never claim examplelang", all lowercase, subtracts nothing.
+    Never its ordinary words, either:
+    a free-text negative such as "do not overstate platform leadership" would otherwise
+    remove `platform` from the vocabulary, and a capitalised `Platform` elsewhere in the CV
+    would then be reported on every lead.
+
+    The job description is not in it, on purpose: a JD is the likeliest place an invented
+    term comes from.
+    """
+    lines = list(_baseline_block(bundle))
+    for e in bundle["entries"]:
+        lines += _entry_block(e) + _entry_skills_line(e)
+    for s in bundle.get("skills", ()):
+        lines += _framing_lines(s)
+    words = {t.casefold() for line in lines for t in _WORD_RE.findall(line or "")}
+    # Imported here, not at module scope: cv/terms.py imports this module at ITS module
+    # scope, so a top-level import in this direction would be a cycle.
+    from sluice.cv.terms import candidates
+    banned = {t.casefold() for n in bundle["negatives"] for t in candidates(n)}
+    return frozenset(words - banned)

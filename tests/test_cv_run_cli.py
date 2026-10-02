@@ -26,7 +26,7 @@ def _detail_lines(err):
     """The indented per-finding lines `cmd_cv_run` prints under each summary line.
 
     ONE expression, used by both the clean-run test (which asserts it is empty) and the
-    order test (which asserts it is all four, in order). That sharing is the point: the
+    order test (which asserts it is every kind, in order). That sharing is the point: the
     clean-run assertion is a NEGATIVE guard -- finding nothing IS the success case -- so it
     passes just as happily on a predicate that can never match anything. Measured by a
     reviewer while this was two copies: narrowing only the clean test's predicate to
@@ -100,7 +100,7 @@ def test_cmd_cv_run_prints_nothing_extra_when_every_finding_list_is_empty(
     assert "SLOP" not in err
     assert "VOICE" not in err
     assert "AUDIT" not in err
-    assert "slop=0" in err and "voice_flags=0" in err
+    assert "slop=0" in err and "voice_flags=0" in err and "terms=0" in err
     assert "violations=0" in err and "audit_flags=0" in err
     assert "artefacts_failed=False" in err
     assert "diagnostic artefacts could not" not in err
@@ -210,10 +210,10 @@ def test_cmd_cv_run_prints_the_audit_flags_with_their_own_label(monkeypatch, tmp
     assert "\n  AUDIT: paraphrase\tScaled the platform\tBO2\n" in err
 
 
-def test_cmd_cv_run_prints_the_four_finding_kinds_in_the_summary_lines_own_order(
+def test_cmd_cv_run_prints_every_finding_kind_in_the_summary_lines_own_order(
         monkeypatch, tmp_path, capsys):
-    """One result carrying all four, to pin the ORDER as the summary line's own field
-    order (violations, audit_flags, slop, voice_flags).
+    """One result carrying every kind, to pin the ORDER as the summary line's own field
+    order (violations, audit_flags, slop, voice_flags, terms).
 
     Not decoration: the summary line is what the operator reads first, and a detail
     block ordered differently from the counts it expands makes the reader match blocks
@@ -230,7 +230,8 @@ def test_cmd_cv_run_prints_the_four_finding_kinds_in_the_summary_lines_own_order
         violations=["UNCITED BULLET: - Delivered the widget pipeline"],
         slop=["SLOP leverage: I leverage strong delivery patterns."],
         audit_flags=["unsupported\tLed a team of nine\tBO1"],
-        voice_flags=["flag\tThis reads like a press release."])
+        voice_flags=["flag\tThis reads like a press release."],
+        terms=["UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: on Examplequery"])
     monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
 
     assert cmd_cv_run(_args(), Config()) == 0
@@ -239,4 +240,23 @@ def test_cmd_cv_run_prints_the_four_finding_kinds_in_the_summary_lines_own_order
         "  AUDIT: unsupported\tLed a team of nine\tBO1",
         "  SLOP leverage: I leverage strong delivery patterns.",
         "  VOICE: flag\tThis reads like a press release.",
+        "  UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: on Examplequery",
     ]
+
+
+def test_cmd_cv_run_counts_and_prints_the_term_findings(monkeypatch, tmp_path, capsys):
+    """F6: `terms` is its own CvResult field, so the summary line counts it on its own --
+    a term must not inflate `slop=` -- and each finding prints in full, already labelled
+    by its producer the way `slop` entries are."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf",
+        terms=["UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: on Examplequery"])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+
+    assert cmd_cv_run(_args(), Config()) == 0
+    err = capsys.readouterr().err
+    assert "slop=0" in err and "terms=1" in err
+    assert ("\n  UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: "
+            "on Examplequery\n") in err
