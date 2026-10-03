@@ -40,6 +40,25 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [3.2.0](https://github.com/MrReasonable/sluice/compare/v3.1.0...v3.2.0) (2026-10-03)
+
+
+### Features
+
+* **cv:** report terms CV prose names but no evidence carries ([#194](https://github.com/MrReasonable/sluice/issues/194)) ([51f16ec](https://github.com/MrReasonable/sluice/commit/51f16ec391fac1db27b2fee1898806ad7be6291b))
+
+
+### Bug Fixes
+
+* **cv:** keep the hard-clean draft with fewer style findings, not the last one ([e264e17](https://github.com/MrReasonable/sluice/commit/e264e17975d3e7d1ae085e7a0e869c2c9cdaf2e7))
+
+
+### Documentation
+
+* **plan:** count the design-doc commits in the autosquash expectation ([#194](https://github.com/MrReasonable/sluice/issues/194)) ([c6bb121](https://github.com/MrReasonable/sluice/commit/c6bb121780395d1969afc030170b82bdb5ca20b4))
+* **plan:** implementation plan for the unbundled-term check ([#194](https://github.com/MrReasonable/sluice/issues/194)) ([1efd247](https://github.com/MrReasonable/sluice/commit/1efd24707ad3dae8f765dc8821439eb7eb566910))
+* **spec:** unbundled-term check for invention in CV prose ([#194](https://github.com/MrReasonable/sluice/issues/194)) ([f076553](https://github.com/MrReasonable/sluice/commit/f076553b1c3b4f47df2af054e2f24b729d11a3a8))
+
 ## [3.1.0](https://github.com/MrReasonable/sluice/compare/v3.0.0...v3.1.0) (2026-10-02)
 
 
