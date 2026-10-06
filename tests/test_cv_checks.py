@@ -436,3 +436,39 @@ def test_an_id_shaped_line_in_an_entrys_own_body_still_sources_that_entrys_figur
 def test_a_section_shaped_body_line_does_not_strand_the_entrys_figures():
     facts = _facts_from([dict(_TWO[1], body="Highlights\n=== Detail ===\nCut latency to 250 ms")])
     assert "250" in facts["EA1"].figures
+
+
+# Owner's model, 2026-10-06: an entry's `Skills` items (general soft skills) feed the SKILLS pool
+# only -- never attribution-checked, never licensing or blanking a figure. Built
+# through the real build_bundle -> entry_facts path, since `entry_facts` is where a field
+# would be harvested.
+_PRACTICE_ENTRIES = [
+    {"title": "Grew the team", "company": "Example Alpha", "metrics": "", "body": "",
+     "fields": dict(Skills="examplecoach, 5X")},
+    {"title": "Built the platform", "company": "Example Beta", "metrics": "12", "body": "",
+     "fields": dict(Tools="Exampleco")},
+]
+
+
+def _practice_facts():
+    from sluice.cv.bundle import build_bundle
+    b = build_bundle(_PRACTICE_ENTRIES, [], [], {"Example Alpha": "EA", "Example Beta": "EB"})
+    return entry_facts(b, CvLayout(roles=(ALPHA, BETA)))
+
+
+def test_a_skills_item_is_never_attribution_checked():
+    facts = _practice_facts()
+    # The attribution check is ON (EB1 declares a tool), so a skipped check cannot pass this.
+    assert facts["EB1"].tools == ("Exampleco",) and facts["EA1"].tools == ()
+    # EB1 never declares examplecoach; EA1 does, under its `Skills` field. Neither bullet is refused.
+    assert _check(r1=[_b("Ran examplecoach sessions", "EA1")],
+                  r2=[_b("Ran examplecoach sessions", "EB1")], facts=facts) == []
+
+
+def test_a_skills_item_neither_licenses_nor_hides_a_figure():
+    # EA1's only 5 is inside its Skills item `5X`: it is not a figure, and naming the practice
+    # in a bullet does not blank the digit the way a cited tool's name would.
+    facts = _practice_facts()
+    assert "5" not in facts["EA1"].figures
+    assert _check(r1=[_b("Ran 5X reviews", "EA1")], facts=facts) == [
+        "INVENTED METRIC ['5'] not in ['EA1']: Ran 5X reviews"]

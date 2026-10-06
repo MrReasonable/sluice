@@ -76,7 +76,6 @@ def test_every_shipped_kind_passes_its_own_construction_guard():
                                cited_by_gate=spec.cited_by_gate,
                                read_by_composer=spec.read_by_composer,
                                floor_map=spec.floor_map,
-                               legacy_fields=spec.legacy_fields,
                                names_in_skills_pool=spec.names_in_skills_pool)
         assert rebuilt == spec, kind
 
@@ -1096,38 +1095,19 @@ def test_the_registry_flags_are_what_this_change_intends():
         == {"experience": (True, True), "skills": (True, False), "stories": (False, False)}
 
 
-def test_a_legacy_field_reports_presence_outside_fields(tmp_path, monkeypatch):
-    # The registry is patched to declare an invented legacy field, `Retired`, rather than
-    # using the shipped `Skills`: the mechanism under test is "whatever legacy_fields names
-    # is reported as presence and kept out of fields", and only a name the shipped registry
-    # does not hard-wire can show the store reads the REGISTRY rather than a spelled-out
-    # `Skills`. The row below covers the shipped field itself.
-    import dataclasses
-    from sluice.core import protocols
-    spec = dataclasses.replace(protocols.EVIDENCE_KINDS["experience"],
-                               legacy_fields=("Retired",))
-    monkeypatch.setitem(protocols.EVIDENCE_KINDS, "experience", spec)
-    v = Vault(str(tmp_path))
-    v.write_document("Job Applications/Experience Library/one.md",
-                     "---\nCompany: Example Alpha\nRetired: anything\nverified: 2026-01-01\n---\nBody\n")
-    v.write_document("Job Applications/Experience Library/two.md",
-                     "---\nCompany: Example Alpha\nRetired: \nverified: 2026-01-01\n---\nBody\n")
-    by_title = {e["title"]: e for e in v.read_evidence("experience")}
-    assert by_title["one"]["legacy"] == {"Retired": True}
-    assert by_title["two"]["legacy"] == {"Retired": False}
-    assert "Retired" not in by_title["one"]["fields"]
-
-
-def test_a_legacy_skills_line_is_surfaced_as_presence_and_never_written(tmp_path):
+def test_an_experience_entrys_skills_is_written_and_read_back_as_data(tmp_path):
+    """Owner decision 2026-10-06 (replaces 4.0's presence-only `legacy` report): `Skills`
+    is a declared experience field again -- general soft skills offered for a CV's SKILLS
+    list -- so a proposal writes it and the citable read hands it back under `fields`, the
+    same as `Tools:`. No `legacy` key is reported any more: nothing retired is left to report."""
     v = Vault(str(tmp_path / "vault"))
-    v.propose_evidence("experience", name="alpha", fields={"Company": "Example Alpha"})
+    v.propose_evidence("experience", name="alpha",
+                       fields=dict({"Company": "Example Alpha"}, Skills="examplecoach"))
     [pending] = v.read_pending_evidence("experience")
     with open(pending["path"], encoding="utf-8") as fh:
-        raw = fh.read().replace("---\n", "---\nSkills: Examplelang\n", 1)
-    with open(pending["path"], "w", encoding="utf-8") as fh:
-        fh.write(raw)
+        raw = fh.read()
+    assert "Skills: examplecoach\n" in raw
     assert v.verify_evidence("experience", "alpha", today="2026-09-03", reviewed=raw)
     [entry] = v.read_evidence("experience")
-    assert "Skills" not in entry["fields"] and entry["legacy"] == dict(Skills=True)
-    with pytest.raises(ValueError, match="Skills"):
-        v.propose_evidence("experience", name="beta", fields={"Skills": "Examplelang"})
+    assert entry["fields"]["Skills"] == "examplecoach"
+    assert "legacy" not in entry

@@ -27,10 +27,13 @@ def test_the_kinds_disagree_on_both_flags_so_the_row_above_can_fail():
     assert {s.names_in_skills_pool for s in EVIDENCE_KINDS.values()} == {True, False}
 
 
-def test_experience_declares_tools_and_keeps_skills_as_legacy_presence_only():
+def test_experience_declares_both_skills_and_tools():
+    # Owner decision 2026-10-06 (replaces 4.0's "Skills is legacy presence only"): the
+    # `Tools` field holds named tools (attribution-checked), the `Skills` field holds
+    # practices (offered for the SKILLS list). Both are user-facing fields, so both get an
+    # `add` flag and an MCP key.
     spec = EVIDENCE_KINDS["experience"]
-    assert spec.fields == ("Company", "Category", "Best For", "Metrics", "Tools")
-    assert spec.legacy_fields == ("Skills",)
+    assert spec.fields == ("Company", "Category", "Best For", "Metrics", "Skills", "Tools")
 
 
 def test_doctor_no_longer_reports_a_baseline_cv():

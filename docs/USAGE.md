@@ -264,12 +264,13 @@ nothing extra prints):
 | `slop` | `SLOP <label>: <snippet>` | the deterministic linter `cv/slop.py`, already prefixed: its HARD tier (`SLOP EM-DASH`, `SLOP DOUBLE-HYPHEN-DASH`), which blocks, as well as the phrase stems |
 | `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
 | `terms` | `UNBUNDLED TERM '<term>': named nowhere in your evidence: <snippet>` | `cv/terms.py`'s check for a term the CV names that no evidence carries, already prefixed (`cv.term_check`, on by default) |
-| `skills_dropped` | `DROPPED: '<pick>': <why>` | a skill pick that was not rendered: not one of your verified skill names or entry tools, listed twice, or beyond the CV Layout's `skills_max`. Never a refusal; quoted from the model, so treat it as untrusted text |
+| `skills_dropped` | `DROPPED: '<pick>': <why>` | a skill pick that was not rendered: not one of your verified skill names or entry tools or skills, listed twice, or beyond the CV Layout's `skills_max`. Never a refusal; quoted from the model, so treat it as untrusted text |
 | `bullets_trimmed` | `TRIMMED: <slot> (<heading>): kept <N> of <M>` | bullets beyond a role's `bullets_max`, the first N kept. A trimmed bullet is never checked, so it never costs a retry |
 
 `attribution_check_off=True` means no verified experience entry declares `Tools:`, so the
-misattributed-tool check did not run. On a vault whose entries still carry the retired
-`Skills:`, `cv run` also logs one WARNING per run saying so, and `doctor` lists the same row.
+misattributed-tool check did not run. On a vault where some verified entry declares `Skills:`
+but none declares `Tools:`, `doctor --verbose` also lists a notice saying so; it is not a
+warning, blocks nothing and does not fail `--strict`.
 
 A summary line follows when any dossier fetch failed and composition proceeded blind, a
 second when any CV was composed without the Skills Inventory because the corpus could
@@ -663,18 +664,24 @@ the prompt), `EvidenceKind.cited_by_gate` (may the gate license its content) and
 `add`'s confirmation line and `doctor`'s row both read them, so neither claims a citability the
 code does not have.
 
-An Experience Library entry's `--tools`/`Tools:` field lists the named tools THIS entry used --
-tools, technologies, languages, platforms, standards and named methods (`Terraform`, `React`,
+An Experience Library entry's `--tools`/`Tools:` field lists the specific tools and hard skills
+THIS entry's job used -- tools, technologies, languages, platforms, standards and named methods (`Terraform`, `React`,
 `WCAG`, `Scrum`) -- comma-separated (or as a YAML block list). Once any verified entry declares
 one, a CV bullet naming a declared tool, spelled as declared, must cite an entry that lists it
 or whose own text names it, or the CV is refused as `MISATTRIBUTED TOOL`; and every listed tool
 can be picked for the SKILLS section.
 
-Leave general practices (`security`, `coaching`, `pairing`, `architecture`) out: a declared word
-is checked in every bullet, hyphenated compounds included (`security-focused` matches a declared
-`security`), so ordinary prose using it is refused whenever the bullet cites a different entry.
-A practice you want under SKILLS belongs in a Skills Inventory note (`skills add`), whose label
-is not checked in bullets.
+Leave general practices (`security`, `coaching`, `pairing`, `architecture`) out of `Tools:`: a
+declared tool is checked in every bullet, hyphenated compounds included (`security-focused`
+matches a declared `security`), so ordinary prose using it is refused whenever the bullet cites a
+different entry. Put general soft skills, ones not tied to any particular job, in `--skills`
+instead: an entry's `Skills:` items are used for one thing only, as candidates for the SKILLS
+section. They are not shown to the composer as part of the entry, never checked against
+bullets, never license a figure, do not count as evidence for the `UNBUNDLED TERM` check, and
+are not held to the digit rule below (so `5S` is accepted for the SKILLS list). Keep tools out of
+`--skills`: a tool named only there and then claimed in a bullet is reported as an unbundled
+term. A Skills Inventory note (`skills add`) works as well; its label is not checked in bullets
+either.
 
 A digit inside a tool's name (`Examplelang3`) is never read as a figure for a bullet citing that
 entry. Every word of a `Tools:` item must begin with a letter, or with a dot then a letter. A
@@ -685,12 +692,12 @@ one admits the other, which would let a `Tools:` value hide an invented figure. 
 thing another way or leave it out.
 
 `add` and `verify` do not check `Tools:`. `cv run` does, before any spend: an unusable item stops
-the whole run (exit 2) naming the entry and the item, and `doctor` counts such entries. The
-retired `Skills:` field is no longer read; `doctor` and `cv run` say when a vault still carries it
-and no entry declares `Tools:`, since the misattributed-tool check is then off. When upgrading,
-copy only the named tools from `Skills:` into `Tools:`, not the practice words.
+the whole run (exit 2) naming the entry and the item, and `doctor` counts such entries. When
+some verified entry declares `Skills:` and none declares `Tools:`, `doctor --verbose` notes that
+the misattributed-tool check is off. When upgrading from 3.x, move any named tools from `Skills:`
+into `Tools:` and leave the general soft skills in `Skills:`.
 
-### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--tools V] [--body TEXT] [--body-file PATH|-]`
+### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--skills V] [--tools V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--label V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`
 
@@ -715,8 +722,9 @@ slug (`C#` becomes `c`). `--label` sets it explicitly; left blank it takes the `
 Lists verified entries by default, one per line: `<title>  [<verified date>]`. With
 `--pending`, lists the not-yet-verified queue instead: `<title>  [pending]`. For a kind with
 those fields (`experience`), each line also shows `Company: <company>` (`(none)` when blank) and,
-when the entry declares any, `Tools: <tools>`: this is where `doctor`'s "not on your CV" and
-"no company" counts point you. For a kind with a `Label` field (`skills`), each line shows
+when the entry declares any, `Tools: <tools>` and then `Skills: <skills>` (a blank field is
+left off the line): this is where `doctor`'s "not on your CV" and "no company" counts point you,
+and where you check which tools and practices each entry declares. For a kind with a `Label` field (`skills`), each line shows
 `Label: <label>` (`(none)` when blank), which is where `doctor`'s "cv skills (no Label)" count
 points you: it counts the lines pairing a slug title with `Label: (none)`. Exit 0 unless the
 store cannot read an entry (see the note under `verify`, below).

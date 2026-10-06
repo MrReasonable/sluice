@@ -280,7 +280,10 @@ Shared by every sub-app:
   `doctor` share -- `find_term` (a term's token sequence inside one segment, no
   alphanumeric of any script touching either end), `figures` (the figure reader, with
   `group_reading` deciding every thousands separator), `tool_items` (the one parser of an
-  entry's `Tools:`) and the decoy validators. In `core/`, not `cv/`, because
+  entry's `Tools:`), `skill_items` (an entry's `Skills:`, split by the same splitter --
+  which drops one enclosing pair of brackets, YAML's inline-list spelling -- but without
+  the per-word rule, since no check matches or blanks a `Skills:` item) and the decoy
+  validators. In `core/`, not `cv/`, because
   `core/doctor.py` must answer the same questions the gate answers and `core/` may not
   import a sub-app; a second copy in doctor is how the two would come to disagree.
 - `layout.py` (#364/#365/#368): the CV Layout note. `parse_layout` validates the
@@ -681,8 +684,10 @@ whichever neighbour it was written next to:
      a retry or a lead; both are reported (`skills_dropped`, `bullets_trimmed`) and
      listed in the retry prompt. The pool is the verified skill notes' names (`Label:`,
      else the title -- `cv_name`) first, so their spelling wins, then every verified
-     entry's `Tools:`, de-duplicated, minus anything a `cv.fabrication_decoys` term
-     matches. Which kinds supply names is keyed on `EvidenceKind.names_in_skills_pool`,
+     entry's `Tools:`, then every verified entry's `Skills:` (general soft skills tied to
+     no job, the owner's model of 2026-10-06; this pool is the ONLY place they are used),
+     de-duplicated, minus anything a `cv.fabrication_decoys`
+     term matches. Which kinds supply names is keyed on `EvidenceKind.names_in_skills_pool`,
      never on a kind's name. `zero_bullet_findings` refuses a selection with no bullet in
      any role that can carry one, unless every slot's budget is `0` (a headings-only CV
      the user configured).
@@ -743,11 +748,10 @@ whichever neighbour it was written next to:
    `cv_layout (no citable entry)` row decided by the same `core/layout.py::no_citable_slot`
    over the same `build_slots`. Its causes stay beside it as the "not on your CV" / "no
    company" warning counts, which on their own block nothing, because while some entry
-   is citable an entry left off is normally the user's choice. A further
-   check is a WARNING, logged once per run (`run_warnings`): the misattributed-tool
-   check is off on an upgraded vault whose entries carry the retired `Skills:` and none
-   declares `Tools:` -- the sentence is doctor's own row (`classify_attribution`), so
-   the two cannot disagree.
+   is citable an entry left off is normally the user's choice. `cv run` logs nothing
+   about the misattributed-tool check being off: on a vault where some verified entry
+   declares `Skills:` and none declares `Tools:`, that is doctor's verbose-only NOTICE
+   (`classify_attribution`), since soft skills without tools is a legitimate vault.
 
    The gate has a HARD tier and a scoped STYLE tier (#167), and both read only the text
    the MODEL wrote -- the profile and the kept bullets. Vault text is the user's: a
@@ -773,7 +777,8 @@ whichever neighbour it was written next to:
      off, and every result says so in `attribution_check_off`), a bullet naming a
      declared tool -- case-sensitively, as a whole term -- must cite an entry that
      declares it (in any case) or whose own title or body names it under the same case
-     rule (a lowercase name also accepting its sentence-initial capital).
+     rule (a lowercase name also accepting its sentence-initial capital). `Skills:`
+     items are never part of it: `EntryFacts.tools` is `tool_items` alone.
    - `FABRICATED`: a `cv.fabrication_decoys` term, as a whole term in any case, in the
      profile or a bullet. A decoy the matcher cannot represent is refused at config load,
      by position (`core/tokens.py::validate_decoys`).
@@ -838,7 +843,8 @@ whichever neighbour it was written next to:
    AI-tell stems) and `cv/terms.py`'s unbundled-term check (#194, on by default via
    `cv.term_check`, reported apart as `CvResult.terms`: a term the model names that
    appears nowhere in `cv/bundle.py::term_vocabulary` -- the entries, their tools, the
-   Skills Inventory framing and the CV Layout's own text). It is SCOPED to
+   Skills Inventory framing and the CV Layout's own text; never an entry's `Skills:`, so
+   a tool name left there and claimed in a bullet is still reported). It is SCOPED to
    `cv/document.py::model_lines` -- the profile and the kept bullets -- since the only
    way to answer a phrase complaint about an employer, certificate or skill name is to
    rename the thing it names. An OPT-IN model-judged check (`cv.voice_check`, off by
@@ -863,7 +869,8 @@ whichever neighbour it was written next to:
    Above the hard gate sits a softer, human-facing layer (#60): an advisory LLM audit
    (`audit.py`) reads the model's text with its cites (`cv/document.py::audit_text`)
    against `cv/bundle.py::render_audit_bundle` -- the entries with their tools, since
-   the gate licenses a tool through `Tools:`, and the guidance; never the Skills
+   the gate licenses a tool through `Tools:`, and the guidance; never an entry's
+   `Skills:` (tied to no job, so not evidence for a bullet), never the Skills
    Inventory, so a claim resting on a skills line alone stays `unsupported` -- and never
    sees a date, title, certificate or education line, which are the user's own data. An
    `unsupported` flag still renders and serves the PDF (it passed the hard gate) but
@@ -2339,11 +2346,13 @@ bullets, the case `missing_prerequisites` refuses. The rest are DEGRADED warning
 that block nothing and are listed by default: verified entries no CV can cite ("not on your
 CV", "no company"), verified skill notes with no `Label:` and a slug-shaped title
 (`classify_skill_labels` -- a note `skills add` made before 4.0, which a CV lists under its
-slugged title; the shape test is `evidence_slug` itself, so a hand-titled note is left out), the attribution
-check off on an upgraded vault, and a
-`cv.fabrication_decoys` entry matching the user's own `Tools:`, skill names or layout text --
+slugged title; the shape test is `evidence_slug` itself, so a hand-titled note is left out), and a
+`cv.fabrication_decoys` entry matching the user's own `Tools:` or `Skills:`, skill names or
+layout text --
 which keeps that tool or skill off every SKILLS list while layout text renders regardless.
-The skill names come from `cv/selection.py` itself, so this row and the pool agree.
+The skill names come from `cv/selection.py` itself, so this row and the pool agree. The
+attribution check being off (some verified entry declares `Skills:`, none `Tools:`) is a
+NOTICE instead: `--verbose` only, blocking nothing and never failing `--strict`.
 A gate row whose role IS
 declared never affects `exit_code`, under `--strict` or otherwise, because an abstaining
 gate (an unconfigured preference simply passes every lead through) is the shipped default

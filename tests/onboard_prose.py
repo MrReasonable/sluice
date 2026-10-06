@@ -66,11 +66,6 @@ _NOT_PROSE = {
     # every kind), so `vars()` sees it as a local name in each and both tuples are listed here.
     ("sluice.evidence.commands", "EVIDENCE_KINDS"),
     ("sluice.evidence.wizard", "EVIDENCE_KINDS"),
-    # `RETIRED_FIELDS` maps a retired frontmatter FIELD NAME to its replacement ("Skills" ->
-    # "Tools"): the same field-name vocabulary as EVIDENCE_KINDS above, never prose. The
-    # refusal it drives is an in-body f-string, run and read by
-    # tests/test_evidence_cli.py::test_the_retired_skills_flag_names_tools_and_writes_nothing.
-    ("sluice.evidence.commands", "RETIRED_FIELDS"),
 }
 
 # The one place the sweep's own fixture values live, so the rendered arm exercises the WALKED

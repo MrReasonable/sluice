@@ -47,36 +47,35 @@ def test_add_exposes_one_flag_per_user_field_and_no_verified_flag():
         parser.parse_args(["skills", "add", "--name", "x", "--verified", "2099-01-01"])
 
 
-@pytest.mark.parametrize("argv", [["--skills", "Examplelang"], ["--skills"]])
-def test_the_retired_skills_flag_names_tools_and_writes_nothing(tmp_path, monkeypatch, capsys,
-                                                                argv):
-    # 4.0 retired `Skills:` for `Tools:`; a bare "unrecognized arguments" would not say so.
+def test_experience_add_skills_writes_the_skills_field(tmp_path, monkeypatch):
+    """Owner decision 2026-10-06 (replaces 4.0's retired-flag refusal): the `Skills` field holds an
+    entry's general soft skills, offered for a CV's SKILLS list, so `--skills` writes
+    it again -- beside `--tools`, never in place of it."""
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
-    with pytest.raises(SystemExit) as exc:
-        main(["experience", "add", "--name", "alpha"] + argv)
-    assert exc.value.code == 2
-    err = capsys.readouterr().err
-    assert "--skills was retired" in err and "use --tools instead" in err
-    assert "Traceback" not in err
-    # Swept where it runs, like every other command message (see
-    # test_no_command_message_names_a_taxonomy_word): this branch is not in that sequence.
-    from sluice.onboard.questions import expresses_a_preference
-    assert not expresses_a_preference(err)
-    assert Vault(str(tmp_path)).read_pending_evidence("experience") == []
+    assert main(["experience", "add", "--name", "alpha", "--company", "Example Alpha",
+                 "--skills", "examplecoach, Example Framework",
+                 "--tools", "Exampleco"]) == 0
+    [entry] = Vault(str(tmp_path)).read_pending_evidence("experience")
+    assert entry["fields"]["Skills"] == "examplecoach, Example Framework"
+    assert entry["fields"]["Tools"] == "Exampleco"
 
 
-def test_the_retired_skills_flag_is_hidden_and_only_where_it_existed(capsys):
+def test_the_skills_flag_is_listed_and_only_where_the_kind_declares_it(capsys):
     parser = _build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["experience", "add", "--help"])
     out = capsys.readouterr().out
-    assert "--tools" in out and "--skills" not in out
-    # Only `experience` ever took --skills (its EvidenceKind's legacy_fields), so any other
-    # kind still refuses it as an unknown argument rather than pointing at a --tools it lacks.
-    for kind in (k for k, spec in EVIDENCE_KINDS.items() if "Skills" not in spec.legacy_fields):
+    assert "--tools" in out and "--skills" in out
+    # Derived from the registry: a kind that does not declare `Skills` refuses the flag as
+    # an unknown argument.
+    others = [k for k, spec in EVIDENCE_KINDS.items() if "Skills" not in spec.fields]
+    assert others, "every kind declares Skills, so the refusal below would check nothing"
+    for kind in others:
+        # Control: the same argv minus the flag parses, so the refusal below is the flag's.
+        assert parser.parse_args([kind, "add", "--name", "x"]).name == "x"
         with pytest.raises(SystemExit):
             parser.parse_args([kind, "add", "--name", "x", "--skills", "y"])
-        assert "use --tools instead" not in capsys.readouterr().err, kind
+        assert "unrecognized arguments: --skills" in capsys.readouterr().err, kind
 
 
 def test_verify_offers_no_bulk_flag():
@@ -231,6 +230,50 @@ def test_experience_list_surfaces_the_tools_field(tmp_path, monkeypatch, capsys)
     out = capsys.readouterr().out
     assert "alpha" in out
     assert "Tools: Example Widget, Example Framework" in out
+
+
+def test_experience_list_surfaces_the_skills_field_beside_tools(tmp_path, monkeypatch,
+                                                                 capsys):
+    """Owner decision 2026-10-06 made an entry's `Skills` field live (it feeds the SKILLS
+    list), so the listing -- where a user checks what each entry declares -- shows it the
+    way it shows the tools: after them, and only when non-blank. `gamma` carries a quoted
+    whitespace-only value, the blank spelling that reaches this code verbatim."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    exp = Vault(str(tmp_path))._evidence_dir("experience")
+    os.makedirs(exp, exist_ok=True)
+    for name, extra in (("alpha", "Skills: examplecoach, Example Framework\nTools: Exampleco\n"),
+                        ("beta", "Skills: \n"), ("gamma", 'Skills: "   "\n')):
+        with open(os.path.join(exp, f"{name}.md"), "w", encoding="utf-8") as fh:
+            fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
+                     f"{extra}verified: 2026-08-25\n---\nBody.\n")
+
+    assert main(["experience", "list"]) == 0
+    lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines()}
+    alpha = lines["alpha"]
+    assert alpha.endswith("Skills: examplecoach, Example Framework")
+    assert "Tools: Exampleco" in alpha and alpha.index("Tools") < alpha.index("Skills")
+    assert "Skills" not in lines["beta"] and "Skills" not in lines["gamma"]
+
+
+def test_experience_list_shows_list_valued_tools_and_skills(tmp_path, monkeypatch, capsys):
+    """The Store contract lets a field come back as a list of text (a store that parses YAML
+    block lists), and core/tokens.py's readers accept one -- so the listing must show it
+    too, joined with ", " under the same blank-skipping rule, rather than silently omitting
+    what the CV pipeline is using. Stubbed at the facade: the vault itself always hands back
+    text, so only another store reaches this shape."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    rows = [{"title": "alpha", "verified": "2026-08-25",
+             "fields": dict({"Company": "Example Alpha"}, Tools=["Exampleco", " ", "Examplelang"],
+                            Skills=("examplecoach",))},
+            {"title": "beta", "verified": "2026-08-25",
+             "fields": dict({"Company": "Example Alpha"}, Tools=[" "], Skills=[])}]
+    monkeypatch.setattr(Sluice, "list_evidence", lambda self, kind, pending=False: rows)
+    assert main(["experience", "list"]) == 0
+    lines = {ln.split()[0]: ln for ln in capsys.readouterr().out.splitlines()}
+    alpha = lines["alpha"]
+    assert alpha.endswith("Skills: examplecoach")
+    assert "Tools: Exampleco, Examplelang" in alpha and alpha.index("Tools") < alpha.index("Skills")
+    assert "Tools" not in lines["beta"] and "Skills" not in lines["beta"]
 
 
 def test_experience_list_omits_a_blank_tools_line(tmp_path, monkeypatch, capsys):

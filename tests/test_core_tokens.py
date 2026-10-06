@@ -279,3 +279,57 @@ def test_a_60k_group_chain_is_read_in_linear_time(sep, monkeypatch):
     got = T.figures(text)
     assert reads[0] <= 8 * len(text)
     assert "1" + "000" * 15000 in got
+
+
+@pytest.mark.parametrize("parse,field", [(T.tool_items, "Tools"), (T.skill_items, "Skills")])
+def test_an_inline_bracketed_list_reads_as_its_items_not_bracket_fragments(parse, field):
+    """`Skills: [examplecoach, Example Framework]` -- YAML's flow-list spelling -- reaches the
+    parser as a literal string, because the vault's frontmatter read is line-based. Split
+    as-is it yielded `[examplecoach` and `Example Framework]`, which would render on a CV
+    and never match. The shared splitter strips ONE enclosing pair; a bracket that does not
+    enclose the whole value is left alone."""
+    entry = {"fields": {field: " [examplecoach, Example Framework] "}}
+    assert parse(entry) == ["examplecoach", "Example Framework"]
+    assert parse({"fields": {field: "[]"}}) == []
+    # Not enclosing: kept as typed (only a whole-value pair is a list marker).
+    assert parse({"fields": {field: "examplecoach, Example Framework]"}}) == [
+        "examplecoach", "Example Framework]"]
+
+
+@pytest.mark.parametrize("parse,field", [(T.tool_items, "Tools"), (T.skill_items, "Skills")])
+@pytest.mark.parametrize("value,items", [
+    # Each item bracketed on its own: NOT one enclosing pair, so split exactly as before.
+    ("[examplecoach], [Example Framework]", ["[examplecoach]", "[Example Framework]"]),
+    # An Obsidian wikilink list: the brackets are the user's link syntax, kept as typed.
+    ("[[examplecoach]], [[Example Framework]]", ["[[examplecoach]]", "[[Example Framework]]"]),
+])
+def test_only_a_single_flow_list_pair_is_stripped(parse, field, value, items):
+    """The enclosing pair is dropped only when the WHOLE value is one `[ ... ]` with no other
+    bracket inside -- YAML's flow list. A value that merely starts with `[` and ends with `]`
+    (bracketed items, wikilinks) is not a flow list, and stripping it would mangle the first
+    and last items."""
+    assert parse({"fields": {field: value}}) == items
+
+
+@pytest.mark.parametrize("parse,field", [(T.tool_items, "Tools"), (T.skill_items, "Skills")])
+def test_a_quoted_flow_list_item_holding_a_comma_stays_one_item(parse, field):
+    """A YAML flow list may quote an item that contains a comma; split at every comma, the
+    item came back as two fragments -- each a pool value that renders on a CV, and for
+    Tools a name a bullet could be refused against. Unquoted items are unchanged."""
+    value = '[examplecoach, "Example Framework, Example Query", Examplelang]'
+    assert parse({"fields": {field: value}}) == [
+        "examplecoach", "Example Framework, Example Query", "Examplelang"]
+    assert parse({"fields": {field: "[examplecoach, Examplelang]"}}) == [
+        "examplecoach", "Examplelang"]
+
+
+def test_an_oversize_flow_list_is_a_value_error_never_a_csv_error():
+    """csv's field-size limit makes a huge flow-list value raise `csv.Error`, which is not a
+    ValueError: it escaped `skill_items`' `except ValueError` and could cost a lead over a
+    skills list. Re-raised as ValueError, Tools refuses it like any bad item and Skills
+    declares none."""
+    import csv
+    huge = "[" + "a" * (csv.field_size_limit() + 1) + "]"
+    with pytest.raises(ValueError, match="Tools"):
+        T.tool_items({"fields": dict(Tools=huge)})
+    assert T.skill_items({"fields": dict(Skills=huge)}) == []

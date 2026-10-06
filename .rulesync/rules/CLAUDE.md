@@ -746,6 +746,14 @@ other way is documented by nothing.
 entry's figures from `cv/bundle.py::_entry_block` -- the lines the composer is shown for it,
 minus its own `[id]` code -- and its tools from `core/tokens.py::tool_items`, shown by a
 SEPARATE emitter (`_tools_line`), so a digit inside a tool's name never licenses a figure.
+The owner's model splits an experience entry's annotations in two: `Tools:` is the specific
+tools and hard skills tied to the job (attribution-checked); `Skills:` is general soft skills
+tied to NO job. `Skills:` items are SKILLS-pool candidates (`cv/selection.py::build_pool`) and
+nothing else: no emitter shows them inside the entry, `term_vocabulary` does not count them,
+and they are never attribution-checked, never a figure and never span-blanked, which is why
+`core/tokens.py::skill_items` skips the digit-led-token rule `tool_items` enforces. Do not
+"restore" a per-entry `skills=` line: shown in an entry and counted as vocabulary, a tool name
+left in `Skills:` could be claimed under that employer with nothing to flag it.
 The gate is HANDED its source set rather than recovering it (#174): `entry_facts` walks the
 bundle's structured entries, never the rendered prompt text, so no line of vault free text
 can mint or rebind a citable `[id]`. A line added to `_entry_block` becomes a source for that
@@ -836,15 +844,12 @@ path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carrie
 `read_by_composer` says the corpus reaches the composer's prompt, `cited_by_gate` says the
 fabrication gate may LICENSE its content, and `names_in_skills_pool` (#364/#365/#368, D12)
 says a verified note's NAME -- its `Label:`, else its title (`cv/selection.py::cv_name`) -- may
-appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` items reach the
-skills pool through `tool_items` whatever that flag says); `skills` is read and named, and is
+appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` and `Skills:`
+items reach the skills pool through `tool_items` and `skill_items` whatever that flag says); `skills` is read and named, and is
 RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
 declared skill, but nothing LICENSES it; `stories` is neither. `__post_init__` refuses
 `cited_by_gate` without `read_by_composer`, since the gate cannot license what the composer
-never emitted. `legacy_fields` is presence-only: the store reports
-whether a note still carries a retired field (`Skills` on experience) as a boolean under the
-entry's own `legacy` key, never its value and never inside `fields`, so no flag, wizard
-prompt or proposal can carry it as data again. `add`'s unverified notice, the `init` wizard's
+never emitted. `add`'s unverified notice, the `init` wizard's
 summary and the MCP `propose_evidence` RESULT say what verifying buys through
 `core/protocols.py::verify_outcome`, keyed on `cited_by_gate` and then `names_in_skills_pool`,
 and `core/doctor.py::classify_store`'s per-kind row branches on the same two flags in the same

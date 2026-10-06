@@ -1,8 +1,9 @@
 """Whether the misattributed-tool check ran is REPORTED, never left to infer (#364 spec §6.6,
 §12.1): four vaults read through the real Vault -- never a hand-built entry dict -- each
-asserting the flag on CvResult, run.json and the MCP result, and the run-wide WARNING on an
-upgraded vault only, once across two leads. D13's end-to-end row lives here too, since it
-needs the same real-store fixture."""
+asserting the flag on CvResult, run.json and the MCP result, and that `cv run` logs no
+attribution WARNING on any of them (doctor's verbose NOTICE is where a vault declaring `Skills`
+items but no tools hears it). D13's end-to-end row lives here too, since it needs the same
+real-store fixture."""
 import json
 
 import pytest
@@ -30,17 +31,14 @@ def _vault_with(tmp_path, *, tools="", skills="", unverified_tools=""):
         fh.write("---\nforenames: Jane\nsurname: Roe\nmobile: +1 555 0100\n---\n")
     # `Tools` as a keyword: in a dict literal keyed by the field name, with a variable as
     # its value, the fixture-name sweep reads the variable's NAME as a tool.
-    fields = dict({"Company": "Example Foundry"}, **(dict(Tools=tools) if tools else {}))
+    # `Skills` likewise: a declared experience field again (owner decision 2026-10-06), so it
+    # is written the way `experience add --skills` writes it.
+    fields = dict({"Company": "Example Foundry"}, **(dict(Tools=tools) if tools else {}),
+                  **(dict(Skills=skills) if skills else {}))
     v.propose_evidence("experience", name="alpha", fields=fields)
     [pending] = v.read_pending_evidence("experience")
     with open(pending["path"], encoding="utf-8") as fh:
         raw = fh.read()
-    if skills:
-        # A 3.x entry's `Skills:` line: the user's own text, which the store no longer
-        # writes, so it is added the way a user's vault already holds it.
-        raw = raw.replace("---\n", f"---\nSkills: {skills}\n", 1)
-        with open(pending["path"], "w", encoding="utf-8") as fh:
-            fh.write(raw)
     assert v.verify_evidence("experience", "alpha", today="2026-09-03", reviewed=raw)
     if unverified_tools:
         v.propose_evidence("experience", name="beta",
@@ -57,14 +55,14 @@ def _app(v, tmp_path, monkeypatch, replies):
     return Sluice(Config(vault_dir=v.dir))
 
 
-@pytest.mark.parametrize("vault_kw,off,warned", [
-    ({"skills": "Examplelang"}, True, True),             # upgraded: a Skills line, no Tools
-    ({}, True, False),                                    # neither: an unconfigured install
-    ({"tools": "Examplelang"}, False, False),             # a verified Tools line turns it on
-    ({"unverified_tools": "Examplelang"}, True, False),   # an unverified one does not
+@pytest.mark.parametrize("vault_kw,off", [
+    ({"skills": "Examplelang"}, True),             # a Skills line, no Tools
+    ({}, True),                                    # neither: an unconfigured install
+    ({"tools": "Examplelang"}, False),             # a verified Tools line turns it on
+    ({"unverified_tools": "Examplelang"}, True),   # an unverified one does not
 ], ids=["skills-only", "neither", "verified-tools", "unverified-tools"])
 def test_the_attribution_flag_is_reported_on_every_surface(
-        tmp_path, monkeypatch, caplog, vault_kw, off, warned):
+        tmp_path, monkeypatch, caplog, vault_kw, off):
     from sluice.mcpserver import cv_run
     v = _vault_with(tmp_path, **vault_kw)
     _seed_shortlist_leads(v.dir, n=2)
@@ -72,8 +70,10 @@ def test_the_attribution_flag_is_reported_on_every_surface(
     with caplog.at_level("WARNING"):
         results = app.compose_cv(all_shortlist=True)
     assert [(r.status, r.attribution_check_off) for r in results] == [("rendered", off)] * 2
+    # No run-time WARNING on any vault (the owner's model: Skills without Tools is a
+    # legitimate shape, so doctor's verbose NOTICE is the one place it is said).
     said = [r for r in caplog.records if "attribution check" in r.getMessage()]
-    assert len(said) == (1 if warned else 0), "once per RUN, never per lead"
+    assert said == []
     for i in range(2):
         run = json.loads((tmp_path / "cv-output" / f"example-foundry-synthetic-role-{i}"
                           / "run.json").read_text(encoding="utf-8"))
@@ -118,3 +118,23 @@ def test_unverified_names_and_tools_never_reach_the_pool(tmp_path, monkeypatch):
     assert list(document.skills) == []
     for name in ("Example Query", "Examplelangscript"):
         assert any(name in dropped for dropped in result.skills_dropped), name
+
+
+def test_a_verified_skills_item_reaches_the_compose_prompt_only_as_a_pool_candidate(
+        tmp_path, monkeypatch):
+    """Engine level, through the real Vault: a vault whose ONLY annotation is a verified
+    `Skills` item puts that item in the compose prompt's SKILLS pool -- and nowhere else in
+    the prompt, since the owner's model ties `Skills` to no job (cv/bundle.py never shows it
+    inside an entry)."""
+    from sluice.cv.compose import _SKILLS_POOL_PROMPT_HEADER
+    v = _vault_with(tmp_path, skills="examplecoach")
+    _seed_shortlist_leads(v.dir, n=1)
+    be = ReplyBackend([REPLY])
+    app = _app(v, tmp_path, monkeypatch, [])
+    monkeypatch.setattr(Sluice, "backend", lambda self, **kw: be)
+    [result] = app.compose_cv(all_shortlist=True)
+    assert result.status == "rendered"
+    [prompt] = be.compose_prompts
+    pool = prompt.split(_SKILLS_POOL_PROMPT_HEADER, 1)[1].split("\n\n", 1)[0]
+    assert "- examplecoach" in pool.splitlines()
+    assert prompt.count("examplecoach") == 1, "the item must appear in the pool alone"

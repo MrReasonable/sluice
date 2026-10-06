@@ -7,12 +7,13 @@ incident in miniature once: a rule about skills went out UNCONDITIONAL for a tim
 vault with nothing annotated still saw it, and a compliant model silently stripped every
 technology name from every WORK bullet with nothing to catch it. Since #364/#365/#368 the
 composer picks skills only from a closed pool -- the verified entries' `Tools:` and
-verified Skills Inventory names (#364 spec §4.4) -- so with neither, the pool is empty and the
-prompt must carry the no-skills rule and no pool at all. The lead must still render
-cleanly on the first attempt, with no SKILLS section.
+`Skills` items (the latter since the owner decision of 2026-10-06) and verified Skills Inventory
+names (#364 spec §4.4) -- so with none of them, the pool is empty and the prompt must carry
+the no-skills rule and no pool at all. The lead must still render cleanly on the first
+attempt, with no SKILLS section.
 
-The seeded Experience Library entry carries no `Tools:` value (harness default) and the
-harness seeds no skill notes, so the pool is empty.
+The seeded Experience Library entry carries no `Tools:` value, no `Skills` value (harness default)
+and the harness seeds no skill notes, so the pool is empty.
 """
 from sluice.cv.compose import _NO_SKILLS_RULE_PROMPT, _SKILLS_POOL_PROMPT_HEADER
 from sluice.cv.document import to_text

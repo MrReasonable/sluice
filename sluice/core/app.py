@@ -1796,7 +1796,7 @@ class Sluice:
         from sluice.core.backends import BackendError
         from sluice.cv.config import load_cv_config
         from sluice.cv.engine import (CvResult, missing_prerequisites, run_batch,
-                                      run_one, run_warnings)
+                                      run_one)
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
 
@@ -1823,9 +1823,6 @@ class Sluice:
             raise ValueError(
                 "cv: this vault is not set up to compose yet:\n  - "
                 + "\n  - ".join(prereqs))
-        # #364 spec §6.6: once per RUN, never per lead.
-        for warning in run_warnings(store):
-            _log.warning("%s", warning)
         # No renderer is CONSTRUCTED for a dry run: it never renders, so a renderer that
         # cannot be built (an uninstalled WeasyPrint, a `cv.template` that is not a file)
         # costs the preview nothing (#364 spec §7.2). The NAME is still resolved, because an

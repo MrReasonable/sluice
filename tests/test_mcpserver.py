@@ -1556,6 +1556,17 @@ def test_propose_evidence_tool_cannot_stamp_the_citability_key_through_fields(tm
     assert list_evidence(app, kind="experience", pending=True)["count"] == 0
 
 
+def test_propose_evidence_tool_accepts_an_experience_entrys_skills(tmp_path):
+    """Owner decision 2026-10-06: `Skills` is a declared experience field again, so an
+    agent may propose an entry's practices beside its tools -- landing pending, like any
+    other proposal."""
+    app = _app(tmp_path)
+    out = _propose(app, fields={"Company": "Example Ltd", "Skills": "examplecoach"})
+    assert out["outcome"] == "proposed"
+    [entry] = app.store().read_pending_evidence("experience")
+    assert entry["fields"]["Skills"] == "examplecoach"
+
+
 def test_propose_evidence_tool_reports_a_name_clash_as_a_structured_refusal(tmp_path):
     """A refusal is REPORTED, not raised -- see the tool's own docstring for the
     measured SDK reason. `detail` carries the store's own message, which is the only

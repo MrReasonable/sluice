@@ -3157,9 +3157,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Nine parsers from ONE loop over the registry, so the CLI's three groups cannot
     # drift from the store's three kinds (#164) and a fourth store later is one entry.
-    from sluice.evidence.commands import (RETIRED_FIELDS, cmd_evidence_add,
-                                          cmd_evidence_list, cmd_evidence_verify,
-                                          field_flag, retired_flag_action)
+    from sluice.evidence.commands import (cmd_evidence_add, cmd_evidence_list,
+                                          cmd_evidence_verify, field_flag)
     for kind, spec in EVIDENCE_KINDS.items():
         group = top.add_parser(kind, help=f"capture and verify {kind} evidence")
         sub = group.add_subparsers(dest=f"{kind}_cmd", required=True)
@@ -3170,14 +3169,6 @@ def _build_parser() -> argparse.ArgumentParser:
         for field in spec.fields:
             add.add_argument(field_flag(field), default="",
                              help=f"the entry's {field} field")
-        # A retired field's flag, hidden from --help, refuses naming its replacement
-        # (sluice/evidence/commands.py::RETIRED_FIELDS says why it exists at all).
-        for field in spec.legacy_fields:
-            if field in RETIRED_FIELDS:
-                # dest SUPPRESS: it stores nothing, because it never lets a parse finish.
-                add.add_argument(field_flag(field), nargs="?", help=argparse.SUPPRESS,
-                                 dest=argparse.SUPPRESS,
-                                 action=retired_flag_action(field, RETIRED_FIELDS[field]))
         add.add_argument("--body", default="", help="free-text body")
         add.add_argument("--body-file", default="",
                          help="read the body from a file, or '-' for stdin")

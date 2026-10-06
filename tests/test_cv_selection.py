@@ -182,3 +182,32 @@ def test_only_a_kept_bullets_text_findings_are_reported():
              _slot("R2", "Example Beta", budget=0, eligible=(), bullets_max=None),
              _slot("R3", "Example Gamma"))
     assert select(reply, slots, (), None).findings == ("kept R3",)
+
+
+def test_an_entrys_skills_join_the_pool_after_its_tools_deduplicated_and_decoy_filtered():
+    """Owner decision 2026-10-06: an entry's `Skills` items (general soft skills) are offered
+    for the SKILLS list beside its `Tools:`. Tools first, so a value declared under both keeps
+    the tool's spelling; blank items dropped; a decoy still beats the user's own list."""
+    named = [{"title": "Example Query", "fields": {}}]
+    experience = [{"fields": dict(Tools="Examplelang",
+                                  Skills="examplecoach, , EXAMPLELANG, Exampleban")},
+                  {"fields": dict(Skills=["Example Framework", " "])}]
+    assert build_pool(named, experience, decoys=("exampleban",)) == (
+        "Example Query", "Examplelang", "examplecoach", "Example Framework")
+
+
+def test_a_digit_led_skills_item_reaches_the_pool_where_a_tools_item_would_be_refused():
+    """The digit-led token rule is a `Tools:` rule only (core/tokens.py::skill_items says
+    why): a practice such as `5X` is never matched in a bullet and never blanks a figure, so
+    refusing it would cost the user a skill for no protection."""
+    experience = [{"fields": dict(Skills="5X, 9E modelling")}]
+    assert build_pool([], experience) == ("5X", "9E modelling")
+
+
+def test_a_skills_value_that_is_not_text_declares_none_rather_than_costing_the_run():
+    """core/tokens.py::skill_items: a skills list affects tailoring quality only (#167), so a
+    store handing back a non-text `Skills` value contributes nothing instead of raising out
+    of build_pool mid-run, as a malformed `Tools` value would."""
+    experience = [{"fields": dict(Tools="Examplelang", Skills=7)},
+                  {"fields": dict(Skills=["examplecoach", 7])}]
+    assert build_pool([], experience) == ("Examplelang",)

@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from sluice.core.doctor import (DEAD, DEGRADED, OK, SETUP, ComponentCheck, DoctorReport,
+from sluice.core.doctor import (DEAD, DEGRADED, NOTICE, OK, SETUP, ComponentCheck, DoctorReport,
                                 classify_attribution, classify_cv_eligibility,
                                 classify_cv_layout, classify_decoys, classify_skill_labels,
                                 classify_tools)
@@ -19,11 +19,11 @@ LAYOUT = CvLayout(roles=(LayoutRole("Example Alpha", "01/2020", "present",
                   omitted=("Example Tidal",))
 
 
-def _entry(company="Example Alpha", tools="", skills=False):
+def _entry(company="Example Alpha", tools="", skills=""):
     # Keywords, not dict literals keyed by the field names: the fixture-name sweep reads such
-    # a literal's value as a skill NAME, and these are a parameter and a presence flag.
-    return {"title": "SYNTHETIC-ENTRY", "company": company, "fields": dict(Tools=tools),
-            "legacy": dict(Skills=skills)}
+    # a literal's value as a skill NAME, and these are parameters.
+    return {"title": "SYNTHETIC-ENTRY", "company": company,
+            "fields": dict(Tools=tools, Skills=skills)}
 
 
 def _printed(capsys, *rows, strict=False):
@@ -140,21 +140,38 @@ def test_a_layout_asking_for_no_bullets_is_not_blocked_for_want_of_a_citable_ent
 
 # --- the attribution check going dark (#364 spec §6.6) ---------------------------------------
 
-def test_an_upgraded_vault_with_no_tools_is_warned_about():
-    [row] = classify_attribution([_entry(skills=True), _entry()])
-    assert (row.state, row.blocks, row.warn_by_default) == (DEGRADED, (), True)
-    assert "1 still carries the retired Skills:" in row.detail
+def test_a_vault_with_skills_but_no_tools_gets_a_notice_that_the_check_is_off():
+    # The owner's model: `Skills` are general soft skills tied to no job, so a vault with
+    # Skills and no Tools is a legitimate shape, not a fault. A NOTICE: verbose view only,
+    # never a default-view warning, never blocking, never failing --strict.
+    [row] = classify_attribution([_entry(skills="examplecoach"), _entry()])
+    assert (row.state, row.blocks, row.warn_by_default) == (NOTICE, (), False)
+    assert "though 1 declares Skills" in row.detail
 
 
-def test_the_upgrade_advice_says_to_move_named_tools_and_leave_practice_words_out():
-    # Measured on a real upgraded vault: copying every legacy skill value across as a tool
-    # declared generic practice words, and each became a MISATTRIBUTED TOOL refusal in
-    # ordinary bullets. The row's advice is what the user acts on, so it must say which
-    # values move.
-    [row] = classify_attribution([_entry(skills=True)])
-    assert "copy each entry's named tools into Tools:" in row.detail
-    assert "leaving practice words out" in row.detail
-    assert "move each entry's tools" not in row.detail
+def test_the_attribution_notice_never_fails_strict_and_stays_out_of_the_default_view(capsys):
+    [row] = classify_attribution([_entry(skills="examplecoach")])
+    report = DoctorReport(checks=[], components=[row])
+    assert (report.exit_code(), report.exit_code(strict=True)) == (0, 0)
+    assert "cv attribution check" not in _printed(capsys, row, strict=True)
+    # ...and IS in the verbose table, which is where a NOTICE lives.
+    from sluice.cli import _print_doctor
+    _print_doctor(report, offline=True)
+    assert "cv attribution check" in capsys.readouterr().out
+
+
+def test_the_off_notice_says_what_tools_and_skills_each_hold():
+    # Replaces 4.0's "copy each entry's named tools into Tools:" advice. The owner's model:
+    # the `Tools` field holds the specific tools and hard skills tied to the job, the `Skills`
+    # field general soft skills tied to none, for the SKILLS list only. The row must neither
+    # call it retired nor tell the user to move it. Count-only: no vault value is echoed.
+    [row] = classify_attribution([_entry(skills="examplecoach")])
+    assert "(specific tools and hard skills tied to the job)" in row.detail
+    assert "turns the check on" in row.detail
+    assert "holds general soft skills" in row.detail and "skills list only" in row.detail
+    for gone in ("retired", "copy", "move", "no longer reads"):
+        assert gone not in row.detail, gone
+    assert "examplecoach" not in row.detail
 
 
 def test_a_vault_with_neither_field_is_an_unconfigured_install_and_draws_nothing():
@@ -162,13 +179,16 @@ def test_a_vault_with_neither_field_is_an_unconfigured_install_and_draws_nothing
 
 
 def test_any_declared_tools_turns_the_check_on_and_draws_nothing():
-    assert classify_attribution([_entry(skills=True), _entry(tools="Examplelang")]) == []
+    assert classify_attribution([_entry(skills="examplecoach"), _entry(tools="Examplelang")]) == []
 
 
 # --- a decoy contradicting the user's own data (#364 spec §8) ------------------------------------
 
 @pytest.mark.parametrize("decoys,entries,names,layout", [
     (["examplelang"], [_entry(tools="Examplelang")], [], None),
+    # An entry's `Skills` items feed the pool too (owner decision 2026-10-06), so a decoy matching
+    # one keeps it off every SKILLS list exactly as it would a tool -- and must be said.
+    (["examplecoach"], [_entry(skills="examplecoach")], [], None),
     (["Example Query"], [], ["Example Query"], None),
     (["example tidal"], [], [], LAYOUT),
 ])
@@ -218,12 +238,15 @@ def test_warn_by_default_is_refused_on_a_row_that_is_not_degraded():
 
 
 def test_a_warning_row_blocks_nothing_and_strict_still_fails_on_it(capsys):
-    [row] = classify_attribution([_entry(skills=True)])
+    # Ported off the attribution row (now a NOTICE) onto the decoy row, another
+    # warn_by_default DEGRADED row, so the flag's own mechanics stay pinned.
+    [row] = classify_decoys(["examplelang"], [_entry(tools="Examplelang")], [], None)
+    assert row.warn_by_default
     report = DoctorReport(checks=[], components=[row])
     assert report.verdict().buckets["cv"] == report.verdict().buckets["ingest"]
     assert (report.exit_code(), report.exit_code(strict=True)) == (0, 1)
     out = _printed(capsys, row, strict=True)
-    assert out.count("cv attribution check") == 1, "listed once, not twice, under --strict"
+    assert out.count("cv.fabrication_decoys entry 1") == 1, "listed once, not twice, under --strict"
 
 
 # --- wired into Sluice.doctor, and agreeing with `cv run` (#364 spec §9.1) -----------------

@@ -78,3 +78,27 @@ def test_a_negative_is_not_left_behind_as_a_source_of_its_own():
     # vocabulary never reads negatives at all (#368), not because a subtraction cancelled it.
     assert "examplelang" not in _vocab(entries=[_entry(body="Delivered reports.")],
                                        negatives=["never claim examplelang"])
+
+
+def test_an_entry_skills_field_is_not_in_the_vocabulary():
+    """Owner's model (binding): `Skills` items are SKILLS-pool candidates only, so they do
+    not make a name recognised in prose. A tool name left in `Skills` and then named in a
+    bullet is reported again, as it was before `Skills` was read at all. Both spellings a
+    store can hand back; the `Tools` control shows the entry was walked."""
+    v = _vocab(entries=[_entry(fields=dict(Tools="Examplebus", Skills="examplecoach"))])
+    assert "examplebus" in v and "examplecoach" not in v
+    assert "examplemesh" not in _vocab(entries=[_entry(fields=dict(Skills=["Examplemesh"]))])
+
+
+def test_a_tool_left_in_skills_is_flagged_when_claimed_under_another_entry():
+    """The reviewer's case, end to end through build_bundle -> term_vocabulary ->
+    unbundled_terms: entry A lists `Examplemesh` under Skills, entry B declares a real tool,
+    and a bullet citing B claims `Examplemesh`. With no per-entry Skills it is named in no
+    evidence the composer was shown, so the term check reports it (as on main before
+    `Skills` was read)."""
+    from sluice.cv.terms import unbundled_terms
+    entries = [_entry(title="SYNTHETIC-A", company="Example Co", fields=dict(Skills="Examplemesh")),
+               _entry(title="SYNTHETIC-B", company="Example Co", fields=dict(Tools="Exampleco"))]
+    vocab = _vocab(entries=entries)
+    found = unbundled_terms([(1, "Ran Examplemesh clusters [EX2]")], vocab)
+    assert [t for _, t, _ in found] == ["Examplemesh"]

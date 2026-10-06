@@ -73,7 +73,7 @@ def _harmless_components(monkeypatch):
 
         def read_evidence(self, kind, verified_only=True):
             return ([{"title": "alpha", "company": "Example Foundry", "fields": {},
-                      "legacy": {}, "verified": "2026-09-03"}]
+                      "verified": "2026-09-03"}]
                     if kind == "experience" else [])
 
     monkeypatch.setattr(Sluice, "store", lambda self: _MinStore())

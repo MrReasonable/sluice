@@ -129,12 +129,14 @@ def _seed_vault(vault_dir, *, experience, cv_name):
             f'Category: "{e.get("category", "")}"',
             f'Best For: "{e.get("best_for", "")}"',
             f'Metrics: "{e.get("metrics", "")}"',
-            # `Tools` (#364/#365/#368, in place of #168's `Skills`): the fifth field
-            # `EVIDENCE_KINDS["experience"].fields` declares. Written so every e2e/
-            # functional CV scenario runs against a vault the attribution check and the
-            # skills pool can see. Blank by default (every scenario stays unannotated);
-            # a caller passes `tools=` to opt one entry in, mirroring how
+            # `Skills` and `Tools`: the two annotation fields
+            # `EVIDENCE_KINDS["experience"].fields` declares beside the four above (#364/
+            # #365/#368 for Tools; owner decision 2026-10-06 for Skills). Written so every
+            # e2e/functional CV scenario runs against a vault the attribution check and the
+            # skills pool can see. Blank by default (every scenario stays unannotated); a
+            # caller passes `skills=`/`tools=` to opt one entry in, mirroring how
             # `metrics`/`category`/`best_for` already work.
+            f'Skills: "{e.get("skills", "")}"',
             f'Tools: "{e.get("tools", "")}"',
             f'verified: {e.get("verified", "true")}',
         ])

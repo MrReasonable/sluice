@@ -269,8 +269,8 @@ are yours (`tags:`, `aliases:`) and are ignored. Every problem is reported at on
 
 ### `Tools:` on experience entries
 
-List the named tools an entry used: tools, technologies, languages, platforms, standards and
-named methods, such as `Terraform`, `React`, `WCAG` or `Scrum`. Write them comma-separated or as
+List the specific tools and hard skills the entry's job used: tools, technologies, languages,
+platforms, standards and named methods, such as `Terraform`, `React`, `WCAG` or `Scrum`. Write them comma-separated or as
 a block list (`job-sluice experience add --tools "..."` writes the comma-separated form). Once
 any verified entry declares `Tools:`, a CV bullet naming one, spelled as declared, must cite an
 entry that lists it, or whose own title or body names it in that spelling (the
@@ -288,13 +288,36 @@ declared `security`. A bullet that uses a declared word must cite an entry that 
 names it in its own title or body, or the CV draws a `MISATTRIBUTED TOOL` finding. That finding
 blocks: the composer retries once, and if no attempt clears the hard gate the lead is skipped. A
 practice word turns ordinary prose ("improved security across the estate") into that refusal on
-any lead whose bullet happens to cite a different entry. Practices belong in a Skills Inventory
-note instead (`job-sluice skills add`), whose `Label:` can appear in SKILLS without being
-checked in bullets.
+any lead whose bullet happens to cite a different entry. General soft skills belong in
+`Skills:` instead (below), or in a Skills Inventory note (`job-sluice skills add`), whose
+`Label:` can appear in SKILLS without being checked in bullets.
 
-Upgrading from 3.x: `Skills:` is no longer read. Copy the named tools from each entry's
-`Skills:` into `Tools:` and leave the practice words out (put any you want listed under SKILLS
-in a Skills Inventory note).
+### `Skills:` on experience entries
+
+List general soft skills, ones not tied to any particular job: `coaching`, `stakeholder
+management`, `pairing` and the like. Write them comma-separated or as a block list
+(`job-sluice experience add --skills "..."` writes the comma-separated form); blank items are
+ignored. A verified entry's `Skills:` items join the list your SKILLS section is picked from,
+beside your verified Skills Inventory names and your entries' `Tools:` items: de-duplicated
+ignoring case (the first spelling wins, in that order: an inventory name, then a `Tools:` item,
+then a `Skills:` item), filtered by `cv.fabrication_decoys`, rendered as spelled and capped by
+the CV Layout's `skills_max`.
+
+That list is the ONLY place `Skills:` is used. The composer is not shown it as part of the
+entry, it never licenses a figure, it is never checked against bullets (a bullet that says
+"coaching" is never refused because some entry lists it under `Skills:`), and it does not count
+as evidence for the `UNBUNDLED TERM` check. So keep tools out of it: a tool name listed only
+under `Skills:` and then named in a bullet is reported as an unbundled term, the same as one
+written nowhere. Because nothing matches a `Skills:` item in your text, the digit rule above
+does not apply to it: `5S` or `360 feedback` is accepted for the SKILLS list.
+
+An inline list in brackets (`Skills: [coaching, pairing]`, and the same for `Tools:`) is read
+as its items; the brackets are dropped, and inside such a list an item in double quotes may
+contain a comma (`[coaching, "planning, prioritising"]` is two items).
+
+Upgrading from 3.x: if an entry's `Skills:` lists named tools, move those into `Tools:`, which
+is what turns the misattributed-tool check on, and leave the general soft skills in
+`Skills:`.
 
 ### `Label:` on Skills Inventory notes
 
