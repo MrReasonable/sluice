@@ -110,10 +110,11 @@ def test_verify_really_carries_no_bulk_promotion_flag():
             "to use. A bulk verifier is a new trust root, not a convenience.")
 
 
-def test_no_mcp_tool_can_verify_evidence_at_any_write_level():
-    """`--write` is a per-registration trust decision, and the doc says verification is not in
-    it at ANY level. Both levels are checked, because 'not in the read-only set' is the weaker
-    claim and the one that would survive someone adding a write-side verifier."""
+def test_only_verify_evidence_can_verify_and_only_at_write():
+    """`--write` is a per-registration trust decision. docs/AI-SETUP.md says the one way an
+    agent can START verification is `verify_evidence`, at --write only, and that it promotes
+    only what the user ticks in a review form. Both levels are checked: nothing verify-shaped
+    below --write, and exactly that one tool at it."""
     # NOT `importorskip`: `mcp` is in the `test` extra precisely so this runs for real, and a
     # test that skips itself is how a safety gate goes silently absent. The tree-wide
     # `test_no_test_module_uses_importorskip` sweep enforces that, and caught this line.
@@ -122,6 +123,7 @@ def test_no_mcp_tool_can_verify_evidence_at_any_write_level():
     from sluice.core.config import Config
     from sluice.mcpserver import build_server
 
+    expected = {False: set(), True: {"verify_evidence"}}
     for write in (False, True):
         server = build_server(Config(), write=write)
 
@@ -133,21 +135,16 @@ def test_no_mcp_tool_can_verify_evidence_at_any_write_level():
         names = asyncio.run(_names())
         assert names, f"the MCP server registered no tools at write={write}"
 
-        # Keyed on EVIDENCE VERIFICATION only. A `sign_off` clause used to sit here too, and it
-        # did not belong: CV sign-off (`cv_signoff`, a write-level tool) is a different concept
-        # that docs/AI-SETUP.md explicitly leaves to the human but never claims is impossible.
-        # It matched nothing today only because `cv_signoff` carries no underscore there, so the
-        # clause was one rename away from failing a legitimate tool for the wrong reason.
+        # Keyed on EVIDENCE VERIFICATION only. CV sign-off (`cv_signoff`) is a different
+        # concept and must not be swept up by a looser pattern.
         offenders = {n for n in names if "verif" in n}
-        assert not offenders, (
-            f"MCP registers {sorted(offenders)} at write={write}. docs/AI-SETUP.md tells an "
-            "agent that nothing at any level can mark evidence verified, and the MCP surface "
-            "is the one an agent reaches for first.")
+        assert offenders == expected[write], (
+            f"MCP registers {sorted(offenders)} at write={write}; docs/AI-SETUP.md tells an "
+            f"agent the only verifier is verify_evidence, at --write only.")
 
-        # ANTI-VACUITY. `offenders` being empty is this sweep's success case, so it reads the
-        # same whether the predicate is working or matches nothing at all. Prove it still bites.
-        planted = {n for n in (names | {"verify_evidence"}) if "verif" in n}
-        assert planted == {"verify_evidence"}, (
+        # ANTI-VACUITY: a second, plainly-named verifier must still be caught.
+        planted = {n for n in (names | {"bulk_verify"}) if "verif" in n}
+        assert "bulk_verify" in planted, (
             f"the offender predicate no longer catches a plainly-named verifier: {planted}")
 
 

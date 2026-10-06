@@ -389,27 +389,19 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
 
     result = asyncio.run(_run())
     by_name = {t.name: t for t in result.tools}
-    # #175's whole scope in one line: a PROPOSE tool ships, a VERIFY tool does not --
-    # at this, the HIGHEST privilege level, which is the only level where the claim says
-    # anything (write=False forbids both by the exact-set assertion in the sibling test).
-    # Promotion to citable stays interactive-only; that is #164's central decision.
-    #
-    # Ordered BEFORE the exact-set `==` below, deliberately. Behind it this clause was
-    # unreachable -- the `==` raises first on any verify tool, so the specific message
-    # never rendered and the comment claiming it was "the readable diagnosis" was false
-    # of its own placement. The `==` is still what holds the property against an
-    # unanticipated name; this is the diagnosis, and now actually gets to be one.
-    # A substring, so `verify_evidence`, `evidence_verify` and `bulk_verify` all trip
-    # it; a future READ tool with `verify` in its name should be renamed rather than
-    # have this narrowed.
-    assert not [n for n in by_name if "verify" in n], (
-        f"a verify tool is registered at --write: {sorted(by_name)} -- promoting an "
-        f"evidence entry to citable is interactive-only (#164), and a second "
-        f"promotion path is a new trust root, not a convenience")
+    # Exactly ONE promotion tool, and only at --write: `verify_evidence`, which promotes
+    # only what the human ticks in a client-shown form (sluice/mcpserver.py::
+    # verify_evidence_step). Ordered BEFORE the exact-set `==` below so its message is the
+    # one a failure shows; the `==` is still what catches a second promotion tool under
+    # any other name. A substring, so `bulk_verify` or `evidence_verify` trips it too.
+    assert [n for n in by_name if "verify" in n] == ["verify_evidence"], (
+        f"verify-shaped tools at --write: {sorted(n for n in by_name if 'verify' in n)} -- "
+        f"exactly one promotion path may exist here, and it must put a human's tick "
+        f"between the model and citability")
     assert set(by_name) == {
         "list_leads", "get_lead", "doctor", "health", "list_evidence",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
-        "propose_evidence",
+        "propose_evidence", "verify_evidence",
     }
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
@@ -419,6 +411,8 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert "note_tag" not in by_name["dismiss_lead"].input_schema["properties"]
     assert set(by_name["apply_record"].input_schema["properties"]) == {"lead", "ats", "url"}
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
+    assert set(by_name["verify_evidence"].input_schema["properties"]) == {"kind", "names"}, (
+        "verify_evidence must take no argument that could approve on the human's behalf")
     # Minor #9 (final whole-branch review): `backend` was an unconstrained str,
     # so an invalid value surfaced only as a runtime BackendError -- typing it
     # Literal[...] puts the constraint into the client-facing schema as a genuine
