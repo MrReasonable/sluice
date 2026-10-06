@@ -1,5 +1,7 @@
 """Tests for evidence kind definitions."""
-from sluice.core.protocols import EVIDENCE_KINDS
+import pytest
+
+from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind
 from sluice.core.vault import Vault
 
 _FM = ("---\nCompany: {company}\nCategory: \nBest For: \nMetrics: \n{skills}"
@@ -64,3 +66,16 @@ def test_experience_add_round_trips_a_skills_value(tmp_path, monkeypatch):
     v = Vault(str(tmp_path))
     entries = {e["title"]: e for e in v.read_pending_evidence("experience")}
     assert entries["delta"]["fields"]["Skills"] == "Example Query, Example Framework"
+
+
+def test_only_the_skills_kind_lists_its_names_in_the_skills_pool():
+    assert {k for k, s in EVIDENCE_KINDS.items() if s.names_in_skills_pool} == {"skills"}
+
+
+def test_the_skills_kind_declares_a_label():
+    assert "Label" in EVIDENCE_KINDS["skills"].fields
+
+
+def test_a_legacy_field_may_not_also_be_a_declared_field():
+    with pytest.raises(ValueError, match="legacy"):
+        EvidenceKind("Job Applications/Example", ("Company",), legacy_fields=("Company",))

@@ -643,7 +643,16 @@ def classify_store(facts: dict | None) -> list:
                 blocks=("cv",)))
         else:
             out.append(ComponentCheck("store", label, NOTICE, detail))
-    if not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
+    candidate_error = facts.get("candidate_error")
+    if candidate_error:
+        # DEAD, not SETUP: the profile EXISTS but the store could not read it, which is a
+        # fault to fix rather than a note to write -- and an unreadable note is never read
+        # as a blank one. It blocks cv for the reason the SETUP row below does: cv/engine.py
+        # derives the name and contact block from this read, and it raises.
+        out.append(ComponentCheck(
+            "store", "Candidate Profile", DEAD, f"cannot be read -- {candidate_error}",
+            blocks=("cv",)))
+    elif not (facts.get("candidate_name_present") and facts.get("candidate_contact_present")):
         out.append(ComponentCheck(
             "store", "Candidate Profile", SETUP,
             "no name or no contact details -- cv run refuses to compose "

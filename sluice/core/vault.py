@@ -42,12 +42,16 @@ from sluice.core.leads import (
     layout_subfolder,
     same_opportunity,
 )
+from sluice.core.layout import parse_layout
 from sluice.core.log import get_logger
 from sluice.core.protocols import (
     CANDIDATE_PROFILE_RELPATH,
     CRITERIA_RELPATH,
+    CV_LAYOUT_RELPATH,
     EVIDENCE_KINDS,
     CandidateProfile,
+    CvLayout,
+    LayoutError,
     LeadNote,
     MalformedNoteField,
     UpsertResult,
@@ -283,7 +287,7 @@ def _evidence_component(name: str) -> str:
     return name
 
 
-def _evidence_entry_path(base: str, filename: str) -> str:
+def _evidence_entry_path(root: str, base: str, filename: str) -> str:
     """Join one evidence entry onto its directory, refusing a symlinked entry FILE.
 
     `_evidence_dir` closes the DIRECTORY half of this class (every component from the
@@ -318,8 +322,12 @@ def _evidence_entry_path(base: str, filename: str) -> str:
     """
     path = os.path.join(base, filename)
     if os.path.islink(path):
+        # Vault-RELATIVE (`root` is the vault dir), "/"-joined: the message reaches doctor
+        # rows and MCP clients, and an absolute path carries the user's home directory
+        # off the machine.
+        rel = "/".join(os.path.relpath(path, root).split(os.sep))
         raise OSError(
-            f"evidence entry {path!r} is a symlink; refusing to read an entry from "
+            f"evidence entry {rel!r} is a symlink; refusing to read an entry from "
             f"behind it, or to promote content from outside the vault into the "
             f"citable set -- move the real file into the vault")
     return path
@@ -650,6 +658,26 @@ def _is_lead_note(fm: dict) -> bool:
 # rather than re-derived from a filename by four separate callers.
 VaultNote = LeadNote
 
+
+
+def _unreadable_reason(exc: Exception) -> str:
+    """A PATH-FREE reason for a read `Vault.preflight` could not complete, for the
+    `<kind>_error` and `candidate_error` facts.
+
+    Those facts become `doctor` rows, and `doctor` rows reach MCP clients, so the reason
+    must never name the absolute path -- it carries the user's home directory off the
+    machine. A SYSTEM OSError (one with an errno) formats its own text as
+    `[Errno N] strerror: '<absolute path>'`, so only its type and strerror are kept. An
+    errno-less OSError is this module's own symlink refusal
+    (`Vault._walk_refusing_symlinks`), whose message is already vault-relative and is the
+    diagnosis, so it passes through. A ValueError (UnicodeDecodeError on a mis-encoded
+    note) states the codec and byte offset, never a path, so it passes through too.
+
+    One helper for both sites, so the two facts cannot drift into disclosing differently.
+    """
+    if isinstance(exc, OSError) and exc.errno is not None:
+        return f"{type(exc).__name__}: {exc.strerror}"
+    return str(exc)
 
 class Vault:
     def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE,
@@ -2012,14 +2040,31 @@ class Vault:
         # "/" and re-joining with os.path.join is what makes it resolve on Windows too;
         # a raw os.path.join on the key happens to work on POSIX and never does there.
         components = spec.relpath.split("/") + ([INBOX_SUBDIR] if inbox else [])
+        return self._walk_refusing_symlinks(
+            components,
+            "evidence directory {path!r} is a symlink; refusing to write "
+            "through it, or to read an entry from behind it -- move the real "
+            "folder into the vault")
+
+    def _walk_refusing_symlinks(self, components: list[str], message: str) -> str:
+        """Join `components` onto the vault root one at a time, raising OSError (`message`,
+        formatted with the offending `path` -- VAULT-RELATIVE and "/"-joined, never the
+        absolute path, because the message reaches `doctor` rows and so MCP clients, and an
+        absolute path discloses the user's home directory; the relative one names the
+        component just as well) at the first symlink, outermost first. The OSError carries
+        no errno, which is what lets `_unreadable_reason` pass its text through verbatim. The one
+        walk `_evidence_dir` and `read_cv_layout` share, so the boundary "inside the vault
+        the user named" is not restated per reader. See `_evidence_dir` for why every
+        component is probed, why outermost first, why islink and never realpath, and why
+        `self.dir` itself is not."""
         path = self.dir
-        for component in components:
+        for i, component in enumerate(components):
             path = os.path.join(path, component)
             if os.path.islink(path):
-                raise OSError(
-                    f"evidence directory {path!r} is a symlink; refusing to write "
-                    f"through it, or to read an entry from behind it -- move the real "
-                    f"folder into the vault")
+                # VAULT-RELATIVE, "/"-joined: these messages reach `doctor` rows and so MCP
+                # clients, and an absolute path carries the user's home directory off the
+                # machine. The relative path names the component just as well.
+                raise OSError(message.format(path="/".join(components[:i + 1])))
         return path
 
     def _evidence_entries(self, kind: str, base: str) -> list[dict]:
@@ -2056,7 +2101,7 @@ class Vault:
             # Reached from the CITABLE listing as well as the pending one, because a
             # symlinked entry sitting in the kind directory feeds the fabrication gate
             # content from outside the vault without any promotion happening at all.
-            path = _evidence_entry_path(base, name)
+            path = _evidence_entry_path(self.dir, base, name)
             inner, body = _split_frontmatter(_read(path))
             fm = _parse_fm_spaced(inner)
             out.append({
@@ -2069,6 +2114,9 @@ class Vault:
                 # floor analogue (skills' Proficiency/Evidence/Signal Value) stays
                 # reachable.
                 "fields": {k: fm.get(k, "") for k in spec.fields},
+                # Presence only, never the value: a retired key is not data (spec §4.2).
+                "legacy": {k: bool(str(fm.get(k, "") or "").strip())
+                           for k in spec.legacy_fields},
             })
         return out
 
@@ -2106,7 +2154,7 @@ class Vault:
         keeps the same containment the write side has and a `name` naming a path
         refuses here too instead of only at promotion time.
         """
-        return _read(_evidence_entry_path(self._evidence_dir(kind, inbox=True),
+        return _read(_evidence_entry_path(self.dir, self._evidence_dir(kind, inbox=True),
                                           f"{_evidence_component(name)}.md"))
 
     def propose_evidence(self, kind: str, *, name, fields, body: str = "") -> str:
@@ -2210,7 +2258,8 @@ class Vault:
         # refusal has to be HERE and not merely on the listing, for the same reason the
         # directory guard sits in the resolver -- an entry reaches this method by name,
         # and a caller who never listed the inbox never passes the listing's copy.
-        src = _evidence_entry_path(self._evidence_dir(kind, inbox=True), f"{name}.md")
+        src = _evidence_entry_path(self.dir, self._evidence_dir(kind, inbox=True),
+                                  f"{name}.md")
         current = _read(src)  # FileNotFoundError propagates: no such pending entry
         if current != reviewed:
             return False
@@ -2297,21 +2346,63 @@ class Vault:
         is silently dropped rather than raising. tests/test_vault_candidate_profile.py
         pins that as a tested fact.
 
-        A missing note is an all-blank profile, not a raise. Only the three
-        "genuinely absent" errors below are folded into that -- a real
+        A missing note is an all-blank profile, not a raise. Only FileNotFoundError
+        is folded into that -- a directory at the path, a symlinked component and a real
         PermissionError must NOT be caught here: this module's standing rule is
         that an unreadable file is loud, never read as empty (see #81's warning
         at core/paths.py). `_read` (not a raw `open()`) is reused for the same
         reason `read_criteria` reuses it: one file-reading primitive, so a future
         change to how notes are opened cannot silently diverge between readers.
         """
+        # Every component below the vault root is probed for a symlink, the same boundary
+        # `read_cv_layout` and the evidence reads hold: the profile's name and contact block
+        # head every CV, so it is read only from inside the vault the user named.
+        path = self._walk_refusing_symlinks(
+            CANDIDATE_PROFILE_RELPATH.split("/"),
+            "Candidate Profile path {path!r} is a symlink -- sluice reads it only from "
+            "inside your vault; move the real folder or file into the vault")
         try:
-            text = _read(self._doc_path(CANDIDATE_PROFILE_RELPATH))
-        except (FileNotFoundError, IsADirectoryError, NotADirectoryError):
+            text = _read(path)
+        except FileNotFoundError:
+            # Absent, and ONLY absent: a directory (or a file where a folder should be) at
+            # the path is unreadable, and unreadable is never read as an empty profile (#242).
             return CandidateProfile()
         # `parse_candidate_profile` (module level, beside `parse_frontmatter`) holds the actual
         # parse; this method's own job is only the file read and the missing-note abstain above.
         return parse_candidate_profile(text)
+
+    def read_cv_layout(self) -> CvLayout | None:
+        """See Store.read_cv_layout."""
+        # Refused like a symlinked evidence directory or entry, on EVERY component below the
+        # vault root (a symlinked `Job Applications/` is followed by a last-component check):
+        # the layout decides what reaches every CV, so it is read only from inside the vault
+        # the user named.
+        path = self._walk_refusing_symlinks(
+            CV_LAYOUT_RELPATH.split("/"),
+            "CV Layout path {path!r} is a symlink -- sluice reads it only from "
+            "inside your vault; move the real folder or file into the vault")
+        try:
+            text = _read(path)
+        except FileNotFoundError:
+            # Absent, and ONLY absent. A directory (or a file where a folder should be) at the
+            # path is unreadable, and unreadable is never reported as absent (#242).
+            return None
+        if yaml is None:
+            raise LayoutError(["PyYAML is not installed, and the CV Layout is YAML -- it is "
+                               "a declared dependency of job-sluice; reinstall the package"])
+        inner, _body = _split_frontmatter(text)
+        try:
+            mapping = yaml.safe_load(inner) if inner and inner.strip() else None
+        except (yaml.YAMLError, RecursionError) as e:
+            # Where, never what: PyYAML's own message quotes the offending line, and this
+            # one reaches `doctor`, whose rows go to MCP clients whole. A line and column in
+            # the frontmatter find the fault without repeating the user's text.
+            mark = getattr(e, "problem_mark", None)
+            where = (f" at frontmatter line {mark.line + 1}, column {mark.column + 1}"
+                     if mark is not None else "")
+            raise LayoutError([f"{CV_LAYOUT_RELPATH}: the frontmatter is not valid YAML"
+                               f"{where} ({type(e).__name__})"]) from e
+        return parse_layout(mapping)
 
     def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
         """Write a store-managed document (the rejected-leads digest). Returns an opaque
@@ -2387,7 +2478,7 @@ class Vault:
         with no other signal anywhere). Iterates `EVIDENCE_KINDS` rather than
         naming the three kinds here, so a fourth kind needs no edit at this call
         site. A kind whose directories could not be read reports
-        `<kind>_error` (the OSError's own text) INSTEAD of that triple, never a
+        `<kind>_error` (a path-free reason, `_unreadable_reason`) INSTEAD of that triple, never a
         zero count -- see the loop's own comment for the isolation this buys and
         for why the classification of that fact belongs to `core/doctor.py`.
 
@@ -2399,8 +2490,8 @@ class Vault:
         reason `criteria_present` is a bool rather than the raw criteria text:
         this method answers FACTS about whether a run can proceed, not the
         content a run would use. Computed the same way the other reads above
-        are -- `read_candidate_profile()` never raises on a missing note (an
-        all-blank CandidateProfile), so no extra try/except is needed here."""
+        are -- except that an UNREADABLE profile (as opposed to a missing one, which is an
+        all-blank CandidateProfile) reports `candidate_error` in place of the pair."""
         if not _is_dir(self.dir):
             # Paired with the flag, deliberately: on its own `vault_exists: False` cannot
             # distinguish "no vault configured yet" from "the configured vault is gone",
@@ -2460,12 +2551,23 @@ class Vault:
                 every = self.read_evidence(kind, verified_only=False)
                 pending = self.read_pending_evidence(kind)
             except (OSError, ValueError) as exc:
-                counts[f"{kind}_error"] = str(exc)
+                counts[f"{kind}_error"] = _unreadable_reason(exc)
                 continue
             counts[f"{kind}_total"] = len(every)
             counts[f"{kind}_verified"] = sum(1 for e in every if e.get("verified"))
             counts[f"{kind}_pending"] = len(pending)
-        profile = self.read_candidate_profile()
+        # Isolated like the evidence corpora above (#259): an unreadable Candidate Profile
+        # (a directory at its path, a symlinked component, a non-UTF-8 file) is reported as
+        # a FACT, `candidate_error`, and every other fact still answers -- one bad note must
+        # not collapse the store rows. The reason never carries a path -- see
+        # `_unreadable_reason`, shared with the per-kind `<kind>_error` above.
+        candidate: dict
+        try:
+            profile = self.read_candidate_profile()
+            candidate = {"candidate_name_present": bool(full_name(profile).strip()),
+                         "candidate_contact_present": bool(contact_block(profile).strip())}
+        except (OSError, ValueError) as exc:
+            candidate = {"candidate_error": _unreadable_reason(exc)}
         return {
             "vault_exists": True,
             "baseline_exists": baseline_exists,
@@ -2478,8 +2580,7 @@ class Vault:
             "baseline_rel_is_default": self.baseline_rel == _MYCV_BASELINE,
             "criteria_present": bool(self.read_criteria().strip()),
             **counts,
-            "candidate_name_present": bool(full_name(profile).strip()),
-            "candidate_contact_present": bool(contact_block(profile).strip()),
+            **candidate,
         }
 
     def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:

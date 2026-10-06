@@ -14,7 +14,10 @@ pure -- every case is a table-driven unit test in tests/test_cv_parse.py, with n
 fixtures, no subprocess, no PDF.
 """
 import re
-from dataclasses import dataclass
+
+# The public template contract now lives in core/protocols.py, where the Renderer seam can
+# name it without a core -> cv import; re-exported here until this module is retired.
+from sluice.core.protocols import CvDocument, Role  # noqa: F401
 
 # Shared, not re-declared: this repo has already paid once for a check that restated a
 # pattern it was supposed to match instead of importing it (see CLAUDE.md's neutrality-gate
@@ -35,30 +38,6 @@ class CvParseError(ValueError):
     a gate violation into, in the same shape, so the model gets one chance to fix its own
     formatting before the lead is skipped like any other gate failure.
     """
-
-
-@dataclass
-class Role:
-    """One WORK EXPERIENCE entry. Field names are the PUBLIC CONTRACT a user's Jinja2
-    template writes against (`sluice/templates/cv_plain.html.j2` already depends on this
-    exact shape) -- renaming a field is a breaking change for every user template."""
-    company: str
-    dates: str
-    location: str
-    title: str
-    bullets: list[str]
-
-
-@dataclass
-class CvDocument:
-    """The whole parsed CV. Same public-contract rule as `Role` above."""
-    name: str
-    contact: str
-    profile: str
-    work: list[Role]
-    skills: list[str]
-    certificates: list[str]
-    education: list[str]
 
 
 # The headers legal immediately after a WORK EXPERIENCE role's bullets end (or after

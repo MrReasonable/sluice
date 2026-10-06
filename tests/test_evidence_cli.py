@@ -83,6 +83,8 @@ def test_add_writes_the_per_field_flag_values_into_frontmatter(tmp_path, monkeyp
     assert entries[0]["fields"] == {
         "Proficiency": "expert", "Domain": "backend",
         "Evidence": "shipped X", "Signal Value": "high",
+        # The typed name is kept in Label (D13).
+        "Label": "widget",
     }
 
 
@@ -755,10 +757,10 @@ def test_the_wizard_carries_on_past_an_entry_it_could_not_capture(tmp_path, monk
     """
     s = Sluice(_config_for(tmp_path, monkeypatch))
     asker = _RecordingAsker(
-        texts=["alpha", "P", "D", "E", "S", "first body",
-               "alpha", "P", "D", "E", "S", "second body", "",
-               "###", "P", "D", "E", "S", "third body", "",
-               "bravo", "P", "D", "E", "S", "fourth body"],
+        texts=["alpha", "P", "D", "E", "S", "", "first body",
+               "alpha", "P", "D", "E", "S", "", "second body", "",
+               "###", "P", "D", "E", "S", "", "third body", "",
+               "bravo", "P", "D", "E", "S", "", "fourth body"],
         # decline `experience`, accept `skills`, "add another" after each SUCCESS only
         # (a failure `continue`s without asking), decline `stories`.
         confirms=[False, True, True, False, False],
@@ -808,7 +810,7 @@ def test_the_wizard_captures_an_optional_body_for_every_kind(tmp_path, monkeypat
     rather than adding a second kind-specific test."""
     s = Sluice(_config_for(tmp_path, monkeypatch))
     asker = _ScriptedAsker(
-        texts=["alpha", "P", "D", "E", "S", "a body of evidence"],
+        texts=["alpha", "P", "D", "E", "S", "", "a body of evidence"],
         confirms=[False, True, False, False],
     )
     collect_evidence(asker, s)
@@ -829,3 +831,19 @@ def test_the_wizard_leaves_the_body_blank_when_the_user_skips_it(tmp_path, monke
     entries = s.list_evidence(kind="skills", pending=True)
     assert len(entries) == 1
     assert entries[0]["body"] == ""
+
+
+def test_skills_add_keeps_the_typed_name_in_label_when_the_filename_is_a_slug(
+        tmp_path, monkeypatch):
+    # D13: a skill's CV name must survive the filename slug.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    assert main(["skills", "add", "--name", "Examplelang#"]) == 0
+    entries = Vault(str(tmp_path)).read_pending_evidence("skills")
+    assert entries[0]["fields"]["Label"] == "Examplelang#"
+
+
+def test_an_explicit_label_wins_over_the_name(tmp_path, monkeypatch):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    assert main(["skills", "add", "--name", "widget", "--label", "Example Widget"]) == 0
+    entries = Vault(str(tmp_path)).read_pending_evidence("skills")
+    assert entries[0]["fields"]["Label"] == "Example Widget"

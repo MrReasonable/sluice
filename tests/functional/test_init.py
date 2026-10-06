@@ -948,8 +948,8 @@ def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(r
     script = (
         [""] * 5    # the 5 Judging Profile prose questions -- blank keeps the neutral default
         + [""] * 5  # the 5 candidate identity questions -- blank declares nothing
-        + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "n", "n"]
-        # decline `experience`, accept `skills` (name "widget", its 4 fields, blank body),
+        + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "", "n", "n"]
+        # decline `experience`, accept `skills` (name "widget", its 5 fields with a blank Label, blank body),
         # decline "add another", decline `stories`.
     )
     rc = _init(["init", "--vault", str(vault)], _scripted(script))
@@ -960,6 +960,8 @@ def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(r
     assert entries[0]["title"] == "widget"
     assert entries[0]["fields"] == {
         "Proficiency": "v1", "Domain": "v2", "Evidence": "v3", "Signal Value": "v4",
+        # A blank Label answer takes the typed name (D13).
+        "Label": "widget",
     }
     # Never citable straight out of the wizard (#164's own contract): only `_inbox/` holds
     # it, not the verified set.

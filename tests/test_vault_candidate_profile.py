@@ -1,6 +1,8 @@
 """Vault.read_candidate_profile(): the frontmatter read, and the parser's limits."""
 import os
 
+import pytest
+
 from sluice.core.candidate import full_name
 from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CandidateProfile
 from sluice.core.vault import Vault, parse_frontmatter
@@ -114,3 +116,21 @@ def test_parse_frontmatter_is_public_and_matches_the_reader(tmp_path):
     assert parse_frontmatter(note) == {"forenames": "Ada"}
     v = _write_note(tmp_path, note)
     assert v.read_candidate_profile().forenames == parse_frontmatter(note)["forenames"] == "Ada"
+
+
+def test_a_symlinked_parent_directory_is_refused_as_unreadable(tmp_path):
+    outside = tmp_path / "outside"
+    note = outside / os.path.basename(CANDIDATE_PROFILE_RELPATH)
+    note.parent.mkdir(parents=True)
+    note.write_text("---\nforenames: Example\n---\n", encoding="utf-8")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    (vault / CANDIDATE_PROFILE_RELPATH.split("/")[0]).symlink_to(outside)
+    with pytest.raises(OSError, match="symlink"):
+        Vault(str(vault)).read_candidate_profile()
+
+
+def test_a_directory_at_the_note_path_is_unreadable_not_blank(tmp_path):
+    os.makedirs(os.path.join(str(tmp_path), *CANDIDATE_PROFILE_RELPATH.split("/")))
+    with pytest.raises(IsADirectoryError):
+        Vault(str(tmp_path)).read_candidate_profile()

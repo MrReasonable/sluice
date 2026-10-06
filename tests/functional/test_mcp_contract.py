@@ -209,7 +209,8 @@ def test_call_tool_round_trips_list_evidence_with_real_arguments(tmp_path):
         "kind": "skills", "pending": False, "count": 1,
         "entries": [{"title": "alpha", "verified": "2026-01-01",
                      "fields": {"Proficiency": "P", "Domain": "D",
-                                "Evidence": "E", "Signal Value": "S"}}],
+                                "Evidence": "E", "Signal Value": "S",
+                                "Label": ""}}],
         "content_warning": mcpserver_mod._LIST_EVIDENCE_CONTENT_WARNING,
     }
     # The shared tail, spelled out the same way the list_leads and get_lead round trips

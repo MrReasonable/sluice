@@ -91,10 +91,10 @@ third is everything after the fence)."""
 class EvidenceKind:
     """One evidence store: where it lives, and the frontmatter fields a USER supplies.
 
-    THREE of the five attributes bind a store: `relpath` is the document key its entries
-    live under, `fields` is the set it must accept and no more, and `floor_map` decides
-    which of those fills each text floor key `read_evidence` promises. `cited_by_gate`
-    binds NO store at all -- it is a fact about `cv/engine.py`, published here because
+    `relpath` is the document key its entries live under, `fields` is the set a store
+    must accept and no more, and `floor_map` decides which of those fills each text
+    floor key `read_evidence` promises. `cited_by_gate` binds NO store at all -- it is a
+    fact about `cv/engine.py`, published here because
     this is the one registry every user-facing message keys its wording on, and a store
     implementer may (and should) ignore it entirely. It is stated rather than left to be
     inferred because it sits on the Store contract's own data with nothing else marking
@@ -145,6 +145,16 @@ class EvidenceKind:
     # citable, which is the over-claim `cited_by_gate` was introduced to prevent.
     read_by_composer: bool = False
     floor_map: tuple = ()
+    # Keys this kind no longer READS as data but whose PRESENCE stays visible
+    # (#364/#365/#368 spec §4.2): `Skills:` after `Tools:` replaced it, so `doctor` and `cv
+    # run` can tell an upgraded vault from an unconfigured one. Materialised by the store
+    # under each entry's own "legacy" key, never inside "fields", so no CLI flag, wizard
+    # prompt or MCP proposal can carry one.
+    legacy_fields: tuple = ()
+    # A verified entry's CV NAME (its `Label:`, else its title) may be listed in a CV's
+    # SKILLS section (spec D12). The NAMES route only: an experience entry's `Tools:` reach
+    # the pool through core/tokens.py::tool_items whatever this flag says.
+    names_in_skills_pool: bool = False
 
     def __post_init__(self):
         """Refuse a `floor_map` entry naming a floor key that is not a floor key, or a
@@ -178,6 +188,10 @@ class EvidenceKind:
             raise ValueError(
                 "cited_by_gate=True requires read_by_composer=True: the fabrication gate "
                 "cannot license a corpus the composer never emits into the bundle")
+        overlap = set(self.legacy_fields) & set(self.fields)
+        if overlap:
+            raise ValueError(f"legacy_fields {sorted(overlap)} are also declared fields; a key "
+                             "is either read as data or retired, never both")
         for floor, key in self.floor_map:
             if floor not in FLOOR_FIELD_SOURCES:
                 raise ValueError(
@@ -299,8 +313,8 @@ EVIDENCE_KINDS = {
     # uniquely sequenced (XX1, XX2, ...), which is that fallback working as designed.
     # The three unmapped fields stay reachable by name in the entry's `fields` dict.
     "skills": EvidenceKind("Job Applications/Skills Inventory",
-                           ("Proficiency", "Domain", "Evidence", "Signal Value"),
-                           read_by_composer=True,
+                           ("Proficiency", "Domain", "Evidence", "Signal Value", "Label"),
+                           read_by_composer=True, names_in_skills_pool=True,
                            floor_map=(("best_for", "Domain"),)),
     # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
     # rank() scores on best_for/category/title, so a future consumer gets that ranker
@@ -882,7 +896,10 @@ class Store(Protocol):
 
         Returns dicts carrying at least `title`, `company`, `category`, `best_for`,
         `metrics`, `verified`, `body` (the floor cv/bundle.py's ranker needs on every
-        kind) plus `fields`, the kind's own frontmatter under its own names. Which of a
+        kind) plus `fields`, the kind's own frontmatter under its own names, and `legacy`,
+        `{key: bool}` per retired field (`EvidenceKind.legacy_fields`): presence only, never
+        the value. Consumers read `legacy` with `.get()`, so a store that omitted it would
+        never be caught and the attribution warning would simply never fire. Which of a
         kind's fields fills each of the four TEXT floor keys is `FLOOR_FIELD_SOURCES`
         merged with that kind's `floor_map` -- not an identity mapping the store invents
         for itself, and not every field: one with no floor analogue is reachable only
@@ -1017,6 +1034,16 @@ class Store(Protocol):
 
         On the judge's critical path, so a store that gets this wrong changes which jobs
         the user is shown."""
+        ...
+
+    def read_cv_layout(self) -> "CvLayout | None":
+        """The user's CV Layout (CV_LAYOUT_RELPATH): which roles a CV shows and how.
+
+        MUST-support, like read_candidate_profile. Three outcomes, kept apart: None when
+        the note is absent; LayoutError when it is malformed (any core/layout.py rule, or
+        YAML the store cannot read as YAML); OSError/ValueError when it cannot be read at
+        all (a symlink out of the store, a permission error, a non-UTF-8 file). An
+        unreadable note must never read as absent (#242)."""
         ...
 
     def read_candidate_profile(self) -> CandidateProfile:
@@ -1214,3 +1241,72 @@ class Renderer(Protocol):
     """
 
     def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str: ...
+
+
+@dataclass
+class Role:
+    """One WORK EXPERIENCE entry. Field names are the PUBLIC CONTRACT a user's Jinja2
+    template writes against (`sluice/templates/cv_plain.html.j2` already depends on this
+    exact shape) -- renaming a field is a breaking change for every user template."""
+    company: str
+    dates: str
+    location: str
+    title: str
+    bullets: list[str]
+
+
+@dataclass
+class CvDocument:
+    """The whole parsed CV. Same public-contract rule as `Role` above."""
+    name: str
+    contact: str
+    profile: str
+    work: list[Role]
+    skills: list[str]
+    certificates: list[str]
+    education: list[str]
+
+
+# The CV Layout note (#364/#365/#368): the vault's one record of which roles a CV shows and
+# how. Beside the Candidate Profile, which supplies the name and contact.
+CV_LAYOUT_RELPATH = "Job Applications/CV Layout.md"
+
+# The canonical CV text's section headings, in the order `to_text` in cv/document.py writes
+# them. Here rather than in cv/document.py because core/layout.py must refuse a layout
+# heading equal to one and core/ may not import a sub-app; cv/document.py re-exports it.
+SECTION_HEADINGS = ("PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION", "SKILLS")
+
+
+class LayoutError(ValueError):
+    """The CV Layout note is malformed. Carries EVERY problem found, each naming its path,
+    so one edit fixes them all. A ValueError so the existing `(OSError, ValueError)`
+    catches keep holding; a caller that tells malformed from unreadable catches this
+    first."""
+
+    def __init__(self, problems):
+        self.problems = tuple(problems)
+        super().__init__("the CV Layout note is malformed:\n  - " + "\n  - ".join(self.problems))
+
+
+@dataclass(frozen=True)
+class LayoutRole:
+    """One heading on the CV. `start`/`end` are the note's `from`/`to` (`from` is a Python
+    keyword); `end` is `MM/YYYY` or `present`. `employers` defaults to `(heading,)`;
+    `bullets_max` is None for no cap, 0 for none."""
+    heading: str
+    start: str
+    end: str
+    location: str = ""
+    title: str = ""
+    employers: tuple = ()
+    bullets_max: int | None = None
+
+
+@dataclass(frozen=True)
+class CvLayout:
+    roles: tuple
+    skills_max: int | None = None
+    certificates: tuple = ()
+    education: tuple = ()
+    any_role: tuple = ()
+    omitted: tuple = ()
