@@ -27,6 +27,7 @@ imports were protecting: an offline command must never construct a browser, a st
 an LLM backend just by existing. `sluice triage run --no-llm` still touches no backend;
 `sluice ingest list-sources` still touches no vault.
 """
+import hashlib
 import json
 import os
 import threading
@@ -2202,9 +2203,10 @@ class Sluice:
     def pending_evidence_for_review(self, *, kind: str, names=None) -> dict:
         """The pending entries a reviewer should be shown, each with its EXACT stored text.
 
-        Serves the MCP `verify_evidence` tool. The CLI keeps its own per-entry loop in
-        verify_evidence_interactive, deliberately untouched: that loop reads each entry
-        just before asking about it, while a form shows a batch at once.
+        Serves the MCP `verify_evidence` tool's first leg. The CLI keeps its own per-entry
+        READ in verify_evidence_interactive -- it reads each entry just before asking about
+        it, while a form shows a batch at once -- but shares the matching rule
+        (_match_pending) and the promotion (promote_reviewed_evidence) with this route.
 
         `names` only NARROWS the set, never approves. Each name matches a title verbatim
         or through `evidence_slug` -- the same two arms verify_evidence_interactive's
@@ -2222,6 +2224,42 @@ class Sluice:
             except (OSError, ValueError) as e:
                 failed.append((title, _evidence_failure_reason(e)))
         return {"entries": entries, "failed": failed, "not_found": not_found}
+
+    def promote_shown_evidence(self, *, kind: str, shown, today: str | None = None) -> dict:
+        """Promote each (title, sha256 of the text a human was shown) pair -- but only when
+        the entry is still pending and its CURRENT text hashes to what they saw.
+
+        The MCP verify tool's route. It cannot hand the store the shown text itself (that
+        lives in the client, not the server), so the "not edited since they saw it" check
+        is this hash comparison, kept here in the facade both routes share rather than in
+        a front-end. Each title is re-read by its EXACT name: a ticked title must never
+        reach a different pending entry through slug matching. Outcomes are disjoint --
+        `promoted`, `changed` (text differs from what was shown, or the store's own
+        compare-and-set refused), `no_longer_pending` (verified elsewhere or deleted
+        meanwhile; NOT reported as an edit), `failed` (unreadable or refused, isolated per
+        entry as in the CLI loop)."""
+        store = self.store()
+        pending = {e["title"] for e in store.read_pending_evidence(kind)}
+        out = {"promoted": [], "changed": [], "no_longer_pending": [], "failed": []}
+        approved = []
+        for title, sha in shown:
+            if title not in pending:
+                out["no_longer_pending"].append(title)
+                continue
+            try:
+                text = store.read_pending_evidence_text(kind, title)
+            except (OSError, ValueError) as e:
+                out["failed"].append((title, _evidence_failure_reason(e)))
+                continue
+            if hashlib.sha256(text.encode("utf-8")).hexdigest() != sha:
+                out["changed"].append(title)
+                continue
+            approved.append((title, text))
+        result = self.promote_reviewed_evidence(kind=kind, approved=approved, today=today)
+        out["promoted"] = result["promoted"]
+        out["changed"] += result["changed"]
+        out["failed"] += result["failed"]
+        return out
 
     def promote_reviewed_evidence(self, *, kind: str, approved,
                                   today: str | None = None) -> dict:

@@ -28,7 +28,7 @@ def test_each_entry_is_shown_in_full_under_its_own_checkbox():
     desc = schema["properties"]["entry_1"]["description"]
     assert desc.startswith("example-alpha") and body in desc
     for prop in schema["properties"].values():
-        assert prop["type"] == "boolean" and prop["default"] is True
+        assert prop["type"] == "boolean" and prop["default"] is False
 
 
 def test_form_message_fits_in_the_three_lines_claude_code_shows():
@@ -90,18 +90,24 @@ def test_set_aside_reasons_name_the_actual_cause():
     assert "control" in m._set_aside_reason("experience", "a\rb")
 
 
+def test_the_control_character_reason_wins_over_length():
+    """An entry with both causes is reported for the one a user can act on first."""
+    assert "control" in m._set_aside_reason("experience", "a\r" + "y" * 3000)
+
+
 def test_a_huge_queue_of_short_entries_still_shows_a_form():
     shown, rest, oversize = m._pack_form([(f"t{i}", "x") for i in range(9000)])
     assert shown and not oversize and len(shown) + len(rest) == 9000
 
 
-def test_ticked_default_is_a_recorded_decision():
-    """Boxes start ticked by the owner's choice (one click for a batch). The guard is
-    _approved_keys: a client that leaves a box out of its answer approves nothing --
-    it does NOT protect against a client that sends the defaults back as true."""
-    assert all(p["default"] is True
-               for p in m._form_schema([("a", "x")])["properties"].values())
-    assert m._approved_keys({"entry_1": True}) == {"entry_1"}
+def test_boxes_start_unticked_so_an_unseen_entry_cannot_be_approved():
+    """A form can run off a small or split terminal, and the dialog does not scroll
+    everywhere: a box the human cannot see must not be approvable by Accept. So every
+    box starts unticked and the message asks them to tick what they have read
+    (owner's ruling, 2026-10-06)."""
+    assert all(p["default"] is False
+               for p in m._form_schema([("a", "x"), ("b", "y")])["properties"].values())
+    assert "Tick" in m._render_form([("a", "x")], "make them citable")
 
 
 def test_state_round_trips_and_binds_each_key_to_the_shown_text_hash():
