@@ -4,8 +4,10 @@ Role preferences are personal. The suite must not encode any real person's targe
 or anti-target titles, so it generates its own fictional lists with a fixed seed:
 deterministic enough to assert on, and revealing nothing about whoever runs sluice.
 """
+import ast
 import logging
 import os
+import sys
 import unicodedata
 
 import pytest
@@ -382,3 +384,117 @@ def make_composable(vault):
         raw = fh.read()
     vault.verify_evidence("experience", "alpha", today="2026-09-03", reviewed=raw)
     return vault
+
+
+# --- Sandbox guard (#364/#365/#368 spec §12.1) -----------------------------------------
+# Every `./…` path default in sluice/ resolves against the CURRENT DIRECTORY, so a test that
+# reaches one without chdir-ing into tmp_path writes into whatever directory pytest was
+# started from -- measured: two single-lead tests in test_cv_backend_failure.py wrote a
+# prompt and a run.json into the worktree's own cv-output/. The DNS guard above cannot see
+# a filesystem write, and the HOME/XDG sandbox in `_pin_paths` does not cover a path that
+# is relative by design.
+#
+# An in-process audit hook rather than a before/after snapshot: a snapshot cannot tell
+# this process's writes from a concurrent real `cv run`, an editor or Finder's .DS_Store,
+# and would redden whichever innocent test was running; the hook sees only this process.
+# It RECORDS rather than raises, because sluice/ has `except BaseException` arms that would
+# swallow a raise, and fails the offending test at teardown -- naming the test.
+# Limits, stated rather than implied: the hook sees `open`, `os.mkdir`, `os.rename`
+# (destination only; `os.replace` arrives as this same event) and `sqlite3.connect`. It does NOT see `os.symlink`,
+# `os.link` or `os.truncate`, so a write reaching a watched path only through one of those
+# passes unrecorded; sluice/ uses none of them on these paths today.
+_SESSION_CWD = os.getcwd()
+# `apply.camofox_cv_dir` names a path INSIDE the browser container, not on this host.
+_CONTAINER_PATHS = frozenset({"./cv-uploads"})
+
+
+def _relative_path_defaults():
+    """Every `"./…"` string constant in sluice/, bar core/paths.py (which RESOLVES paths
+    rather than naming one) and container-side paths. Derived by AST walk, never
+    hand-listed, so a new cwd-relative default is watched the day it lands; pinned by
+    tests/test_sandbox_guard.py."""
+    root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "sluice")
+    found = set()
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            path = os.path.join(dirpath, name)
+            if not name.endswith(".py") or path.endswith(os.path.join("core", "paths.py")):
+                continue
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                        and node.value.startswith("./") and len(node.value) > 2
+                        and not any(c.isspace() for c in node.value)):
+                    found.add(node.value)
+    return frozenset(found - _CONTAINER_PATHS)
+
+
+# Absolute, anchored at the SESSION-START cwd. A file-valued default (the render script) is
+# watched as that exact path, never its parent, so importing scripts/ (which writes its
+# __pycache__ beside it) is not a violation.
+_WATCHED = [os.path.normpath(os.path.join(_SESSION_CWD, p))
+            for p in sorted(_relative_path_defaults())]
+_VIOLATIONS = []
+_ARMED = {"nodeid": None}
+_WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+
+
+def _is_watched(path):
+    try:
+        # fsdecode first: a bytes path would make abspath return bytes and the startswith
+        # below raise TypeError inside the audit hook, which must record and never raise.
+        resolved = os.path.abspath(os.fsdecode(os.fspath(path)))
+    except (TypeError, ValueError):
+        return False                      # a file descriptor, not a path
+    return any(resolved == w or resolved.startswith(w + os.sep) for w in _WATCHED)
+
+
+def _guard_audit(event, args):
+    nodeid = _ARMED["nodeid"]
+    if nodeid is None:
+        return
+    if event == "open":
+        path, mode, flags = args
+        writes = (any(c in mode for c in "wax+") if isinstance(mode, str)
+                  else bool((flags or 0) & _WRITE_FLAGS))
+        targets = [path] if writes else []
+    elif event in ("os.mkdir", "sqlite3.connect"):
+        targets = [args[0]]
+    elif event == "os.rename":
+        targets = [args[1]]
+    else:
+        return
+    for target in targets:
+        if isinstance(target, (str, bytes, os.PathLike)) and _is_watched(target):
+            _VIOLATIONS.append((nodeid, event, os.fsdecode(os.fspath(target))))
+
+
+sys.addaudithook(_guard_audit)
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_guard(request):
+    _ARMED["nodeid"] = request.node.nodeid
+    try:
+        yield
+    finally:
+        _ARMED["nodeid"] = None
+    mine = [v for v in _VIOLATIONS if v[0] == request.node.nodeid]
+    if mine:
+        pytest.fail("this test wrote into a cwd-relative path default -- chdir into "
+                    "tmp_path or pass an explicit path: "
+                    + "; ".join(f"{event} {path}" for _n, event, path in mine))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _sandbox_session_check():
+    # The hook sees only this process. A subprocess that writes a watched path is caught
+    # here instead: anything absent at session start and present at the end.
+    before = {w for w in _WATCHED if os.path.exists(w)}
+    yield
+    appeared = [w for w in _WATCHED if w not in before and os.path.exists(w)]
+    if appeared:
+        raise AssertionError("the test session created cwd-relative path defaults "
+                             f"(a subprocess, which the audit hook cannot see): {appeared}")

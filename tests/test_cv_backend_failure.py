@@ -119,6 +119,9 @@ def test_a_non_transient_failure_stays_per_lead():
 
 
 def test_the_single_lead_path_reports_an_outage_as_a_result(tmp_path, monkeypatch):
+    # cv.output_dir defaults to ./cv-output, relative to the cwd by design; without this
+    # the run's prompt and run.json land in whatever directory pytest was started from.
+    monkeypatch.chdir(tmp_path)
     from sluice.core.app import Sluice
     from sluice.core.config import Config
 
@@ -135,6 +138,7 @@ def test_the_single_lead_path_reports_an_outage_as_a_result(tmp_path, monkeypatc
 
 
 def test_the_single_lead_path_reports_a_non_transient_error_as_a_result(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
     # The lead's own failure (a truncation, a 400) is an `error` result in run_batch's own
     # vocabulary, with its reason -- never a traceback out of `cv run --lead`, and never an
     # outage, which would tell the user to wait for a backend that is up.
