@@ -43,7 +43,8 @@ def field_dest(field: str) -> str:
 def cmd_evidence_add(args, config) -> int:
     """Propose one entry (#164). Never citable on its own -- `verified` is not among
     the flags this command exposes (see `EvidenceKind.fields`' own docstring), so
-    there is no way to shell in a verified entry; only `... verify` can promote one.
+    there is no way to shell in a verified entry. Only a human's approval promotes one:
+    `... verify` at a prompt, or a tick in the MCP `verify_evidence` review form.
     """
     from sluice.core.app import Sluice
 

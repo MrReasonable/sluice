@@ -43,19 +43,30 @@ def test_form_schema_uses_positional_keys_ticked_by_default():
     assert schema["properties"]["entry_1"]["description"] == "a title with spaces"
 
 
-def test_pack_form_keeps_order_reports_remaining_and_oversize():
+def test_pack_form_keeps_order_reports_the_rest_and_every_oversize_entry():
     small = [(f"t{i}", "x" * 100) for i in range(5)]
-    shown, remaining, oversize = m._pack_form(small, budget=350)
+    shown, rest, oversize = m._pack_form(small, budget=350)
     assert [t for t, _ in shown] == ["t0", "t1"]
-    assert remaining == 3 and oversize == []
-    shown, remaining, oversize = m._pack_form([("big", "x" * 500), ("ok", "y")], budget=350)
-    assert [t for t, _ in shown] == ["ok"] and oversize == ["big"] and remaining == 0
+    assert rest == ["t2", "t3", "t4"] and oversize == []
+    shown, rest, oversize = m._pack_form([("big", "x" * 500), ("ok", "y")], budget=350)
+    assert [t for t, _ in shown] == ["ok"] and oversize == ["big"] and rest == []
+    # An oversize entry AFTER the cut-off is still reported, not silently dropped.
+    entries = [("a", "x" * 200), ("b", "x" * 200), ("huge", "x" * 900)]
+    shown, rest, oversize = m._pack_form(entries, budget=350)
+    assert [t for t, _ in shown] == ["a"] and rest == ["b"] and oversize == ["huge"]
+
+
+def test_build_form_keeps_the_whole_message_within_budget():
+    entries = [(f"t{i}", "x" * 300) for i in range(40)]
+    shown, rest, oversize, message = m._build_form(entries, "make them citable", 2000)
+    assert shown and rest and not oversize
+    assert len(message) <= 2000
 
 
 def test_state_round_trips_and_binds_each_key_to_the_shown_text_hash():
     shown = [("example-alpha", "body a"), ("example-beta", "body b")]
-    state = m._decode_state(m._encode_state("experience", shown, remaining=3))
-    assert state["kind"] == "experience" and state["remaining"] == 3
+    state = m._decode_state(m._encode_state("experience", shown, rest=["t3", "t4"]))
+    assert state["kind"] == "experience" and state["rest"] == ["t3", "t4"]
     assert state["entries"] == [
         ["entry_1", "example-alpha", hashlib.sha256(b"body a").hexdigest()],
         ["entry_2", "example-beta", hashlib.sha256(b"body b").hexdigest()]]

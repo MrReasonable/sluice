@@ -939,7 +939,8 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   each entry's full text in its own code block and every box ticked, and verify only
   the entries they leave ticked and accept. An entry whose text changed after the form
   was built is reported `changed` and left pending. If the entries do not fit in one
-  form, `remaining` says how many are left and a second call shows them; one too long
+  form, `remaining_titles` names the ones not shown -- call again with those as `names`
+  (a bare second call would show the same unticked entries first); one too long
   for any form is reported for `job-sluice <kind> verify`. It needs a client on the
   2026-07-28 MCP protocol that supports form elicitation (Claude Code does); any other
   client gets `outcome: "unsupported_client"` and nothing is written. There is no
