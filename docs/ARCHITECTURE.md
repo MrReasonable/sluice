@@ -1182,7 +1182,9 @@ description, since Claude Code folds the form's message after three lines but sh
 description in full up to about 2,000 characters (measured) -- the client
 shows it to the user, and on the protocol's retry only entries the client returned an
 explicit `true` for -- and whose current text still hashes to what was shown -- reach
-`Store.verify_evidence` through `Sluice.promote_reviewed_evidence`. The tool takes no
+`Store.verify_evidence` through `Sluice.promote_shown_evidence` (which holds that hash check,
+re-reading by exact title) and `Sluice.promote_reviewed_evidence`. Boxes start unticked, so a box
+the human cannot see is never approved. The tool takes no
 argument that approves. It guards against the model accidentally making its own claims
 citable, not against a client configured to answer the form for the user.
 

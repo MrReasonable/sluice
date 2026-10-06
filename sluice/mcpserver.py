@@ -463,7 +463,7 @@ def list_evidence(sluice: Sluice, kind: str, pending: bool = False) -> dict:
     degrades to a normal SDK tool error exactly like list_leads' unknown-status
     ValueError does above. Direct import of EVIDENCE_KINDS is forbidden here: it
     lives in sluice.core.protocols, which is not in the isolation sweep's
-    allow-list (sluice.core.{app,leads,status} only) -- unlike list_leads'
+    allow-list (sluice.core.{app,leads,safeout,status} only) -- unlike list_leads'
     CANONICAL/normalize, which sluice.core.status already exposes and this module
     already imports for other reasons. A Sluice-facade accessor for the valid kind
     names WOULD be an available route (Sluice itself is on the allow-list) and is
@@ -550,7 +550,7 @@ def apply_record(sluice: Sluice, lead: str, ats: str | None = None, url: str | N
         # inlined rather than imported -- DELIBERATELY (deferred item #5, final
         # whole-branch review), not an oversight: the isolation sweep
         # (`tests/test_mcpserver.py`'s `_isolation_violations`) confines
-        # mcpserver.py to `sluice.core.{app,leads,status}` only, so importing
+        # mcpserver.py to `sluice.core.{app,leads,safeout,status}` only, so importing
         # `sluice.apply.select` here would violate that boundary. Must be kept
         # in sync with `select.resolve`'s own scope by hand if that ever changes.
         notes = [n for n in sluice.store().read_leads({"shortlist"}) if slug_matches(n, lead)]
@@ -1237,10 +1237,12 @@ def build_server(config, write: bool = False):
         # Derived, and assigned before registering, for the reason given above
         # list_evidence_tool: a hand-typed kind list goes stale when EVIDENCE_KINDS grows.
         verify_evidence_tool.__doc__ = (
-            f"Show pending evidence entries ({evidence_kinds_text()}) to the human in one "
-            "review form and verify only the ones they tick. `names` narrows which pending "
-            "entries are offered; it never approves anything. There is no argument that "
-            "approves on the human's behalf. Clients that cannot show a form get "
+            f"Show pending evidence entries ({evidence_kinds_text()}) to the human in a "
+            "review form and verify only the ones they tick. A form holds about one screen "
+            "of entries: when the result's not_shown_titles is non-empty, call again with "
+            "those as `names` to review the rest. `names` only narrows which pending entries "
+            "are offered; it never approves anything, and no argument approves on the "
+            "human's behalf. Clients that cannot show a form get "
             f'outcome="unsupported_client". {evidence_verify_effects()}')
         mcp_server.tool(name="verify_evidence")(verify_evidence_tool)
 
