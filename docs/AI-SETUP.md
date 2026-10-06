@@ -52,8 +52,9 @@ So: propose freely, then stop and hand back. `job-sluice experience verify` is t
 
 The Candidate Profile note supplies the name and contact block that render as the headline of every
 CV sluice produces, and `cv run` refuses to compose while either is blank rather than shipping
-something nameless. Evidence entries are what work-experience bullets cite, and every number in a
-bullet must appear in the entry it cites.
+something nameless. The CV Layout note supplies every heading, date, location, title,
+certificate and education line a CV shows. Evidence entries are what work-experience bullets
+cite, and every number in a bullet must appear in the entry it cites.
 
 Ask for all of it. If the user will not answer something, leave it blank and tell them which command
 that blocks. A blank field produces a clean refusal; an invented one produces a plausible CV sent
@@ -68,8 +69,8 @@ under their name.
 | Install, `init`, config | yes | |
 | Interview for judging criteria, then write the Judging Profile | yes | answers |
 | Interview for identity, then write the Candidate Profile | yes | answers |
-| Place a baseline CV at `My CV/CV.md` | | supplies the file |
-| Propose evidence entries from that CV | yes | |
+| Interview for the CV Layout, then write it | yes | answers |
+| Propose evidence entries from their existing CV, if they have one | yes | |
 | **Verify evidence** | **never** | **only they can** |
 | API key or `claude` CLI | | supplies |
 | Start Camofox, log into job boards over VNC | can start it | does the logins |
@@ -154,18 +155,31 @@ answers in their words. Leave the neutral text where they had no answer.
 `doctor` reports it `setup` and blocking `cv`. Ask for the name and contact details that should head
 their CV, then fill it in. This is rule 3 territory: nothing here is guessable.
 
-### 4. Baseline CV
+### 4. CV Layout: interview, then write
 
-Ask for their existing CV as markdown at `My CV/CV.md` inside the vault (`baseline_rel` moves
-it). This is the source material the composer tailors from. There is no way for you to supply it.
+Ask which roles their CV shows, newest first: each employer as the CV should print it, the
+dates, and optionally the location and title; any roll-up of earlier roles under one heading,
+and which employers it covers; companies whose work fits any role; companies to leave off;
+certificates; education. Then create `Job Applications/CV Layout.md` in the shape
+`docs/CONFIGURATION.md` shows -- ONLY if it does not exist. If it does, show them a diff of
+what you would change and edit only what they approve; never rewrite it. Every value is
+theirs: never fill in a date, a title or a qualification they did not give you.
 
 ### 5. Evidence: propose, then hand back
 
-Read the baseline CV and propose one entry per real achievement:
+If they have an existing CV, read it as source material and propose one entry per real achievement, each with the `--company` a role in their CV Layout names and its named tools in `--tools`:
 
 ```bash
-job-sluice experience add --name "..." --company "..." --metrics "..." --body "..."
+job-sluice experience add --name "..." --company "..." --metrics "..." --tools "..." --body "..."
 ```
+
+Put only named tools in `--tools`: tools, technologies, languages, platforms, standards and named
+methods (`Terraform`, `React`, `WCAG`, `Scrum`). Never general practices or concepts such as
+`security`, `coaching`, `pairing` or `architecture`. Every declared item is checked, as spelled, in
+every bullet of every CV, hyphenated compounds included (`security-focused` matches a declared
+`security`), so a practice word there can turn ordinary prose into a `MISATTRIBUTED TOOL` refusal
+and get leads skipped. A practice they want listed under SKILLS goes in a Skills Inventory note
+(`job-sluice skills add`) instead.
 
 Every figure you put in `--metrics` must come from their CV or from something they told you. This is
 the pool the fabrication gate licenses bullets against, so a number you rounded, extrapolated or
@@ -262,6 +276,13 @@ End by telling them, concretely:
   list fully enforced. Neither is an unset preference waiting for you to fill it in; populating
   either because it looked empty would invert rule 1 rather than satisfy it.
 - **`triage run --no-llm` puts every lead in `keep`.** Same reason as the abstaining gates.
+- **`doctor` says the cv attribution check is off.** No verified entry declares `Tools:` while
+  some still carry the retired `Skills:`. Nothing is broken, but a bullet can then name a tool
+  from another role unchecked. Tell the user; copying the named tools (not the practice words)
+  from `Skills:` into `Tools:` on their verified notes is their edit to make.
+- **`doctor` counts entries "not on your CV" or with "no company".** Those verified entries
+  match no role in the CV Layout, so no CV cites them. `job-sluice experience list` shows each
+  entry's company; ask the user which role it belongs to rather than guessing.
 - **`leads` passes print and change nothing.** `dedupe`, `expire` and `reconcile` report by default
   and need `--merge` / `--expire` / `--apply` to act. `dismiss` is the exception and writes on every
   call, because the verdict is one the user typed.

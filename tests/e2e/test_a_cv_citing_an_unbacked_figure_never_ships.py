@@ -1,34 +1,34 @@
 """A CV citing a figure absent from the bundle never ships.
 
-The fabrication gate's NUMERIC arm, end to end (distinct from the structural-drift
-arm that `test_a_clean_lead_reaches_rejected` exercises). The composed CV has the
-correct WORK EXPERIENCE header, so the citation gate RUNS; its one and only
-violation is a bullet citing "42", a figure in no cited bundle entry (the single
-[EF1] entry allows {3, 8}). The engine retries once -- the retry re-keys the same
-canned CV, since compose appends violations past the prompt's first line -- then
-skips. Exactly one violation is load-bearing: any other failure would keep the CV
-skipped-gate under the numeric-check mutation and the witness would go inert.
+The fabrication gate's NUMERIC arm, end to end. The reply is well-formed, so the
+selection is checked; its one and only violation is a bullet citing "42", a figure in
+no cited bundle entry (the single [EF1] entry allows {3, 8}). The engine retries once --
+the scripted backend answers the retry with the same reply, since it routes on the
+prompt's first line -- then skips. Exactly one violation is load-bearing: any other
+failure would keep the lead skipped-gate under the numeric-check mutation and the
+witness would go inert.
 """
+import json
+
 from sluice.ingest import sources as _sources
 
-from tests.harness import PASSING_CV, ScriptedBackend, build_harness
+from tests.harness import ScriptedBackend, build_harness
 
 BOARD_URL = "https://remoteok.example/harness"
 ROWS = [{"title": "Staff Engineer", "company": "Example Foundry",
          "link": "https://remoteok.example/jobs/1", "salary": ""}]
 
-# PASSING_CV with ONE bullet changed to cite "42" -- absent from the cited [EF1]
-# entry (metrics "3 8"). Deriving from PASSING_CV (rather than re-transcribing it)
-# structurally guarantees the CV is otherwise identical to the passing baseline, so
-# the ONLY violation is the invented 42.
-NUMERIC_VIOLATION_CV = PASSING_CV.replace(
-    "- Shipped the billing service to production [EF1]",
-    "- Cut deploy time by 42 percent [EF1]")
+# One cited bullet whose figure, 42, is absent from the cited [EF1] entry (metrics "3 8"),
+# under a number-free profile, so the ONLY violation is the invented 42.
+NUMERIC_VIOLATION_REPLY = json.dumps({
+    "profile": "I build reliable systems.",
+    "roles": {"R1": [{"text": "Cut deploy time by 42 percent", "cites": ["EF1"]}]},
+    "skills": []})
 
 
 def test_a_cv_citing_an_unbacked_figure_never_ships(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS)
-    backend = ScriptedBackend(cv_by_company={"Example Foundry": NUMERIC_VIOLATION_CV},
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": NUMERIC_VIOLATION_REPLY},
                               default_verdict="shortlist")
     app = h.sluice(backend)
     app.ingest([_sources.get("remoteok")])
@@ -36,7 +36,7 @@ def test_a_cv_citing_an_unbacked_figure_never_ships(tmp_path, monkeypatch):
 
     # Snapshot compose calls so the retry-once contract is PINNED, not assumed: a
     # gate failure composes once, feeds the violations back, composes a SECOND time,
-    # then skips (cv/engine.py's `for _ in range(2)`). Without this the test would
+    # then skips (cv/engine.py's `for attempt in range(1, 3)`). Without this the test would
     # still pass if the retry were removed.
     composes_before = sum(p.startswith("Compose a tailored CV for") for p in backend.prompts)
     results = app.compose_cv(all_shortlist=True)

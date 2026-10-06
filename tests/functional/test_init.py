@@ -173,6 +173,12 @@ def test_the_profile_is_probed_through_the_store_not_the_filesystem(run_init, tm
     assert real_exists(probed), "precondition: the profile was actually written"
 
 
+def _first_catalogue_prompt(vault):
+    """The prompt of the first catalogue question after `vault_dir`."""
+    from sluice.onboard.questions import catalogue
+    return next(q.prompt for q in catalogue(default_vault=str(vault)) if q.key != "vault_dir")
+
+
 def _skip_all_questions():
     """One blank per question `cmd_init` will ask, DERIVED from the catalogue.
 
@@ -532,9 +538,9 @@ def test_a_populated_candidate_note_is_left_alone_and_the_questions_are_not_re_a
     # Positive anchor, not just an absence: this run has no config yet, so the catalogue's OWN
     # first question is expected to fire on the same asker/stream -- proving the transcript is
     # genuinely live rather than resting on a sibling test elsewhere to establish that.
-    # cv_employers, not the retired cv_name (#133/#107: cv_name/cv_contact left the
-    # catalogue entirely, so cv_employers is now the first question after vault_dir).
-    assert "Places you have worked, comma-separated?" in shown
+    # DERIVED, so the next removal cannot strand it: what is asked first is whatever the
+    # catalogue lists after `vault_dir`.
+    assert _first_catalogue_prompt(vault) in shown
     assert "forename(s)" not in shown, "the interview must be gated, not merely harmless"
 
 
@@ -551,8 +557,8 @@ def test_a_note_declaring_only_email_still_closes_the_gate(run_init, tmp_path):
     shown = out.getvalue()
 
     assert rc == 0
-    # cv_employers, not the retired cv_name -- positive anchor, see the sibling test above.
-    assert "Places you have worked, comma-separated?" in shown
+    # Positive anchor, derived from the catalogue: see the sibling test above.
+    assert _first_catalogue_prompt(vault) in shown
     assert "forename(s)" not in shown
 
 
@@ -949,8 +955,8 @@ def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(r
         [""] * 5    # the 5 Judging Profile prose questions -- blank keeps the neutral default
         + [""] * 5  # the 5 candidate identity questions -- blank declares nothing
         + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "", "n", "n"]
-        # decline `experience`, accept `skills` (name "widget", its 5 fields with a blank Label, blank body),
-        # decline "add another", decline `stories`.
+        # decline `experience`, accept `skills` (name "widget", its fields with a blank
+        # Label, blank body), decline "add another", decline `stories`.
     )
     rc = _init(["init", "--vault", str(vault)], _scripted(script))
     assert rc == 0
@@ -960,7 +966,7 @@ def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(r
     assert entries[0]["title"] == "widget"
     assert entries[0]["fields"] == {
         "Proficiency": "v1", "Domain": "v2", "Evidence": "v3", "Signal Value": "v4",
-        # A blank Label answer takes the typed name (D13).
+        # A blank Label answer takes the typed name (#364 D13).
         "Label": "widget",
     }
     # Never citable straight out of the wizard (#164's own contract): only `_inbox/` holds
@@ -1007,19 +1013,34 @@ def test_a_seeded_corpus_stops_the_wizard_being_offered_again_pending_or_verifie
         fh.write("# hand written\n")
 
     vault = tmp_path / "notes"
+    # The wizard's answers are DERIVED from each kind's declared fields, one per prompt in
+    # the order collect_evidence asks them: decline every kind but skills; for skills, y, a
+    # name, one answer per field, a blank body, then "n" to "add another". A hand-counted
+    # list went stale when skills gained Label:, and every later answer slid one prompt
+    # along -- the body got "n", and stories was declined by EOF rather than by its answer --
+    # while the title-only check below stayed green.
+    skill_fields = {f: f"v{i}" for i, f in enumerate(EVIDENCE_KINDS["skills"].fields, 1)}
+    wizard = []
+    for kind in EVIDENCE_KINDS:
+        wizard += (["y", "widget", *skill_fields.values(), "", "n"] if kind == "skills"
+                   else ["n"])
     script1 = (
         [""] * 5                              # the 5 Judging Profile prose questions
         + ["", "RunOneSurname", "", "", ""]   # candidate identity -- DECLARED, so the note lands
-        + ["n", "y", "widget", "v1", "v2", "v3", "v4", "", "n", "n"]
+        + wizard
     )
     assert _init(["init", "--vault", str(vault)], _scripted(script1)) == 0
-    assert [e["title"] for e in Vault(str(vault)).read_pending_evidence("skills")] == ["widget"]
+    [seeded] = Vault(str(vault)).read_pending_evidence("skills")
+    # Each answer landed on the prompt it was written for: a shift moves a value onto its
+    # neighbour's field and the "n" meant for "add another" into the body.
+    assert (seeded["title"], seeded["fields"], seeded["body"]) == ("widget", skill_fields, "")
 
     # One accept-and-capture block per kind, so a re-offered wizard captures something in
     # EVERY kind rather than only whichever one the script happens to stay aligned with:
-    # y, a name, four field answers (more than any kind declares -- the surplus is
-    # harmlessly eaten by the next prompt), a blank body, then "n" to "add another".
-    hostile = ["y", "should-never-be-captured", "x", "x", "x", "x", "", "n"] * len(EVIDENCE_KINDS)
+    # y, a name, one answer per declared field, a blank body, then "n" to "add another".
+    hostile = []
+    for spec in EVIDENCE_KINDS.values():
+        hostile += ["y", "should-never-be-captured", *["x"] * len(spec.fields), "", "n"]
 
     for run in ("pending", "verified"):
         if run == "verified":

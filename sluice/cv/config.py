@@ -5,9 +5,11 @@ from dataclasses import dataclass, field
 
 from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.config import (apply_claude_cli_env, refuse_retired_backend_keys,
-                                refuse_retired_dossier_dir,
+                                refuse_retired_cv_inputs, refuse_retired_dossier_dir,
                                 refuse_wrong_container, sub_app_block)
 from sluice.core.paths import config_file
+from sluice.core.protocols import CV_LAYOUT_RELPATH
+from sluice.core.tokens import validate_decoys
 from sluice.core.log import get_logger
 from sluice.cv.slop import _PHRASES, _RETIRED_PHRASES
 
@@ -29,16 +31,11 @@ _NEGATIVES: list = []
 class CvConfig:
     # NB no `name`/`contact` here (#107): both moved to the vault's Candidate
     # Profile note. load_cv_config RAISES on either rather than letting `hasattr`
-    # drop it in silence -- see the guard below, same shape as baseline_rel's.
-    # Employers the composer must cite and the validate() gate must see present.
-    # Empty by default: with no list configured, compose.py asks the model to
-    # include every employer present in the source bundle instead of a fixed
-    # list, and validate.py skips the per-employer completeness check.
-    employers: list = field(default_factory=list,
-        metadata={"gate_role": "abstain"})
-    # Strings the validate() gate treats as known-hallucination decoys (a HARD
-    # FAIL if any appear in the composed CV). Empty by default; supply your own
-    # via the `cv:` block of sluice.yaml.
+    # drop it in silence -- see the guard below, same shape as the retired baseline_rel's.
+    # Terms the composer must never claim: a profile or bullet naming one, as a whole
+    # term, is a HARD fail (cv/validate.py::check_selection), and a pool item one
+    # matches is never offered as a skill. Empty by default; supply your own via the
+    # `cv:` block of sluice.yaml.
     fabrication_decoys: list = field(default_factory=list,
         metadata={"gate_role": "abstain"})
     # Prefix used for the served/staged PDF filename: "{served_prefix}_<sha1>.pdf".
@@ -73,8 +70,8 @@ class CvConfig:
     # appears nowhere in what the composer was shown drives the one retry. ON by default,
     # deliberately unlike voice_check: it is pure and deterministic and spends nothing
     # unless it fires, the slop stems' cost profile. The escape exists for a THIN vault --
-    # precision rests on the baseline CV carrying the user's ordinary vocabulary. No
-    # allow-list: a term the candidate really holds belongs in their evidence.
+    # precision rests on the evidence and the CV Layout carrying the user's ordinary
+    # vocabulary. No allow-list: a term the candidate really holds belongs in their evidence.
     term_check: bool = True
     # Phrases from slop._PHRASES this candidate legitimately uses in their own voice.
     # NB this is NOT abstain-shaped: it SUBTRACTS from a hardcoded list, so empty means
@@ -175,23 +172,20 @@ def _load_cv_config_from_file(path: str | None = None) -> CvConfig:
     with open(path, encoding="utf-8") as f:
         data = sub_app_block("cv", (yaml.safe_load(f) or {}).get("cv"))
 
-    # baseline_rel MOVED to the root config (only the store can honour it). This loader
-    # filters unknown keys with `hasattr`, so an existing `cv.baseline_rel` would be
-    # dropped in silence -- and it was LIVE before this move, so a user with a curated
-    # baseline would quietly get a CV composed from a stale `My CV/CV.md` instead, with
-    # the fabrication gate green (the gate checks bullets against cited entries; it does
-    # not check the baseline's dates and employers). Fail loudly at construction, which is
-    # this codebase's rule precisely because a quiet wrong default is the bug class it
-    # most consistently engineers out.
     refuse_retired_dossier_dir("cv", data)
     refuse_retired_backend_keys("cv", data)
 
     if "baseline_rel" in data:
+        # Re-pointed (#364/#365/#368): its old advice -- move the key to the top level --
+        # would now send a user to a key that also raises. The value is not echoed.
         raise ValueError(
-            "cv.baseline_rel has moved to the top level of sluice.yaml (it is a STORE "
-            "location, and only the store can honour it). Move it out of the `cv:` block:\n"
-            "    baseline_rel: " + str(data["baseline_rel"])
-        )
+            "cv.baseline_rel is retired: sluice no longer reads a baseline CV. A CV's roles, "
+            f"dates and headings come from the CV Layout note ({CV_LAYOUT_RELPATH}) -- delete "
+            "the key.")
+    # `employers` has no field to be caught on any more, and this loader's hasattr filter
+    # would drop it in silence when a caller reaches it without load_config: the same
+    # refusal load_config makes, so the two entry points cannot disagree.
+    refuse_retired_cv_inputs({"cv": data})
 
     # cv.name/cv.contact MOVED to the vault (#107): the candidate's identity is now
     # read from Job Applications/Candidate Profile.md, once per lead, so it can be
@@ -396,12 +390,15 @@ def _load_cv_config_from_file(path: str | None = None) -> CvConfig:
                 f'is a STRING -- and "false" is truthy in Python, so the knob would '
                 f"be switched ON by the value meant to switch it off.")
         # #176, the container sibling of the bool guard above and keyed the same way.
-        # `employers`, `fabrication_decoys` and `negatives` feed the FABRICATION GATE,
-        # which iterates them: measured before this existed, `fabrication_decoys: Acme`
+        # `fabrication_decoys` feeds the fabrication gate and `negatives` the composer's
+        # guidance section, and both are iterated: measured before this existed, `fabrication_decoys: Acme`
         # made `validate()` return `FABRICATED: contains 'A'`, `'c'`, `'m'` and
         # hard-block every CV, accusing the model and naming neither the config key nor
         # the word "list". `slop_allow` keeps its own bespoke check above, which is
         # narrower than this one (it also validates MEMBERSHIP against the stem list).
         refuse_wrong_container("cv", k, v, getattr(cfg, k))
         setattr(cfg, k, v)
+    # #364 spec §8: a decoy the shared tokeniser cannot represent could never match, so it is
+    # refused here, by POSITION, rather than left silently inert.
+    validate_decoys(cfg.fabrication_decoys)
     return cfg

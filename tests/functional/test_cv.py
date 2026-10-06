@@ -8,7 +8,7 @@ else (e2e drives Sluice.compose_cv directly, never cli.py).
 import os
 
 from sluice.cli import _build_parser
-from tests.harness import PASSING_CV, ScriptedBackend
+from tests.harness import PASSING_BULLETS, PASSING_REPLY, ScriptedBackend
 
 
 def test_cv_run_parses_lead_and_flags():
@@ -33,15 +33,16 @@ def _seed_shortlist_lead(vault_dir, company, role):
 
 
 def test_cv_run_composes_and_renders(cli):
-    # Company "Example Foundry" -> [EF1] via the harness prefix_map; PASSING_CV cites
+    # Company "Example Foundry" -> [EF1] via the harness prefix_map; PASSING_REPLY cites
     # [EF1] and its numbers appear in the seeded Experience entry, so the gate passes.
-    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_REPLY})
     h, run = cli(backend=backend)
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
     rc, _out, err = run(["cv", "run", "--lead", "example-foundry"])
     assert rc == 0
     assert "cv:" in err and "rendered" in err              # cmd_cv_run's stderr line
-    assert h.recorder.rendered == [PASSING_CV]             # the gate passed, it rendered
+    # The gate passed, it rendered.
+    assert [d.work[0].bullets for d in h.recorder.rendered] == [PASSING_BULLETS]
 
 
 def test_cv_run_no_matching_lead_returns_1(cli):
@@ -66,7 +67,7 @@ def test_cv_run_blank_candidate_profile_returns_1(cli):
     cv.name/cv.contact entirely, so reverting cv.name to its default no longer has
     anything to do with what this handler refuses on.
     """
-    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_REPLY})
     h, run = cli(backend=backend, cv_name="")
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
     rc, _out, err = run(["cv", "run", "--lead", "example-foundry"])
@@ -100,7 +101,7 @@ def test_cv_run_ambiguous_lead_composes_for_neither_and_returns_1(cli):
     vault: naming one of the twins precisely still composes and renders. A guard that
     refused whenever a vault held look-alike leads would silently block real work.
     """
-    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_CV})
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": PASSING_REPLY})
     h, run = cli(backend=backend)
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Staff Engineer")
     _seed_shortlist_lead(h.paths["vault"], "Example Foundry", "Senior Engineer")
@@ -119,7 +120,7 @@ def test_cv_run_ambiguous_lead_composes_for_neither_and_returns_1(cli):
     # Mirror harm: an unambiguous fragment still composes, twins present or not.
     rc, _out, err = run(["cv", "run", "--lead", "staff-engineer"])
     assert rc == 0 and "rendered" in err
-    assert h.recorder.rendered == [PASSING_CV]
+    assert [d.work[0].bullets for d in h.recorder.rendered] == [PASSING_BULLETS]
     assert "tailored_cv:" in _lead_text(h.paths["vault"], "Example Foundry", "Staff Engineer")
     # ...and only the named twin was touched.
     assert "tailored_cv:" not in _lead_text(h.paths["vault"], "Example Foundry",

@@ -488,7 +488,7 @@ def test_claudemax_empty_response_redacts_before_truncating():
 # ── #28: the default argv, the timeout, and an exit that says nothing ────────────
 #
 # All three come from issue #28. The composition bug it leads with did NOT reproduce
-# (six arms through the real build_prompt/render_bundle/validate returned gate-passing
+# (six arms through the text pipeline of the time returned gate-passing
 # CVs), but these three are code facts independent of how the agent behaves.
 
 

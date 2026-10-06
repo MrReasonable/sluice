@@ -1,7 +1,8 @@
 """The external render script, registered as the `script` renderer.
 
-This is today's behaviour and stays the default, so nothing changes for an operator who
-already has a working script.
+The escape hatch, selected by `cv.renderer: script`: `template` is the default
+(cv/config.py::CvConfig.renderer). It hands an operator's own script the canonical text
+form (cv/document.py::to_text), so an operator who already has a working script keeps it.
 
 It does now fail LOUDLY AT CONSTRUCTION when the script is missing. That is not
 pedantry: `CvConfig.render_script` defaults to `./scripts/cv_render_v2.py`, and **that
@@ -41,18 +42,20 @@ class ScriptRenderer:
         self.script, self.python_bin, self.home = script, python_bin, home
 
     def render(self, document, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
+        """Write the document in its canonical text form and hand it to the render script;
+        return the PDF path. Anything but a `CvDocument` raises `RenderError`."""
         from sluice.cv.render import render as _render
         # A CvDocument is written in the canonical text format (cv/document.py::to_text),
         # citation-free: exactly what a script received from the old pipeline, pinned by
-        # tests/test_cv_script_golden.py. TRANSITIONAL: the str branch is removed in Task 19.
-        if isinstance(document, CvDocument):
-            from sluice.cv.document import to_text
-            document = to_text(document)
-        elif not isinstance(document, str):
-            # Fail loud, never coerce: str() of a wrong object would hand the script junk.
+        # tests/test_cv_script_golden.py.
+        if not isinstance(document, CvDocument):
+            # Fail loud, never coerce: str() of a wrong object would hand the script junk,
+            # and composed text is no longer a CV this renderer is given.
             raise RenderError(
                 f"renderer 'script': render() takes a CvDocument, "
                 f"got {type(document).__name__}")
+        from sluice.cv.document import to_text
+        document = to_text(document)
         return _render(document, out_dir, render_script=self.script,
                        python_bin=self.python_bin, home=self.home,
                        neutral_name=neutral_name)

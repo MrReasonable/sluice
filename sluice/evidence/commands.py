@@ -17,38 +17,38 @@ someone to "restore" the laziness it describes by hoisting the per-function `Slu
 import up here, which would move a heavy import onto every single invocation while
 reading as a tidy-up.
 """
+import argparse
 import sys
 
 from sluice.core.protocols import EVIDENCE_KINDS
-
-
-def verify_outcome(spec, subject: str = "it") -> str:
-    """What `verify` actually BUYS for this kind, as a verb phrase.
-
-    One place, so no user-facing message can over-claim on its own. The gate LICENSES
-    `experience` alone, but every message said verifying made an entry "citable by the
-    CV fabrication gate" regardless of kind (#164 review, M2). A user reads that as "my
-    skills are feeding my CVs" and stops looking, which is the reassuring direction to
-    be wrong in.
-
-    Keyed on `EvidenceKind.cited_by_gate`, which since #165 is one of TWO flags:
-    `read_by_composer` says the corpus reaches the prompt, `cited_by_gate` says the gate
-    may license its content. `skills` is now the first kind where they differ -- shown to
-    the composer as framing, citable by nothing -- so keying on the wrong one here would
-    re-create the exact over-claim this helper exists to prevent.
-
-    `subject` is the object of the verb, so the `init` wizard's plural summary
-    ("...to make them citable") reaches the same one sentence rather than keeping its
-    own copy for the sake of one word.
-    """
-    return (f"make {subject} citable" if spec.cited_by_gate
-            else f"mark {subject} reviewed")
+from sluice.core.protocols import verify_outcome  # noqa: F401 -- re-exported for cli.py
 
 
 def field_flag(field: str) -> str:
     """`Signal Value` -> `--signal-value`. One place, so the parser and the command
     body cannot disagree about what argparse called the destination."""
     return "--" + field.lower().replace(" ", "-")
+
+
+# A field a kind used to take, mapped to the field that replaced it. 4.0 (#364/#365/#368,
+# #364 spec §4.2) retired `Skills:` on experience entries for `Tools:`, so `experience add
+# --skills` would otherwise die as a bare argparse "unrecognized arguments" that never says
+# what to type instead. Keyed by field and applied to a kind only when its EvidenceKind
+# lists the field in `legacy_fields`, so the retired flag exists exactly where it existed.
+RETIRED_FIELDS = {"Skills": "Tools"}
+
+
+def retired_flag_action(retired: str, replacement: str):
+    """An argparse Action class for a retired field flag: it refuses at parse time naming
+    the replacement, through `parser.error` -- exit 2 and a usage line, never a traceback.
+    An Action rather than a post-parse check, so the refusal names the flag the user
+    actually typed even when some other argument is also wrong."""
+
+    class _Retired(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            parser.error(f"{field_flag(retired)} was retired in 4.0 -- sluice no longer "
+                         f"reads {retired}:; use {field_flag(replacement)} instead")
+    return _Retired
 
 
 def field_dest(field: str) -> str:
@@ -111,17 +111,18 @@ def cmd_evidence_add(args, config) -> int:
 
 
 def cmd_evidence_list(args, config) -> int:
-    """List one kind's entries. `experience` entries also print their `Skills:` value
-    (#168 Task 10), so `core/doctor.py`'s skills-reconciliation NOTICE rows -- which
-    report a count and never the skill's own name, by this codebase's own "no doctor
-    row carries user-authored text" rule -- have somewhere actionable to point a user
-    at: this command is the resolving command `job-sluice experience list` those rows
-    name.
+    """List one kind's entries. For a kind that declares them, every line shows the
+    entry's `Company:` (or `(none)`), any `Tools:` it declares and its `Label:` (or
+    `(none)`), so `core/doctor.py`'s eligibility, tools and skill-label rows -- "not on
+    your CV", "no company", the unusable-`Tools:` row and "cv skills (no Label)", which
+    report a COUNT and never the entry's own text, by this codebase's own "no doctor row
+    carries user-authored text" rule -- have somewhere actionable to point a user at: this
+    command is the resolving command (`job-sluice experience list`, `job-sluice skills
+    list`) those rows name.
 
-    Keyed on `"Skills" in spec.fields` rather than a hardcoded `args.kind ==
-    "experience"` check, so a future kind that grows its own `Skills` field (unlikely,
-    but the registry-driven discipline this whole module already follows for its flags)
-    would get this for free rather than needing a second hand-written branch here.
+    Keyed on the kind's declared `fields` rather than a hardcoded `args.kind ==
+    "experience"` check, so a future kind that grows either field gets this for free
+    rather than needing a second hand-written branch here.
     """
     from sluice.core.app import Sluice
 
@@ -137,20 +138,29 @@ def cmd_evidence_list(args, config) -> int:
     if not entries:
         print(f"no {'pending' if args.pending else 'verified'} {args.kind} entries")
         return 0
-    show_skills = "Skills" in EVIDENCE_KINDS[args.kind].fields
+    fields = EVIDENCE_KINDS[args.kind].fields
+    show_company, show_tools = "Company" in fields, "Tools" in fields
+    show_label = "Label" in fields
     for e in entries:
         marker = "pending" if args.pending else e["verified"]
         line = f"{e['title']}  [{marker}]"
-        if show_skills:
-            skills = (e.get("fields") or {}).get("Skills", "")
-            # Blank is absent (SC5, cv/bundle.py:_skill_items) -- omitted rather than
-            # printed as a bare "Skills: " on every entry that has not annotated one,
-            # which is the common case today and would be noise on every line.
+        declared = e.get("fields") or {}
+        if show_company:
+            # ALWAYS shown, blank included: "no company" is one of the doctor rows this
+            # listing resolves, so the entry carrying none must be findable here.
+            company = declared.get("Company", "")
+            company = company.strip() if isinstance(company, str) else ""
+            line += f"  Company: {company or '(none)'}"
+        if show_tools:
+            tools = declared.get("Tools", "")
+            # Blank is absent (core/tokens.py::tool_items declares no item for it) --
+            # omitted rather than printed as a bare "Tools: " on every entry that has not
+            # annotated one, which would be noise on every line.
             #
             # WHITESPACE-ONLY is blank, and the check is on the stripped value for that
-            # reason: `_skill_items` splits on commas and drops every item that is empty
-            # after stripping, so `Skills: "   "` contributes nothing THERE while a bare
-            # truthiness test printed an empty `Skills:` suffix HERE -- one value
+            # reason: `tool_items` splits on commas and drops every item that is empty
+            # after stripping, so `Tools: "   "` contributes nothing THERE while a bare
+            # truthiness test would print an empty `Tools:` suffix HERE -- one value
             # described two ways. Only the QUOTED spelling reaches this line as
             # whitespace (measured: `_parse_fm_spaced` hands back `''` for an unquoted
             # run of spaces), and a human editing their own vault can write it.
@@ -158,10 +168,16 @@ def cmd_evidence_list(args, config) -> int:
             # `isinstance` rather than a bare `.strip()`: this is a display path,
             # `core/protocols.py`'s Store contract does not require the field to be a
             # `str`, and raising `AttributeError` out of `list` over one odd field is not
-            # a trade this command should make. A non-str value abstains, matching
-            # `classify_skills_reconciliation`'s own posture on the same field.
-            if isinstance(skills, str) and skills.strip():
-                line += f"  Skills: {skills.strip()}"
+            # a trade this command should make. A non-str value abstains.
+            if isinstance(tools, str) and tools.strip():
+                line += f"  Tools: {tools.strip()}"
+        if show_label:
+            # ALWAYS shown, blank included, for the same reason as Company above: doctor's
+            # "cv skills (no Label)" row counts the notes a CV lists under a slug title, and
+            # names this command as where to find them (a slug title with `(none)` here).
+            label = declared.get("Label", "")
+            label = label.strip() if isinstance(label, str) else ""
+            line += f"  Label: {label or '(none)'}"
         print(line)
     return 0
 

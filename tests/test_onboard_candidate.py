@@ -5,10 +5,10 @@ The load-bearing property is the round trip, not the render. `core/vault.py`'s `
 `.strip().strip('"').strip("'")` -- EVERY leading and trailing quote character is stripped, not
 merely one -- and unescapes NOTHING -- it has no idea what `emit.scalar()` (the same double-quoted,
 escape-table emitter `_render_config` already uses for the main config file) may have escaped on
-the way out. `full_name` (core/candidate.py) feeds both
-`compose()` and the #99/#100 STRUCTURAL header guard in `cv/engine.py`, so a value that is written
-one way and read back a DIFFERENT way would compare a corrupted name against itself in that guard,
-pass every gate, and ship a wrong name as the PDF's headline. `_render_candidate` refuses instead
+the way out. `full_name` (core/candidate.py) is the name `cv/document.py::assemble` prints as the
+PDF's headline, so a value that is written one way and read back a DIFFERENT way would pass every
+gate and ship a wrong name there (nothing compares the vault's name against anything; the #99/#100
+header guard that once did was removed by #364/#365/#368). `_render_candidate` refuses instead
 of writing: see `FrontmatterRoundTripError`.
 """
 import dataclasses
@@ -80,9 +80,8 @@ def test_the_body_carries_prose_and_no_data():
 ])
 def test_a_value_that_does_not_survive_the_round_trip_is_refused_not_written(hostile):
     """_fm_dict ends in .strip().strip('"').strip("'") and unescapes nothing, so a
-    lossy round trip corrupts the value and then compares the corrupted value
-    against itself in cv/engine.py's #99 guard -- the PDF headline ships wrong with
-    every guard green. There is no escaping scheme here: the REAL reader is the
+    lossy round trip corrupts the value, and cv/document.py::assemble prints it as
+    the PDF headline -- shipped wrong with every guard green. There is no escaping scheme here: the REAL reader is the
     oracle."""
     with pytest.raises(FrontmatterRoundTripError) as exc:
         build_plan({"vault_dir": "/example"}, candidate_answers={"cv_forenames": hostile})

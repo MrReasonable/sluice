@@ -1,4 +1,4 @@
-"""core/layout.py::parse_layout -- one row per validation rule in the spec's §4.1.
+"""core/layout.py::parse_layout -- one row per validation rule in the #364 spec's §4.1.
 
 Mappings are built directly here (the pure parser); tests/test_core_layout_store.py reads
 YAML TEXT through the store, the route a user's note takes.
@@ -222,6 +222,22 @@ def test_a_company_both_in_any_role_and_omitted_is_refused():
         "omitted[0]: also listed under any_role or a role's employers",)
 
 
+def test_a_company_both_in_any_role_and_a_roles_employers_is_named():
+    # A role match outranks any_role (core/layout.py::place), so the any_role listing would
+    # do nothing; it is named, the way an omitted-and-placed company is. Compared through
+    # fold_employer, the same fold as the omitted check (pinned by the fold rows below).
+    assert _problems({"roles": [_role(employers=["Example Beta"])],
+                      "any_role": ["Example Cartography", "Example Beta"]}) == (
+        "any_role[1]: also listed under a role's employers, which wins -- remove it from "
+        "one of the two",)
+
+
+def test_an_any_role_company_no_role_lists_is_accepted():
+    layout = parse_layout({"roles": [_role(employers=["Example Beta"])],
+                           "any_role": ["Example Cartography"]})
+    assert layout.any_role == ("Example Cartography",)
+
+
 def test_employer_fold_ignores_no_break_and_doubled_spaces():
     plain = fold_employer("Example Beta")
     assert fold_employer("Example\u00a0Beta") == plain
@@ -238,7 +254,7 @@ def test_the_cap_message_is_exact():
 
 
 def test_the_pipe_message_is_exact():
-    assert _problems({"roles": [_role(title="Example | Title")]}) == (
+    assert _problems({"roles": [_role(title="SYNTHETIC | TITLE")]}) == (
         "roles[0].title: '|' separates the CV's meta-line fields, so it cannot appear here",)
 
 

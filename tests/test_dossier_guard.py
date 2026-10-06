@@ -500,7 +500,7 @@ def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
     what is being proven here), same as test_no_serve_renders_but_does_not_mark_lead.
     """
     from sluice.cv import engine as cvengine
-    from tests.test_cv_engine import CLEAN_CV, ENTRIES, FakeBackend, FakeRenderer, FakeVault, Note, _cfg
+    from tests.test_cv_engine import CLEAN_REPLY, ENTRIES, FakeBackend, FakeRenderer, FakeVault, Note, _cfg
 
     seen = {}
     monkeypatch.setattr(cvengine, "_jd_keywords", lambda r, jd: seen.setdefault("jd", jd) or [])
@@ -520,7 +520,7 @@ def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
     cfg.served_dir = ""
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": role})
-    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_CV), _BlockedCache(),
+    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_REPLY), _BlockedCache(),
                               renderer=FakeRenderer())
 
     assert result.status == "rendered", "a blocked dossier must not stop composition"
@@ -538,13 +538,13 @@ def test_the_cv_consumer_records_a_clean_fetch_as_not_blind(role):
     when the fetch actually succeeded, or the flag would be True unconditionally and
     the cv run summary's blind-CV count would be meaningless."""
     from sluice.cv import engine as cvengine
-    from tests.test_cv_engine import CLEAN_CV, ENTRIES, FakeBackend, FakeCache, FakeRenderer, FakeVault, Note, _cfg
+    from tests.test_cv_engine import CLEAN_REPLY, ENTRIES, FakeBackend, FakeCache, FakeRenderer, FakeVault, Note, _cfg
 
     cfg = _cfg()
     cfg.served_dir = ""
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": role})
-    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_CV), FakeCache(),
+    result = cvengine.run_one(note, v, cfg, FakeBackend(CLEAN_REPLY), FakeCache(),
                               renderer=FakeRenderer())
 
     assert result.status == "rendered"

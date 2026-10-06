@@ -52,6 +52,49 @@ def _today() -> str:
     return date.today().isoformat()
 
 
+
+def pending_evidence_detail(kind: str) -> str:
+    """The MCP `propose_evidence` result's detail: what a proposal is, and what verifying it
+    would buy for THIS kind (#364 D12) -- here because mcpserver.py may not import
+    core/protocols.py itself (its isolation sweep).
+
+    It rides on every SUCCESSFUL `propose_evidence` response (#175): the tool's DESCRIPTION
+    already says a proposal does nothing on its own, but a description does not travel with
+    each result -- the calling agent reads the RESPONSE, and this is the fact it most needs
+    from one. What `verify` BUYS differs per kind, so the sentence comes from
+    `verify_outcome`, keyed on the kind's flags: restating it from memory is exactly the
+    over-claim that helper exists to prevent -- a user told "verifying makes it citable"
+    for a skills entry concludes their skills are feeding their CVs' citations and stops
+    looking."""
+    from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
+    return (f"proposed only -- it does nothing until a human runs `job-sluice {kind} verify` "
+            f"to {verify_outcome(EVIDENCE_KINDS[kind])}. It is not visible to "
+            "list_evidence's default view, and there is deliberately no tool here that "
+            "promotes one.")
+
+
+def evidence_kinds_text() -> str:
+    """The evidence kinds, quoted and comma-joined, for an MCP tool description -- derived
+    from EVIDENCE_KINDS so a kind added there is never missing from what a client is told.
+    Here for the same reason as `pending_evidence_detail`: mcpserver.py may not import
+    core/protocols.py itself."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    return ", ".join(f"'{kind}'" for kind in EVIDENCE_KINDS)
+
+
+def evidence_verify_effects() -> str:
+    """One sentence saying what verifying BUYS for each kind, for the MCP evidence tools'
+    descriptions. Built from `verify_outcome` over every kind's flags, never restated: the
+    description used to say verification makes an entry citable, which is true of a kind
+    with `cited_by_gate` alone -- a verified skill's name reaches a CV through the skills
+    pool instead, and a verified story only ever reaches a human."""
+    from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
+    effects = [verify_outcome(spec, f"{kind} entries") for kind, spec in EVIDENCE_KINDS.items()]
+    if len(effects) > 1:
+        effects[-1] = "and " + effects[-1]
+    return "Verifying would " + (", " if len(effects) > 2 else " ").join(effects) + "."
+
+
 def _evidence_failure_reason(exc: BaseException) -> str:
     """Why ONE evidence entry could not be promoted, in words a human can act on.
 
@@ -642,7 +685,20 @@ class Sluice:
         # `template` now, not `script`; this fallback must track that or a future
         # regression here would fail silently into the retired norm instead of the
         # current one.
-        return self._resolve(_RENDERER_SEAM, getattr(cvcfg, "renderer", "template"), cvcfg)
+        return self._resolve(_RENDERER_SEAM, self._renderer_name(cvcfg), cvcfg)
+
+    @staticmethod
+    def _renderer_name(cvcfg):
+        return getattr(cvcfg, "renderer", "template")
+
+    def _check_name(self, seam: str, name: str):
+        """Raise UnknownAdapter (listing the valid names, and a retired name's hint) when
+        `name` is not registered under `seam`, constructing nothing. The same lookup
+        `_resolve` makes before it calls the factory; an override answers for its seam."""
+        if seam in self._overrides:
+            return
+        _import_plugins(seam)
+        plugins.get(seam, name)
 
     def backend(self, *, provider, model, effort, host, claude_path, timeout=None,
                 override=None):
@@ -1719,30 +1775,11 @@ class Sluice:
         returns a `skipped-ambiguous` CvResult per candidate and composes for none of them
         (see the guard below). Both are refusals the CLI must exit non-zero on.
 
-        The renderer is resolved for a dry run TOO, and that is a correction rather than
-        an oversight repaired: `renderer=None` on a dry run also switched off the seam's
-        optional `precheck` grammar hook, which `cv/engine.py` reaches via
-        `getattr(renderer, "precheck", None)`. Measured 2026-08-06 -- one CV, gate-clean
-        and unparseable by the `template` renderer, reported `status=dry-run,
-        violations=[]` on a dry run and `status=skipped-gate` with a `FORMAT:` violation
-        on the real run. A dry run IS the cheap preview, and it was false-greening exactly
-        the CV a real run refuses.
-
-        Construction is still allowed to FAIL without killing the dry run, which is what
-        the original `None` was reaching for: a missing template file or an uninstalled
-        WeasyPrint is a config problem with nothing to do with this CV, so a preview must
-        not die on it. What a dry run skips is the RENDER and the WRITES -- not the cost.
-        `cv/engine.py`'s `run_one` calls `_compose.compose(backend, ...)` and then
-        `run_audit(backend, ...)` ABOVE its `if dry_run:` return, so a dry run still
-        spends a composition and an audit call per lead. Stated because the earlier
-        wording here said a preview "costs nothing", which is the reading that makes a
-        `--dry-run` over a large shortlist look free. So a `RenderError` is caught,
-        warned about
-        NAMING the lost check (a silently weaker dry run is the thing being fixed), and
-        the run proceeds unchecked. An unknown `cv.renderer` NAME is deliberately not
-        caught: that is `plugins.get`'s "fail loudly at construction, listing the valid
-        names", and a dry run that hid it would report success for a pipeline that cannot
-        run at all.
+        A dry run builds no renderer and renders nothing; it still spends a composition and
+        an audit call per lead, since both run above the dry-run return in
+        `cv/engine.py::run_one`. Stated because an earlier wording here said a preview
+        "costs nothing", which is the reading that makes a `--dry-run` over a large
+        shortlist look free.
 
         cv's config maps to Sluice.backend's fields via backend/model/compose_effort/
         compose_host/compose_claude_path -- NOT triage's claude_max_* fields. That
@@ -1759,7 +1796,7 @@ class Sluice:
         from sluice.core.backends import BackendError
         from sluice.cv.config import load_cv_config
         from sluice.cv.engine import (CvResult, missing_prerequisites, run_batch,
-                                      run_one)
+                                      run_one, run_warnings)
         from sluice.core.leads import slug_matches
         from sluice.core.protocols import VaultConflict
 
@@ -1767,15 +1804,15 @@ class Sluice:
         if no_serve:
             cvcfg.served_dir = ""  # engine still renders; serve is skipped when dir is empty
 
-        # #242: the two config-level preconditions, checked ONCE and FIRST. They are
-        # properties of the install rather than of a lead, so this is not in run_one: a
-        # per-lead check emits N identical lines for one fixable thing, and `--lead` used to
-        # surface a missing baseline as a TRACEBACK out of `_read`'s bare open.
+        # #242, #364/#365/#368: the config-level preconditions, checked ONCE and FIRST. They
+        # are properties of the install rather than of a lead, so this is not in run_one: a
+        # per-lead check emits N identical lines for one fixable thing.
         #
         # BEFORE the renderer and the backend, not merely before the dossier fetch. Measured:
         # on a bare install the renderer raises first (`No module named 'weasyprint'`), so a
         # check placed after it never runs for exactly the newcomer this exists to help, and
-        # they get a traceback about a rendering library instead of "you have no CV yet".
+        # they get a traceback about a rendering library instead of "you have no CV Layout
+        # yet".
         #
         # ValueError, so `main`'s handler turns it into the clean exit-2 usage error
         # docs/USAGE.md promises for a config problem. A dry run is refused too: previewing a
@@ -1786,19 +1823,18 @@ class Sluice:
             raise ValueError(
                 "cv: this vault is not set up to compose yet:\n  - "
                 + "\n  - ".join(prereqs))
+        # #364 spec §6.6: once per RUN, never per lead.
+        for warning in run_warnings(store):
+            _log.warning("%s", warning)
+        # No renderer is CONSTRUCTED for a dry run: it never renders, so a renderer that
+        # cannot be built (an uninstalled WeasyPrint, a `cv.template` that is not a file)
+        # costs the preview nothing (#364 spec §7.2). The NAME is still resolved, because an
+        # unknown or retired `cv.renderer` makes the real run fail in `plugins.get`: a
+        # preview that skipped it would spend a compose and an audit per lead and report
+        # success for a run that cannot render at all.
         if dry_run:
-            # See the docstring: a dry run wants the renderer for its `precheck` alone,
-            # and must survive a renderer it cannot build. The engine never calls
-            # `render()` on this path -- run_one returns `dry-run` above the render line.
-            from sluice.core.protocols import RenderError
-            try:
-                renderer = self.renderer(cvcfg)
-            except RenderError as e:
-                renderer = None
-                _log.warning(
-                    "cv --dry-run: renderer %r could not be constructed (%s), so its "
-                    "format precheck did NOT run -- a real run may still report "
-                    "skipped-gate for this lead", getattr(cvcfg, "renderer", ""), e)
+            self._check_name(_RENDERER_SEAM, self._renderer_name(cvcfg))
+            renderer = None
         else:
             renderer = self.renderer(cvcfg)
         try:
@@ -2103,9 +2139,13 @@ class Sluice:
         `Store.propose_evidence`'s requirement to reject an undeclared field key by name
         -- `_render_evidence_note` in the one store that exists -- plus its requirement to
         write where `read_evidence` cannot see it."""
-        # D13: a skill note's filename is a slug (`C#` becomes `c.md`), so the name the user
-        # typed is kept in Label:, which is what a CV lists. An explicit Label wins.
         from sluice.core.protocols import EVIDENCE_KINDS
+
+        # #364 D13: a skill note's filename is a slug (`C#` becomes `c.md`), so the name the user
+        # typed is kept in Label:, which is what a CV lists. An explicit Label wins. An
+        # unknown kind is passed to the store untouched (`.get`, not `[]`): the store's
+        # propose_evidence raises a ValueError naming the valid kinds, and that one message
+        # is what every caller -- the CLI, the MCP tool -- already reports.
         spec = EVIDENCE_KINDS.get(kind)
         if spec is not None and "Label" in spec.fields \
                 and not str(fields.get("Label") or "").strip():
@@ -2550,7 +2590,7 @@ class Sluice:
         in THIS process, and -- unless `offline` -- does a one-token round-trip
         succeed? Also preflights everything else a run depends on that a green
         backend table said nothing about: the renderer actually constructs, the
-        store's baseline CV, Judging Profile and Candidate Profile (#133/#107 --
+        store's CV Layout note, Judging Profile and Candidate Profile (#133/#107 --
         the candidate's identity, checked here rather than as its own separate
         item) are where they should be, track's Google adapter is usable, and
         every preference gate's current posture (abstaining or active).
@@ -2565,16 +2605,14 @@ class Sluice:
         `self.fetcher()` (a live Camofox browser) is still never touched, so
         `sluice doctor` still never opens a browser. The store's OPTIONAL
         `preflight()` hook (see core/protocols.py's `Store` docstring) is
-        reached via `getattr`, exactly as `cv/engine.py` reaches the renderer
-        seam's optional `precheck` -- a store that does not implement it reports
+        reached via `getattr` -- a store that does not implement it reports
         nothing for that component rather than being treated as broken, and a
         store whose `preflight()` itself raises is reported as the one DEAD row
         that failure is, rather than crashing the one tool that diagnoses a
         broken install. `load_cv_config()` is guarded too, ahead of all of the
-        above: a ValueError from it -- today that means `cv.baseline_rel`,
-        `cv.render_script` without `cv.renderer`, `cv.compose_timeout`, a
-        retired `cv.dossier_dir`, or a legacy `cv.name`/`cv.contact` (#133/#107:
-        both moved to the vault's Candidate Profile note) -- becomes one DEAD
+        above: a ValueError from it -- today that means a retired key
+        (`cv.baseline_rel`), a decoy the gate could never match, or a list
+        given as a scalar, among others -- becomes one DEAD
         `cv-config` row naming the real error, rather than a traceback out of
         the one command a user runs BECAUSE something -- possibly that very
         config -- is wrong. `cv_cfg` is then `None` for the rest of the run: it
@@ -2584,10 +2622,10 @@ class Sluice:
         guard's own comment at the call site) -- a table computed off an
         invented default would be the "quiet wrong default" bug class this
         codebase engineers out, aimed at its own diagnostic tool. Only the
-        FOUR checks that actually read `cv_cfg` -- cv's own backend targets,
-        the renderer, cv's row in the gate-posture sweep, and (#165) the
-        negatives-vs-Skills-Inventory cross-check, which sits inside the STORE
-        branch but is gated on the same condition -- are skipped;
+        checks that actually read `cv_cfg` -- cv's own backend targets, the
+        renderer, cv's row in the gate-posture sweep, and (#364/#365/#368) the
+        fabrication-decoys cross-check, which sits inside the STORE branch but
+        is gated on the same condition -- are skipped;
         the store (including the Candidate Profile row that replaced the old
         cv_cfg-based identity check, #133/#107), track/Google, camofox and
         every other sub-app's gate rows are unrelated to `cv_cfg` and still
@@ -2614,11 +2652,9 @@ class Sluice:
 
         triage_cfg = load_triage_config()
         # `load_cv_config()` already raises ValueError today for several
-        # unrelated config mistakes -- `cv.baseline_rel` (moved to the config
-        # root), `cv.render_script` set without `cv.renderer`, a non-positive
-        # `cv.compose_timeout`, a retired `cv.dossier_dir`, and a legacy
-        # `cv.name`/`cv.contact` (#133/#107: both moved to the vault's
-        # Candidate Profile note). `doctor` is precisely the command a user
+        # unrelated config mistakes -- a retired key (`cv.baseline_rel`), a decoy
+        # the gate could never match, a list given as a scalar, `cv.render_script`
+        # set without `cv.renderer`, a non-positive `cv.compose_timeout`. `doctor` is precisely the command a user
         # runs BECAUSE something about their config is wrong, so an unguarded
         # call here would traceback on the very thing it exists to diagnose;
         # caught here, ahead of the deliberately-guarded
@@ -2725,7 +2761,7 @@ class Sluice:
             # "cv.name" unconditionally, which reported a bad `cv.compose_timeout`
             # as if the candidate's NAME were the problem. `blocks=("cv",)` alone,
             # not "apply": apply's packet excludes every cv-only key, so a broken
-            # `cv:` block does not stop it. The detail lists exactly the three
+            # `cv:` block does not stop it. The detail lists exactly the
             # checks skipped below (see the `if cv_cfg is not None:` guard and
             # the gate-posture sweep further down) -- not "every other check",
             # which would be false: the store (including the Candidate Profile
@@ -2734,7 +2770,7 @@ class Sluice:
             components.append(_doctor.ComponentCheck(
                 "cv-config", "cv:", _doctor.DEAD,
                 f"{cv_config_error} -- cv's backend targets, the renderer, "
-                f"cv's gate-posture row and the negatives-vs-Skills-Inventory "
+                f"cv's gate-posture row and the fabrication-decoys "
                 f"cross-check are skipped this run "
                 f"until this is fixed", blocks=("cv",)))
 
@@ -2779,8 +2815,7 @@ class Sluice:
             else:
                 components.append(_doctor.classify_renderer(None))
 
-        # Store: the optional preflight() hook, reached the same way
-        # cv/engine.py reaches the renderer seam's optional precheck. A store
+        # Store: the optional preflight() hook, reached via `getattr`. A store
         # without the hook contributes nothing; a store whose hook raises
         # becomes one DEAD row naming the failure rather than an uncaught
         # exception out of the one command meant to diagnose a broken install.
@@ -2811,86 +2846,60 @@ class Sluice:
             components.append(_doctor.ComponentCheck(
                 "store", "store", _doctor.DEAD, str(e), blocks=_doctor.ALL_CAPABILITIES))
         else:
+            # #364/#365/#368 (spec §9.1). The CV Layout is read ONCE, in its own try (#259:
+            # one bad note never collapses the store rows), and classified purely. Read
+            # BEFORE the store rows, because the empty-corpus row's verdict depends on it:
+            # a headings-only layout needs no citable entry (core/layout.py::asks_for_bullets).
+            # The rows that need the parsed layout run only when it parsed, so an absent,
+            # malformed or unreadable note produces exactly the cv_layout row.
+            layout, layout_error = None, None
+            try:
+                layout = store.read_cv_layout()
+            except Exception as e:  # noqa: BLE001 -- it IS the cv_layout row's verdict
+                layout_error = e
+            from sluice.core.layout import asks_for_bullets
+            cv_asks_for_bullets = layout is None or asks_for_bullets(layout.roles)
             preflight_fn = getattr(store, "preflight", None)
             if preflight_fn is not None:
                 try:
-                    components.extend(_doctor.classify_store(preflight_fn()))
+                    components.extend(_doctor.classify_store(
+                        preflight_fn(), cv_asks_for_bullets=cv_asks_for_bullets))
                 except Exception as e:  # noqa: BLE001 -- see the comment above: a
                     # broken preflight must be reported, not crash doctor itself.
                     components.append(_doctor.ComponentCheck(
                         "store", "preflight", _doctor.DEAD, str(e),
                         blocks=_doctor.ALL_CAPABILITIES))
-            # #259. Read HERE -- its own try, ahead of both cross-checks below -- for two
-            # reasons that are separate and both load-bearing.
-            #
-            # Its OWN try, not the reconciliation's two-corpus one further down: this row
-            # reports on the experience corpus alone, so an unreadable Skills Inventory must
-            # not withhold a fact about a healthy Experience Library. That is what sharing
-            # the read did, and the reconciliation's own comment (which argues one try is
-            # enough) was written when it was the only consumer.
-            #
-            # AHEAD of them so every `store`-component row prints contiguously:
-            # `cli.py`'s `_print_doctor` emits `components` in plain list order with no
-            # grouping or sort, and the negatives cross-check just below emits `gates` rows,
-            # so extending after it put a `gates` row in the middle of the store block --
-            # measured. Deliberately NOT stated as an ordering claim against the
-            # RECONCILIATION: the two classifiers are mutually exclusive by construction
-            # (this row fires only when no entry declares a skill, which is exactly the state
-            # the reconciliation abstains on), so their relative order is unobservable and a
-            # comment asserting it would be one no test could ever falsify.
-            #
-            # `verified_only=True` is the whole point of the row and not a default worth
-            # trusting to habit: `cv/engine.py` computes `skills_requested` over the
-            # VERIFIED set, so a doctor reading a wider one would report a precondition the
-            # gate does not use -- silently, and in the reassuring direction.
-            _experience = None
+            components.append(_doctor.classify_cv_layout(layout, layout_error))
+
+            # The VERIFIED experience entries, read once and shared by every row below: the
+            # gate and the skills pool read only those.
+            experience = None
             try:
-                _experience = store.read_evidence("experience", verified_only=True)
-            except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already reported
-                # DEAD by classify_store above WHEN the store implements the optional
-                # preflight hook; when it does not, this line is the only signal, which is why
-                # it is WARNING rather than DEBUG. Same shape as the two cross-checks below.
-                _log.warning("experience read for the skills rows failed: %s", e)
+                experience = store.read_evidence("experience", verified_only=True)
+            except Exception as e:  # noqa: BLE001 -- classify_store reports an unreadable
+                # corpus DEAD when the store implements preflight; this is the only signal
+                # when it does not.
+                _log.warning("experience read for the cv rows failed: %s", e)
             else:
-                components.extend(_doctor.classify_skills_request(_experience))
+                components.extend(_doctor.classify_tools(experience))
+                components.extend(_doctor.classify_attribution(experience))
+                if layout is not None:
+                    components.extend(_doctor.classify_cv_eligibility(layout, experience))
 
-            # ONE read of the Skills Inventory per report, shared by both cross-checks below
-            # (CodeRabbit, PR #283). It used to be read twice -- once for the negatives
-            # cross-check and once for the reconciliation -- so the two rows could describe
-            # two different revisions of the same corpus inside a single report, which is
-            # the same one-report-one-vault-state rule the #259 read above already keeps for
-            # the Experience Library.
-            #
-            # Its OWN try, and deliberately NOT chained to that read: the review's suggested
-            # shape was to read the inventory after the Experience Library read succeeds,
-            # which would let an unreadable Experience Library silence the negatives row --
-            # a row that has nothing to do with that corpus. That is the same coupling the
-            # #259 read was split out to remove, applied to a different pair, so the concern
-            # is taken and the structure is not. Each classifier keeps its own precondition
-            # instead: the negatives one needs `cv_cfg` (#165 -- it reads a config key, which
-            # is why it cannot live in `Vault.preflight()`, whose docstring commits it to
-            # COUNTS rather than content), the reconciliation needs the experience corpus
-            # (#168 Task 10 -- a property of the two corpora alone, so it runs whether or not
-            # the `cv:` block loaded), and both need this read to have succeeded.
-            #
-            # The `except` covers only the store READ. Both classifiers are pure and sit
-            # outside it, so a bug in either surfaces rather than being logged away.
-            _inventory = None
+            # The skill names the pool would offer, derived by cv/selection.py itself, so
+            # this row and the composer agree on what a skill is called (#364 D12, D13).
+            from sluice.cv.selection import cv_name, named_entries, pool_kinds
+            skill_names = None
             try:
-                _inventory = store.read_evidence("skills", verified_only=True)
-            except Exception as e:  # noqa: BLE001 -- an unreadable corpus is already reported
-                # DEAD by classify_store above WHEN the store implements the optional
-                # preflight hook; when it does not, this line is the only signal, which is why
-                # it is WARNING rather than DEBUG. Same shape as the #259 read above.
-                _log.warning("skills read for the evidence cross-checks failed: %s", e)
-
-            if cv_cfg is not None and _inventory is not None:
-                components.extend(_doctor.classify_negatives_vs_skills(
-                    cv_cfg.negatives, _inventory))
-
-            if _experience is not None and _inventory is not None:
-                components.extend(_doctor.classify_skills_reconciliation(
-                    _experience, _inventory))
+                named = named_entries(store.read_evidence)
+            except Exception as e:  # noqa: BLE001 -- same reasoning as the read above
+                _log.warning("skills read for the decoy cross-check failed: %s", e)
+            else:
+                skill_names = [cv_name(e) for e in named]
+                components.extend(_doctor.classify_skill_labels(named, pool_kinds()))
+            if cv_cfg is not None and experience is not None and skill_names is not None:
+                components.extend(_doctor.classify_decoys(
+                    cv_cfg.fabrication_decoys, experience, skill_names, layout))
 
         # Track/Google: probed through track.google_client's own helper rather
         # than importing the google libs here a second time -- that module is

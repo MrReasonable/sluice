@@ -30,8 +30,8 @@ Collects structured findings, prints a severity-grouped summary.
 - Before executing a plan, while iteration is still cheap. A bad assumption costs minutes here and
   hours at PR time.
 - After substantive edits to a plan, to check the revision still holds together.
-- Whenever a plan proposes touching a seam (`core/vault.py`, `core/status.py`, `cv/validate.py`,
-  `cv/engine.py`, `core/backends.py`) or adds a dependency.
+- Whenever a plan proposes touching a seam (`core/vault.py`, `core/status.py`, `cv/validate.py`, `cv/engine.py`, `cv/reply.py`, `cv/selection.py`, `cv/document.py`, `core/layout.py`, `core/tokens.py`,
+  `core/backends.py`) or adds a dependency.
 
 ## How it works
 
@@ -123,7 +123,7 @@ written. Record that as a `scope-gap` finding, then continue with the full roste
 
 | Trigger in the plan | Add reviewer |
 | --- | --- |
-| Structural change, a new module, a new runtime dependency, or a task touching a seam (`core/backends.py`, `core/vault.py`, `core/status.py`, `cv/validate.py`, `cv/engine.py`, `ingest/camofox.py`) | `sluice-architect` |
+| Structural change, a new module, a new runtime dependency, or a task touching a seam (`core/backends.py`, `core/vault.py`, `core/status.py`, `cv/validate.py`, `cv/engine.py`, `cv/reply.py`, `cv/selection.py`, `cv/document.py`, `core/layout.py`, `core/tokens.py`, `core/camofox.py`) | `sluice-architect` |
 
 Four reviewers is the floor, five the common case. Do not inflate the roster: a reviewer with nothing
 to say produces noise that buries the ones who do.
@@ -306,8 +306,7 @@ Invariant and neutrality categories, as they appear in a plan:
   `shortlist -> applied` in apply. (`core/status.py`)
 - `fabrication-gate`: a step renders, serves or stages a CV without clearing validation, makes the
   gate impure or non-deterministic, or changes the retry-and-retain contract (exactly one retry;
-  a lead is skipped only if no attempt ever clears the HARD tier). (`cv/validate.py`,
-  `cv/engine.py`)
+  a lead is skipped only if no attempt ever clears the HARD tier). (`cv/validate.py`, `cv/engine.py`, `cv/reply.py`, `cv/selection.py`, `cv/document.py`, `core/layout.py`, `core/tokens.py`)
 - `abstain-default`: a gate the plan describes rejects when unconfigured, or a shipped default
   carries a real preference.
 - `personal-data`: the plan puts an employer, role preference, location, contact, hostname,
@@ -382,10 +381,10 @@ point of reviewing at plan time.
    lead; a backward move or a move out of a terminal on the ladder; apply transitioning from anything
    but `shortlist` (`can_apply` is deliberately a *different* predicate from `can_advance`).
    (`core/status.py`)
-3. **The fabrication gate is hard.** No path may render, serve or stage a CV with validation
-   violations. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
+3. **The fabrication gate is hard.** No path may render, serve or stage a CV with outstanding
+   HARD findings. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
    (#167) drives exactly one retry, and the lead is skipped only if no attempt ever clears the
-   HARD tier. Weakening it is **Critical**. (`cv/validate.py`, `cv/engine.py`)
+   HARD tier. Weakening it is **Critical**. (`cv/validate.py`, `cv/engine.py`, `cv/reply.py`, `cv/selection.py`, `cv/document.py`, `core/layout.py`, `core/tokens.py`)
 4. **Empty config abstains.** An unconfigured preference gate passes every lead through. A gate that
    rejects when unconfigured, or a non-empty default preference in shipped code, is **Critical**.
    (This is the `672ad2a` bug class: `target_locations` once defaulted to `["remote"]` and silently

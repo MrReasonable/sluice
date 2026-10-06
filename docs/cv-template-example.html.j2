@@ -17,8 +17,8 @@
 
    ZERO SAMPLE VALUES. Every text node below is either a CvDocument field
    (`document.name`, `.contact`, `.profile`, `.work[].company/.dates/.location/.title/
-   .bullets`, `.certificates`, `.education`) or a structural heading matching
-   cv/compose.py's own vocabulary (PROFILE, WORK EXPERIENCE, CERTIFICATES, EDUCATION) --
+   .bullets`, `.certificates`, `.education`) or a section heading sluice writes
+   (`core/protocols.py::SECTION_HEADINGS`) --
    the same two categories the packaged default is limited to, and
    tests/test_no_leaked_files.py holds this file to that bar mechanically, not just by
    convention. A worked example asked for "real CSS" is exactly the pressure that
@@ -78,8 +78,8 @@
 {% for role in document.work %}
 <div class="role">
   <div class="company">{{ role.company }}</div>
-  {# select() drops a blank LOCATION rather than leaving a dangling " |  | " -- see the
-     same fix and its reasoning in sluice/templates/cv_plain.html.j2. #}
+  {# select() drops a blank location or title -- both optional in the CV Layout -- so
+     neither leaves a dangling separator; see sluice/templates/cv_plain.html.j2. #}
   <div class="meta">{{ [role.dates, role.location, role.title] | select | join(" | ") }}</div>
   <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
 </div>

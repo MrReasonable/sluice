@@ -15,7 +15,7 @@ NASTY = ["O'Example", "Foo: Bar", "#hash", "yes", "no", "on", "null", "~", "!tag
 # merely stated. Without these rows the claim was untested and false: measured, an unescaped
 # \x1b/\x07/\x0b/\x00 wrote a config that raised ReaderError on every later load, and \x85
 # round-tripped silently to a space. Reachable through the sluice.yaml `cv:` block (e.g.
-# cv_employers) and through the Candidate Profile interview's identity fields (`cv_mobile`,
+# cv.negatives) and through the Candidate Profile interview's identity fields (`cv_mobile`,
 # `cv_linkedin`, ...) alike -- text pasted out of a CV or a PDF, where \x0b and \x0c are
 # routine extraction artefacts. The TWO targets
 # behave differently on this corpus, though: the config side's real YAML loader safely undoes
@@ -60,8 +60,8 @@ def test_a_control_character_is_refused_not_corrupted_in_the_candidate_note(tmp_
     exists to cover would come back as the literal escape-sequence TEXT, not the original
     byte -- corrupting the value silently, if nothing caught it. `_render_candidate`
     catches it: it re-reads what it is about to write and REFUSES rather than returning a
-    value that would compare wrong against itself in cv/engine.py's #99 STRUCTURAL guard
-    and ship a corrupted PDF headline with every gate green.
+    value that cv/document.py::assemble would then print as the PDF headline, corrupted,
+    with every gate green (nothing compares the vault's name against anything).
 
     This is therefore the regression test for Task 6's round-trip GUARD, not for survival
     -- the hostile-input case is more load-bearing here than the original test's, precisely

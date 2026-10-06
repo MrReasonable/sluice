@@ -10,7 +10,7 @@ backend that reaches a given `.complete(` was actually metered is a DATAFLOW que
 `meter` wraps where a backend is HANDED to a stage, which is a different module from where
 the call happens, and often a different sub-app. So "every module holding a `.complete(`
 also calls `meter`" is FALSE BY DESIGN here and would be the wrong assertion: the metering
-for `cv/compose.py::compose` lives in `cv/engine.py`, and for `triage/judge.py::judge` in
+for `cv/compose.py::compose_structured` lives in `cv/engine.py`, and for `triage/judge.py::judge` in
 `core/app.py`. The first draft of this guard asserted exactly that and would have had to be
 narrowed until it checked nothing.
 
@@ -85,7 +85,6 @@ _CALL_SITES = {
     ("core/backends.py", "complete"): (None, 1),
     ("core/usage.py", "complete"): (None, 1),
     ("cv/audit.py", "run_audit"): ("cv-audit", 1),
-    ("cv/compose.py", "compose"): ("cv-compose", 1),
     ("cv/compose.py", "compose_structured"): ("cv-compose", 1),
     ("cv/voice.py", "run_voice"): ("cv-voice", 1),
     ("track/classify.py", "classify"): ("track-classify", 1),

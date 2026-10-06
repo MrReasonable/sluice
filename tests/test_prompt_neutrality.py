@@ -3,8 +3,9 @@
 The per-prompt guards this joins are static by necessity and were going stale one at a
 time:
 
-  * `tests/test_cv_compose.py::test_cv_prompt_expresses_no_role_or_culture_preference`
-    reads `compose._RULES`, which used to spell out seven banned inflections. #167 moved
+  * The static CV-prompt guard (now
+    `tests/test_cv_structured_prompt.py::test_no_structured_prompt_constant_names_a_job_or_culture_preference`)
+    reads rule CONSTANTS, which once spelled out seven banned inflections. #167 moved
     the ban list into a `{banned_phrases}` placeholder rendered from `slop._PHRASES`, so
     that guard's coverage of the list went from seven terms to ZERO while the list itself
     grew roughly six-fold. `_PHRASES` had no neutrality guard of its own: a hand-edited
@@ -39,7 +40,7 @@ from sluice.cv.slop import _PHRASES
 _SLUICE = Path(__file__).resolve().parent.parent / "sluice"
 
 # The shipped vocabulary a prompt must not name. Union of the two per-prompt guards'
-# lists (tests/test_prompt.py's judge guard and tests/test_cv_compose.py's CV guard).
+# lists (tests/test_prompt.py's judge guard and tests/test_cv_structured_prompt.py's CV guard).
 #
 # Nothing is subtracted from this tuple. An earlier revision dropped "remote-first"
 # globally so that triage/prompt.py's few-shot would pass, which is the wrong shape twice
@@ -114,9 +115,9 @@ def _structured_findings():
     from sluice.cv.validate import EntryFacts, check_selection
     slots = (Slot("R1", LayoutRole("SYNTHETIC heading", "01/2020", "present"), ("SY1",), None),
              Slot("R2", LayoutRole("SYNTHETIC group", "01/2010", "12/2019"), ("SY2",), None))
-    facts = {"SY1": EntryFacts(frozenset(), ("Examplelang",), "SYNTHETIC", "role",
+    facts = {"SY1": EntryFacts(frozenset(), ("Examplelang",), ("SYNTHETIC",), "role",
                                ("SYNTHETIC heading",)),
-             "SY2": EntryFacts(frozenset(), ("Examplelangscript",), "SYNTHETIC", "role",
+             "SY2": EntryFacts(frozenset(), ("Examplelangscript",), ("SYNTHETIC",), "role",
                                ("SYNTHETIC group",))}
     selection = Selection(profile="SYNTHETIC profile.", skills=(), roles={
         "R1": (Bullet("Built SYNTHETIC tooling.", ("SY2",)),       # WRONG EMPLOYER
@@ -164,15 +165,6 @@ _SYNTHETIC_ARGS = {
                     "structured_data": "",
                     "jd": {"markdown": "SYNTHETIC jd"}},
     },
-    # #168 Task 8: `skills_requested` defaults to False, and the SKILLS block it gates
-    # (`_SKILLS_PROMPT_BLOCK`) is the ONLY route into this prompt for a term planted
-    # there -- a defaulted-False render would sweep zero characters of it. True is what
-    # makes the sweep actually reach that text, which is the whole point of overriding a
-    # DEFAULTED parameter (see `_render`'s override-before-default precedence above).
-    # #329: `triage_framing` defaults to empty, and the TRIAGE NOTES rule and header render ONLY
-    # when it is not, so a defaulted render would sweep none of that shipped text.
-    "sluice.cv.compose.build_prompt": {"skills_requested": True,
-                                       "triage_framing": ("SYNTHETIC framing",)},
     # The structured composer (#364/#365/#368). `slots` is required and must be real Slot
     # objects; the rest are DEFAULTED and each gates a conditional block -- the skills
     # pool, the retry findings and drops, and the triage framing -- so a defaulted render
@@ -193,7 +185,6 @@ _SYNTHETIC_ARGS = {
 # SUBSET check on purpose -- a NEW prompt is picked up and swept automatically, and must
 # not have to be listed here first.
 _KNOWN_PROMPTS = frozenset({
-    "sluice.cv.compose.build_prompt",
     "sluice.cv.compose.build_structured_prompt",
     "sluice.cv.bundle._TOOLS_SOURCE_PROMPT",
     "sluice.cv.bundle._ENTRIES_HEADER_PROMPT",
@@ -210,7 +201,6 @@ _KNOWN_PROMPTS = frozenset({
     "sluice.triage.resolve._RESOLVE_PROMPT_TAIL",
     "sluice.track.classify.build_prompt",
     "sluice.core.doctor.PROBE_PROMPT",
-    "sluice.cv.bundle._DERIVED_NEGATIVE_PROMPT",
     "sluice.onboard.ask._CANDIDATE_PROMPTS",
     "sluice.onboard.plan._PROFILE_PROMPTS",
     "sluice.cv.compose._TRIAGE_FRAMING_PROMPT_RULE",
@@ -265,7 +255,7 @@ def _strings_in(value):
 def _render(func, qualname):
     """`func` called with a fixed synthetic value for each REQUIRED parameter; optional
     ones keep their shipped defaults UNLESS `_SYNTHETIC_ARGS` explicitly overrides them.
-    Compose's `skills_requested` and `triage_framing` are overridden for that reason: each
+    Compose's `pool`, `prior_findings` and `triage_framing` are overridden for that reason: each
     defaults to a value that gates a CONDITIONAL block, and a defaulted call never reaches
     that block's text at all.
 
@@ -278,13 +268,13 @@ def _render(func, qualname):
     Overrides are consulted BEFORE the defaulted-parameter `continue` -- an earlier
     version of this loop checked default-ness first and `continue`d past any parameter
     carrying one, which made an `_SYNTHETIC_ARGS` entry for a defaulted parameter
-    (`skills_requested`) silently inert: the override was computed but
+    (`triage_framing`) silently inert: the override was computed but
     never used, so a `_FORBIDDEN` term hidden inside a conditional block reached by that
     parameter would sweep clean with the whole suite green. Measured twice independently
     (`_employer_line`'s configured branch was already unswept for exactly this reason).
 
     An override naming a key the function's signature does not have is asserted on here,
-    rather than silently dropped: renaming a gating parameter (`skills_requested` has no
+    rather than silently dropped: renaming a gating parameter (`pool` has no
     coverage row of its own) would otherwise leave the stale `_SYNTHETIC_ARGS` key
     matching nothing, the render falling back to that parameter's shipped default, and
     a conditional block it gates sweeping unswept with the suite green (#329).
@@ -395,30 +385,18 @@ def test_the_sweep_reaches_every_prompt_it_was_written_against():
     assert [n for n, text in found.items() if not text.strip()] == []
 
 
-def test_the_swept_cv_prompt_carries_the_whole_enforced_ban_list():
-    # The coverage claim, made executable. `_PHRASES` reaches the CV prompt ONLY through
-    # `{banned_phrases}`, so if that interpolation ever broke, the sweep above would
-    # still pass -- over text that no longer contains the ~40 stems it is there to cover.
-    # Checked against the imported list, never a hand-copied one.
-    rendered = _discover_prompts()["sluice.cv.compose.build_prompt"]
-    missing = [p for p in _PHRASES if p not in rendered]
-    assert missing == [], (
-        "these enforced phrases never reach the rendered CV prompt, so the neutrality "
-        f"sweep above does not actually cover them: {missing}")
-
-
-def test_the_swept_cv_prompt_carries_the_triage_framing_text():
+def test_the_swept_structured_prompt_carries_the_triage_framing_text():
     # The coverage claim for #329's shipped text, made executable. The rule and header reach the
     # rendered CV prompt only through the `triage_framing` override above; delete that override and
     # the sweep still passes, over a render that no longer contains them.
     from sluice.cv import compose
-    rendered = _discover_prompts()["sluice.cv.compose.build_prompt"]
+    rendered = _discover_prompts()["sluice.cv.compose.build_structured_prompt"]
     assert compose._TRIAGE_FRAMING_PROMPT_HEADER in rendered
     assert compose._TRIAGE_FRAMING_PROMPT_RULE.strip("\n") in rendered
 
 
 def test_render_refuses_an_override_that_names_no_parameter(monkeypatch):
-    # #329: `_render`'s unknown-override raise (guarding a renamed `skills_requested`-shaped
+    # #329: `_render`'s unknown-override raise (guarding a renamed `pool`-shaped
     # parameter, which has no coverage row of its own) had no test of its own -- deleting it
     # turned nothing red. A real function whose signature genuinely lacks the overridden name,
     # exercised through `_render` itself rather than through `_discover_prompts`'s real prompts.

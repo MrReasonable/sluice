@@ -376,8 +376,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     # a staler table than the real run would use. That is acceptable HERE for the reason
     # the whole feature rests on -- rates drift a few percent a year -- so the two agree on
     # every verdict not already sitting on the boundary. It would NOT be acceptable for a
-    # preview whose answer the fetch could change, which is why `cv --dry-run` resolves its
-    # renderer and runs `precheck` rather than skipping them.
+    # preview whose answer the skipped step could change: a dry run that skips a step must
+    # skip one whose result the preview never reports.
     #
     # The result is deliberately ignored: `fx.refresh` returns False rather than raising on
     # any failure, and an offline run must proceed on the pinned rates exactly as it did

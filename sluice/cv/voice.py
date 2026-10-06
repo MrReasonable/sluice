@@ -34,11 +34,11 @@ network code of its own.
 SCOPING is the CALLER's, exactly as it is for this check's deterministic sibling
 (cv/slop.py's `check_phrases`, which takes lines it has no opinion about). This module is
 never handed the document -- what goes in the `excerpt` is cv/engine.py's call, and it
-sends the PROFILE prose and WORK bullets, two of the THREE regions `validate.section_spans`
-yields (#168's Task 3 added a SKILLS region alongside them, deliberately excluded from this
-excerpt), because a voice complaint about an EMPLOYER, CERTIFICATE, or SKILL line is
-answerable only by renaming the thing it names -- a style rule turned into fabrication
-pressure. That policy lives with the tier, in cv/engine.py, and this module keeps its zero
+sends the PROFILE prose and the kept bullets the model wrote (cv/document.py::model_lines),
+never the text sluice assembles around them from the vault (role headings, certificates,
+education, the skills list), because a voice complaint about an EMPLOYER, CERTIFICATE, or
+SKILL line is answerable only by renaming the thing it names -- a style rule turned into
+fabrication pressure. That policy lives with the tier, in cv/engine.py, and this module keeps its zero
 imports rather than reaching for cv/validate.py to reproduce the split.
 """
 
@@ -88,9 +88,10 @@ def run_voice(backend, excerpt: str):
     # "Flagged nothing: the writing is clean." returned ONE finding. That burns the
     # single retry on every such run and, under `cv.style_hold`, withholds the
     # send-ready `tailored_cv` pointer from a CV with nothing wrong with it. An
-    # ordinary "Flagship product ..." line does the same. `_unwrap_agent_envelope`
-    # exists in compose.py precisely because these backends do not honour "output
-    # nothing"; this is the same lesson at the parse instead of the prompt.
+    # ordinary "Flagship product ..." line does the same. cv/reply.py::extract_json
+    # finds the reply's JSON object among whatever chat surrounds it precisely because these
+    # backends do not honour "output nothing"; this is the same lesson at the parse instead
+    # of the prompt.
     flagged = [line for line in report.splitlines()
                if line.partition("\t")[0].strip().lower() == "flag"]
     return report, flagged

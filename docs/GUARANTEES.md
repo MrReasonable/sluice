@@ -52,22 +52,38 @@ fail in: a visible duplicate costs you a moment, and a silent suppression costs 
 The gate is pure, deterministic, and hard — a violation blocks rendering outright, and a lead
 whose every attempt failed is skipped rather than served an ungated CV.
 
-- Every work-experience bullet must cite a real entry from a closed evidence bundle.
-- Every number in that bullet must appear in the entry it cites.
-- The profile prose carries no per-bullet citations, so it is held to a numeric floor over the
-  whole source set: a figure appearing nowhere in your source material is a violation.
-- Skills must be contained in the evidence you supplied, not invented around it.
+- Every work bullet must cite a verified entry, and only an entry your CV Layout places under
+  the role it sits under. An entry with no company, or one matching no role, is cited nowhere.
+- Every number in a bullet must appear in an entry it cites; every number in the profile
+  must appear in some entry. One residual, stated: an entry that groups digits with a plain
+  space is read both ways, because sluice cannot tell which you meant -- an entry reading
+  `Led 3 100-person teams` licenses `3,100` as well as `3` and `100`. A second: an ASCII
+  letter written against a digit is not refused, so `8O%` with a capital O passes with only
+  the `8` checked, because `5G` and `O2` are real text. A non-Latin letter there (a Cyrillic
+  or Greek O) is refused.
+- Once any entry declares `Tools:`, a tool named in a bullet must be listed, or named, by an
+  entry it cites.
+- Headings, dates, locations, titles, certificates, education, your name and your contact
+  details come from your vault, never from the model.
+- A skill the model picks that is not one of your verified skills or tools is dropped, never
+  shown.
 
-The gate is **handed** its source set rather than recovering it by re-parsing the composed text.
-That distinction closed three real holes at once, all of which let a line of free text mint or
-rebind a citable source. No line of prose can now license a number.
+The model's reply is **data**: a JSON object holding the profile, the cited bullets and the
+skill picks. Sluice reads it, checks it, and assembles the CV itself, so the gate never
+re-parses composed text and no line of prose can mint or rebind a citable source. A reply that
+writes a number or a word in a form the checks could read differently from the PDF -- a
+numeral without digits (a Roman, CJK or vulgar-fraction numeral, a circled number past nine),
+a look-alike letter, an unusual separator between digits, a comma decimal, a number grouped
+with a plain space -- is refused and sent back for the one retry. A bullet over its role's
+budget is trimmed rather than checked, so one written that way and then trimmed costs
+nothing: it never reaches the CV.
 
 Above the hard gate sits an advisory LLM audit, which catches the qualitative fabrication a
 deterministic check cannot — a claim that is technically sourced and still misleading. It does not
 block rendering. It withholds the send-ready CV pointer for your sign-off, which you clear with
 `job-sluice cv signoff`.
 
-**One limit, stated rather than buried.** The gate runs on the composed *text*. A custom Jinja2
+**One limit, stated rather than buried.** The gate checks what the *model* wrote. A custom Jinja2
 template is free text sluice does not audit, so a template can add prose the gate never saw.
 
 ## An empty setting abstains

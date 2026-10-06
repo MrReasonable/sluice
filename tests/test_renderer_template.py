@@ -10,45 +10,29 @@ WeasyPrint is NOT imported here -- it needs cairo/pango (and, on macOS, a
 DYLD_FALLBACK_LIBRARY_PATH). It is injected as a fake, exactly as the renderer it
 replaces was tested.
 """
+import dataclasses
 import os
 
 import pytest
 
-from sluice.core.protocols import RenderError
+from sluice.core.protocols import CvDocument, RenderError, Role
 from sluice.renderers.template import TemplateRenderer
 
-CV = """\
-Email: someone@example.invalid
-
-EXAMPLE PERSON
-
-PROFILE
-Engineer with nine years building data pipelines.
-
-WORK EXPERIENCE
-
-Example Data Co
-03/2021-present | EXAMPLECITY | Staff Engineer
-- Cut p99 latency to <200ms [ED1]
-
-CERTIFICATES
-- Example Cloud Practitioner, 2022
-
-EDUCATION
-- Example University, 2010-2013 | BSc Computer Science
-"""
+# The assembled document the engine hands a renderer (#364/#365/#368 spec §7): nothing here
+# is parsed from text, so a renderer test builds the document itself.
+CV = CvDocument(
+    name="EXAMPLE PERSON", contact="Email: someone@example.invalid",
+    profile="Nine years building data pipelines.",
+    work=[Role(company="Example Data Co", dates="03/2021–present", location="Alfa",
+               title="SYNTHETIC-TITLE", bullets=["Cut p99 latency to <200ms"])],
+    skills=[], certificates=["Example Cloud Practitioner, 2022"],
+    education=["Example University, 2010-2013 | BSc Computer Science"])
 
 # `Example Query`/`Example Framework` are already on `_REVIEWED_SKILL_VALUES`
 # (tests/test_fixture_name_neutrality.py, #168) -- reused here rather than minted fresh,
 # so this fixture does not force a second, redundant roster entry for values that mean
-# the identical thing (a synthetic skill name) in both places. Placed after EDUCATION,
-# matching `cv/compose.py`'s `_RULES` format contract (WORK EXPERIENCE, CERTIFICATES,
-# EDUCATION, SKILLS) -- `cv/parse.py` itself accepts the three trailing sections in ANY
-# order, so this ordering is a fixture choice, not a grammar requirement.
-CV_WITH_SKILLS = CV.replace(
-    "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n",
-    "EDUCATION\n- Example University, 2010-2013 | BSc Computer Science\n\n"
-    "SKILLS\n- Example Query\n- Example Framework\n")
+# the identical thing (a synthetic skill name) in both places.
+CV_WITH_SKILLS = dataclasses.replace(CV, skills=["Example Query", "Example Framework"])
 
 
 class FakeHTML:
@@ -93,7 +77,7 @@ def test_template_renderer_escapes_html_in_a_bullet(tmp_path):
     `select_autoescape()` suffix-matches .html/.htm/.xml and returns False for the
     conventional .j2 suffix. With autoescape off, this gate-verified bullet renders as an
     unknown HTML element and WeasyPrint DROPS the text -- so the PDF differs from what
-    validate() approved, and nobody sees it until after the CV is sent.
+    the gate approved, and nobody sees it until after the CV is sent.
     """
     r = _renderer(tmp_path, "{{ document.work[0].bullets[0] }}")
     r.render(CV, str(tmp_path / "out"))
@@ -107,7 +91,7 @@ def test_a_misspelled_field_raises_instead_of_rendering_blank(tmp_path):
     renders `{{ document.nmae }}` as an EMPTY STRING and raises only for a wholly
     undefined ROOT name. Measured pre-fix: this exact template constructed and
     rendered with no error at all, silently producing a PDF missing the candidate's
-    name -- the same "silently differs from what validate() approved" harm the
+    name -- the same "silently differs from what the gate approved" harm the
     autoescape test above already exists to catch, just via a typo instead of an
     unescaped character. Match on the misspelled field name: Jinja2's own error text
     names it, and RenderError must carry that through, not swallow it.
@@ -130,15 +114,6 @@ def test_a_misspelled_nested_field_raises_naming_the_template(tmp_path):
     assert str(path) in str(ei.value)
 
 
-def test_template_renderer_strips_citations_before_writing(tmp_path):
-    """The [id] tokens must never reach an employer. parse_cv strips them, so no
-    template can reintroduce them however it is written."""
-    r = _renderer(tmp_path, "{{ document.work[0].bullets[0] }}")
-    r.render(CV, str(tmp_path / "out"))
-    assert "[ED1]" not in FakeHTML.captured["html"]
-    assert "Cut p99 latency to" in FakeHTML.captured["html"]
-
-
 def test_missing_template_file_raises_at_construction(tmp_path):
     """At CONSTRUCTION, not at call time -- the whole point of this feature is that a
     render failure stops arriving after the LLM spend."""
@@ -155,33 +130,32 @@ def test_a_template_directory_is_refused_at_construction(tmp_path):
         TemplateRenderer(str(d), html_module=FakeHTML)
 
 
-def test_the_shipped_template_renders_a_parsed_document(tmp_path):
+def test_the_shipped_template_renders_a_document(tmp_path):
     """The REAL jinja2 engine against the REAL shipped template. A fake engine cannot
     prove a template renders."""
     r = _renderer(tmp_path)          # None -> the packaged default
     out = r.render(CV, str(tmp_path / "out"))
     assert out.endswith("CV.pdf") and os.path.exists(out)
     html = FakeHTML.captured["html"]
-    for expected in ("EXAMPLE PERSON", "Example Data Co", "Staff Engineer",
-                     "EXAMPLECITY", "Example Cloud Practitioner, 2022"):
+    for expected in ("EXAMPLE PERSON", "Example Data Co", "SYNTHETIC-TITLE",
+                     "Alfa", "Example Cloud Practitioner, 2022"):
         assert expected in html, f"{expected!r} missing from the rendered CV"
 
 
 def test_a_blank_location_does_not_leave_a_dangling_separator(tmp_path):
-    """`sluice/cv/parse.py` accepts a 2-field meta line with no location, setting
-    `location=""` -- and both templates joined dates/location/title with unconditional
-    `|` characters, so the rendered line read `03/2021-present |  | Staff Engineer`.
-    `leftover_content` classifies a bare `" | "` as punctuation (see its own no-content
-    guard), so nothing else in this file's guards would have caught the defect either.
-    CodeRabbit's cloud review on PR #97 found this against the shipped template.
+    """A role whose LOCATION is blank (the layout leaves it unset, #364 spec §7.1) -- and both
+    templates joined dates/location/title with unconditional `|` characters, so the rendered
+    line read `03/2021–present |  | SYNTHETIC-TITLE`. `leftover_content` classifies a bare
+    `" | "` as punctuation (see its own no-content guard), so nothing else in this file's
+    guards would have caught the defect either. CodeRabbit's cloud review on PR #97 found
+    this against the shipped template.
     """
-    cv_no_location = CV.replace(
-        "03/2021-present | EXAMPLECITY | Staff Engineer", "03/2021-present | Staff Engineer")
-    assert "03/2021-present | Staff Engineer" in cv_no_location, "the replace no-opped"
+    no_location = dataclasses.replace(
+        CV, work=[dataclasses.replace(CV.work[0], location="")])
     r = _renderer(tmp_path)
-    r.render(cv_no_location, str(tmp_path / "out"))
+    r.render(no_location, str(tmp_path / "out"))
     html = FakeHTML.captured["html"]
-    assert "03/2021-present | Staff Engineer" in html
+    assert "03/2021\u2013present | SYNTHETIC-TITLE" in html
     assert " |  | " not in html, "a blank LOCATION left a dangling separator in the PDF"
 
 
@@ -202,7 +176,7 @@ def test_a_document_with_no_skills_renders_no_skills_heading(tmp_path):
     """The CERTIFICATES shape: `{% if document.skills %}` means an empty list omits the
     heading entirely rather than rendering an empty section under it -- the exact defect
     that made a repeated CERTIFICATES header indistinguishable from "holds none" (see
-    CLAUDE.md). `CV` (unlike `CV_WITH_SKILLS`) carries no SKILLS section at all, so
+    CLAUDE.md). `CV` (unlike `CV_WITH_SKILLS`) carries no skills at all, so
     `document.skills == []`.
     """
     r = _renderer(tmp_path)
@@ -625,26 +599,6 @@ def test_no_test_module_uses_importorskip():
         f"only turn an absent dependency into a green run.")
 
 
-def test_precheck_reports_a_shape_failure_as_a_format_violation(tmp_path):
-    """The seam's OPTIONAL hook (core/protocols.py), implemented here and NOT by
-    `script`. cv/engine.py folds the returned strings in with the fabrication gate's own,
-    so this renderer's grammar reaches the model's one retry instead of surfacing at
-    render time -- after the LLM spend, past the only recovery there is.
-
-    Asserts both arms: `[]` for a CV this renderer can lay out, and a `FORMAT:`-prefixed
-    string naming the problem for one it cannot. A precheck that returned something
-    truthy for every CV would bin every lead, so the empty arm is the load-bearing one.
-    """
-    r = _renderer(tmp_path, "{{ document.name }}")
-    assert r.precheck(CV) == []
-    broken = CV.replace("03/2021-present | EXAMPLECITY | Staff Engineer",
-                        "03/2021-present Staff Engineer")
-    assert "03/2021-present Staff Engineer" in broken, "the replace no-opped"
-    msgs = r.precheck(broken)
-    assert len(msgs) == 1 and msgs[0].startswith("FORMAT: "), msgs
-    assert "meta line" in msgs[0]
-
-
 def test_a_jinja_syntax_error_is_raised_as_a_render_error_naming_the_template(tmp_path):
     """`from_string` carries NO filename, so an unclosed `{% for %}` raises
     `jinja2.exceptions.TemplateSyntaxError` reading `File "<template>", line N` -- which
@@ -809,26 +763,24 @@ def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
     assert isinstance(ei.value.__cause__, OSError)
 
 
-def test_a_document_renders_without_being_parsed(tmp_path, monkeypatch):
-    from sluice.core.protocols import CvDocument, Role
-    import sluice.cv.parse as parse_mod
-
-    def refuse(_text):
-        raise AssertionError("a CvDocument must not be parsed")
-
-    monkeypatch.setattr(parse_mod, "parse_cv", refuse)
-    # The renderer binds parse_cv at import, so patch its own reference too.
-    import sluice.renderers.template as tmpl_mod
-    monkeypatch.setattr(tmpl_mod, "parse_cv", refuse)
-    doc = CvDocument(name="JANE ROE", contact="+1 555 0100", profile="I build.",
-                     work=[Role("Example Alpha", "01/2020–present", "", "", ["Shipped it"])],
-                     skills=[], certificates=[], education=[])
-    r = _renderer(tmp_path, "{{ document.work[0].company }}|{{ document.work[0].bullets[0] }}")
-    r.render(doc, str(tmp_path / "out"))
-    assert FakeHTML.captured["html"] == "Example Alpha|Shipped it"
-
-
-def test_a_wrong_argument_type_raises_naming_the_renderer(tmp_path):
+@pytest.mark.parametrize("wrong", [["not", "a", "document"], "EXAMPLE PERSON\n\nPROFILE\nI build.\n"],
+                         ids=["list", "composed-text"])
+def test_a_wrong_argument_type_raises_naming_the_renderer(tmp_path, wrong):
+    """Composed text is a wrong type too: the str branch that parsed it is removed, so a
+    caller still handing one gets a named refusal rather than a coerced or blank PDF."""
     r = _renderer(tmp_path, "x")
     with pytest.raises(RenderError, match="renderer 'template'"):
-        r.render(["not", "a", "document"], str(tmp_path / "out"))
+        r.render(wrong, str(tmp_path / "out"))
+
+
+def test_an_untitled_role_does_not_leave_a_dangling_separator(tmp_path):
+    # #364 spec §7.2: a layout role's title is optional now, so an untitled role is ordinary.
+    doc = CvDocument(name="EXAMPLE PERSON", contact="Email: someone@example.invalid",
+                     profile="I build.",
+                     work=[Role("Example Alpha", "01/2020–present", "Example Location A", "",
+                                ["Shipped it"])],
+                     skills=[], certificates=[], education=[])
+    _renderer(tmp_path).render(doc, str(tmp_path / "out"))
+    html = FakeHTML.captured["html"]
+    assert "01/2020–present | Example Location A<" in html.replace("\n", "")
+    assert "Example Location A | " not in html

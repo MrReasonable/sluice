@@ -233,6 +233,12 @@ stdout, ` (dry-run)` appended when applicable. Exit 0 always.
 
 Compose, gate, render and sign off a tailored CV.
 
+The model is asked for JSON content only -- a profile, cited bullets for each role your CV
+Layout note (`Job Applications/CV Layout.md`, see `docs/CONFIGURATION.md`) defines, and skill
+picks from a closed list -- and every piece of it is checked against your verified evidence.
+Sluice then assembles the CV from that content plus your vault's own data (headings, dates,
+locations, titles, certificates, education, your name and contact block) and renders it.
+
 ### `job-sluice cv run (--lead SLUG | --all-shortlist) [--limit N] [--dry-run] [--backend NAME] [--no-serve] [--include-stale]`
 
 `--lead` and `--all-shortlist` are mutually exclusive and one is **required**.
@@ -243,21 +249,27 @@ Compose, gate, render and sign off a tailored CV.
 | `--all-shortlist` | compose for every shortlist lead without a `tailored_cv` yet |
 | `--include-stale` | compose even for a lead older than `lead_ttl_days` (see #9 in `docs/CONFIGURATION.md`) |
 | `--no-serve` | skip staging the rendered PDF for `apply` |
-| `--dry-run` | compose, gate and audit (so the backend calls are still spent) and write the diagnostic artefacts below, but render nothing, serve nothing and change nothing in the vault |
+| `--dry-run` | compose, gate and audit (so the backend calls are still spent) and write the diagnostic artefacts below, but render nothing, serve nothing and change nothing in the vault. No renderer is built, but an unknown or retired `cv.renderer` name is still refused before any backend call |
 
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
-slop=<N> voice_flags=<N> terms=<N> dossier_failed=<bool> skills_unreadable=<bool>
-artefacts_failed=<bool>`, followed by one
+slop=<N> voice_flags=<N> terms=<N> skills_dropped=<N> bullets_trimmed=<N> dossier_failed=<bool>
+skills_unreadable=<bool> attribution_check_off=<bool> artefacts_failed=<bool>`, followed by one
 indented line per finding, in that line's own field order and empty on a clean run (so
 nothing extra prints):
 
 | Kind | Indented line | Notes |
 |---|---|---|
-| `violations` | `<CATEGORY> ...` | the HARD fabrication gate's own findings. Each already opens with its producer's own ALL-CAPS category (`UNSOURCED SKILL`, `INVENTED METRIC`, `UNCITED BULLET`, `STRUCTURAL`, the `template` renderer's `FORMAT`, ...), so no label is added. A `skipped-gate` result rendered no CV, and these are what say why (#258) |
+| `violations` | `<CATEGORY> ...` | the HARD fabrication gate's own findings. Each already opens with its producer's own ALL-CAPS category (`REPLY`, `INVENTED METRIC`, `UNCITED BULLET`, `WRONG EMPLOYER`, `MISATTRIBUTED TOOL`, ...), so no label is added. A `skipped-gate` result rendered no CV, and these are what say why (#258) |
 | `audit_flags` | `AUDIT: <verdict>\t<claim>\t<cited-id>` | the advisory model-judged fabrication audit; `unsupported` is the verdict that withholds the send-ready pointer (`cv.require_signoff`) |
-| `slop` | `SLOP <label>: <snippet>` | the deterministic linter `cv/slop.py`, already prefixed |
+| `slop` | `SLOP <label>: <snippet>` | the deterministic linter `cv/slop.py`, already prefixed: its HARD tier (`SLOP EM-DASH`, `SLOP DOUBLE-HYPHEN-DASH`), which blocks, as well as the phrase stems |
 | `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
 | `terms` | `UNBUNDLED TERM '<term>': named nowhere in your evidence: <snippet>` | `cv/terms.py`'s check for a term the CV names that no evidence carries, already prefixed (`cv.term_check`, on by default) |
+| `skills_dropped` | `DROPPED: '<pick>': <why>` | a skill pick that was not rendered: not one of your verified skill names or entry tools, listed twice, or beyond the CV Layout's `skills_max`. Never a refusal; quoted from the model, so treat it as untrusted text |
+| `bullets_trimmed` | `TRIMMED: <slot> (<heading>): kept <N> of <M>` | bullets beyond a role's `bullets_max`, the first N kept. A trimmed bullet is never checked, so it never costs a retry |
+
+`attribution_check_off=True` means no verified experience entry declares `Tools:`, so the
+misattributed-tool check did not run. On a vault whose entries still carry the retired
+`Skills:`, `cv run` also logs one WARNING per run saying so, and `doctor` lists the same row.
 
 A summary line follows when any dossier fetch failed and composition proceeded blind, a
 second when any CV was composed without the Skills Inventory because the corpus could
@@ -268,11 +280,15 @@ if: `--lead` matched no shortlist lead; `--lead` was ambiguous; the `--lead` res
 (the lead's own failure, such as a truncated reply, printed with its reason); any result is
 `backend-unavailable` (#333: the backend was still down after its retries -- a batch stops at
 that lead and leaves the rest for the next run, and the reason is printed); or any result is
-`skipped-config` (the candidate's derived name or contact block — from `Job Applications/
-Candidate Profile.md` in your vault — is blank; the compose refuses before any LLM spend).
-**Exit 2** if the vault cannot compose at all: the baseline CV at `baseline_rel` is missing,
-empty, or unreadable (a permission problem, a refused symlink, or bytes that are not UTF-8), or
-the `experience` corpus has no verified entries or cannot be read (#242). Unreadable and absent
+`skipped-config` (the vault's Candidate Profile note declares no name or no contact block, or
+the CV Layout note disappeared after the run began -- the printed line names which; either way
+the compose refused before any LLM spend). That line comes after every other lead's line, so a
+lead rendered or held for sign-off earlier in the same batch is still reported.
+**Exit 2** if the vault cannot compose at all: the CV Layout note (`Job Applications/CV
+Layout.md`) is missing, malformed or unreadable; a verified experience entry's `Tools:` holds an
+item the gate cannot use; no role in the layout can cite any verified entry; or the `experience`
+corpus cannot be read, or has no verified entries while some role in the layout asks for bullets
+(#242) -- a layout whose every role has `bullets_max: 0` renders headings only, so it needs none. Unreadable and absent
 are reported differently -- a read failure carries the underlying error rather than claiming the
 file is not there. That is a config problem rather than a per-lead outcome,
 so it is refused once for the whole run, before the renderer, the backend or any dossier fetch,
@@ -291,7 +307,7 @@ role, lowercased, with each run of characters other than `a-z` and `0-9` turned 
 |---|---|
 | `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: everything the composer was shown, of which only the source bundle is citable. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
 | `reply.attempt-N.txt` | attempt N's reply exactly as the backend returned it, before anything read it. `.txt` because a reply can carry chat around its JSON |
-| `cv.rendered.md` | the text handed to the renderer; absent when nothing was rendered |
+| `cv.rendered.md` | the CV sluice built, in the canonical text form, each bullet ending with its ` [ID]` citations. Written before the audit, so a dry run has one too; the PDF itself comes from the renderer |
 | `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `skills_dropped`, `bullets_trimmed`, `attribution_check_off`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
 
 A directory holding a 3.x run's `cv.attempt-N.md` files has them cleared by the next run, like the rest of the set.
@@ -621,7 +637,7 @@ failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename no
 ## Evidence corpus capture: `experience`, `skills`, `stories`
 
 Human-authored source material for CV composition (#164) — the Experience Library (the gate's
-only citable source), the Skills Inventory (shown to the composer as framing since #165) and STAR
+only citable source), the Skills Inventory (shown to the composer as framing, and a source of SKILLS-section names) and STAR
 Stories (captured, not yet consumed), one per `EvidenceKind` in
 `sluice/core/protocols.py`. All three groups (and their `add`/`list`/`verify` subcommands) are
 built from ONE loop over that registry, so they share an identical shape and a fourth kind later
@@ -635,41 +651,46 @@ from the kind's user-facing fields, which is exactly why `verified` is never amo
 on `verify` FILTERS which pending entries are offered for review; it never answers for you.
 
 *Unless*, not *until*: review is necessary for every kind, and sufficient for one. The gate
-LICENSES the **Experience Library** only. Since #165 the other two differ from each other:
-a verified **Skills Inventory** entry is shown to the composer as framing — it orders and
-emphasises the experience entries, and no number may be quoted from it — while **STAR Stories**
-are captured and reviewed but consumed by nothing yet.
+LICENSES the **Experience Library** only. The other two differ from each other: a verified
+**Skills Inventory** entry is shown to the composer as framing — it orders and emphasises the
+experience entries, and no number may be quoted from it — and its name (`Label:`, else its
+title) may be picked for a CV's SKILLS section, while **STAR Stories** are captured and
+reviewed but consumed by nothing yet.
 
-Two registry flags carry that distinction: `EvidenceKind.read_by_composer` (does the corpus reach
-the prompt) and `EvidenceKind.cited_by_gate` (may the gate license its content). `add`'s
-confirmation line and `doctor`'s row both read them, so neither claims a citability the code does
-not have.
+Registry flags carry that distinction: `EvidenceKind.read_by_composer` (does the corpus reach
+the prompt), `EvidenceKind.cited_by_gate` (may the gate license its content) and
+`EvidenceKind.names_in_skills_pool` (may a verified entry's name be listed under SKILLS).
+`add`'s confirmation line and `doctor`'s row both read them, so neither claims a citability the
+code does not have.
 
-An Experience Library entry's `--skills`/`Skills:` field (#168) licenses skills RELATIONALLY rather
-than by merely existing in the Skills Inventory: a comma-separated (or YAML block-list) set of names
-that THIS entry evidences, so a CV bullet citing it may use those names without being flagged a
-misattributed skill, and a digit embedded in one (`Widget3`) is not read as a fabricated metric for
-a bullet citing that entry. Every token of a `Skills:` value must begin with a letter, or with a dot
-then a letter (`.NET`). A token that begins with a DIGIT is refused, and that is wider than it
-sounds: a bare `92` is refused, and so are `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`
-and `802.11ac`. Those are real things people hold, and the refusal is deliberate rather than an
-oversight — a word followed by a bare number is structurally identical to metric shorthand like
-`Result 92`, and admitting one admits the other, which would let a `Skills:` value blank a real
-figure out of the numeric gate. Name them another way (`ISO quality management`) or leave them out.
+An Experience Library entry's `--tools`/`Tools:` field lists the named tools THIS entry used --
+tools, technologies, languages, platforms, standards and named methods (`Terraform`, `React`,
+`WCAG`, `Scrum`) -- comma-separated (or as a YAML block list). Once any verified entry declares
+one, a CV bullet naming a declared tool, spelled as declared, must cite an entry that lists it
+or whose own text names it, or the CV is refused as `MISATTRIBUTED TOOL`; and every listed tool
+can be picked for the SKILLS section.
 
-That check runs at CV compose time (`cv/bundle.py`'s `build_bundle`), not at `add` or `verify`, and
-it is **not** scoped to one lead: `build_bundle` runs per lead over the shared verified corpus, so a
-single malformed value fails EVERY lead in the run — measured over three shortlisted leads, all
-three returned `cv run`'s `error` outcome. The run itself does not abort (each failure is isolated
-per lead), and the proposal and review commands never REFUSE on it, because they do not import
-`cv/bundle.py` and so never validate it — they do read it (`experience list` prints the field, and
-`verify` shows the raw note text including its `Skills:` line). Fix the one entry and the whole run
-recovers. There is no
-requirement that a `Skills:` name also exist as a verified `skills` entry, or the reverse;
-`job-sluice doctor` reports a drift between the two corpora as an informational count, never the
-skill's own name, and neither direction affects its exit code.
+Leave general practices (`security`, `coaching`, `pairing`, `architecture`) out: a declared word
+is checked in every bullet, hyphenated compounds included (`security-focused` matches a declared
+`security`), so ordinary prose using it is refused whenever the bullet cites a different entry.
+A practice you want under SKILLS belongs in a Skills Inventory note (`skills add`), whose label
+is not checked in bullets.
 
-### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--skills V] [--body TEXT] [--body-file PATH|-]`
+A digit inside a tool's name (`Examplelang3`) is never read as a figure for a bullet citing that
+entry. Every word of a `Tools:` item must begin with a letter, or with a dot then a letter. A
+word that begins with a DIGIT is refused, and that is wider than it sounds: a bare `92` is
+refused, and so is any name with a number-led word in it. That is deliberate — a word followed
+by a bare number is structurally identical to metric shorthand like `Result 92`, and admitting
+one admits the other, which would let a `Tools:` value hide an invented figure. Name such a
+thing another way or leave it out.
+
+`add` and `verify` do not check `Tools:`. `cv run` does, before any spend: an unusable item stops
+the whole run (exit 2) naming the entry and the item, and `doctor` counts such entries. The
+retired `Skills:` field is no longer read; `doctor` and `cv run` say when a vault still carries it
+and no entry declares `Tools:`, since the misattributed-tool check is then off. When upgrading,
+copy only the named tools from `Skills:` into `Tools:`, not the practice words.
+
+### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--tools V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--label V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`
 
@@ -692,13 +713,18 @@ slug (`C#` becomes `c`). `--label` sets it explicitly; left blank it takes the `
 ### `job-sluice stories list [--pending]`
 
 Lists verified entries by default, one per line: `<title>  [<verified date>]`. With
-`--pending`, lists the not-yet-verified queue instead: `<title>  [pending]`. Exit 0 unless the
+`--pending`, lists the not-yet-verified queue instead: `<title>  [pending]`. For a kind with
+those fields (`experience`), each line also shows `Company: <company>` (`(none)` when blank) and,
+when the entry declares any, `Tools: <tools>`: this is where `doctor`'s "not on your CV" and
+"no company" counts point you. For a kind with a `Label` field (`skills`), each line shows
+`Label: <label>` (`(none)` when blank), which is where `doctor`'s "cv skills (no Label)" count
+points you: it counts the lines pairing a slug title with `Label: (none)`. Exit 0 unless the
 store cannot read an entry (see the note under `verify`, below).
 
 Verified is not the same as **citable**: the CV fabrication gate licenses the Experience Library
-alone, so a verified `skills` entry is shown to the composer as framing but cited by nothing, and
-a verified `stories` entry is consumed by nothing yet (`EvidenceKind.cited_by_gate` and
-`read_by_composer`).
+alone, so a verified `skills` entry is shown to the composer as framing and its name may be
+listed under SKILLS, but it is cited by nothing, and a verified `stories` entry is consumed by
+nothing yet (`EvidenceKind.cited_by_gate`, `read_by_composer` and `names_in_skills_pool`).
 
 ### `job-sluice experience verify [--id NAME]`
 ### `job-sluice skills verify [--id NAME]`
@@ -930,10 +956,12 @@ a directory. Exit 1 if any individual write failed. Otherwise 0.
 
 ## `job-sluice doctor [--offline] [--strict] [--verbose] [--require CAPABILITY]`
 
-Preflights backends, the renderer, the store's on-disk artefacts (vault, baseline CV, Judging
+Preflights backends, the renderer, the store's on-disk artefacts (vault, Judging
 Profile, a verified/pending count for each of the three evidence corpora — #164: Experience
-Library, Skills Inventory, STAR Stories — and the Candidate Profile note's own declared
-name/contact — #133/#107), track's Google adapter, and every list-typed preference gate's
+Library, Skills Inventory, STAR Stories — the Candidate Profile note's own declared
+name/contact — #133/#107 — and the CV Layout note: present and well-formed, and how many
+verified experience entries no CV can cite, an unusable `Tools:` item, and a
+`cv.fabrication_decoys` entry that matches your own data), track's Google adapter, and every list-typed preference gate's
 abstain/active posture. A `cv.name`/`cv.contact` key still set in `sluice.yaml` from an older
 config is its own DEAD `cv-config` row rather than a traceback — see
 `docs/TROUBLESHOOTING.md`. Never opens a browser and never writes through the store or renderer.
@@ -967,7 +995,7 @@ active. All of them are `notice`, so none reaches the exit code. The numeric pay
 (`contract_floor_gbp_day`, `perm_floor_gbp`) get no row at all: they default to `0`, which is off.
 
 **`setup` versus `dead` is the distinction the exit code is built on.** `setup` means you have
-not supplied the thing yet — no baseline CV, no verified evidence, no API key in the
+not supplied the thing yet — no CV Layout, no verified evidence, no API key in the
 environment, the `render` extra not installed, no vault. `dead` means something you *did*
 supply does not work — a `cv.renderer` naming no registered renderer, a `cv.template` that is
 not a file, an API key that fails its round-trip, a store that has moved. Exit 1 if any row is

@@ -61,10 +61,8 @@ def test_full_name_leaves_no_stray_whitespace():
 
 
 def test_full_name_collapses_internal_whitespace_runs():
-    # full_name feeds the #99/#100 STRUCTURAL guard (cv/engine.py, see its docstring): that guard
-    # case-fold-matches the composed header's last line, so a composer that collapses a whitespace
-    # run (models routinely do) must still match, or a gate-clean CV will fail the anchor check and
-    # the lead will be binned after its one retry.
+    # full_name is the CV's headline (cv/document.py::assemble), so a doubled space typed into the
+    # note must not reach the PDF.
     assert full_name(CandidateProfile(forenames="Ada  Grace", surname="Example")) == "Ada Grace Example"
 
 

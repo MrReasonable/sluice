@@ -240,10 +240,11 @@ def test_the_declared_constant_sweep_actually_walks_both_command_packages():
 
     SCOPE, stated honestly: this (and the sweep it pins) reaches `sluice.evidence.wizard`'s
     MODULE-LEVEL prompt constants, because Task 8 hoisted them out of in-body f-strings for
-    exactly this reason. It reaches NOTHING in `sluice.evidence.commands` -- that module's
+    exactly this reason. It reaches no PROSE in `sluice.evidence.commands` -- that module's
     user-facing `print()`/error messages are in-body f-strings, the same shape `wizard.py`
     was in before Task 8's fix, so widening discovery to include the module does not sweep
-    them; there is no module-level constant there for `_declared_string_constants` to find.
+    them; its module-level constants are field-name tables (`EVIDENCE_KINDS`,
+    `RETIRED_FIELDS`), named in `_NOT_PROSE`.
 
     Those messages are no longer unswept, though, and this docstring used to say hoisting
     was the outstanding fix (#164 review, L2). They are swept WHERE THEY RUN, by
@@ -269,9 +270,9 @@ def test_the_declared_constant_sweep_actually_walks_both_command_packages():
 def test_every_value_bearing_question_states_its_consequence():
     """A question whose answer changes what the pipeline DOES must say so in the post-write report.
 
-    `cv_employers` was the sole exception, and it was also the one whose hint described the
-    opposite of its mechanism -- `cv/validate.py` runs a case-sensitive COMPLETENESS check, so a
-    lower-case answer makes every `cv run` skip every lead. Silent, permanent, and the report never
+    `cv_employers` WAS the sole exception, and it was also the one whose hint described the
+    opposite of the completeness check `cv/validate.py` then ran, which a lower-case answer made
+    every `cv run` skip every lead on. Its probe went with the check (#364), and the question with it. Silent, permanent, and the report never
     mentioned the key at all. Exempted keys are named, not pattern-matched, so a new question
     cannot join them by accident."""
     # These configure the tool rather than gating leads: the vault is a location, and the
@@ -285,26 +286,8 @@ def test_every_value_bearing_question_states_its_consequence():
     assert not missing, f"these answers change behaviour but the report never says so: {missing}"
 
 
-def test_the_employers_hint_describes_the_check_that_actually_runs():
-    """Pins the hint against `cv/validate.py`'s real behaviour, so the two cannot drift apart
-    again. The check is COMPLETENESS and case-SENSITIVE; probed here rather than asserted."""
-    from sluice.cv.bundle import BundleSources
-    from sluice.cv.validate import validate
-    cv = "WORK EXPERIENCE\nPROFILE\nExample Alpha Ltd did a thing."
-    # An explicitly empty source set (#174): this test exercises only the employer-
-    # completeness gate, which reads no citation or number, so no real bundle is needed.
-    # `BundleSources` is 3-field since #168 (`entries`, `baseline`, `source_tokens`); the
-    # third is likewise empty here, since row 2 (#168's skills gate) plays no part either.
-    sources = BundleSources({}, frozenset(), ())
-    assert any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["example alpha ltd"]))
-    assert not any("MISSING EMPLOYER" in v for v in validate(cv, sources, employers=["Example Alpha Ltd"]))
-    hint = {q.key: q for q in catalogue(default_vault=VAULT)}["cv_employers"].hint
-    assert "VERBATIM" in hint and "case" in hint.lower()
-
-
 def test_the_candidate_note_prose_describes_the_check_that_actually_runs(tmp_path):
-    """Sibling to the employers-hint probe above: `plan._render_candidate`'s
-    shipped sentence -- "`cv run` needs at least one name part and at least one contact channel
+    """`plan._render_candidate`'s shipped sentence -- "`cv run` needs at least one name part and at least one contact channel
     before it will compose" -- is prose in a stranger's vault with nothing pinning it to
     `cv/engine.py`'s actual `skipped-config` check (`run_one`'s
     `if not cv_name.strip() or not cv_contact.strip()`). Probed by driving `run_one` itself over a
@@ -312,11 +295,15 @@ def test_the_candidate_note_prose_describes_the_check_that_actually_runs(tmp_pat
     built for the #107 gate this prose describes), not merely asserted from the source line."""
     from sluice.cv.engine import run_one
     from tests.test_cv_engine import (
-        _CountingBackend, _cfg, _note, _vault_with_candidate, FakeRenderer, RecordingCache)
+        _CountingBackend, _cfg_unserved, _note, _vault_with_candidate, FakeRenderer,
+        RecordingCache)
 
     def status(label, overrides):
+        # Serving off: a declared identity can now run all the way to render (the vault
+        # seeds no entry, so every bullet is trimmed and the selection is clean), and the
+        # bare FakeRenderer's path would otherwise reach the real `serve`.
         vault = _vault_with_candidate(str(tmp_path / label), overrides)
-        res = run_one(_note(), vault, _cfg(), _CountingBackend(), RecordingCache(),
+        res = run_one(_note(), vault, _cfg_unserved(), _CountingBackend(), RecordingCache(),
                       renderer=FakeRenderer())
         return res.status
 
@@ -331,9 +318,8 @@ def test_the_candidate_note_prose_describes_the_check_that_actually_runs(tmp_pat
     # ...and the SENTENCE itself, which this test claimed to pin but never read. Without
     # this, rewording or deleting it from `_render_candidate` leaves everything above
     # green -- which is precisely the drift the test was written to catch, so the
-    # docstring's claim was false. The sibling employers-hint probe above reads `q.hint`
-    # for the same reason. Asserted on the RENDERED note, not on the source line, so the
-    # sentence has to survive into the artefact a stranger's vault actually receives.
+    # docstring's claim was false. Asserted on the RENDERED note, not on the source line, so
+    # the sentence has to survive into the artefact a stranger's vault actually receives.
     from sluice.onboard.plan import build_plan
     note = build_plan({}, candidate_answers={}).candidate_text
     for phrase in ("at least one name part", "at least one contact channel"):

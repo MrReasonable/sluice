@@ -12,8 +12,8 @@ import pytest
 import sluice.cv.render as _render_mod
 from sluice.core.backends import BackendError, Completion
 from sluice.cv.engine import run_batch, run_one
-from tests.test_cv_engine import (CLEAN_CV, ENTRIES, FakeCache, FakeRenderer, FakeVault,
-                                  Note, _cfg)
+from tests.test_cv_engine import (_COMPOSE, CLEAN_REPLY, ENTRIES, FakeCache, FakeRenderer,
+                                  FakeVault, Note, _cfg)
 
 _DOWN = "claude-max claude-sonnet-4-5: claude-max invocation failed: timed out after 3 attempts"
 
@@ -27,8 +27,8 @@ class _ComposeThenAuditDown:
 
     def complete(self, prompt):
         self.calls += 1
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
-            return Completion(CLEAN_CV)
+        if prompt.startswith(_COMPOSE):
+            return Completion(CLEAN_REPLY)
         raise BackendError(_DOWN, transient=self.transient)
 
 
@@ -79,8 +79,8 @@ def test_a_failed_voice_check_is_still_treated_as_clean(served):
     # audit fix above cannot be widened to it by accident.
     class _VoiceDown:
         def complete(self, prompt):
-            if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
-                return Completion(CLEAN_CV)
+            if prompt.startswith(_COMPOSE):
+                return Completion(CLEAN_REPLY)
             if "auditing" in prompt:
                 return Completion("supported\tx\tEF1")
             raise BackendError(_DOWN)
@@ -126,7 +126,7 @@ def test_the_single_lead_path_reports_an_outage_as_a_result(tmp_path, monkeypatc
     from sluice.core.config import Config
 
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
-    # The engine's own FakeVault as the store: it declares a candidate, a baseline and a
+    # The engine's own FakeVault as the store: it declares a candidate, a CV Layout and a
     # verified entry, so compose_cv's preconditions pass and the lead (no url, so no page
     # visit) reaches the backend.
     store = FakeVault(ENTRIES, notes=[_lead()])

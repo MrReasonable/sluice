@@ -24,13 +24,10 @@ def full_name(profile: CandidateProfile) -> str:
     """The CV header's name line. Joins whichever parts are declared, collapsing
     any internal whitespace RUN to one space -- not just stripping the ends.
 
-    cv/engine.py's #99/#100 STRUCTURAL guard case-fold-matches the composed
-    header's last line against this value (Task 3) -- it no longer compares
-    against `cvcfg.name`. The normalization is FOR that guard: a composer that
-    collapses a whitespace run (models routinely do) would otherwise fail the
-    anchor check and the lead would be binned after its one retry with an
-    otherwise gate-clean CV. `.split()` with no argument already splits on any
-    run of whitespace and drops empty tokens, so
+    cv/document.py::assemble writes this value as the CV's headline (upper-cased);
+    the model never writes the name (#364/#365/#368). Collapsing whitespace keeps a
+    stray doubled space in the note off the PDF. `.split()` with no argument already
+    splits on any run of whitespace and drops empty tokens, so
     `" ".join(a.split() + b.split())` is lossless for every sane input and
     removes the class outright rather than patching one run width.
     """
@@ -47,10 +44,9 @@ def contact_block(profile: CandidateProfile) -> str:
     shipped constant with no override, which is a formatting preference in code.
     A user who wants a label puts it in the field value -- the field is free text.
 
-    cv/engine.py's #99/#100 STRUCTURAL guard compares the composed CV's header
-    block against this value (Task 3) -- it no longer compares against
-    `cvcfg.contact`/`cvcfg.name`. Whatever this returns is what the composer is
-    told to emit and what the guard expects back.
+    cv/document.py::assemble writes this value as the CV's contact block verbatim;
+    the model never writes it (#364/#365/#368), so whatever this returns is exactly
+    what the PDF shows.
     """
     lines = [v for v in (profile.mobile.strip(), profile.email.strip(),
                          profile.linkedin.strip()) if v]

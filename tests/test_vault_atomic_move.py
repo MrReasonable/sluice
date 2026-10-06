@@ -10,8 +10,9 @@ import os
 
 import pytest
 
-from sluice.core.vault import (_archive_name_candidates, _fold_note_name,
-                               _folded_archive_names, _reserve_and_move)
+from sluice.core.names import fold_note_name
+from sluice.core.vault import (_archive_name_candidates, _folded_archive_names,
+                               _reserve_and_move)
 from tests.conftest import UNREADABLE_DIR, require_case_sensitive_fs
 
 
@@ -223,7 +224,7 @@ def test_a_name_differing_only_in_case_is_treated_as_taken():
     """The defect. `Example Co - Role.md` is already seated; the loser arriving as
     `EXAMPLE CO - Role.md` must NOT be offered that name, because a case-insensitive
     replica cannot hold both."""
-    taken = frozenset({_fold_note_name("Example Co - Role.md")})
+    taken = frozenset({fold_note_name("Example Co - Role.md")})
     got = next(iter(_archive_name_candidates("EXAMPLE CO - Role.md", taken)))
     assert got == "EXAMPLE CO - Role.1.md"
 
@@ -231,7 +232,7 @@ def test_a_name_differing_only_in_case_is_treated_as_taken():
 def test_an_exactly_equal_name_is_treated_as_taken():
     """The pre-existing exact collision, now expressible through the same set -- so the
     fold is a WIDENING of the old rule and never a replacement for it."""
-    taken = frozenset({_fold_note_name("Example Co - Role.md")})
+    taken = frozenset({fold_note_name("Example Co - Role.md")})
     got = next(iter(_archive_name_candidates("Example Co - Role.md", taken)))
     assert got == "Example Co - Role.1.md"
 
@@ -241,8 +242,8 @@ def test_it_walks_past_a_suffixed_name_that_also_collides_only_in_case():
     once and then falls back to bare `O_EXCL` seats `<stem>.1.md` beside a case-variant of
     itself -- the same unholdable pair, one suffix along."""
     taken = frozenset({
-        _fold_note_name("Example Co - Role.md"),
-        _fold_note_name("example co - role.1.md"),
+        fold_note_name("Example Co - Role.md"),
+        fold_note_name("example co - role.1.md"),
     })
     got = next(iter(_archive_name_candidates("EXAMPLE CO - Role.md", taken)))
     assert got == "EXAMPLE CO - Role.2.md"
@@ -316,10 +317,10 @@ def test_the_taken_set_is_full_basenames_including_files_that_are_not_notes(tmp_
 
     taken = _folded_archive_names(dest_dir)
 
-    assert _fold_note_name("EXAMPLE CO - ROLE.MD") in taken, (
+    assert fold_note_name("EXAMPLE CO - ROLE.MD") in taken, (
         "the extension was stripped before folding, so a name spelled `X.MD` no longer folds "
         "onto the seated `X.md` and the replica collision between them goes undetected")
-    assert _fold_note_name(".SYNCTHING.EXAMPLE CO - ROLE.MD.TMP") in taken, (
+    assert fold_note_name(".SYNCTHING.EXAMPLE CO - ROLE.MD.TMP") in taken, (
         "a non-note file was filtered out, though it collides on the replica like any other")
     assert len(taken) == 2, taken
 

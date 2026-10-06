@@ -14,7 +14,17 @@ rather than being copied into each -- one implementation, no drift.
 import pytest
 
 from sluice.core import plugins
-from sluice.core.app import Sluice
+from sluice.core.app import _SEAMS, Sluice
+
+
+def _snapshot():
+    """Force every seam's one-time autoload, then copy the registry. The seams come from
+    core.app._SEAMS: a hand-listed four skipped `rates`, so the restore after the first
+    test that autoloaded it dropped the production rates plugin for good (the cached
+    import never re-runs autoload)."""
+    for seam in _SEAMS:
+        Sluice.available(seam)  # triggers each seam's one-time autoload
+    return {seam: dict(impls) for seam, impls in plugins._REGISTRY.items()}
 
 
 @pytest.fixture(autouse=True)
@@ -28,10 +38,7 @@ def isolate_plugin_registry():
     restore removes only what a test added. Mirrors the copy-the-inner-dicts
     rollback `plugins.autoload` itself uses.
     """
-    for seam in ("store", "fetcher", "renderer", "backend"):
-        Sluice.available(seam)  # triggers each seam's one-time autoload
-
-    snapshot = {seam: dict(impls) for seam, impls in plugins._REGISTRY.items()}
+    snapshot = _snapshot()
     yield
     plugins._REGISTRY.clear()
     plugins._REGISTRY.update(snapshot)

@@ -6,9 +6,8 @@ invented and Example-shaped throughout.
 """
 import pytest
 
-from sluice.cv.bundle import build_bundle, mention_vocab
+from sluice.cv.bundle import build_bundle, term_vocabulary
 from sluice.cv.terms import candidates, unbundled_terms
-from sluice.cv.validate import section_spans
 
 
 # ── arms ──────────────────────────────────────────────────────────────────────
@@ -114,7 +113,10 @@ def test_an_empty_vocabulary_is_a_valid_shape_and_reports_every_candidate():
 
 def test_a_non_ascii_name_in_the_bundle_is_quiet():
     """Review Focus 5: both sides fragment `Exämple` identically."""
-    v = mention_vocab(build_bundle([], "Worked at Exämple.", [], [], {}))
+    from tests.conftest import SYNTHETIC_LAYOUT
+    v = term_vocabulary(build_bundle([{"title": "t", "company": "", "metrics": "",
+                                       "body": "Worked at Exämple."}], [], [], {}),
+                        SYNTHETIC_LAYOUT)
     assert unbundled_terms([(1, "Rejoined Exämple later.")], v) == []
 
 
@@ -123,21 +125,32 @@ def test_a_wrongly_shaped_vocabulary_raises_naming_the_type(bad):
     """A `str` would substring-match and silently suppress every finding; a list is the
     wrong container; a set of non-str is the wrong members. Fail loudly, naming the type
     only -- never the value, which is the user's own vocabulary."""
-    with pytest.raises(TypeError, match=r"mention_vocab"):
+    with pytest.raises(TypeError, match=r"term_vocabulary"):
         unbundled_terms([(1, "Moved onto Examplequery.")], bad)
 
 
 # ── anti-vacuity, over the suite's real gate-clean CV ─────────────────────────
 def test_the_check_scans_real_lines_finds_candidates_and_reports_nothing_bundled():
-    """Roster: tests/test_cv_engine.py::CLEAN_CV with its own ENTRIES bundle. All three
-    clauses are needed: (c) alone passes on a sweep that scanned nothing (a)
-    or whose rule admits nothing (b)."""
-    from tests.test_cv_engine import CLEAN_CV, ENTRIES
-    profile, work, _skills = section_spans(CLEAN_CV)
-    lines = sorted(dict(profile + work).items())
-    assert lines, "(a) section_spans yielded no scoped lines"
+    """Roster: tests/test_cv_engine.py::CLEAN_REPLY with its own ENTRIES bundle, read as the
+    engine reads a reply (cv/document.py::model_lines). All three clauses are needed: (c)
+    alone passes on a sweep that scanned nothing (a) or whose rule admits nothing (b)."""
+    import json
+
+    from sluice.core.layout import build_slots
+    from sluice.cv.document import model_lines
+    from sluice.cv.reply import Bullet
+    from sluice.cv.selection import Selection
+    from tests.conftest import SYNTHETIC_LAYOUT
+    from tests.test_cv_engine import CLEAN_REPLY, ENTRIES
+    data = json.loads(CLEAN_REPLY)
+    selection = Selection(profile=data["profile"], skills=(), roles={
+        slot: tuple(Bullet(b["text"], tuple(b["cites"])) for b in bullets)
+        for slot, bullets in data["roles"].items()})
+    bundle = build_bundle(ENTRIES, [], [], {"Example Foundry": "EF"})
+    lines = model_lines(selection, build_slots(SYNTHETIC_LAYOUT, bundle["entries"]))
+    assert lines, "(a) model_lines yielded no lines"
     assert any(candidates(text) for _ln, text in lines), "(b) the rule admits nothing"
-    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
+    vocab = term_vocabulary(bundle, SYNTHETIC_LAYOUT)
     assert unbundled_terms(lines, vocab) == [], "(c) the fixture's own bundle must cover it"
 
 
@@ -147,3 +160,16 @@ def test_a_snippet_is_cut_to_fifty_characters_of_the_stripped_line():
     assert len(line.strip()) > 50
     out = unbundled_terms([(7, line)], frozenset())
     assert out == [(7, "ExampleQuery", line.strip()[:50])]
+
+
+def test_the_citation_strip_matches_render_exactly():
+    # Moved from tests/test_cv_validate.py with the pattern itself (cv/terms.py is its one
+    # user now). The strip must remove exactly what the renderer removes, so the term check
+    # sees what a reader sees: a non-id bracket like [500] must survive both. Pin equality.
+    from sluice.cv.render import _CITE_RE as _RENDER_CITE_RE
+    from sluice.cv.terms import _CITE_RE as _TERMS_CITE_RE
+    assert _TERMS_CITE_RE.pattern == _RENDER_CITE_RE.pattern
+    assert _TERMS_CITE_RE.flags == _RENDER_CITE_RE.flags
+    for s in ("I scaled [ES1] fast", "I scaled [500] users", "count [es1] here",
+              "value [AB12] ok", "unicode [ES\u0967] digit", "plain text"):
+        assert _TERMS_CITE_RE.sub("", s) == _RENDER_CITE_RE.sub("", s), s

@@ -8,43 +8,32 @@ import functools
 import re
 import unicodedata
 
-# The ONE tokeniser. `cv/validate.py` imports this rather than redefining it -- two copies
-# let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
+# The ONE tokeniser. The gate (through find_term), cv/terms.py, cv/bundle.py and doctor all
+# use it rather than redefining it -- two copies let the vocabulary the gate BUILDS drift from
+# the one it SEARCHES with.
 #
 # A dot is part of a token only BETWEEN alphanumerics, or leading one -- never trailing.
 # The original `[A-Za-z0-9#+.]+` folded a sentence-final period into the token before it,
-# and only `.` did that, which broke all three consumers at once (measured, on a bullet
-# reading `Migrated to Examplestore3.` against `Skills: Examplestore3`):
-#
-#   row 1 / span removal -> the declared skill tokenises `Examplestore3` while the prose
-#                           tokenises `Examplestore3.`, so the span never matches, the
-#                           digit survives extraction, and the gate reports
-#                           `INVENTED METRIC ['3']` on a name the user really declared.
-#                           Same shape in PROFILE prose -> `INVENTED PROFILE METRIC 3`.
-#   row 2               -> a skill sourced from an entry BODY that happens to end a
-#                          sentence (`...ran on Example Widget.`) reads as `UNSOURCED
-#                          SKILL`, which is false, and the only actionable answer is to
-#                          delete a true skill.
-#
-# Both refusals are answerable only by deleting or corrupting true content -- the shape
-# CLAUDE.md's LOCATION-field incident names -- and `S3`, `p99`, `OAuth2` and `Log4j` all
-# sit in an ordinary bullet that ends with a full stop. The internal dot MUST survive:
-# `Node.js` and `ASP.NET` are one token each, and splitting them would make a two-token
-# needle that no `Skills:` value could match. The leading dot survives so `.NET` stays
-# distinguishable from a bare `NET` (see `TOKEN_RULE_RE` below).
+# and only `.` did that. Measured on a bullet reading `Migrated to Examplestore3.` against a
+# declared `Examplestore3`: the prose tokenised `Examplestore3.`, so the declared name was
+# never found, its span was never removed before figures were read, and the gate reported
+# an invented `3` on a name the user really declared -- a refusal answerable only by
+# deleting or corrupting true content, the shape CLAUDE.md's LOCATION-field incident names.
+# `S3`, `p99`, `OAuth2` and `Log4j` all sit in an ordinary bullet that ends with a full
+# stop. The internal dot MUST survive: `Node.js` and `ASP.NET` are one token each, and
+# splitting them would make a two-token needle that no `Tools:` value could match. The
+# leading dot survives so `.NET` stays distinguishable from a bare `NET` (see
+# `TOKEN_RULE_RE` below).
 #
 # `802.11ac` is deliberately NOT cited as an example here, though it has the same token
-# shape: `TOKEN_RULE_RE` refuses it as a `Skills:` value outright (digit-leading), so it
-# can never be a needle, and citing it would read as if this rule made it expressible. It
-# is still governed by this pattern on the OTHER side -- as an EMITTED skill in a SKILLS
-# section, row 2 matches it against source text, where it must stay one token or a body
-# mentioning it could never source it. The two directions are not the same mechanism, and
-# an example that only holds for one of them belongs with that one.
+# shape: `TOKEN_RULE_RE` refuses it as a `Tools:` item outright (digit-leading), so it can
+# never be a needle, and citing it would read as if this rule made it expressible.
 WORD_RE = re.compile(r"\.?[A-Za-z0-9#+]+(?:\.[A-Za-z0-9#+]+)*")
 
-# EVERY TOKEN of a `Skills:` item must begin with a letter, or with a DOT then a letter.
-# Span removal (cv/validate.py) makes this the first field that SUBTRACTS from the hard
-# numeric gate, so an unconstrained value is a laundering path.
+# EVERY TOKEN of a `Tools:` item must begin with a letter, or with a DOT then a letter.
+# Span removal (cv/validate.py::check_selection blanks a cited entry's tool names before
+# reading a bullet's figures) makes this a field that SUBTRACTS from the hard numeric gate,
+# so an unconstrained value is a laundering path.
 #
 # PER TOKEN, and that is the whole guard: an ITEM-level check (`^[A-Za-z]` against the
 # comma-separated item) accepts `Result 92`, because the item begins with `R` -- and removal
@@ -65,12 +54,12 @@ WORD_RE = re.compile(r"\.?[A-Za-z0-9#+]+(?:\.[A-Za-z0-9#+]+)*")
 # structurally indistinguishable from the metric shorthand the rule exists to refuse
 # (`Result 92` is the same shape as `ISO 9001`), so admitting one admits the other and
 # re-opens the laundering path. A letter-led metric shorthand IS reachable and is a
-# separate, stated residual (spec section 14): `p99` still licenses removing `99` for its
+# separate, stated residual (#168 spec section 14): `p99` still licenses removing `99` for its
 # own entry, and tightening further (two leading alphabetic characters) would kill
 # legitimate short names.
 TOKEN_RULE_RE = re.compile(r"^\.?[A-Za-z]")
 
-# Sentence punctuation FOLLOWED BY WHITESPACE between two tokens ends a phrase (spec §6.1), so
+# Sentence punctuation FOLLOWED BY WHITESPACE between two tokens ends a phrase (#364 spec §6.1), so
 # a two-word decoy never matches across a sentence break ("at Example. Zephyr checks") yet
 # still matches "Example;Zephyr", where nothing separates the words on the page. A dot
 # INSIDE a token (`Node.js`) is part of the token and never reaches this set.
@@ -78,6 +67,7 @@ _BREAK = frozenset(".;:!?")
 
 
 def tokens(text):
+    """The `WORD_RE` tokens of `text`, in order; empty for empty or None input."""
     return WORD_RE.findall(text or "")
 
 
@@ -154,7 +144,11 @@ def find_term(text, term, *, case_sensitive=False, lower_accepts_capital=False):
 _GROUP_SEPS = frozenset(",  \u00a0\u202f\u2009")
 
 
-def _digit(seq, i):
+def digit_value(seq, i):
+    """The digit value of `seq[i]`, or None (also for an index outside `seq`). THE digit
+    predicate: figures() reads a run of exactly these, and cv/reply.py judges what touches
+    a digit with this same function, so the two cannot disagree on where a run starts or
+    ends -- a full-width, Arabic-Indic or superscript digit is a digit to both."""
     return unicodedata.digit(seq[i], None) if 0 <= i < len(seq) else None
 
 
@@ -209,10 +203,10 @@ def _readings(text):
         if c not in _GROUP_SEPS:
             continue
         before = 0
-        while before < 4 and _digit(text, i - 1 - before) is not None:
+        while before < 4 and digit_value(text, i - 1 - before) is not None:
             before += 1
-        if not (1 <= before <= 3 and all(_digit(text, i + k) is not None for k in (1, 2, 3))
-                and _digit(text, i + 4) is None):
+        if not (1 <= before <= 3 and all(digit_value(text, i + k) is not None for k in (1, 2, 3))
+                and digit_value(text, i + 4) is None):
             continue
         head = i - 1 - before
         if head < 0:
@@ -270,7 +264,7 @@ def figures(text, *, remove=()):
     joined = "".join(chars)  # group_reading memoises per string, so one string for the pass
 
     def digit_at(i):
-        return unicodedata.digit(chars[i], None) if i < n else None
+        return digit_value(chars, i)
 
     def read(i):
         out = []

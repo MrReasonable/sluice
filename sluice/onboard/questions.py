@@ -148,24 +148,9 @@ def catalogue(*, default_vault: str = "") -> tuple:
         # #107: no cv_name/cv_contact question here any more -- identity now comes from
         # the vault's Candidate Profile note, collected by its own five-question
         # interview (`collect_candidate`, cli.py's cmd_init), not from a catalogue entry
-        # that writes into sluice.yaml. This catalogue keeps only cv_employers below,
-        # which stays config-shaped because it is the fabrication gate's completeness
-        # roster, not identity.
-        #
-        # The hint states the mechanism the code ACTUALLY implements. It previously said this
-        # checked that a CV "only cites places you worked" -- a soundness check -- while
-        # `cv/validate.py` runs the opposite: a case-sensitive COMPLETENESS check that every name
-        # listed here appears VERBATIM in each tailored CV. Measured, `example alpha ltd` against a
-        # CV saying `Example Alpha Ltd` yields MISSING EMPLOYER, which the hard gate blocks and the
-        # engine retries once then skips -- so typing your employers in lower case here turns the
-        # whole cv sub-app off, silently, forever. A wizard hint that inverts its key's meaning is
-        # worse than no hint.
-        Question("cv_employers", "Places you have worked, comma-separated?", parse_csv,
-                 ("cv.employers",), "You",
-                 hint="Every name here must appear VERBATIM in each tailored CV or the fabrication "
-                      "gate blocks it. Match your baseline CV's spelling and case exactly, or "
-                      "leave blank.",
-                 consequence="require every tailored CV to name, verbatim: {value}"),
+        # that writes into sluice.yaml. The catalogue writes no `cv:` key at all: the
+        # employers a CV shows are the CV Layout note's roles (#364), so the former
+        # `cv_employers` question is gone with the `cv.employers` key it wrote.
 
         Question("accept_titles", "Which job titles do you want, comma-separated?", parse_csv,
                  ("triage.accept_titles",), "Want",

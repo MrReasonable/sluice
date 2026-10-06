@@ -51,7 +51,7 @@ def is_control(ch: str) -> bool:
     unreadable to every later sluice command (`ReaderError`), and `\x85` silently round-trips to
     a space -- a value corruption with nothing raising.
 
-    The reachable path is ordinary rather than adversarial: `cv_employers` is prompted as free
+    The reachable path is ordinary rather than adversarial: `reject_companies` is prompted as free
     text and names are pasted out of a CV or PDF, where `\x0b` and `\x0c` are routine extraction
     artefacts.
 

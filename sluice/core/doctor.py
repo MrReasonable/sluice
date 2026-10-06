@@ -25,7 +25,6 @@ reach the candidate. Nothing above probed for either, because nothing did.
 `ComponentCheck` below is the second table this module now classifies, one row
 per non-backend piece a run depends on.
 """
-import re
 from dataclasses import dataclass, field, fields
 
 from sluice.core.backends import option_like
@@ -37,7 +36,6 @@ from sluice.core.protocols import (
     ALL_CAPABILITIES, BROKEN, CAPABILITIES, DEGRADED_CAP, EVIDENCE_KINDS,
     NEEDS_SETUP, READY,
 )
-from sluice.core.stem import stem, stem_all, tokens
 
 # Five states, as bare strings so callers (cli formatter, exit_code) and tests
 # share one vocabulary without importing an enum. NOTICE is not a severity --
@@ -54,7 +52,7 @@ NOTICE = "notice"
 # prose because the exit code said otherwise.
 #
 # The distinction is "did they give us something broken, or nothing at all": an unset API key is
-# SETUP, a key that fails its round-trip is DEAD; a missing baseline is SETUP, an unreadable one
+# SETUP, a key that fails its round-trip is DEAD; a missing CV Layout is SETUP, an unreadable one
 # is DEAD; a renderer whose extra is not installed is SETUP, a renderer NAME that does not exist
 # is DEAD. SETUP never reaches the exit code, so `doctor` exits 0 when nothing is broken and 1
 # when something is -- which is what a monitor wants to fire on.
@@ -183,7 +181,7 @@ class Verdict:
     # not only under `--strict`, because a row saying `blocks: ingest` is a thing the user
     # must act on whether or not this run's exit code turns on it.
     degraded_blocking_rows: list = field(default_factory=list)
-    # DEGRADED rows that block nothing but carry `warn_by_default` (D14).
+    # DEGRADED rows that block nothing but carry `warn_by_default` (#364 D14).
     warning_rows: list = field(default_factory=list)
 
 
@@ -485,16 +483,15 @@ def classify_renderer(error: str | None, *, missing_dependency: bool = False) ->
     return ComponentCheck("renderer", "cv.renderer", OK, "constructs ok")
 
 
-def classify_store(facts: dict | None) -> list:
+def classify_store(facts: dict | None, *, cv_asks_for_bullets: bool = True) -> list:
     """`facts` is the store's own `preflight()` result (see core/protocols.py),
     or None when the configured store does not implement the optional method --
-    reported as nothing rather than an error, the same shape `cv/engine.py`
-    already gives the renderer seam's optional `precheck`. A store that cannot
-    say is not a store that is broken.
+    reported as nothing rather than an error, because `Store.preflight` is an
+    OPTIONAL member of the seam (reached through `getattr` in core/app.py). A store
+    that cannot say is not a store that is broken.
 
-    Missing vault or missing baseline CV BLOCK (#243: SETUP when the user has not
-    supplied them, DEAD when a named vault is gone): `cv run` cannot compose
-    without a baseline, and every sub-app that touches `self.store()` --
+    A missing vault BLOCKS (#243: SETUP when the user has not supplied one, DEAD
+    when a named vault is gone): every sub-app that touches `self.store()` --
     which, ingest through track, is all five -- treats an unreadable vault the
     same way. A missing Judging Profile is DEGRADED, not dead --
     `core/criteria.py` ships a documented neutral fallback that states only
@@ -552,20 +549,6 @@ def classify_store(facts: dict | None) -> list:
                                "vault directory does not exist -- "
                                "`job-sluice init --vault PATH` creates one",
                                blocks=ALL_CAPABILITIES)]
-    if not facts.get("baseline_exists"):
-        out.append(ComponentCheck(
-            "store", "baseline_rel",
-            # Same explicit-vs-default rule as `vault_dir` above, and it belongs here for
-            # the same reason: `baseline_rel` is a root config key, so a user who set it
-            # told sluice where their CV IS. If it is not there, they renamed or moved it --
-            # every `cv run` now refuses before any spend, and `doctor`, the command they
-            # run to find out why, would otherwise say "Nothing is broken." and exit 0.
-            # At the shipped default nobody has said anything, so it is unsupplied.
-            SETUP if facts.get("baseline_rel_is_default") is True else DEAD,
-            "baseline CV not found, or empty, at the configured path -- cv run cannot "
-            "compose without it", blocks=("cv",)))
-    else:
-        out.append(ComponentCheck("store", "baseline_rel", OK, "found"))
     if not facts.get("criteria_present"):
         out.append(ComponentCheck(
             "store", "Judging Profile", DEGRADED,
@@ -593,10 +576,9 @@ def classify_store(facts: dict | None) -> list:
             #
             # `blocks` is set only for a corpus the gate actually READS. Measured with
             # `Job Applications/Experience Library` symlinked out of the vault:
-            # `read_evidence("experience")` RAISES rather than returning [], so `cv/engine.py`'s
-            # `run_one` never builds a bundle and `run_batch`'s per-lead catch-all records
-            # `error` for every lead -- the same "cv run cannot compose" cost the
-            # `baseline_rel` row above already names. Keyed on `cited_by_gate`, NOT on
+            # `read_evidence("experience")` RAISES rather than returning [], so
+            # `cv/engine.py::missing_prerequisites` refuses the whole run before any spend
+            # ("cannot read your experience entries"). Keyed on `cited_by_gate`, NOT on
             # `read_by_composer`: since #165 an unreadable `skills` corpus does not block
             # `cv` at all -- `cv/engine.py` catches it, warns, and composes without the
             # framing -- so naming a sub-app there would over-claim in the other
@@ -627,6 +609,13 @@ def classify_store(facts: dict | None) -> list:
         if spec.cited_by_gate:
             detail = (f"{verified} verified / {total} total entries -- only verified "
                       f"entries are citable by the CV fabrication gate")
+        elif spec.names_in_skills_pool:
+            # D12 (#364/#365/#368): a verified skill note's NAME may now appear in a CV's
+            # skills list, so "framing only" would under-claim what verifying it buys. It
+            # still licenses no figure; `citable` stays the experience kind's word alone.
+            detail = (f"{verified} verified / {total} total entries -- framing for the CV "
+                      f"composer, and each verified entry's name (its Label:, else its "
+                      f"title) can appear in a CV's skills list")
         elif spec.read_by_composer:
             # True for `skills` since #165: the composer is SHOWN them as framing, the gate
             # licenses no figure from them, and the #60 advisory audit is not shown them at
@@ -651,7 +640,18 @@ def classify_store(facts: dict | None) -> list:
         # refusal it predicts -- and predicting which commands are blocked is what this report
         # is for. Only for `cited_by_gate`: an empty `skills` or `stories` corpus blocks
         # nothing, so those stay NOTICE and say so in their own wording above.
-        if spec.cited_by_gate and not verified and not fact_missing:
+        # A headings-only CV Layout (every role at bullets_max 0, #364 spec §5.2/D10) cites
+        # nothing, and `cv run`'s prerequisite check accepts it with an empty corpus, so
+        # the row must not block `cv` then -- `cv_asks_for_bullets` is the caller's reading
+        # of core/layout.py::asks_for_bullets, the same predicate that check uses. It
+        # defaults to True: with no layout read (absent, malformed, unreadable) the
+        # cv_layout row already blocks, and this row keeps saying what it always said.
+        if spec.cited_by_gate and not verified and not fact_missing and not cv_asks_for_bullets:
+            out.append(ComponentCheck(
+                "store", label, NOTICE,
+                detail + " -- your CV Layout asks for no bullets, so cv run composes "
+                "headings-only CVs without one"))
+        elif spec.cited_by_gate and not verified and not fact_missing:
             out.append(ComponentCheck(
                 "store", label, SETUP,
                 detail + " -- cv run refuses to compose without at least one",
@@ -949,485 +949,6 @@ def classify_dossier_cache(counts: dict) -> ComponentCheck:
         f"{total} cached; {counts.get('unreadable', 0)} unreadable, {lengths}")
 
 
-# Matches `cv/engine.py:_jd_keywords`' own `[a-z]{4,}`, so the two places that reduce prose
-# to comparable keywords agree on what is too short to carry meaning. A LENGTH floor, not a
-# stopword list -- see classify_negatives_vs_skills for the measured case it closes.
-#
-# It floors the TERMS and must never be applied to `_NEGATION_WORDS` below: `no`, `not` and
-# `nor` are all under it. They are function words whose whole job is grammatical, not topics
-# too short to mean anything, so one floor over both would silently leave the check firing
-# on the longer half of the vocabulary only.
-_MIN_TERM_LEN = 4
-
-# The words that FLIP what follows them (#260). This is not the stopword list this repo
-# declines to ship: a stopword list rules on which words carry meaning, in general and for
-# every caller; this is eleven words whose presence changes the meaning of a sentence, in
-# one check. `core/health.py`'s `_LOGIN_SEGMENTS` is the precedent for the narrow kind --
-# a handful of shipped words whose presence is the signal, with a matching rule chosen
-# after measuring the alternatives rather than assumed.
-#
-# Natural spellings, stemmed ONCE at import and compared against each token's stem, so
-# `avoiding` reaches `avoid` and no hand-stemmed literal can be typed wrong -- `exclude`
-# stems to `exclud`, and it is exactly the entry a hand-written set would get wrong.
-#
-# Contractions are deliberately absent. `tokens()` splits on `[a-z]+`, so `don't` arrives
-# as `don` + `t`, and `don` is an ordinary English word -- shipping it to catch the
-# contraction would fire on the word itself. A missed negation ABSTAINS, which is the
-# direction this check already prefers to fail in (see the docstring below), and
-# `cv.negatives` is terse imperative config where the contraction is rare.
-_NEGATION_WORDS = ("no", "not", "never", "none", "nor", "neither",
-                   "avoid", "exclude", "omit", "without", "cannot")
-_NEGATION_STEMS = frozenset(stem(w) for w in _NEGATION_WORDS)
-
-# Clause terminators. A negation negates its own clause, not the whole config line.
-# Measured before this existed: "Never use more than six bullets per role; keep the
-# platform section last" reported a contradiction, because the line CONTAINS `never` and
-# CONTAINS `platform` and nothing related the two. #260's observed false positives were
-# all long lines, so a presence-anywhere test would have been nearly as blunt as the bare
-# intersection it replaces.
-#
-# A run of two or more hyphens and the en/em dashes are here because this is prose a human
-# typed; a SINGLE hyphen is not, because it lives inside words. Widening this set can only
-# narrow what is reported, so the failure direction of adding one wrongly is a miss -- and
-# both of the following were exactly that, measured rather than predicted:
-#
-#   - A sentence terminator is required to be followed by WHITESPACE. Without that, the
-#     dot in a dotted technology name split the clause, and
-#     `cv.negatives` is the key written ABOUT technology names: "never claim experience
-#     with <something>.js or containers" put everything after the dot outside the
-#     negation's scope and reported nothing. A decimal ("never claim 2.5 years of
-#     container work") did the same. There is deliberately no end-of-line arm beside the
-#     whitespace one: a terminator with nothing after it splits off an empty trailing
-#     clause, which contributes no tokens, so `(?=\s|$)` and `(?=\s)` are the same
-#     function -- measured over ten trailing-terminator lines, the SPLIT differs on eight
-#     and `_negated_stems` on none. An arm no row could falsify reads as a checked
-#     mechanism and is not one.
-#   - `:` is NOT here. A colon continues its sentence rather than ending it, so breaking on
-#     it put the whole of "never claim: containers, dashboards" outside the scope. The
-#     forward scope is what makes leaving it in safe: in "keep the container section last:
-#     no tables" the term before the colon is still ahead of the negation, so it is not
-#     matched anyway.
-_CLAUSE_BREAK_RE = re.compile(r"[.;!?](?=\s)|\n|-{2,}|[\u2013\u2014]")
-
-
-def _negated_stems(neg: str) -> set:
-    """The stems `neg` actually FORBIDS: within each clause, every stem after the first
-    negation word, the negation words themselves excepted.
-
-    FORWARD scope, because that is how English negation works -- a term BEFORE the negation
-    is something the line asserts, not something it forbids, so "keep the platform section
-    last and never use tables" is a rule about tables. And clause-scoped rather than
-    windowed, because a window needs a token count nothing here can justify. An ordinary
-    imperative negative puts its forbidden terms anywhere from the very next token to the
-    end of a long list, so any N is either arbitrary or generous enough to be no filter at
-    all; the clause boundary, by contrast, is a mark the author actually typed. This is a
-    reason for preferring the boundary, not a measurement -- no distance distribution was
-    taken, and none is claimed.
-
-    A negation word is never itself returned as a term -- hence the `elif`, not a second
-    `if`. `never` is five characters, so it clears `_MIN_TERM_LEN`, and an inventory whose
-    prose happens to contain the word would otherwise match on it.
-    """
-    out = set()
-    for clause in _CLAUSE_BREAK_RE.split(neg or ""):
-        negated = False
-        for token in tokens(clause):
-            stemmed = stem(token)
-            if stemmed in _NEGATION_STEMS:
-                negated = True
-            elif negated:
-                out.add(stemmed)
-    return out
-
-
-def classify_negatives_vs_skills(negatives: list, skills: list) -> list:
-    """One NOTICE per configured `cv.negatives` entry that FORBIDS something the verified
-    Skills Inventory holds (#165, narrowed to what the line negates by #260).
-
-    `cv.negatives` is prose asserting which technologies the candidate does and does not
-    work in, maintained by hand and separately from the inventory that already answers
-    that. The bundle's derived cross-reference (`cv/bundle.py:_DERIVED_NEGATIVE_PROMPT`)
-    cannot stop the two disagreeing -- it names nothing, so it adds a third voice rather
-    than replacing the stale one. This is what makes the disagreement visible.
-
-    Matches on `best_for` ONLY -- the floor key `EVIDENCE_KINDS["skills"]` maps onto
-    `Domain`, the kind's classification axis. The entry TITLE is excluded: it is a name the
-    user chose, so matching its stems makes an ordinary word in it ('skill', 'example')
-    fire a NOTICE about nothing.
-
-    The TERMS are floored at `_MIN_TERM_LEN` characters, and the intersection carries that
-    to the negative side for free -- flooring it there as well is provably dead code, since
-    every member of `terms` already clears the floor, so it is not written. A `Domain` reading "Data and
-    analytics for the platform" otherwise contributes the stem `the`, and every negative
-    containing the word "the" reports a contradiction -- measured, and NOT covered by the
-    asymmetry this docstring used to claim was accepted. The floor is 4 to match
-    `cv/engine.py:_jd_keywords`' own `[a-z]{4,}` extraction, so the two places in this
-    codebase that turn prose into comparable keywords agree on what is too short to mean
-    anything. It is a LENGTH rule and not a vocabulary of words too dull to match -- no
-    stopword list ships, which is the thing this repo declines to do. `_NEGATION_WORDS`
-    above IS a vocabulary and is deliberately not that one: it rules on which eleven words
-    flip the sentence after them, never on which words carry meaning.
-
-    Above the floor the negative side is scoped by NEGATION rather than taken whole (#260).
-    The bare intersection this replaced called any shared 4-character stem a contradiction,
-    and a shared word is not one. #260 reports the harm on a real install -- four negatives
-    flagged, every one of them a formatting, ordering or length rule -- and quotes none of
-    them, so the reproduction here is CONSTRUCTED to that shape rather than lifted from
-    anyone's vault: run against the code this replaced, the formatting rule "keep the
-    platform section last" and a skill whose `best_for` read "building data platforms"
-    reported "contradicts ... on 1 term(s) -- remove the line, or remove the skill", advice
-    that deletes a working rule. It scaled the wrong way besides, which is
-    the sharper argument: more verified skills is a larger `terms` set, so the signal
-    degraded exactly as an operator did the thing this row nudges them toward.
-    `_negated_stems` is the narrowing, and that docstring carries the scope rules.
-
-    Raising the COUNT instead was measured against the old predicate and rejected, and the
-    measurement has to straddle the threshold to mean anything -- the first cut of this
-    paragraph cited a 1-term false positive and a 2-term contradiction, which a floor of
-    two separates exactly, so it argued the opposite of what it claimed. Both counts carry
-    both classes: "never claim container work" against a `best_for` of "container
-    orchestration" is a genuine contradiction on ONE term, while "keep the data section and
-    the platform section last" against "building data platforms" is a formatting rule on
-    TWO -- and that last overlaps on `['data', 'platform']`, byte-identical to the genuine
-    two-term case, so no threshold and no comparison of the term sets separates them.
-    Matching the skill's NAME instead was rejected too -- that is the entry title, excluded
-    just above because it is a name the user chose.
-
-    It fails toward ABSTAIN. A contradiction phrased without a shipped negation word, or
-    with the negation in another clause, is missed and reported as nothing. That is the
-    right direction here for the same reason the title exclusion is: the row names no term
-    and so cannot be investigated, which makes a false report worse than a missed one --
-    its whole value is that it means something when it appears.
-
-    The row NAMES THE INDEX and the overlap SIZE, never the configured text or the matched
-    terms. A DoctorReport is returned whole to MCP clients (`sluice/mcpserver.py`), and
-    `classify_gate` below reports this same key as a COUNT for exactly that reason;
-    echoing the user's own preference prose into a diagnostic would make it a disclosure
-    surface.
-
-    NOTICE, never DEGRADED, so it cannot affect the exit code: `--strict` in a cron job
-    failing because a negative overlaps an inventory is the 672ad2a class aimed at the
-    tool's own exit status. Same posture `classify_gate` takes for a declared role; its
-    undeclared-role row is DEGRADED, but that is a wrong-shaped VALUE, not a gate posture.
-
-    Abstains on either empty input, and on an inventory whose entries declare no domain at
-    all -- an install with nothing to contradict must report nothing.
-    """
-    if not negatives or not skills:
-        return []
-    terms = {t for e in skills for t in stem_all(e.get("best_for", ""))
-             if len(t) >= _MIN_TERM_LEN}
-    if not terms:
-        return []
-    out = []
-    for i, neg in enumerate(negatives):
-        overlap = _negated_stems(neg) & terms
-        if overlap:
-            out.append(ComponentCheck(
-                "gates", f"cv.negatives[{i}]", NOTICE,
-                f"contradicts the verified Skills Inventory on {len(overlap)} term(s) -- "
-                f"the composer is told both. Compare this line against `job-sluice skills "
-                f"list`; remove the line, or remove the skill."))
-    return out
-
-
-# The Experience Library frontmatter field this module reads, named once. `_declared_skills`
-# and BOTH halves of the row `classify_skills_request` prints -- the subject and the detail
-# -- derive from it, so a renamed field cannot leave either labelled after the old one. The
-# detail is the half that matters there: it is the one an operator reads as an instruction,
-# and it spelled `Skills:` as a bare literal until review caught the constant reaching only
-# the subject.
-#
-# The constant itself carries NO trailing colon, which is why the detail adds one and the
-# subject does not. The subject is asserted verbatim in tests/, and `Skills:` followed by
-# anything in a test file is read as a declared skill VALUE by
-# `test_fixture_name_neutrality.py`'s collector -- measured: spelling the subject
-# `Experience Library (Skills:)` puts `)` on the reviewed-name roster and reddens that
-# guard. The detail keeps its colon because that is what an operator greps their notes for
-# and no test asserts that substring; one that did would trip the same collector, which
-# fails SAFE (the guard reddens and asks a human) but is worth knowing before writing it.
-_SKILLS_FIELD = "Skills"
-
-
-def _declared_skills(entry: dict):
-    """The `Skills:` names ONE experience entry declares: a set, or None when the value is
-    one `cv/bundle.py`'s `_skill_items` could not read at all.
-
-    The single reader of that field in this module, shared by `classify_skills_request`
-    and `classify_skills_reconciliation` below. The two rows ask different questions of
-    the same field -- "does this entry annotate anything at all" and "what does it claim"
-    -- and a second reader written for one of them would let the two disagree about the
-    same note. Same discipline as `core/vault.py`'s `_fold_note_name`: a reduction every
-    caller has to agree on gets one definition, not one per call site.
-
-    THREE outcomes, not two, because the gate has three. `_skill_items` returns no items
-    for a blank value, returns items for an annotated one, and RAISES for anything it
-    cannot read -- `.split` on a non-str. An empty set here means the first; None means
-    the third. Collapsing them (an earlier cut returned an empty set for both) made this
-    function report "no annotation" for a value that in fact stops `cv run` dead, and
-    `classify_skills_request` then fired a reassuring row about a corpus that composes
-    nothing. That is the same shape its non-blank suppression already exists to prevent,
-    on the one arm the suppression could not see; the two callers need the distinction, so
-    the reader draws it rather than each caller re-deriving it. Same
-    cannot-say-is-not-zero rule `classify_store` applies to an absent preflight count.
-
-    `.get(...)` returns None when the key is ABSENT, which is a genuine blank -- `_skill_items`
-    defaults it to `""` and reads no items -- so the missing key is normalised to `""` HERE
-    rather than falling into the non-str arm. What remains non-str is a value the Store
-    actually supplied: an explicit `None`, an int, a list. core/protocols.py's Store contract
-    forbids none of them, even though the real Vault never produces one (`_evidence_entries`
-    materialises every declared field via `fm.get(k, "")`).
-
-    Nothing here raises, and nothing is COERCED. doctor never refuses (this module's house
-    rule -- see `DoctorReport.exit_code` and CLAUDE.md), and stringifying a list would
-    render Python's own repr, whose brackets and quotes the comma-split would then read as
-    further "skill names" -- carrying a Store's returned content into a report these rows
-    promise holds only COUNTS.
-
-    Split HERE rather than through `_skill_items` itself -- `sluice/core/` must not import a
-    sub-app (CLAUDE.md's layering rule). Given the None arm the two readings now partition
-    a value the same way: blank under one is blank under the other, and every value
-    `_skill_items` raises on is one this returns None for. They still differ in DEGREE on a
-    non-blank value -- `_skill_items` also refuses an item carrying no name (`...`, `-`)
-    where this returns it as an item -- but both are then non-blank, which is all either
-    caller asks. `classify_skills_request` says why that residual difference cannot reach
-    a row.
-    """
-    raw = (entry.get("fields") or {}).get(_SKILLS_FIELD, "")
-    if not isinstance(raw, str):
-        return None
-    return {t.strip() for t in raw.split(",") if t.strip()}
-
-
-def classify_skills_request(experience_entries: list) -> list:
-    """One NOTICE naming the precondition a composed SKILLS section actually has, emitted
-    only while NO verified experience entry annotates a `Skills:` field (#259).
-
-    `cv/engine.py` asks for the section with
-    `skills_requested=any(es.skills for es in sources.entries.values())`, computed over
-    `bundle_sources(build_bundle(entries, ...))` where `entries` is
-    `read_evidence("experience", verified_only=True)` -- the FULL verified set on every
-    lead, since `cv/bundle.py`'s `rank` orders and never excludes. One corpus-wide fact
-    therefore decides it for every lead at once: with no `Skills:` value anywhere, no CV
-    ever gets a SKILLS section.
-
-    The Skills Inventory appears NOWHERE in that chain. It is framing the composer is
-    shown, licensing nothing (`EvidenceKind.read_by_composer`, `cited_by_gate=False`), and
-    `classify_store`'s row for it says exactly that -- while still being outweighed by the
-    `<verified> / <total>` ratio in front of the sentence and by sitting beside the
-    Experience Library row, where that same ratio genuinely IS what gates citability.
-    Measured on a vault whose every verified experience entry carried a blank `Skills:`:
-    that inventory row was the only thing doctor said on the subject, verifying all of it
-    changed nothing, and the real precondition was reported by nothing at all. This row is
-    that missing fact. It takes the `store` component so it is read beside the row it
-    corrects; `classify_skills_reconciliation` below uses `gates` because it
-    cross-references TWO corpora, whereas this is one corpus's own content, like
-    `classify_store`'s per-kind counts.
-
-    SUPPRESSED by any entry the gate would not read as blank, and that is what keeps the
-    claim exact rather than merely usually true. TWO shapes suppress, for one reason.
-    An entry that genuinely annotates the field is the obvious one. The other is an entry
-    `_skill_items` REFUSES -- a non-blank but nameless item (`...`, `-`), or a value it
-    cannot split at all (`_declared_skills` returns None) -- which raises out of
-    `build_bundle` before any compose and fails every lead in the batch. Firing there
-    would announce that no CV gets a SKILLS section about a corpus that in fact composes
-    no CV at all: true by accident, reassuring, and pointed at a remedy already taken.
-    So the row is emitted only where the two readings of the field agree that nothing is
-    annotated, which no difference in how strictly they read a NON-blank value can reach.
-    Zero is also the only count an operator can act on; a non-zero one asks for nothing.
-
-    It does NOT report the refused corpus itself. That is `classify_store`'s job -- it
-    already emits a per-kind DEAD row from the `<kind>_error` a store reports for a corpus
-    it cannot read -- and inventing a second, differently-worded row for it here would put
-    one fact in two places. This row's whole contribution is the count, so where the count
-    would mislead it says nothing.
-
-    ABSTAINS on an empty corpus rather than reporting `0 of 0`. `classify_store` already
-    emits a SETUP row there that BLOCKS `cv` (#242: `cv run` refuses a vault with nothing
-    verified), so the operator's next step is to verify an entry, not to annotate one that
-    does not exist yet -- and a row naming the further step would compete with the row
-    naming the blocking one.
-
-    NOTICE, never DEGRADED or SETUP, and no `blocks`: a vault with no `Skills:` annotation
-    anywhere is the shape EVERY vault had the day #168 landed (`_skill_items`' own "Blank
-    is absent") and is fully supported -- `cv run` composes a CV without the section, so
-    nothing is stopped. `--strict` in a cron job must not fail on it, the same posture
-    `classify_skills_reconciliation` and `classify_negatives_vs_skills` take and for the
-    same reason (see `DoctorReport.exit_code`).
-
-    Reports a COUNT, never a skill name. There is none to report at zero, and the rule
-    holds regardless: a `DoctorReport` is returned whole to MCP clients
-    (core/protocols.py's Store contract).
-    """
-    if not experience_entries:
-        return []
-    for e in experience_entries:
-        declared = _declared_skills(e)
-        # None (the gate cannot read this value) suppresses exactly as a real annotation
-        # does, and for the same reason: both mean this row's claim would be false.
-        if declared is None or declared:
-            return []
-    # Both labels derived from the registry `classify_store` reads its own subjects from,
-    # never hand-typed: the detail below distinguishes two corpora by name, and a second
-    # spelling of either is the two-sources-for-one-fact shape this file avoids elsewhere.
-    experience_label = EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1]
-    skills_label = EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]
-    return [ComponentCheck(
-        "store", f"{experience_label} ({_SKILLS_FIELD})", NOTICE,
-        f"0 of {len(experience_entries)} verified entries carry a {_SKILLS_FIELD}: field "
-        f"-- until one does, no CV gets a SKILLS section. The field goes on the "
-        f"{experience_label} entry note itself, not on a {skills_label} entry "
-        f"(job-sluice experience list)")]
-
-
-def classify_skills_reconciliation(experience_entries: list, skills_entries: list) -> list:
-    """Up to two NOTICE rows cross-referencing verified experience entries' `Skills:`
-    claims against the verified Skills Inventory (#168 Task 10) -- modelled on
-    `classify_negatives_vs_skills` immediately above: two hand-maintained corpora
-    nothing else here keeps in agreement, made VISIBLE rather than left to silently
-    drift.
-
-    Neither direction is an error. `Skills:` licenses a CV bullet's own numbers
-    RELATIONALLY (cv/bundle.py's `_skill_items`/`_entry_skills_line`) with no
-    requirement that the name it claims also exist as its own Skills Inventory entry --
-    a user may simply type a skill name straight into `Skills:` and never curate an
-    inventory entry for it at all. And a Skills Inventory entry is read by the composer
-    purely as FRAMING (`EvidenceKind.read_by_composer`, cited_by_gate=False) with no
-    requirement that any experience entry cite it back -- the spec's own words for this
-    row are "framing-only, licensing nothing". So both directions are NOTICE, never
-    DEGRADED, the same posture `classify_negatives_vs_skills` and `classify_gate`'s
-    declared-role rows take:
-    `--strict` in a cron job must not fail an install that simply has not (yet, or
-    ever) linked the two corpora together (see `DoctorReport.exit_code`'s own
-    reasoning for why NOTICE is excluded from the count by construction).
-
-    IDENTITY. An experience entry's `Skills:` value is free TEXT a user typed into an
-    ordinary frontmatter field, never reduced. A Skills Inventory entry's `title` is
-    the STORED FILENAME, which for every entry `propose_evidence` created is
-    `evidence_slug(name)` -- lowercase, dash-separated (core/vault.py). Comparing the
-    two verbatim would therefore almost never match a real pair ("Example Widget3" vs
-    "example-widget3"). `_keys` reduces a typed name through the SAME `evidence_slug`
-    call `Sluice.verify_evidence_interactive`'s own `--id` lookup already imports and
-    uses (`entry["title"] == only or entry["title"] == reduced`, core/app.py), applying
-    the identical verbatim-or-reduced comparison shape around it. The REDUCTION cannot
-    drift between the two call sites since it is one shared function; the comparison
-    itself is written independently at each -- currently identical, so the two checks
-    agree today, but that agreement is not structurally enforced the way sharing the
-    reduction is. A name that fails to reduce (`evidence_slug` raises on an
-    all-punctuation name) falls back to the verbatim form alone, mirroring that same
-    call site.
-
-    PARSING. `Skills:` is comma-separated free text, split HERE rather than through
-    `cv/bundle.py:_skill_items` -- `sluice/core/` must not import a sub-app (CLAUDE.md's
-    layering rule). Verified narrowly, not as a blanket claim about `sluice/core/` as a
-    whole: `core/doctor.py` ITSELF imports nothing from `sluice.cv`, which is the
-    property this function's own layering actually depends on. `core/app.py` (a
-    DIFFERENT `core/` module, the documented composition root every sub-app is wired
-    through) does import from `sluice.cv`, lazily, inside individual method bodies --
-    `sluice.cv.config` inside BOTH `Sluice.compose_cv` and `Sluice.doctor` itself (the
-    method that builds the `DoctorReport` this function's rows end up in), and
-    `sluice.cv.engine` inside `compose_cv` alone. Those imports are deliberate (the
-    composition root doing its job) and unrelated to this function's own layering
-    claim, which is only ever about `core/doctor.py`. This reconciliation is also
-    informational rather than gate-enforcing, so it must never RAISE the way that
-    function's own per-token validation does on a malformed entry -- doctor never
-    refuses (this module's own house rule, stated at `DoctorReport.exit_code` and in
-    CLAUDE.md). A `Skills` VALUE that is present but not a `str` (an `int`, a `list`)
-    is handled by ABSTAINING -- treated as no claim at all -- rather than by
-    coercing it with `str()`: stringifying a list renders Python's own repr
-    (brackets, quotes, comma-separated elements), and this function's own comma-split
-    would then read those as further "skill names" and could carry a non-string
-    Store's own returned content into a comparison this function's docstring
-    elsewhere promises reports only a COUNT. Abstaining keeps that promise; coercing
-    would not.
-
-    REPORTS A COUNT, never the skill's own name: a `DoctorReport` reaches MCP clients
-    whole (core/protocols.py's Store contract), and "no doctor row carries user-authored
-    text today" is this codebase's own standing rule (see the spec's section 7) -- a
-    skill name is exactly that, this person's own claimed expertise.
-
-    ABSTAINS unless BOTH corpora contribute something -- at least one `Skills:` claim
-    and at least one inventory entry -- exactly as `classify_negatives_vs_skills` above
-    abstains on either empty input and again on a vocabulary that reduces to nothing.
-    A reconciliation is a statement about two corpora DRIFTING; with one side empty
-    there is no drift to report, only the other side counted at 100%. Both such installs
-    are fully supported and neither is a mistake: `Skills:` licenses a bullet's numbers
-    RELATIONALLY with no requirement that an inventory entry exist, and an inventory
-    entry is framing that requires no experience entry to cite it back. So a row fired
-    against an empty other side would be permanent, uninformative, and pointed at a
-    remedy the user has deliberately not taken -- the empty-means-abstain posture
-    CLAUDE.md states for every preference gate, applied here to a NOTICE row instead.
-    (Before this, an empty inventory reported EVERY declared `Skills:` name as unmatched
-    while the mirror row silently abstained, and an install with no `Skills:` annotation
-    anywhere -- the shape every pre-#168 vault has -- reported every inventory entry as
-    unclaimed. The asymmetry was in the counts, not in the rule.)
-
-    Past that guard both counts are computed independently and each row is still
-    suppressed at zero, so a partial overlap reports only the direction that actually
-    disagrees.
-    """
-    from sluice.core.vault import evidence_slug
-
-    def _keys(name: str) -> set:
-        try:
-            return {name, evidence_slug(name)}
-        except ValueError:
-            return {name}
-
-    # `_declared_skills` above, not a second split written here: `classify_skills_request`
-    # decides whether ANY entry annotates the field and this decides WHAT each one claims,
-    # and the two questions must be answered off one reading of the note. Its docstring
-    # carries the absent-key / None-value / non-str handling that used to live here.
-    claimed = set()
-    for e in experience_entries:
-        # `or set()`: a value `_declared_skills` could not read (None) contributes no NAME
-        # here, which is what this row has always done with one -- unlike
-        # `classify_skills_request`, which must suppress on it. One reader, two mappings,
-        # each stated where it is made.
-        claimed |= _declared_skills(e) or set()
-
-    titles = {e.get("title", "") for e in skills_entries}
-    # The abstain, on the DERIVED vocabularies rather than the raw arguments -- the same
-    # two-stage shape `classify_negatives_vs_skills` uses, and for the same reason: an
-    # experience corpus none of whose entries carries a usable `Skills:` value is the
-    # identical "nothing to reconcile" state as no experience corpus at all, and a raw
-    # `if not experience_entries` guard would miss it. See the docstring for why one
-    # empty side is an abstain rather than a 100% row.
-    if not claimed or not titles:
-        return []
-
-    claimed_keys = set().union(*(_keys(n) for n in claimed))
-
-    unclaimed = sum(1 for title in titles if title not in claimed_keys)
-    unmatched = sum(1 for name in claimed if not _keys(name) & titles)
-
-    # Derived from the SAME registry `classify_store` above reads its own per-kind
-    # subjects from -- but suffixed, DELIBERATELY not reused bare: `classify_store`
-    # already emits a "store"-component row at the bare "Skills Inventory"/
-    # "Experience Library" subject for each corpus's own total/verified/pending
-    # count, and a reader (or a test keying on `subject` alone rather than the
-    # `(component, subject)` pair together) could not tell that row apart from this
-    # one. Measured: a mutation deleting this function's call site in Sluice.doctor
-    # left `test_the_skills_reconciliation_runs_through_the_real_wiring` GREEN when
-    # the two subjects were bare, because `classify_store`'s own rows alone already
-    # satisfied the subject-set assertion.
-    experience_label = EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1]
-    skills_label = EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]
-
-    out = []
-    if unclaimed:
-        out.append(ComponentCheck(
-            "gates", f"{skills_label} (unclaimed)", NOTICE,
-            f"{unclaimed} inventory skill(s) evidenced by no entry -- "
-            f"job-sluice experience list"))
-    if unmatched:
-        out.append(ComponentCheck(
-            "gates", f"{experience_label} (unmatched)", NOTICE,
-            f"{unmatched} entry Skills: name(s) absent from the inventory -- "
-            f"job-sluice skills list"))
-    return out
-
-
 # What an EMPTY list means, per role (#245). The sweep is generic over every
 # list-typed field, and "empty" does not mean one thing across them, so before
 # this it reported one thing anyway.
@@ -1532,7 +1053,7 @@ def classify_gate(owner: str, name: str, value: list, role: str) -> ComponentChe
 # whole. Pure: Sluice.doctor reads the store once and passes what it read.
 
 def classify_cv_layout(layout, error=None) -> ComponentCheck:
-    """The `store / cv_layout` row: the note every CV is assembled into (spec §9.1).
+    """The `store / cv_layout` row: the note every CV is assembled into (#364 spec §9.1).
 
     From ONE read, which Sluice.doctor makes in its own `try` (#259: one bad note never
     collapses the store rows), passing the parsed layout or the exception. It blocks `cv`
@@ -1563,7 +1084,7 @@ def classify_cv_layout(layout, error=None) -> ComponentCheck:
 
 def classify_tools(experience_entries) -> list:
     """One DEAD row, blocking `cv`, when a verified experience entry's `Tools:` holds an
-    item the gate cannot use (spec §4.2): `cv run` refuses before any spend then, naming
+    item the gate cannot use (#364 spec §4.2): `cv run` refuses before any spend then, naming
     the entry and the item on the user's own terminal; this row counts them."""
     from sluice.core.tokens import tool_items
     bad = 0
@@ -1582,16 +1103,38 @@ def classify_tools(experience_entries) -> list:
 
 
 def classify_cv_eligibility(layout, experience_entries) -> list:
-    """D14 warning rows: verified entries no CV can cite (spec §4.3, D6).
+    """D14 rows: verified entries no CV can cite (#364 spec §4.3, D6).
 
-    `unmatched` -- a Company: matching no role's heading or employers, nor any_role or
-    omitted -- and `blank` -- no Company: at all -- are citable nowhere, and the CV still
-    composes. So each is DEGRADED, blocks nothing, and is listed by default: a user who
-    verified an entry and never sees its work on a CV is owed the reason. `omitted` is the
-    user's own choice and draws nothing."""
-    from sluice.core.layout import placement_counts
+    `unmatched` -- a Company: matching no role's employers (a role's heading when it lists
+    none), nor any_role or
+    omitted -- and `blank` -- no Company: at all -- are citable nowhere, and while some
+    other entry is citable the CV still composes. So each is DEGRADED, blocks nothing, and
+    is listed by default: a user who verified an entry and never sees its work on a CV is
+    owed the reason. `omitted` is the user's own choice and draws nothing.
+
+    When NO slot can cite anything while the layout asks for bullets, `cv run` refuses the
+    whole run (cv/engine.py::missing_prerequisites), so a row that blocked nothing would
+    call the install fine about the exact thing that stops the next command. That case adds
+    one DEAD row blocking `cv`, decided by the SAME core/layout.py::no_citable_slot over the
+    same build_slots the refusal runs, so the two cannot disagree. DEAD, not SETUP: the user
+    supplied both the layout and the entries, and the pair does not work -- the
+    "something broken" side of the #243 distinction. The warning counts stay beside it, as
+    its causes; an all-omitted vault has none, which is why the row names omitted too."""
+    from sluice.core.layout import build_slots, no_citable_slot, placement_counts
     counts = placement_counts(layout, experience_entries)
     rows = []
+    # The ids are only labels: build_slots keys eligibility by them, exactly as the refusal
+    # labels them.
+    slots = build_slots(layout, [dict(e, id=str(i)) for i, e in enumerate(experience_entries)])
+    if experience_entries and no_citable_slot(slots):
+        n = len(experience_entries)
+        rows.append(ComponentCheck(
+            "store", "cv_layout (no citable entry)", DEAD,
+            f"no role in the CV Layout can cite any of your {n} verified experience "
+            f"entr{'y' if n == 1 else 'ies'}, so `cv run` refuses -- give each a Company: "
+            "that equals one of a role's employers (its heading when it lists none), or list "
+            "it under any_role, and take it off omitted if it is there "
+            "(job-sluice experience list)", blocks=("cv",)))
 
     def pronoun(n):
         return "it" if n == 1 else "them"
@@ -1604,7 +1147,7 @@ def classify_cv_eligibility(layout, experience_entries) -> list:
         rows.append(ComponentCheck(
             "store", "cv_layout (not on your CV)", DEGRADED,
             f"{entries(n)} name{'s' if n == 1 else ''} a Company: that matches no role's "
-            "heading or employers, nor "
+            "employers (a role's heading when it lists none), nor "
             "any_role or omitted, in the CV Layout, so no CV can cite "
             f"{pronoun(n)} -- add the company to a role, or to omitted if leaving it off is "
             "deliberate "
@@ -1619,8 +1162,50 @@ def classify_cv_eligibility(layout, experience_entries) -> list:
     return rows
 
 
+def classify_skill_labels(named_entries, kinds) -> list:
+    """An upgrade warning: verified notes whose names a CV's SKILLS section may list
+    (`kinds`, the `names_in_skills_pool` kinds) that carry no `Label:`.
+
+    A CV shows such a note under `Label:`, else its title (cv/selection.py::cv_name). Since
+    4.0 `skills add` keeps the typed name in `Label:` because the filename it writes is a
+    slug, so a note it made BEFORE 4.0 has no `Label:` and reaches a CV under its slug.
+    Nothing is broken -- the CV still composes -- so DEGRADED, blocking nothing, listed by
+    default: the user cannot otherwise learn why a skill reads oddly until a CV goes out.
+    A COUNT and the listing command only, never a title: a report reaches MCP clients whole.
+    The blank test is cv_name's own, so the two cannot disagree about what is missing.
+
+    Only a SLUG-SHAPED title counts: one `evidence_slug` -- the reduction `skills add` filed
+    every pre-4.0 note under -- leaves unchanged. A note made by hand and titled with its
+    real name ("Example Query") already reaches a CV under that name, so counting it would
+    warn on every run, and fail `doctor --strict`, on a vault with nothing to fix. The
+    reduction is IMPORTED, never restated, so this test cannot drift from what `add` wrote.
+    A hand title that happens to be slug-shaped (a single lowercase word) is counted too:
+    nothing local tells it from an `add` note, and it reaches a CV exactly as a slug would."""
+    from sluice.core.vault import evidence_slug
+
+    def slug_shaped(title):
+        try:
+            return evidence_slug(title) == title
+        except ValueError:   # reduces to nothing usable, so `add` cannot have written it
+            return False
+
+    missing = sum(1 for e in named_entries
+                  if not str((e.get("fields") or {}).get("Label") or "").strip()
+                  and slug_shaped(str(e.get("title") or "")))
+    if not missing:
+        return []
+    listers = " / ".join(f"job-sluice {kind} list" for kind in kinds)
+    return [ComponentCheck(
+        "store", "cv skills (no Label)", DEGRADED,
+        f"{missing} verified skill note{'' if missing == 1 else 's'} ha"
+        f"{'s' if missing == 1 else 've'} a slug for a title and no Label:, so a CV lists "
+        f"{'it' if missing == 1 else 'each'} under the slug -- `skills add` named notes that "
+        "way before 4.0; add `Label:` with the name as a CV should show it "
+        f"({listers} shows which: a slug title with Label: (none))", warn_by_default=True)]
+
+
 def classify_attribution(experience_entries) -> list:
-    """The spec §6.6 warning. On an UPGRADED vault -- a verified entry still carries a
+    """The #364 spec §6.6 warning. On an UPGRADED vault -- a verified entry still carries a
     non-empty legacy Skills: and none declares Tools: -- the misattributed-tool check is
     off, and the user who annotated their entries is owed the reason. A vault with neither
     field is an unconfigured install and draws nothing (empty config abstains)."""
@@ -1641,18 +1226,19 @@ def classify_attribution(experience_entries) -> list:
         "store", "cv attribution check", DEGRADED,
         f"off: no verified experience entry declares Tools:, and {legacy} still "
         f"carr{'ies' if legacy == 1 else 'y'} the retired Skills: -- sluice no longer reads "
-        "Skills:; move each entry's tools into Tools: to turn the check on "
+        "Skills:; copy each entry's named tools into Tools: to turn the check on, leaving "
+        "practice words out, since every declared item is checked in every bullet "
         "(docs/CONFIGURATION.md)", warn_by_default=True)]
 
 
 def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
-    """The spec §8 warning: a `cv.fabrication_decoys` entry matching, as a whole term, the
+    """The #364 spec §8 warning: a `cv.fabrication_decoys` entry matching, as a whole term, the
     user's own data -- a verified entry's Tools: item, a verified skill's CV name, or any CV
     Layout text. The ban contradicts that data: it keeps the tool or skill off every CV's
     skills list, while layout text renders regardless. `skill_names` arrive already derived
     (Sluice.doctor passes cv/selection.py::cv_name's answers), so this and the pool agree.
     Decoys are named by POSITION, never echoed."""
-    from sluice.core.layout import layout_text
+    from sluice.core.layout import layout_strings
     from sluice.core.tokens import find_term, tool_items
 
     def items(entry):
@@ -1662,7 +1248,9 @@ def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
             return []
 
     texts = ([t for e in experience_entries for t in items(e)] + list(skill_names)
-             + ([layout_text(layout)] if layout is not None else []))
+             # Each layout string on its own: searching their join matched a phrase across
+             # two of them, a warning about text the user never wrote.
+             + (list(layout_strings(layout)) if layout is not None else []))
     hits = [i for i, d in enumerate(decoys, 1) if any(find_term(t, d) for t in texts)]
     if not hits:
         return []

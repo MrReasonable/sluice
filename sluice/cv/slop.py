@@ -74,13 +74,13 @@ _RETIRED_PHRASES: dict[str, str] = {}
 
 
 def check_hard(text: str):
-    """The BLOCKING tier: em dash and literal '--', over the WHOLE document.
+    """The BLOCKING tier: em dash and literal '--', over whatever text it is handed.
 
-    Deliberately UNSCOPED, unlike check_phrases below -- an em dash in an employer
-    line is always fixable without inventing anything (retype the dash), so there is
-    no reason to exempt any line from it. A phrase complaint about the same employer
-    line would only be answerable by renaming the employer, which is why that check
-    (check_phrases) instead takes a caller-scoped subset of lines.
+    cv/engine.py hands it the text the MODEL wrote -- the profile and each kept bullet
+    (cv/document.py::model_lines) -- and never vault text: a dash in an employer line or
+    a certificate is the user's own and renders as written (#364/#365/#368). Within the
+    model's text it scopes nothing, since a dash there is always fixable without
+    inventing anything (retype it).
     """
     out = []
     for i, line in enumerate(text.splitlines(), 1):
@@ -94,10 +94,10 @@ def check_phrases(lines, *, allow=()):
     """The STYLE tier, over the (lineno, text) pairs the caller chose to scope it to.
 
     Takes LINES rather than a document, deliberately: this module stays pure and
-    dependency-free (stdlib `re` only), and the PROFILE/WORK scoping that keeps this
-    check off employer/fact lines lives in cv/engine.py, which already owns the tier
-    policy and the `slop_allow` list. Importing cv/validate.py here to do that split
-    would invert the layering for no gain -- this function has NO opinion about which
+    dependency-free (stdlib `re` only), and the scoping that keeps this check off
+    employer/fact lines lives in cv/engine.py (via cv/document.py::model_lines), which
+    already owns the tier policy and the `slop_allow` list. Importing either here to do
+    that split would invert the layering for no gain -- this function has NO opinion about which
     lines it receives; it matches whatever it is handed. See tests/test_cv_slop.py for
     why handing it an unscoped line (e.g. an employer name) would be a caller bug, not
     a bug here.
@@ -129,9 +129,8 @@ def check_phrases(lines, *, allow=()):
 def check_text(text: str):
     """Back-compat wrapper: (hard errors, phrase warns over EVERY line, unscoped).
 
-    Retained only for the fixture-cleanliness guards in tests/test_cv_slop.py,
-    tests/test_cv_engine.py and tests/test_cv_parse.py, which use it to assert a
-    fixture is slop-clean end to end. Production code reads check_hard/check_phrases
+    Retained only for the fixture-cleanliness guards in tests/test_cv_slop.py, which use
+    it to assert a fixture is slop-clean end to end. Production code reads check_hard/check_phrases
     directly so the engine can scope the phrase tier (see check_phrases above).
     """
     return check_hard(text), check_phrases(list(enumerate(text.splitlines(), 1)))

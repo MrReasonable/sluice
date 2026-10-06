@@ -1332,6 +1332,12 @@ _BACKEND_HELP = (
 
 # ── cv ────────────────────────────────────────────────────────────────────
 def cmd_cv_run(args, config) -> int:
+    """`job-sluice cv run`: compose CVs through the facade and print one summary line per result.
+    Exits 1 when `--lead` matched no lead, was ambiguous, or ended in `error`; and, under
+    `--lead` AND `--all-shortlist` alike, when any result is `backend-unavailable` or
+    `skipped-config` -- even in a batch that rendered other leads first, since a configuration
+    refusal names a note the user must fix and a scheduled run has to see it. A batch's own
+    `error` and ambiguous results do not change its exit code. Otherwise exits 0."""
     from sluice.core.app import Sluice
 
     results = Sluice(config).compose_cv(
@@ -1354,17 +1360,16 @@ def cmd_cv_run(args, config) -> int:
     # --all-shortlist (unlike the ambiguous branch below, which is genuinely
     # per-lead): nothing composed at all here, for a reason the user can fix in
     # one place, so both call shapes exit non-zero with the same actionable line
-    # rather than a batch silently reporting zero rendered CVs.
-    if any(r.status == "skipped-config" for r in results):
-        # The path comes from the constant, never a literal: `cmd_init` below already
-        # imports the same name, so a hardcoded copy here would keep sending users to a
-        # file that had moved, silently and with nothing red.
-        from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
-        print(f"cv: the vault's Candidate Profile note ({CANDIDATE_PROFILE_RELPATH}) has "
-              "no declared name or contact details -- fill it in before composing (the "
-              "name becomes the PDF's headline, and the contact block is emitted "
-              "verbatim)", file=sys.stderr)
-        return 1
+    # rather than a batch silently reporting zero rendered CVs. The reason now comes
+    # from `CvResult.error`, because two notes can refuse a lead (the Candidate Profile,
+    # or a CV Layout deleted mid-run, #364/#365/#368), and only the engine knows which --
+    # one line per DISTINCT refusal, so a batch refused for one reason prints it once.
+    #
+    # Printed LAST, after every other result's line, not by returning here: a note can
+    # change mid-batch, so leads before it may already be rendered or held for sign-off,
+    # and returning first hid them -- a CV served with no line saying so. The
+    # skipped-config rows themselves print no per-result line; the refusal says why.
+    refusals = sorted({r.error for r in results if r.status == "skipped-config"})
     # A named --lead that resolved to two notes composed for NEITHER, so it exits non-zero
     # for the same reason the no-match branch above does: the user asked for a CV and did
     # not get one. Falling through to the per-result loop would print a `skipped-ambiguous`
@@ -1395,11 +1400,16 @@ def cmd_cv_run(args, config) -> int:
         return 1
 
     for r in results:
+        if r.status == "skipped-config":
+            continue
         print(f"cv: {r.status} {r.lead} served={r.served} "
               f"violations={len(r.violations)} audit_flags={len(r.audit_flags)} "
               f"slop={len(r.slop)} voice_flags={len(r.voice_flags)} terms={len(r.terms)} "
+              f"skills_dropped={len(r.skills_dropped)} "
+              f"bullets_trimmed={len(r.bullets_trimmed)} "
               f"dossier_failed={r.dossier_failed} "
               f"skills_unreadable={r.skills_unreadable} "
+              f"attribution_check_off={r.attribution_check_off} "
               f"artefacts_failed={r.artefacts_failed}",
               file=sys.stderr)
         # Every finding the summary line COUNTS also prints in full, in that line's own
@@ -1428,9 +1438,8 @@ def cmd_cv_run(args, config) -> int:
         #
         # LABELS only where the producer does not label itself -- the rule #167 set here.
         # `r.violations` entries all arrive with their own ALL-CAPS category
-        # (cv/validate.py's UNSOURCED SKILL / INVENTED METRIC / ..., cv/engine.py's
-        # STRUCTURAL, renderers/template.py's FORMAT, whose `precheck` docstring says it
-        # chose that prefix to match "the shape the engine's other gate messages take"),
+        # (cv/validate.py::check_selection's INVENTED METRIC / WRONG EMPLOYER / ..., and
+        # cv/reply.py's REPLY for a reply that is not what the prompt asked for),
         # `r.slop` entries their own "SLOP <label>: <snippet>" (cv/engine.py), and
         # `r.terms` entries their own "UNBUNDLED TERM ..." (built in cv/engine.py from
         # cv/terms.py's findings, #194);
@@ -1467,6 +1476,12 @@ def cmd_cv_run(args, config) -> int:
             print(f"  VOICE: {vf}", file=sys.stderr)
         for t in r.terms:
             print(f"  {t}", file=sys.stderr)
+        # #364 spec §9.2: what the selection dropped, each kind with its own label so a reader
+        # never has to guess which list a line came from. Never a refusal.
+        for d in r.skills_dropped:
+            print(f"  DROPPED: {d}", file=sys.stderr)
+        for t in r.bullets_trimmed:
+            print(f"  TRIMMED: {t}", file=sys.stderr)
     # #18: a job description that did not arrive does not stop composition (cv/engine.py
     # proceeds either way so the fabrication gate still runs), so "rendered" alone would
     # silently hide that some of these CVs were composed against no real job description
@@ -1498,7 +1513,9 @@ def cmd_cv_run(args, config) -> int:
         _notify_reporting("job-sluice cv: " + "; ".join(
             f"{r.served} (audit flags: {len(r.audit_flags)})" for r in rendered),
             config=config, label="cv-summary")
-    return 1 if unavailable or errored else 0
+    for reason in refusals:
+        print(f"cv: {reason}", file=sys.stderr)
+    return 1 if refusals or unavailable or errored else 0
 
 
 def _print_signoff_claims(slug: str, claims: list) -> None:
@@ -2345,9 +2362,9 @@ def cmd_init(args, config, *, asker=None) -> int:
         for kind, names in collected.items():
             # `verify_outcome`, not a literal "to make them citable": the gate LICENSES
             # `experience` alone, and this line claimed otherwise for every kind (#164
-            # review, M2). Since #165 `skills` is a third case again -- read by the
-            # composer as framing, licensed by nothing -- which is exactly why the helper
-            # is keyed on the registry rather than on prose here.
+            # review, M2). `skills` is a third case -- framing for the composer and a
+            # source of SKILLS-section names, yet licensing no figure -- which is exactly
+            # why the helper is keyed on the registry rather than on prose here.
             outcome = verify_outcome(EVIDENCE_KINDS[kind], subject="them")
             print(f"{kind}: proposed {len(names)} entr{'y' if len(names) == 1 else 'ies'} "
                  f"-- run `job-sluice {kind} verify` to {outcome}")
@@ -2745,7 +2762,7 @@ def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
                           ("Not working", v.broken_rows),
                           ("Working, but not properly",
                            v.degraded_blocking_rows + strict_only),
-                          # D14: degraded rows that block nothing but are worth reading.
+                          # #364 D14: degraded rows that block nothing but are worth reading.
                           ("Worth a look (these block nothing)", v.warning_rows)):
         if not rows:
             continue
@@ -3140,8 +3157,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # Nine parsers from ONE loop over the registry, so the CLI's three groups cannot
     # drift from the store's three kinds (#164) and a fourth store later is one entry.
-    from sluice.evidence.commands import (cmd_evidence_add, cmd_evidence_list,
-                                          cmd_evidence_verify, field_flag)
+    from sluice.evidence.commands import (RETIRED_FIELDS, cmd_evidence_add,
+                                          cmd_evidence_list, cmd_evidence_verify,
+                                          field_flag, retired_flag_action)
     for kind, spec in EVIDENCE_KINDS.items():
         group = top.add_parser(kind, help=f"capture and verify {kind} evidence")
         sub = group.add_subparsers(dest=f"{kind}_cmd", required=True)
@@ -3152,6 +3170,14 @@ def _build_parser() -> argparse.ArgumentParser:
         for field in spec.fields:
             add.add_argument(field_flag(field), default="",
                              help=f"the entry's {field} field")
+        # A retired field's flag, hidden from --help, refuses naming its replacement
+        # (sluice/evidence/commands.py::RETIRED_FIELDS says why it exists at all).
+        for field in spec.legacy_fields:
+            if field in RETIRED_FIELDS:
+                # dest SUPPRESS: it stores nothing, because it never lets a parse finish.
+                add.add_argument(field_flag(field), nargs="?", help=argparse.SUPPRESS,
+                                 dest=argparse.SUPPRESS,
+                                 action=retired_flag_action(field, RETIRED_FIELDS[field]))
         add.add_argument("--body", default="", help="free-text body")
         add.add_argument("--body-file", default="",
                          help="read the body from a file, or '-' for stdin")

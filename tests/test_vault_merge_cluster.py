@@ -7,7 +7,8 @@ import shutil
 
 import pytest
 
-from sluice.core.vault import Vault, _fm_dict, _fold_note_name, _split_frontmatter
+from sluice.core.names import fold_note_name
+from sluice.core.vault import Vault, _fm_dict, _split_frontmatter
 from sluice.core.protocols import MalformedNoteField, VaultConflict
 from tests.conftest import LOCATIONS, racing_read, require_case_sensitive_fs
 
@@ -257,5 +258,5 @@ def test_two_losers_differing_only_in_case_do_not_both_seat_in_merged(tmp_path):
 
     entries = sorted(os.listdir(os.path.join(v.leads_dir, "_merged")))
     assert len(entries) == 2, f"both losers must be archived: {entries}"
-    assert len({_fold_note_name(e) for e in entries}) == 2, (
+    assert len({fold_note_name(e) for e in entries}) == 2, (
         f"_merged/ holds two names a case-insensitive replica cannot both hold: {entries}")

@@ -99,6 +99,7 @@ class FakeVault:
         self._candidate, self._notes = candidate, list(notes)
         self._skills_error = skills_error
         self.tailored, self.holds = {}, {}
+        self.evidence_reads = []
 
     def read_cv_layout(self):
         return self._layout
@@ -107,6 +108,7 @@ class FakeVault:
         return self._candidate
 
     def read_evidence(self, kind, verified_only=True):
+        self.evidence_reads.append(kind)
         if kind == "skills" and self._skills_error is not None:
             raise self._skills_error
         return [dict(e) for e in self._evidence.get(kind, [])]

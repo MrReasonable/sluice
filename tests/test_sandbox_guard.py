@@ -5,6 +5,8 @@ would itself be inert (the same reason tests/test_hermeticity.py exists for the 
 """
 import os
 
+import pytest
+
 import tests.conftest as guard
 
 
@@ -114,3 +116,63 @@ def test_a_bytes_path_is_recorded_without_raising(tmp_path, request):
         assert [v[1] for v in mine] == ["os.mkdir"], mine
     finally:
         guard._WATCHED.remove(watched)
+
+
+# --- the ENFORCEMENT arms -------------------------------------------------------------
+# Every control above asserts the hook RECORDS and then clears its own records, so a guard
+# that recorded and never failed anything would pass them all. These drive each fixture's
+# generator directly (`__wrapped__` is the undecorated function) and assert it FAILS on a
+# record, and stays quiet without one.
+
+def _finish(gen):
+    """Run a fixture generator's teardown; return the exception it raised, or None."""
+    try:
+        next(gen)
+    except StopIteration:
+        return None
+    except BaseException as e:   # pytest.fail raises an OutcomeException, a BaseException
+        return e
+    raise AssertionError("the fixture yielded twice")
+
+
+def _function_guard(nodeid):
+    request = type("Request", (), {})()
+    request.node = type("Node", (), {"nodeid": nodeid})()
+    return guard._sandbox_guard.__wrapped__(request)
+
+
+def test_a_recorded_violation_fails_its_test_at_teardown():
+    armed, planted = guard._ARMED["nodeid"], "planted/test_x.py::test_writes"
+    try:
+        quiet = _function_guard(planted)
+        next(quiet)
+        assert _finish(quiet) is None, "the guard failed a test that recorded nothing"
+        gen = _function_guard(planted)
+        next(gen)
+        guard._VIOLATIONS.append((planted, "open", "/planted/cv-output/x.txt"))
+        raised = _finish(gen)
+        assert isinstance(raised, pytest.fail.Exception), raised
+        assert "wrote into a cwd-relative path default" in str(raised)
+        assert "open /planted/cv-output/x.txt" in str(raised)
+    finally:
+        guard._VIOLATIONS[:] = [v for v in guard._VIOLATIONS if v[0] != planted]
+        guard._ARMED["nodeid"] = armed
+
+
+def test_a_watched_path_that_appears_during_the_session_fails_the_session(tmp_path):
+    watched = str(tmp_path / "cv-output")
+    guard._WATCHED.append(watched)
+    try:
+        quiet = guard._sandbox_session_check.__wrapped__()
+        next(quiet)
+        assert _finish(quiet) is None, "the session check failed a session that wrote nothing"
+        gen = guard._sandbox_session_check.__wrapped__()
+        next(gen)
+        os.mkdir(watched)        # as a subprocess would: the check reads the disk, not the hook
+        raised = _finish(gen)
+        assert isinstance(raised, AssertionError), raised
+        assert "the test session created cwd-relative path defaults" in str(raised)
+        assert watched in str(raised)
+    finally:
+        guard._WATCHED.remove(watched)
+        guard._VIOLATIONS[:] = [v for v in guard._VIOLATIONS if v[2] != watched]

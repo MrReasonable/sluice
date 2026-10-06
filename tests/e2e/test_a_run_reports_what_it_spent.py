@@ -21,7 +21,7 @@ from sluice.ingest import sources as _sources
 
 from tests.harness import (
     FakeGoogleClient,
-    PASSING_CV,
+    PASSING_REPLY,
     ScriptedBackend,
     build_harness,
 )
@@ -42,7 +42,7 @@ def _rows(path):
 def test_a_run_reports_what_it_spent(tmp_path, monkeypatch, capsys):
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS)
     backend = ScriptedBackend(
-        cv_by_company={"Example Foundry": PASSING_CV},
+        cv_by_company={"Example Foundry": PASSING_REPLY},
         default_verdict="shortlist",
         track_response=[("REJECTION-SIGNAL",
                          {"lead": "Example Foundry", "type": "rejection",

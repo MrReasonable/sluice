@@ -182,15 +182,16 @@ def test_no_answer_emits_a_scalar_that_loads_as_a_bool_where_an_int_is_meant(tmp
 
 
 def test_nasty_answers_still_yield_loadable_yaml(tmp_path):
-    # cv_employers, not cv_name (#133/#107: cv_name no longer exists -- identity moved
-    # to the vault, and load_cv_config now RAISES on cv.name rather than loading it, so
-    # a hostile-character regression there could not even be observed through this
-    # loader any more). cv_employers is parse_csv-shaped, same as accept_titles below,
-    # but on a DIFFERENT sub-app's config block, so this still proves the emitter's
-    # escaping survives the loader across more than one `*Config`.
+    # reject_companies, not cv_name (#133/#107: cv_name no longer exists -- identity moved
+    # to the vault, and load_cv_config now RAISES on cv.name rather than loading it) and
+    # not cv_employers (#364: the question and its cv.employers key are retired).
+    # reject_companies is parse_csv-shaped, same as accept_titles below, but a different
+    # triage key and so a second witness of the emitter's list escaping; the control-
+    # character leg below uses the ROOT-level relevance_keep, so the emitter's escaping is
+    # proven to survive the loader across more than one block.
     #
     # vault_dir carries the SCALAR branch of _render_value (`scalar(value)`, not
-    # `flow_list(value)`) -- without it, cv_employers/accept_titles being both LIST-
+    # `flow_list(value)`) -- without it, reject_companies/accept_titles being both LIST-
     # shaped left `scalar()` with no hostile witness in this file at all. Mutating
     # `_render_value`'s scalar branch from `scalar(value)` to a bare `value` survived
     # the whole suite before this row was added (measured); it reddens here now.
@@ -199,10 +200,10 @@ def test_nasty_answers_still_yield_loadable_yaml(tmp_path):
     # a bare passthrough (`str(data.get("vault_dir") or "")`, core/config.py) -- so an
     # arbitrary hostile string is a legitimate answer to give it here.
     path = _written(tmp_path, {"vault_dir": '/example/O\'Example: "the #1"',
-                               "cv_employers": ['O\'Example: "the #1"'],
+                               "reject_companies": ['O\'Example: "the #1"'],
                                "accept_titles": ["yes", "#hash", "back\\slash"]})
     assert load_config(path).vault_dir == '/example/O\'Example: "the #1"'
-    assert load_cv_config(path).employers == ['O\'Example: "the #1"']
+    assert load_triage_config(path).reject_companies == ['O\'Example: "the #1"']
     assert load_triage_config(path).accept_titles == ["yes", "#hash", "back\\slash"]
 
     # The in-situ CONTROL-character arm, restored. `test_onboard_emit.py`'s
@@ -215,9 +216,9 @@ def test_nasty_answers_still_yield_loadable_yaml(tmp_path):
     # CONTROLS corpus at all -- nothing any longer proved a control character survives
     # `build_plan`'s REAL rendered text through the REAL loader. `\x0b`/`\x0c` are the two
     # `test_onboard_emit.py`'s CONTROLS corpus names as routine copy-paste artefacts (out of a
-    # CV or a PDF); driven here through both a root scalar (`vault_dir`) and a nested sub-app
-    # list (`cv_employers`), the same two shapes the NASTY-corpus assertions above already
-    # cover, without reintroducing a retired `cv.name`/`cv.contact` key.
+    # CV or a PDF); driven here through both a root scalar (`vault_dir`) and a root list (`relevance_keep`);
+    # the NASTY-corpus leg above covers a nested sub-app list, and neither reintroduces a
+    # retired `cv.name`/`cv.contact`/`cv.employers` key.
     # Its OWN directory, so its config file is a DIFFERENT file from the nasty-answer one
     # above. `_written` always writes `<dir>/config.yaml`, so a shared `tmp_path` made
     # `ctrl_path == path` and the second call silently overwrote the first: the assertions
@@ -227,10 +228,10 @@ def test_nasty_answers_still_yield_loadable_yaml(tmp_path):
     ctrl_dir = tmp_path / "control-characters"
     ctrl_dir.mkdir()
     ctrl_path = _written(ctrl_dir, {"vault_dir": "/example/a\x0bb\x0cc",
-                                    "cv_employers": ["a\x0bb"]})
+                                    "relevance_keep": ["a\x0bb"]})
     assert ctrl_path != path, "each config must be its own file, not one overwritten twice"
     assert load_config(ctrl_path).vault_dir == "/example/a\x0bb\x0cc"
-    assert load_cv_config(ctrl_path).employers == ["a\x0bb"]
+    assert load_config(ctrl_path).relevance_keep == ["a\x0bb"]
 
 
 def test_every_key_renders_below_its_own_section_header_in_its_own_block(tmp_path):

@@ -105,9 +105,28 @@ def test_the_script_renderer_hands_its_script_the_canonical_citation_free_text(
     assert seen["text"] == GOLDEN
 
 
-def test_the_script_renderer_refuses_a_wrong_argument_type(tmp_path):
+@pytest.mark.parametrize("wrong", [42, "EXAMPLE PERSON\n\nPROFILE\nI build.\n"],
+                         ids=["int", "composed-text"])
+def test_the_script_renderer_refuses_a_wrong_argument_type(tmp_path, wrong):
+    """Composed text is a wrong type too: the str branch is removed, so a caller still
+    handing one gets a named refusal and the script is never run."""
     script = tmp_path / "render.py"
     script.write_text("", encoding="utf-8")
     r = ScriptRenderer(str(script), python_bin="python3", home=str(tmp_path))
     with pytest.raises(RenderError, match="renderer 'script'"):
-        r.render(42, str(tmp_path / "out"))
+        r.render(wrong, str(tmp_path / "out"))
+
+
+def test_every_test_fake_renderer_takes_a_document():
+    """#364 spec §12.1: every registered renderer AND every test fake matches the seam's
+    parameters, so a fake cannot keep accepting what production no longer passes."""
+    import inspect
+    from tests.harness.renderer import RecordingRenderer as HarnessRenderer
+    from tests.structured_cv import RecordingRenderer
+    from tests.test_cv_engine import FakeRenderer
+    from tests.test_cv_run_artefacts import (_BrokenRenderer, _NonStringPathRenderer,
+                                             _PdfRenderer)
+    for cls in (HarnessRenderer, RecordingRenderer, FakeRenderer, _PdfRenderer,
+                _BrokenRenderer, _NonStringPathRenderer):
+        params = list(inspect.signature(cls.render).parameters)
+        assert params == ["self", "document", "out_dir", "neutral_name"], (cls, params)

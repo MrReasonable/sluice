@@ -72,13 +72,13 @@ class Source(Protocol):
     tests/fixtures/<id>/raw.json.
 
     OPTIONAL MEMBER -- `company_from_url(self, url: str) -> str | None`. Not
-    declared as a required member below, for the identical reason `Store.preflight`
-    and `Renderer.precheck` are not: a Protocol member is a REQUIRED member, and the
-    whole point of this hook is that a source may omit it.
+    declared as a required member below, because a Protocol member is a REQUIRED
+    member, and the whole point of this hook is that a source may omit it
+    (`Store.preflight` is optional the same way).
     `sluice.triage.resolve.resolve_company` (#109) reaches it via
     `getattr(source, "company_from_url", None)` and treats its absence as tier-1
-    abstaining for that source -- the same shape those two other optional seam
-    members already use.
+    abstaining for that source -- the same `getattr` shape `Sluice.doctor` uses for
+    `Store.preflight`.
 
     Implement it only where the board's real URL shape unambiguously encodes the
     hiring company with a clear delimiter on both ends of the captured slug --

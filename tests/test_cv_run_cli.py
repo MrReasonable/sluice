@@ -129,16 +129,15 @@ def test_cmd_cv_run_prints_the_gate_violations_on_skipped_gate(monkeypatch, tmp_
     `cv.engine._validate` from a driver script.
 
     The populated case, on the status that actually produces it: one gate violation
-    (cv/validate.py's own wording) and one renderer `precheck` violation
-    (renderers/template.py's `FORMAT:` prefix), since the field carries both and a
-    fixture holding only cv/validate.py's shape would not notice a reader that dropped
-    the folded-in renderer half.
+    (cv/validate.py's own wording) and one reply finding (cv/reply.py's `REPLY:` prefix),
+    since the field carries both and a fixture holding only cv/validate.py's shape would
+    not notice a reader that dropped the folded-in reply half.
     """
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     result = CvResult(
         "Job Applications/Job Leads/Example Foundry - Analyst.md", "skipped-gate",
-        violations=["UNSOURCED SKILL 'Widget, Gadget': not in the bundle",
-                    "FORMAT: meta line 1 has 4 fields, expected 3"])
+        violations=["INVENTED METRIC ['80'] not in ['EF1']: Cut costs by 80 percent",
+                    "REPLY: profile missing or empty -- give a 2 to 3 sentence profile"])
     monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
 
     assert cmd_cv_run(_args(), Config()) == 0
@@ -149,14 +148,12 @@ def test_cmd_cv_run_prints_the_gate_violations_on_skipped_gate(monkeypatch, tmp_
     # would satisfy a bare `in err` for neither of these, but a future reader that
     # inlined them into the summary would still be the count-only defect wearing a
     # longer line, and this is what distinguishes the two.
-    assert "\n  UNSOURCED SKILL 'Widget, Gadget': not in the bundle\n" in err
-    assert "\n  FORMAT: meta line 1 has 4 fields, expected 3\n" in err
+    assert "\n  INVENTED METRIC ['80'] not in ['EF1']: Cut costs by 80 percent\n" in err
+    assert "\n  REPLY: profile missing or empty -- give a 2 to 3 sentence profile\n" in err
     # No added label, unlike VOICE below: every producer of a `violations` entry already
-    # prefixes its own ALL-CAPS category (cv/validate.py's UNSOURCED SKILL / INVENTED
-    # METRIC / ..., cv/engine.py's STRUCTURAL, and renderers/template.py's FORMAT --
-    # whose docstring states it chose that prefix to "match the shape the engine's other
-    # gate messages take"). Pinned so a well-meant "GATE: " prefix does not silently
-    # double-label them.
+    # prefixes its own ALL-CAPS category (cv/validate.py's INVENTED METRIC / UNCITED
+    # BULLET / ..., and cv/reply.py's REPLY). Pinned so a well-meant "GATE: " prefix does
+    # not silently double-label them.
     assert "GATE:" not in err
 
 
@@ -260,3 +257,68 @@ def test_cmd_cv_run_counts_and_prints_the_term_findings(monkeypatch, tmp_path, c
     assert "slop=0" in err and "terms=1" in err
     assert ("\n  UNBUNDLED TERM 'Examplequery': named nowhere in your evidence: "
             "on Examplequery\n") in err
+
+
+def test_cmd_cv_run_reports_the_selection_and_the_attribution_state(monkeypatch, tmp_path,
+                                                                    capsys):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    result = CvResult(
+        "Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+        served="Example_CV_deadbeef.pdf",
+        skills_dropped=["'Example Ghost': not one of your skills"],
+        bullets_trimmed=["R1 (Example Foundry): kept 2 of 3"], attribution_check_off=True)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+    assert cmd_cv_run(_args(), Config()) == 0
+    err = capsys.readouterr().err
+    assert "skills_dropped=1 bullets_trimmed=1" in err
+    assert "attribution_check_off=True" in err
+    assert _detail_lines(err) == ["  DROPPED: 'Example Ghost': not one of your skills",
+                                  "  TRIMMED: R1 (Example Foundry): kept 2 of 3"]
+
+
+def test_cmd_cv_run_names_whichever_note_refused_a_skipped_config_lead(monkeypatch,
+                                                                      tmp_path, capsys):
+    from sluice.cv.engine import _IDENTITY_REFUSAL, _LAYOUT_REFUSAL
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    results = [CvResult("a.md", "skipped-config", error=_LAYOUT_REFUSAL),
+               CvResult("b.md", "skipped-config", error=_IDENTITY_REFUSAL)]
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: results)
+    assert cmd_cv_run(_args(), Config()) == 1
+    err = capsys.readouterr().err
+    assert f"cv: {_LAYOUT_REFUSAL}" in err and f"cv: {_IDENTITY_REFUSAL}" in err
+
+
+def test_a_refusal_mid_batch_still_reports_the_leads_already_finished(monkeypatch, tmp_path,
+                                                                     capsys):
+    # A note can change mid-batch, so a lead before the refusal may already be rendered or
+    # held for sign-off. Its line prints, then the refusal, and the exit code stays 1.
+    from sluice.cv.engine import _LAYOUT_REFUSAL
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    results = [CvResult("a.md", "rendered", served="Example_CV_aaaa.pdf"),
+               CvResult("b.md", "needs-signoff", served="Example_CV_bbbb.pdf"),
+               CvResult("c.md", "skipped-config", error=_LAYOUT_REFUSAL)]
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: results)
+    assert cmd_cv_run(_args(), Config()) == 1
+    lines = capsys.readouterr().err.splitlines()
+    rendered = next(i for i, ln in enumerate(lines) if ln.startswith("cv: rendered a.md "))
+    held = next(i for i, ln in enumerate(lines) if ln.startswith("cv: needs-signoff b.md "))
+    refusal = lines.index(f"cv: {_LAYOUT_REFUSAL}")
+    assert rendered < refusal and held < refusal
+    assert not any(ln.startswith("cv: skipped-config") for ln in lines)
+
+
+def test_a_batch_that_rendered_a_lead_and_then_refused_one_still_exits_1(monkeypatch,
+                                                                         tmp_path, capsys):
+    # The --all-shortlist shape of the row above, which runs under --lead. A batch isolates
+    # a lead's `error` and a twin pair's ambiguity and exits 0 over them, so it would be
+    # natural to read a configuration refusal the same way once something rendered. It is
+    # not: the refusal names a note the user must fix, and a scheduled batch has to see a
+    # non-zero exit to say so, however many leads it rendered first.
+    from sluice.cv.engine import _LAYOUT_REFUSAL
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    results = [CvResult("a.md", "rendered", served="Example_CV_aaaa.pdf"),
+               CvResult("b.md", "skipped-config", error=_LAYOUT_REFUSAL)]
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: results)
+    args = _build_parser().parse_args(["cv", "run", "--all-shortlist"])
+    assert cmd_cv_run(args, Config()) == 1
+    assert f"cv: {_LAYOUT_REFUSAL}" in capsys.readouterr().err

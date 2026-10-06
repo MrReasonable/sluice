@@ -1,4 +1,4 @@
-"""cv/document.py: the CV sluice builds, and its text forms (spec §7.1, §7.3, §6.4)."""
+"""cv/document.py: the CV sluice builds, and its text forms (#364 spec §7.1, §7.3, §6.4)."""
 from sluice.core.layout import Slot
 from sluice.core.protocols import CandidateProfile, CvLayout, LayoutRole
 from sluice.cv.document import assemble, audit_text, model_lines, to_text
@@ -46,7 +46,7 @@ def test_the_document_takes_its_structure_from_the_layout_and_the_candidate():
 
 
 def test_no_document_string_carries_a_citation():
-    """Spec §12.1: cites live in AssembledCv.cites, `to_text(..., cites=True)` and the audit
+    """#364 spec §12.1: cites live in AssembledCv.cites, `to_text(..., cites=True)` and the audit
     excerpt -- never in the document a renderer receives. Checked with cv/render.py's own
     pattern, so a renderer that strips citations finds nothing to strip."""
     from sluice.cv.render import _CITE_RE
@@ -66,6 +66,14 @@ def test_bullets_land_under_their_own_slot_whatever_the_reply_key_order():
     a = _assembled(selection=select(reply, SLOTS, (), None))
     assert [r.bullets for r in a.document.work] == [["First role work"], ["Second role work"]]
     assert a.cites == ((("EF1",),), (("EF2",),))
+    # assemble's OWN lookup, apart from select(): select() rebuilds `roles` in slot order,
+    # so through it alone a zip in assemble passes this row (witnessed, Task 24). A
+    # Selection's key order is not part of its contract, so hand one over out of order.
+    direct = _assembled(selection=Selection("I build.", {"R2": reply.roles["R2"],
+                                                          "R1": reply.roles["R1"]}, ()))
+    assert [r.bullets for r in direct.document.work] == [["First role work"],
+                                                         ["Second role work"]]
+    assert direct.cites == ((("EF1",),), (("EF2",),))
 
 
 def test_an_omitted_middle_slot_renders_empty_and_shifts_nothing():
@@ -76,6 +84,12 @@ def test_an_omitted_middle_slot_renders_empty_and_shifts_nothing():
                                "R3": (Bullet("Three", ("EG1",)),)}, ())
     doc = assemble(layout, slots, select(reply, slots, (), None), CANDIDATE).document
     assert [r.bullets for r in doc.work] == [["One"], [], ["Three"]]
+    # The same through assemble alone, every slot keyed (Selection's contract) but not in
+    # layout order: select() would have normalised the order and hidden a zip here.
+    direct = Selection("I build.", {"R3": reply.roles["R3"], "R1": reply.roles["R1"],
+                                    "R2": ()}, ())
+    assert [r.bullets for r in assemble(layout, slots, direct, CANDIDATE).document.work] == [
+        ["One"], [], ["Three"]]
     # The audit pairs each bullet with its OWN heading too, and skips the empty role.
     assert audit_text(select(reply, slots, (), None), slots) == (
         "PROFILE\nI build.\n\nExample Systems\n- One [EF1]\n\nExample Meridian\n- Three [EG1]\n")

@@ -357,8 +357,14 @@ _RETIRED_CONFIG = [
      "cv.renderer: weasyprint -- retired, raises naming `template` as the replacement",
      "Install the bundled renderer and set cv.renderer: weasyprint in your config."),
     (re.compile(r"\bcv\.baseline_rel\b"),
-     "cv.baseline_rel -- retired, baseline_rel is a ROOT config key now",
+     "cv.baseline_rel -- retired: no baseline CV is read; raises naming the CV Layout",
      "Set cv.baseline_rel: ./baseline.md if migrating from an old config."),
+    (re.compile(r"(?<![\w.])baseline_rel:"),
+     "a root `baseline_rel:` key -- retired: no baseline CV is read; raises naming the CV Layout",
+     "baseline_rel: My CV/CV.md"),
+    (re.compile(r"\bcv\.employers\b"),
+     "cv.employers -- retired: the CV Layout's roles say which employers a CV shows; raises",
+     "Set cv.employers: [Example Alpha] in your config."),
     (re.compile(r"\btriage\.dossier_dir\b"),
      "triage.dossier_dir -- retired, use the root dossier_dir",
      "The old triage.dossier_dir key has moved to the root dossier_dir."),
@@ -775,7 +781,7 @@ def test_only_an_exact_breaking_heading_is_stripped():
 # block it is inside, so `name:` under `cv:` is flagged and `name:` under anything else --
 # or at the top level, or in prose -- is not. Being section-aware is what removes the
 # false-positive risk the regex approach could not.
-_RETIRED_UNDER_CV = ("name", "contact")
+_RETIRED_UNDER_CV = ("name", "contact", "employers")
 # A SINGLE leading `#` is a YAML comment marker and is stripped; `##` or more is a markdown
 # heading and is not, because `## cv:` in a doc's prose is a section title, not a block
 # opener -- treating it as one would then flag any indented `name:` further down the page.
@@ -827,14 +833,16 @@ def test_no_shipped_doc_nests_a_retired_key_under_a_cv_block():
         hits = _nested_cv_keys(text)
         assert not hits, (
             f"{path} sets a retired key inside a `cv:` block -- identity moved to the vault's "
-            f"Candidate Profile note (#133/#107) and a config setting either now RAISES at "
-            f"load: {hits}")
+            f"Candidate Profile note (#133/#107) or the CV Layout (#364), and a config "
+            f"setting any of them now RAISES at load: {hits}")
     assert checked >= 5, "the nested-YAML sweep read almost nothing -- it is broken, not clean"
 
 
 @pytest.mark.parametrize("label,sample,expected", [
     ("plain nested YAML", 'cv:\n  name: "Ada Example"\n', [(2, "name", '"Ada Example"')]),
     ("the commented catalogue shape", '# cv:\n#   contact: "x"\n', [(2, "contact", '"x"')]),
+    ("a retired employers roster nested under cv:", "cv:\n  employers: [Example Alpha]\n",
+     [(2, "employers", "[Example Alpha]")]),
     ("indented inside a fence", '```yaml\ncv:\n    name: Ada\n```\n', [(3, "name", "Ada")]),
     # ...and the shapes it must NOT flag, which are what make it section-aware rather than
     # another regex. The last is the exact false positive the dotted patterns were narrowed
@@ -1492,7 +1500,14 @@ def test_every_evidence_add_flag_is_documented(kind):
     Derived from the real parser on both sides rather than hand-listed, which is the point:
     correcting the one missing flag would leave the next field addition free to repeat it.
     """
-    real = _parser_flags(kind, "add")
+    from sluice.evidence.commands import RETIRED_FIELDS, field_flag
+
+    # A RETIRED field's flag is hidden from --help on purpose and only refuses, naming its
+    # replacement (cli.py's evidence loop), so it is not one to document. Subtracted by
+    # derivation from the same registry the parser reads -- never by "whatever is hidden",
+    # which would let any flag escape this check by being hidden.
+    retired = {field_flag(f) for f in EVIDENCE_KINDS[kind].legacy_fields if f in RETIRED_FIELDS}
+    real = _parser_flags(kind, "add") - retired
     assert real, (
         f"walked no flags for `{kind} add` -- for a comparison this is the vacuous-pass "
         f"shape, so the scope is asserted before the contents are")
@@ -1793,8 +1808,12 @@ def test_every_violation_append_carries_its_category_as_a_literal():
         f"or teach _validate_appends the new shape and widen this assertion with it")
 
 
-_FOLDED_IN_CATEGORIES = {"STRUCTURAL": "sluice/cv/engine.py",
-                         "FORMAT": "sluice/renderers/template.py"}
+# `REPLY` findings come from reading the model's reply -- `cv/reply.py`, and the zero-bullet
+# rule in `cv/selection.py` -- not from cv/validate.py, so the category sweep cannot see
+# them. `STRUCTURAL` and `FORMAT` no longer exist: once the CV's structure is data the model
+# fills rather than text it writes, there is no header to drift and no renderer grammar to
+# check (#364 spec §6.5).
+_FOLDED_IN_CATEGORIES = {"REPLY": "sluice/cv/reply.py"}
 
 
 def _skipped_gate_section():
@@ -1840,10 +1859,11 @@ def test_the_gate_category_sweep_is_not_vacuous():
     """The SCOPE assertion. A sweep that discovers nothing satisfies the coverage test below
     for every doc, including one that explains no category at all."""
     cats = _validate_categories()
-    assert len(cats) >= 9, f"the violation-category sweep found only {sorted(cats)}"
+    assert len(cats) >= 7, f"the violation-category sweep found only {sorted(cats)}"
     # Named anchors, not just a count: an extraction that started matching some OTHER
     # ALL-CAPS-leading append would keep the count up while missing the real categories.
-    for anchor in ("UNSOURCED SKILL", "INVENTED METRIC", "UNCITED BULLET", "MISSING EMPLOYER"):
+    for anchor in ("INVENTED METRIC", "UNCITED BULLET", "WRONG EMPLOYER",
+                   "MISATTRIBUTED TOOL"):
         assert anchor in cats, f"{anchor} vanished from the sweep: {sorted(cats)}"
 
 
@@ -1873,16 +1893,16 @@ def test_troubleshooting_explains_every_gate_violation_category():
         f"explained but unreachable: {sorted(explained - expected)}")
 
 
-def test_troubleshooting_names_the_two_folded_in_violation_producers():
-    """`STRUCTURAL` and `FORMAT` reach `violations` from outside cv/validate.py -- the engine's
-    own inline guards and the `template` renderer's `precheck` -- so the sweep above cannot see
-    them. Asserted in BOTH directions here (the doc names them, and each source still emits it),
+def test_troubleshooting_names_the_folded_in_violation_producer():
+    """`REPLY` reaches `violations` from outside cv/validate.py -- `cv/reply.py`'s reading of
+    the reply, and `cv/selection.py`'s zero-bullet rule -- so the category sweep above cannot
+    see it. Asserted in BOTH directions here (the doc names it, and its source still emits it),
     which is what catches a rename on either side."""
     bullets = _troubleshooting_category_bullets()
     for category, source in _FOLDED_IN_CATEGORIES.items():
-        # The DOC direction reads the bullet heads, not the file: `FORMAT` and `STRUCTURAL`
-        # both appear elsewhere on the page (the sample output, and the next section's prose),
-        # so a whole-file membership check was satisfied with the bullet deleted -- measured.
+        # The DOC direction reads the bullet heads, not the file: a category also appears
+        # elsewhere on the page (the sample output), so a whole-file membership check was
+        # satisfied with the bullet deleted -- measured.
         assert category in bullets, (
             f"docs/TROUBLESHOOTING.md's `skipped-gate` bullets stopped explaining {category}")
         assert f'"{category}: ' in pathlib.Path(source).read_text(encoding="utf-8"), (
@@ -1890,35 +1910,47 @@ def test_troubleshooting_names_the_two_folded_in_violation_producers():
             f"troubleshooting entry naming it is now wrong")
 
 
-def test_the_troubleshooting_example_quotes_a_message_the_engine_really_emits():
-    """The `skipped-gate` section shows a sample `STRUCTURAL:` line. An ILLUSTRATIVE example
-    that quotes a real message is a claim like any other -- an operator greps for the text they
-    were shown -- and the first draft of it invented a plausible ending rather than quoting one,
-    which is why this exists.
+def test_the_troubleshooting_example_quotes_a_message_the_reply_reader_really_emits():
+    """The `skipped-gate` section shows a sample `REPLY:` line. An ILLUSTRATIVE example that
+    quotes a real message is a claim like any other -- an operator greps for the text they
+    were shown -- and the first draft of the section's earlier `STRUCTURAL:` example invented
+    a plausible ending rather than quoting one, which is why this exists.
 
-    Read through `ast`, not as raw text: cv/engine.py builds the message from two adjacent
-    string literals, so a substring search over the file's BYTES cannot find it, and the
-    obvious fix (splicing the quotes back out with a regex) is the "pattern consumed by two
-    engines" shape this repo has already been bitten by. Reading `ast.Constant.value` off the
-    parsed tree is what the interpreter itself sees.
+    The message is built by an f-string around the bullet's position, so no literal in the
+    source holds it whole. It is produced instead, by running `cv/reply.py::parse_reply` on
+    the reply the sample describes -- what an operator would really see -- rather than by
+    splicing text out of the source, the "pattern consumed by two engines" shape this repo
+    has already been bitten by.
     """
-    import ast
+    from sluice.core.layout import Slot
+    from sluice.core.protocols import LayoutRole
+    from sluice.cv.reply import parse_reply
+    from sluice.cv.selection import select
 
     doc = pathlib.Path("docs/TROUBLESHOOTING.md").read_text(encoding="utf-8")
-    quoted = [ln.strip() for ln in doc.splitlines() if ln.strip().startswith("STRUCTURAL:")]
-    assert quoted, "the skipped-gate section no longer shows a STRUCTURAL example"
+    quoted = [ln.strip() for ln in _skipped_gate_section().splitlines()
+              if ln.strip().startswith("REPLY:")]
+    assert quoted, "the skipped-gate section no longer shows a REPLY example"
+    assert all(q in doc for q in quoted)
 
-    tree = ast.parse(pathlib.Path("sluice/cv/engine.py").read_text(encoding="utf-8"))
-    emitted = {n.value for n in ast.walk(tree)
-               if isinstance(n, ast.Constant) and isinstance(n.value, str)}
-    # Scope: the sweep must actually be seeing the engine's messages, or every assertion
-    # below it holds over an empty set.
-    assert any(v.startswith("STRUCTURAL: ") for v in emitted), (
-        "the literal sweep found no STRUCTURAL message in cv/engine.py at all")
+    bracketed = {"text": "Shipped the platform [EA1]", "cites": ["EA1"]}
+    reply = parse_reply({"profile": "I build reliable systems.",
+                         "roles": {"R1": [], "R2": [bracketed]}, "skills": []},
+                        ["R1", "R2"])
+    # A bullet's text findings reach the operator through the selection: parse_reply files
+    # them, and cv/selection.py::select carries forward those of the bullets it keeps. Two
+    # uncapped slots that may cite EA1, so the bullet is kept.
+    slots = tuple(Slot(sid, LayoutRole("Example Alpha", "01/2020", "present"), ("EA1",), None)
+                  for sid in ("R1", "R2"))
+    emitted = reply if isinstance(reply, list) else list(select(reply, slots, (), None).findings)
+    # Scope: the reader must actually refuse this reply, or the assertion below holds over
+    # a message nothing emits.
+    assert isinstance(emitted, list) and emitted, "the reply reader accepted a bracketed bullet"
     for line in quoted:
         assert line in emitted, (
-            f"docs/TROUBLESHOOTING.md shows {line!r}, which sluice/cv/engine.py does not emit -- "
-            f"quote the real message or the operator greps for text that does not exist")
+            f"docs/TROUBLESHOOTING.md shows {line!r}, which sluice/cv/reply.py does not emit "
+            f"for that reply (it emits {emitted}) -- quote the real message or the operator "
+            f"greps for text that does not exist")
 
 
 # ── docs/USAGE.md's `cv run` per-result line (#258) ──────────────────────────────────────────
@@ -1948,7 +1980,8 @@ def test_the_cv_summary_key_extraction_is_not_vacuous():
     floor would let one key silently replace another."""
     assert _printed_cv_summary_keys() == {
         "served", "violations", "audit_flags", "slop", "voice_flags", "terms",
-        "dossier_failed", "skills_unreadable", "artefacts_failed"}, (
+        "skills_dropped", "bullets_trimmed", "dossier_failed", "skills_unreadable",
+        "attribution_check_off", "artefacts_failed"}, (
         "the cv per-result line changed. Update this set AND the `Per-result line to stderr` "
         "paragraph in docs/USAGE.md that it guards.")
 
@@ -2006,7 +2039,8 @@ def test_usage_md_documents_the_label_each_finding_kind_actually_gets():
     # SCOPE, as an equality: a fifth finding kind printed without a table row must redden here,
     # and one kind silently replacing another must not slip past a floor.
     assert labels == {"violations": "  ", "audit_flags": "  AUDIT: ", "slop": "  ",
-                      "voice_flags": "  VOICE: ", "terms": "  "}, (
+                      "voice_flags": "  VOICE: ", "terms": "  ",
+                      "skills_dropped": "  DROPPED: ", "bullets_trimmed": "  TRIMMED: "}, (
         f"cmd_cv_run's per-finding lines changed to {labels}. Update this set AND the "
         f"finding-kind table in docs/USAGE.md that it guards.")
 

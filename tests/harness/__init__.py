@@ -8,8 +8,10 @@ from tests.harness.backend import ScriptedBackend
 from tests.harness.browser import ScriptedBrowserClient, install_scripted_fetcher
 from tests.harness.config import (
     FIXTURE_ADDR,
-    GATE_FAILING_CV,
-    PASSING_CV,
+    GATE_FAILING_FINDING,
+    GATE_FAILING_REPLY,
+    PASSING_BULLETS,
+    PASSING_REPLY,
     Harness,
     build_harness,
 )
@@ -27,8 +29,10 @@ __all__ = [
     "FakeGoogleClient",
     "Harness",
     "build_harness",
-    "PASSING_CV",
-    "GATE_FAILING_CV",
+    "PASSING_REPLY",
+    "PASSING_BULLETS",
+    "GATE_FAILING_REPLY",
+    "GATE_FAILING_FINDING",
     "FIXTURE_ADDR",
     "seed_lead_note",
 ]

@@ -1,8 +1,8 @@
 {# The shipped DEFAULT template. It is not "neutral" -- a template must lay something
    out, so its layout is a shipped opinion and the spec says so. What IS guaranteed, and
    is guarded by test_the_shipped_template_contributes_no_content, is that it contributes
-   no CONTENT: every literal text node below is either a CvDocument field or a heading
-   the composer already emits. Single-column on purpose: a grid or table produces a PDF
+   no CONTENT: every literal text node below is either a CvDocument field or a section
+   heading sluice writes (`core/protocols.py::SECTION_HEADINGS`). Single-column on purpose: a grid or table produces a PDF
    whose text extracts in the wrong order, and the destination is an ATS upload. #}
 <style>
   @page { size: A4; margin: 18mm 16mm; }
@@ -29,11 +29,9 @@
 {% for role in document.work %}
 <div class="role">
   <div class="company">{{ role.company }}</div>
-  {# select() drops empty strings before the join, so a blank LOCATION (parse.py accepts
-     a 2-field meta line with no location -- see its module docstring) does not leave a
-     dangling " |  | " in a PDF sent under the user's name. Measured: gate-clean output
-     from the 2-field form renders "03/2021-present | Staff Engineer" here, not
-     "03/2021-present |  | Staff Engineer". #}
+  {# select() drops empty strings before the join, so a blank location or title --
+     both optional in the CV Layout -- does not leave a dangling separator (" |  | ", or
+     a trailing " | ") in a PDF sent under the user's name. #}
   <div class="meta">{{ [role.dates, role.location, role.title] | select | join(" | ") }}</div>
   <ul>{% for bullet in role.bullets %}<li>{{ bullet }}</li>{% endfor %}</ul>
 </div>

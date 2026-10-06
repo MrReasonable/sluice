@@ -32,25 +32,24 @@ def test_yaml_overrides_cv_block(tmp_path):
     assert cfg.ttl_days == 3
     assert cfg.prefix_map == {}   # untouched default (still empty, no yaml override given)
 
-def test_legacy_cv_baseline_rel_raises_rather_than_dropping_silently(tmp_path):
-    # baseline_rel MOVED from `cv:` to the root config (only the store can honour it). The
-    # loader filters unknown keys with `hasattr`, so a still-present `cv.baseline_rel` would
-    # be dropped in silence -- and it was LIVE before the move, so a user with a curated
-    # baseline would quietly get a CV composed from the stale default `My CV/CV.md`, with the
-    # fabrication gate green (it checks bullets against cited entries, not the baseline's
-    # employers/dates). This asserts that quiet-drop is a loud raise, per the codebase's
-    # fail-at-construction rule. Without it, simplifying the loader back to a plain hasattr
-    # filter would reintroduce the silent stale-baseline with nothing going red.
+@pytest.mark.parametrize("key,value", [("baseline_rel", '"My CV/Curated.md"'),
+                                       ("employers", "[Example Alpha]")])
+def test_legacy_cv_baseline_rel_or_employers_raises_rather_than_dropping_silently(
+        tmp_path, key, value):
+    # Both keys are RETIRED (#364/#365/#368): no baseline CV is read and the CV Layout's
+    # roles say which employers a CV shows. The loader filters unknown keys with `hasattr`,
+    # so a still-present key would be dropped in silence and a user who set it would watch it
+    # stop meaning anything. This asserts the quiet drop is a loud raise (the codebase's
+    # fail-at-construction rule), that the message names the replacement, and that neither
+    # value is echoed.
     p = tmp_path / "config.yaml"
-    p.write_text(textwrap.dedent('''
-    cv:
-      baseline_rel: "My CV/Curated.md"
-    '''))
+    p.write_text(f"cv:\n  {key}: {value}\n")
     with pytest.raises(ValueError) as e:
         load_cv_config(path=str(p))
     msg = str(e.value)
-    assert "baseline_rel" in msg
-    assert "top level" in msg, "the error must tell the operator where to move the key"
+    assert key in msg
+    assert "CV Layout" in msg, "the error must name what replaces the key"
+    assert "Curated" not in msg and "Example Alpha" not in msg, "a retired value is never echoed"
 
 
 # ── #133/#107: cv.name/cv.contact moved to the vault ──────────────────────────────
@@ -61,7 +60,7 @@ def test_legacy_cv_baseline_rel_raises_rather_than_dropping_silently(tmp_path):
     ("contact", "ada@example.invalid"), ("contact", ""),
 ], ids=["name-populated", "name-empty", "contact-populated", "contact-empty"])
 def test_legacy_cv_name_or_contact_raises_rather_than_dropping_silently(tmp_path, moved, value):
-    # Same fail-at-construction shape as baseline_rel above, and the same reason: the
+    # Same fail-at-construction shape as the retired baseline_rel above, and the same reason: the
     # loader's setattr loop is hasattr-filtered, so a still-present cv.name/cv.contact
     # would otherwise vanish in silence and every later compose would ship a blank
     # header with nobody told why.

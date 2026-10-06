@@ -94,7 +94,7 @@ hard-coded `main` and never a fixed `/tmp` path.
 | --- | --- |
 | `sluice/core/**`, a new module, a new dependency, or any seam (`backends.py`, `vault.py`, `render.py`, `camofox.py`) | `sluice-architect` |
 | `sluice/ingest/sources/**` | `sluice-test-engineer` (already always; require a golden fixture for any new or changed parser) |
-| `sluice/cv/validate.py`, `sluice/cv/engine.py` | `sluice-invariant-reviewer` (already always; intensify — this is the fabrication gate) |
+| `sluice/cv/validate.py`, `sluice/cv/engine.py`, `sluice/cv/reply.py`, `sluice/cv/selection.py`, `sluice/cv/document.py`, `sluice/core/layout.py`, `sluice/core/tokens.py` | `sluice-invariant-reviewer` (already always; intensify — this is the fabrication gate) |
 | `sluice/core/status.py`, `sluice/core/vault.py` | `sluice-invariant-reviewer` (already always; intensify — never-clobber / never-regress) |
 | `pyproject.toml` (dependencies) | `sluice-architect` — `sluice/` is standard-library only |
 | `.rulesync/**` | `sluice-reviewer` — canonical source for every AI-tool config, so a false claim there propagates to every agent. Review it, do not escalate it. Check each claim is true of the code AS MERGED, not of code a later PR adds. |
@@ -220,8 +220,8 @@ failure, and most have an incident or a dedicated test behind them.
    writing to a lead that is already `APPLICATION_OWNED`; a backward move or a move out of a terminal
    on the ladder; apply transitioning from anything but `shortlist` (`can_apply` — note it is a
    *different* predicate from `can_advance`, deliberately).
-3. **The fabrication gate is hard.** No path may render, serve, or stage a CV with validation
-   violations. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
+3. **The fabrication gate is hard.** No path may render, serve, or stage a CV with outstanding
+   HARD findings. The gate stays pure and deterministic; a HARD or surviving STYLE/VOICE finding
    (#167) drives exactly one retry, and the lead is skipped only if no attempt ever clears the
    HARD tier. Weakening it is **Critical**.
 4. **Empty config abstains.** An unconfigured preference gate passes every lead through. A gate that

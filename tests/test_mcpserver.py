@@ -20,7 +20,7 @@ import pathlib
 import pytest
 
 import sluice.mcpserver as mcpserver_mod
-from sluice.core.app import Sluice
+from sluice.core.app import Sluice, pending_evidence_detail
 from sluice.core.config import Config
 from sluice.core.leads import (
     TRIAGE_FRAMING_CONTENT_WARNING,
@@ -367,7 +367,7 @@ def test_list_evidence_shapes_entries_to_title_verified_fields_only(tmp_path):
                    "entries": [{"title": "alpha", "verified": "2026-01-01",
                                 "fields": {"Proficiency": "P", "Domain": "D",
                                            "Evidence": "E", "Signal Value": "S",
-                                               "Label": ""}}],
+                                           "Label": ""}}],
                    "content_warning": mcpserver_mod._LIST_EVIDENCE_CONTENT_WARNING}
 
 
@@ -832,7 +832,7 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
     """The single most important test in this slice (Testing item 6): proves the
     #60 latch survives the MCP path unweakened. run_one checks pending_cv BEFORE
     any dossier fetch or compose (verified directly, sluice/cv/engine.py::run_one), so
-    a minimal store carrying just read_leads/read_evidence/read_baseline
+    a minimal store carrying just read_leads/read_evidence/read_cv_layout
     is enough -- the fabrication gate never reaches far enough to need more."""
     from tests.test_cv_engine import FakeCache, Note, _cfg
 
@@ -847,9 +847,13 @@ def test_cv_run_tool_skipped_needs_signoff_for_a_lead_already_holding_pending_cv
             # Non-empty for the CITABLE kind only (#242): compose_cv refuses a run with no
             # verified experience before any spend, and these tests are about the outcome
             # AFTER that point (skipped-selection, skipped-needs-signoff), not about it.
-            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
-        def read_baseline(self):
-            return "BASELINE"
+            # `company` is the CV Layout's one role, or `missing_prerequisites` refuses
+            # for want of a slot that can cite the entry.
+            return ([{"title": "alpha", "company": "Example Foundry",
+                      "verified": "2026-09-03"}] if kind == "experience" else [])
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
 
     app = _cv_app(_MinimalCvStore())
     monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
@@ -902,9 +906,13 @@ def test_cv_run_tool_skipped_selection_for_a_non_shortlist_lead(monkeypatch):
             # Non-empty for the CITABLE kind only (#242): compose_cv refuses a run with no
             # verified experience before any spend, and these tests are about the outcome
             # AFTER that point (skipped-selection, skipped-needs-signoff), not about it.
-            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
-        def read_baseline(self):
-            return "BASELINE"
+            # `company` is the CV Layout's one role, or `missing_prerequisites` refuses
+            # for want of a slot that can cite the entry.
+            return ([{"title": "alpha", "company": "Example Foundry",
+                      "verified": "2026-09-03"}] if kind == "experience" else [])
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
 
     app = _cv_app(_MinimalCvStore())
     monkeypatch.setattr(app, "dossier_cache", lambda *a, **k: FakeCache())
@@ -1596,16 +1604,19 @@ def test_propose_evidence_tool_says_in_the_response_that_the_entry_is_not_citabl
     Named-kind interpolation is asserted because the generic `<kind>` placeholder is
     the easy regression: it leaves the agent to guess which of three commands to run."""
     out = _propose(_app(tmp_path), kind="experience")
-    assert "NOT citable" in out["detail"]
+    assert out["detail"] == pending_evidence_detail("experience")
+    assert "it does nothing until a human runs" in out["detail"]
     assert "`job-sluice experience verify`" in out["detail"]
 
 
 def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path):
-    """The message must state only what holds for EVERY kind. What verification
-    actually buys is per-kind (`EvidenceKind.cited_by_gate`: the gate licenses
-    `experience` alone), and the correctly-keyed wording lives in `verify_outcome`
-    (sluice/evidence/commands.py) -- a module mcpserver.py's isolation sweep forbids
-    importing, so the standing risk is someone restating it here from memory.
+    """What verification actually buys is per-kind (`EvidenceKind.cited_by_gate`: the
+    gate licenses `experience` alone; #364 D12: a skill note's name can reach a CV's skills
+    list), and the correctly-keyed wording lives in `verify_outcome`
+    (sluice/core/protocols.py), reached through `core/app.py::pending_evidence_detail`
+    since mcpserver.py's isolation sweep forbids importing it -- so the standing risk is
+    someone restating it here from memory. Every kind must also say the proposal does
+    nothing yet: an unverified entry is citable in no kind.
 
     Sweeps ALL THREE kinds rather than the one where the claim would be true, since a
     hand-written over-claim would read correctly on `experience` and mislead on the
@@ -1617,10 +1628,12 @@ def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path
         detail = _propose(app, kind=kind, name=f"Example entry for {kind}",
                           fields={}, body="")["detail"]
         swept.append(kind)
-        assert "citable" in detail, f"{kind}: the response stopped saying anything at all"
-        assert "NOT citable" in detail, (
-            f"{kind}: the response claims this entry IS citable, or is now vague about "
-            f"it -- an unverified entry is citable in no kind")
+        assert detail == pending_evidence_detail(kind), kind
+        assert "it does nothing until a human runs" in detail, (
+            f"{kind}: the response no longer says the proposal is inert -- an unverified "
+            f"entry is citable in no kind")
+        assert ("citable" in detail) == EVIDENCE_KINDS[kind].cited_by_gate, (
+            f"{kind}: the response claims what verifying this kind cannot buy")
     # Assert on the SCOPE, not only on the violations. A sweep that enumerated nothing
     # satisfies every assertion inside the loop, so this row was green under
     # `EVIDENCE_KINDS = {}` -- measured, not supposed. Pinned against the registry's own
@@ -1710,13 +1723,13 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
 # previous version's comment already claimed this and the literal set happened to
 # agree, but a future write method added to Store would silently miss this sweep
 # with no test failure to say so. Its read-only members (read_leads,
-# read_baseline, read_criteria, read_candidate_profile, read_cv_layout,
+# read_criteria, read_candidate_profile, read_cv_layout,
 # read_evidence, read_pending_evidence, read_pending_evidence_text; the optional
 # preflight hook, which is never declared in the class body at all) are excluded by
 # name, since a read reaching this deep is exactly what the module-allow-list above
 # already permits via Sluice's own store() access.
 _STORE_READ_METHODS = frozenset({
-    "read_leads", "read_baseline", "read_criteria",
+    "read_leads", "read_criteria",
     "read_candidate_profile", "read_cv_layout", "read_evidence", "read_pending_evidence",
     "read_pending_evidence_text",
 })
@@ -1940,3 +1953,70 @@ def test_no_tool_description_denies_the_propose_tool_that_is_registered():
         assert not hit, (
             f"{name}'s description tells the client {hit!r} while propose_evidence is "
             f"registered in the same tools/list response")
+
+
+def test_cv_run_tool_reports_drops_and_trims_and_warns_only_for_model_text(monkeypatch,
+                                                                          tmp_path):
+    """`skills_dropped` quotes the MODEL's own picks, which a job ad can steer, so it joins
+    the content warning's trigger (#364 spec §9.2); `bullets_trimmed` is a slot id, a vault
+    heading and two counts, so it does not. Each list alone, so neither can pass because the
+    other was populated."""
+    from sluice.cv.engine import CvResult
+
+    trimmed = CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+                       served="Example_CV_deadbeef.pdf",
+                       bullets_trimmed=["R1 (Example Foundry): kept 2 of 3"])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [trimmed])
+    out = cv_run(_cv_app(Vault(str(tmp_path))), "Example Foundry - Analyst")
+    assert out["bullets_trimmed"] == ["R1 (Example Foundry): kept 2 of 3"]
+    assert "skills_dropped" not in out and "content_warning" not in out
+    # The heading is the user's own vault text: the user-authored warning, under its own key.
+    assert out["bullets_trimmed_warning"] == mcpserver_mod._CV_RUN_TRIMMED_WARNING
+    assert USER_AUTHORED_CONTENT_WARNING in out["bullets_trimmed_warning"]
+
+    dropped = CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+                       served="Example_CV_deadbeef.pdf",
+                       skills_dropped=["'Example Ghost': not one of your skills"])
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [dropped])
+    out = cv_run(_cv_app(Vault(str(tmp_path))), "Example Foundry - Analyst")
+    assert out["skills_dropped"] == ["'Example Ghost': not one of your skills"]
+    assert out["content_warning"] == mcpserver_mod._CV_RUN_CONTENT_WARNING
+    assert "skills_dropped" in mcpserver_mod._CV_RUN_CONTENT_WARNING
+
+
+@pytest.mark.parametrize("refusal", ["_IDENTITY_REFUSAL", "_LAYOUT_REFUSAL"])
+def test_cv_run_tool_names_the_note_that_refused_a_skipped_config_lead(monkeypatch, tmp_path,
+                                                                      refusal):
+    """A `skipped-config` lead carries WHICH note refused it in `error` (#364/#365/#368:
+    the Candidate Profile or the CV Layout), and the tool must hand that to the client --
+    the outcome alone cannot say which note to fix."""
+    from sluice.cv import engine
+    from sluice.cv.engine import CvResult
+
+    reason = getattr(engine, refusal)
+    result = CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md",
+                      "skipped-config", error=reason)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+    out = cv_run(_cv_app(Vault(str(tmp_path))), "Example Foundry - Analyst")
+    assert (out["outcome"], out["error"]) == ("skipped-config", reason)
+
+
+
+def test_the_evidence_tool_descriptions_say_what_verifying_buys_per_kind():
+    """A5: both evidence tools once told a client that verifying makes an entry citable --
+    true only of a `cited_by_gate` kind. The sentence is derived from
+    core/protocols.py::verify_outcome over EVERY kind, so each kind's real effect must
+    appear, and no kind the gate does not cite may be called citable."""
+    from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
+    server = build_server(Config(), write=True)
+    described = {t.name: (t.description or "") for t in asyncio.run(server.list_tools())}
+    uncited = [k for k, spec in EVIDENCE_KINDS.items() if not spec.cited_by_gate]
+    assert uncited, "every kind is cited by the gate, so the over-claim cannot be detected"
+    for tool in ("list_evidence", "propose_evidence"):
+        desc = " ".join(described[tool].split())
+        for kind, spec in EVIDENCE_KINDS.items():
+            assert f"'{kind}'" in desc, (tool, kind)
+            assert verify_outcome(spec, f"{kind} entries") in desc, (tool, kind)
+        assert "verification is what makes an entry citable" not in desc, tool
+        for kind in uncited:
+            assert f"make {kind} entries citable" not in desc, (tool, kind)

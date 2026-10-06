@@ -33,7 +33,10 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
             "---\n"
             f"id: {entry['id']}\n"
             f"Company: {entry.get('employer', 'Example Foundry')}\n"
-            f"verified: {'true' if entry.get('verified') else ''}\n"
+            # Extra frontmatter lines as a user's vault already holds them -- e.g. a 3.x
+            # entry's retired `Skills:` line, which the store no longer writes.
+            + "".join(f"{k}: {v}\n" for k, v in entry.get("extra", {}).items())
+            + f"verified: {'true' if entry.get('verified') else ''}\n"
             "---\n"
             f"{entry.get('body', 'Did a thing.')}\n"
         )

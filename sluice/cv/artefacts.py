@@ -14,9 +14,10 @@ WHAT. Into the per-lead working directory the renderer already writes its PDF in
                         the backend call, so a compose that hangs or raises still leaves it.
   reply.attempt-N.txt   attempt N's reply exactly as the backend returned it. `.txt` because
                         a reply can be chat-wrapped, so it promises nothing about its content.
-  cv.rendered.md        the text handed to the renderer; absent when nothing was rendered.
-                        Written before the render call, so a renderer that raises still
-                        leaves what it was given.
+  cv.rendered.md        the CV sluice assembled, in its canonical text form with each
+                        bullet's citations. Written before the audit, so a dry run, or a
+                        run whose audit or render raises, still has one; absent when no
+                        attempt cleared the gate.
   run.json              the run record, written last. Its `files` list is the manifest of
                         every OTHER file this run wrote, so anything else in the directory
                         (the PDF of an earlier run, a file that failed to write part-way) is
@@ -60,19 +61,20 @@ def prompt_name(attempt: int) -> str:
 
 
 def reply_name(attempt: int) -> str:
+    """File name under which attempt number `attempt`'s raw backend reply is kept."""
     # The backend's reply exactly as received (#364/#365/#368): `.txt` because a reply can
     # be chat-wrapped or fenced, so it promises nothing about being JSON.
     return f"reply.attempt-{attempt}.txt"
 
 
-# Every name this module writes, and nothing else, because `begin` DELETES whatever matches.
-# It has to stay in step with the four names above in both directions: a name written but not
-# matched survives into the next run as a stale file, and a pattern wider than the names
-# deletes something this module never wrote. Attempt numbers are `\d+` rather than the
-# engine's current two, so a larger retry budget cannot leave a stale attempt 3 behind.
-# Every name this module writes -- and the 3.x attempt name it no longer writes, so the
-# first 4.0 run in an upgraded directory clears a stale cv.attempt-N.md rather than leaving
-# it beside the new run.json looking current.
+# What `begin` DELETES: every name this module writes (RUN_RECORD, RENDERED_TEXT,
+# prompt_name, reply_name), plus the attempt file it wrote in 3.x and no longer writes,
+# `cv.attempt-N.md`, so the first 4.0 run in an upgraded directory clears it rather than
+# leaving it beside the new run.json looking current. Nothing else: it has to stay in step
+# with those names in both directions, since a name written but not matched survives into
+# the next run as a stale file, and a pattern wider than the names deletes something this
+# module never wrote. Attempt numbers are `\d+` rather than the engine's current two, so a
+# larger retry budget cannot leave a stale attempt 3 behind.
 _OWNED = re.compile(r"run\.json|cv\.rendered\.md|prompt\.attempt-\d+\.txt"
                     r"|reply\.attempt-\d+\.txt|cv\.attempt-\d+\.md")
 
@@ -148,6 +150,7 @@ class RunArtefacts:
         self._write(prompt_name(attempt), text)
 
     def composed(self, attempt, text):
+        """Record the backend's reply for `attempt`, exactly as received."""
         self._attempt(attempt)
         self._write(reply_name(attempt), text)
 
@@ -181,11 +184,13 @@ class RunArtefacts:
 
     def finish_error(self, exc):
         """Write run.json for a run that RAISED after composition started. `error` is
-        run_batch's word for that outcome. The finding lists are null rather than empty:
-        the run never got as far as settling them, and an empty list would read as clean."""
+        run_batch's word for that outcome. The finding lists, the selection report and the
+        attribution switch are null rather than empty or False: the run never got as far as
+        settling them, an empty list would read as clean, and False would say the
+        misattributed-tool check ran."""
         self._write_record(status="error", backend=None, violations=None, audit_flags=None,
-                           slop=None, voice_flags=None, terms=None, skills_dropped=[],
-                           bullets_trimmed=[], attribution_check_off=False, served=None,
+                           slop=None, voice_flags=None, terms=None, skills_dropped=None,
+                           bullets_trimmed=None, attribution_check_off=None, served=None,
                            error=_describe(exc))
 
     def _write_record(self, *, status, backend, violations, audit_flags, slop, voice_flags,

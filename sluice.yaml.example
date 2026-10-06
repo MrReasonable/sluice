@@ -38,9 +38,6 @@
 store: vault        # the lead/experience store
 fetcher: camofox    # the browser the ingest sources drive
 rates: frankfurter  # where the pay-floor conversion gets exchange rates (#305)
-# Where the STORE keeps your baseline CV, relative to the store root. Lives here rather
-# than under `cv:` because only the store can honour it.
-baseline_rel: My CV/CV.md
 
 # Where your vault lives. Unset, sluice uses ./vault (relative to wherever you run it),
 # and $VAULT_DIR still wins over this key. The vault is the one path sluice does NOT
@@ -336,7 +333,7 @@ triage:
 #   style_hold: false
 #   # Whether a term CV prose names but nothing in your evidence carries drives the
 #   # composer's one retry (#194). ON by default; it never bins a lead. Turn it off if a
-#   # thin vault (a short baseline CV) makes it fire on ordinary words.
+#   # thin vault (few verified entries) makes it fire on ordinary words.
 #   term_check: true
 #   # Phrases from slop._PHRASES you legitimately use in your own voice. NOT
 #   # abstain-shaped like the lists above: it SUBTRACTS from a hardcoded list, so EMPTY
@@ -360,17 +357,14 @@ triage:
 #   # channel (mobile, email or linkedin), even if your template never uses them.
 #   # If your template supplies its own contact block, declare a throwaway value in
 #   # one contact field to clear the gate.
-#   employers: [Employer A, Employer B]   # empty skips the per-employer gate
+#   # Which employers a CV shows, in what order, under which headings and dates, is the CV
+#   # Layout note in your vault: Job Applications/CV Layout.md (shape in docs/CONFIGURATION.md).
+#   # Terms the composer must never claim: a CV whose profile or bullets name one, as a
+#   # whole term in any case, is refused. Letters, digits, '#', '+' and inner dots only --
+#   # write a hyphen as a space; anything else is refused at load, by position.
 #   fabrication_decoys: [Some Other Company]
-#   # Free-text constraints prepended to the bundle's NEGATIVE CONSTRAINTS block. With a
-#   # non-empty Skills Inventory the bundle already derives its own cross-reference ("claim
-#   # no technology, language, framework or tool that is not named in the BASELINE CV or the
-#   # VERIFIED EXPERIENCE ENTRIES above" -- deliberately NOT naming the Skills Inventory
-#   # itself, since a claim resting on that framing section alone is exactly what this rule
-#   # forbids), so a line here restating which technologies you work in is a hand-typed
-#   # shadow of that file and will drift from it -- `job-sluice doctor` reports any line
-#   # that FORBIDS a skill the inventory actually holds. What this key is still FOR is the
-#   # negatives an inventory cannot express:
+#   # Your guidance to the composer, in your own words: shown to it, read by no check. A
+#   # real "never claim X" belongs in fabrication_decoys above.
 #   negatives:
 #     - never claim a certification the Experience Library does not evidence
 #   served_prefix: CV

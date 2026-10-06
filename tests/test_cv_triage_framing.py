@@ -9,16 +9,20 @@ from sluice.core.leads import FRAMING_KEYS, framing_entries, split_framing
 from sluice.cv import compose as C
 from sluice.cv.engine import run_one
 from tests.conftest import FRAMING_CONCERNS, FRAMING_FLAGS
-from tests.test_cv_engine import (CLEAN_CV, ENTRIES, FakeBackend, FakeCache, FakeRenderer,
-                                  FakeVault, Note, RecordingBackend, _cfg, _served)
+from tests.test_cv_engine import (_COMPOSE, CLEAN_REPLY, ENTRIES, FakeBackend, FakeCache,
+                                  FakeRenderer, FakeVault, Note, RecordingBackend, _cfg,
+                                  _reply, _served)
 
 _NAME = "Example Candidate"
 _FLAGS = ", ".join(FRAMING_FLAGS)
 _CONCERNS = "; ".join(FRAMING_CONCERNS)
 
 
+_BUNDLE = "BUNDLE-TEXT-SENTINEL"
+
+
 def _prompt(**kw):
-    return C.build_prompt("BUNDLE", "JD", "Co", "Role", name=_NAME, **kw)
+    return C.build_structured_prompt(_BUNDLE, "JD", "Co", "Role", name=_NAME, slots=(), **kw)
 
 
 @pytest.mark.parametrize("flags,concerns,expected", [
@@ -56,33 +60,31 @@ def test_every_framing_key_has_its_own_prompt_label():
     assert len(C._TRIAGE_FRAMING_PROMPT_LABELS) == len(FRAMING_KEYS)
 
 
+# A non-empty pool is what makes the skills pick part of the rules list, so both parametrised
+# values exercise the splice point with and without that rule beside it.
+def _pool(skills):
+    return ("Example Query",) if skills else ()
+
+
 @pytest.mark.parametrize("skills", [False, True])
-def test_the_unframed_prompt_matches_the_pre_329_shape_at_both_splice_points(skills):
+def test_the_unframed_prompt_carries_neither_the_framing_rule_nor_its_section(skills):
     """Replaces a vacuous byte-identity row: `triage_framing` defaults to `()`, so
-    `_prompt(triage_framing=())` and `_prompt()` take the identical path and the comparison could
-    never fail either way. Pins the pre-#329 shape directly instead, at both places #329 spliced
-    something in -- the neighbourhood around the JD block's end and the `=== SOURCE BUNDLE`
-    header, and the rules line the #329 rule is spliced before -- read off `git show
-    origin/main:sluice/cv/compose.py` (c9d700e3, the commit this branch is rebased onto)."""
-    lines = _prompt(skills_requested=skills).splitlines()
+    `_prompt(triage_framing=())` and `_prompt()` take the identical path and the comparison
+    could never fail either way. Pins the unframed shape directly instead, at both places the
+    framing is spliced in: the JD block runs straight into the role slots with no gap where a
+    section would sit, and the rule's own placeholder collapses out of the rules list."""
+    p = _prompt(pool=_pool(skills))
+    assert C._TRIAGE_FRAMING_PROMPT_RULE.strip("\n") not in p
+    assert C._TRIAGE_FRAMING_PROMPT_HEADER not in p
+    lines = p.splitlines()
     jd_at = lines.index("=== THE ROLE (JD) ===")
-    assert lines[jd_at:jd_at + 5] == [
-        "=== THE ROLE (JD) ===", "JD", "",
-        "=== SOURCE BUNDLE (the ONLY permitted source) ===", "BUNDLE",
-    ]
-    # Adjacent to the line immediately before the one the #329 rule is spliced before, with no
-    # placeholder-collapse gap between them, exactly as it read before #329. `skills_attribution_
-    # rule` sits in that same gap (#167), so its own line -- present only when `skills` is True --
-    # is part of the expected slice rather than a second, unrelated placeholder.
-    skills_at = lines.index(
-        "- The SKILLS INVENTORY section is FRAMING, not a source. Use it to choose which "
-        "experience entries to lead with and how to describe them. Never cite it, never quote "
-        "a number from it, and never introduce a claim that rests on it alone: every fact in "
-        "the CV must still come from the BASELINE CV or a VERIFIED EXPERIENCE ENTRY.")
-    expected_next = ([C._SKILLS_ATTRIBUTION_PROMPT_RULE.rstrip("\n")] if skills else []) + [
-        "- Every line of the SKILLS section must come from the SOURCE BUNDLE. Do not add a "
-        "skill the bundle does not contain."]
-    assert lines[skills_at + 1:skills_at + 1 + len(expected_next)] == expected_next
+    assert lines[jd_at:jd_at + 4] == ["=== THE ROLE (JD) ===", "JD", "",
+                                      C._ROLE_SLOTS_PROMPT_HEADER]
+    # The placeholders sit directly before the em-dash rule: collapsed, that rule follows the
+    # bullet above it with no blank line between them.
+    dash_at = next(i for i, ln in enumerate(lines) if ln.startswith("- NO em dashes"))
+    assert lines[dash_at - 1].startswith("- "), (
+        "the framing placeholder left a gap in the rules list")
 
 
 @pytest.mark.parametrize("skills", [False, True])
@@ -91,8 +93,8 @@ def test_framing_adds_exactly_its_rule_and_its_section(skills):
     from a framed render, and what is left must be the unframed render, line for line. A
     placeholder that fails to collapse shows up here."""
     framing = C.framing_lines(_FLAGS, _CONCERNS)
-    base = _prompt(skills_requested=skills).splitlines()
-    remaining = _prompt(skills_requested=skills, triage_framing=framing).splitlines()
+    base = _prompt(pool=_pool(skills)).splitlines()
+    remaining = _prompt(pool=_pool(skills), triage_framing=framing).splitlines()
     for line in C._TRIAGE_FRAMING_PROMPT_RULE.strip("\n").splitlines():
         remaining.remove(line)
     section = [C._TRIAGE_FRAMING_PROMPT_HEADER, *[f"- {line}" for line in framing], ""]
@@ -105,12 +107,18 @@ def test_framing_adds_exactly_its_rule_and_its_section(skills):
 def test_the_section_sits_after_the_jd_and_outside_the_source_bundle():
     p = _prompt(triage_framing=C.framing_lines(_FLAGS, _CONCERNS))
     assert (p.index("=== THE ROLE (JD) ===") < p.index(C._TRIAGE_FRAMING_PROMPT_HEADER)
-            < p.index("=== SOURCE BUNDLE"))
+            < p.index(C._ROLE_SLOTS_PROMPT_HEADER) < p.index(_BUNDLE))
+    # The section's own text never reaches into the bundle's: the notes are lead data, not
+    # evidence, and the bundle is what the gate and the audit read.
+    section = (p.partition(C._TRIAGE_FRAMING_PROMPT_HEADER)[2]
+               .partition(C._ROLE_SLOTS_PROMPT_HEADER)[0])
+    assert _BUNDLE not in section and _CONCERNS in section
 
 
-def test_compose_forwards_the_framing_into_the_prompt_it_sends():
-    # `compose()` passes its arguments to `build_prompt` one by one; a forgotten forward is
-    # exactly the shape that leaves the section out of what the backend receives.
+def test_compose_structured_forwards_the_framing_into_the_prompt_it_sends():
+    # `compose_structured()` passes its arguments to `build_structured_prompt` one by one; a
+    # forgotten forward is exactly the shape that leaves the section out of what the backend
+    # receives.
     class _Backend:
         def __init__(self):
             self.prompts = []
@@ -120,8 +128,9 @@ def test_compose_forwards_the_framing_into_the_prompt_it_sends():
             return Completion("CV")
 
     be = _Backend()
-    C.compose(be, "BUNDLE", "JD", "Co", "Role", name=_NAME,
-              triage_framing=C.framing_lines("", _CONCERNS))
+    C.compose_structured(be, _BUNDLE, "JD", "Co", "Role", name=_NAME, slots=(),
+                         triage_framing=C.framing_lines("", _CONCERNS))
+    assert len(be.prompts) == 1
     assert C._TRIAGE_FRAMING_PROMPT_HEADER in be.prompts[0]
     assert f"- concerns: {_CONCERNS}" in be.prompts[0]
 
@@ -188,13 +197,12 @@ def test_a_figure_only_in_the_triage_notes_is_refused_by_the_gate(monkeypatch):
     pass on a tree where the notes never reach the composer at all."""
     _served(monkeypatch)
     note = _framed_note(triage_concerns=f"{FRAMING_CONCERNS[0]} {_FIGURE}")
-    cv = CLEAN_CV.replace("I build reliable systems.",
-                          f"I build reliable systems for {_FIGURE} users.")
-    assert _FIGURE in cv, "the replace no-opped"
+    cv = _reply(profile=f"I build reliable systems for {_FIGURE} users.")
     be = RecordingBackend(cv_out=cv)
     r, rend = _run(note, be)
+    # The framing section ends where the role slots begin (cv/compose.py's prompt order).
     section = (be.prompts[0].partition(C._TRIAGE_FRAMING_PROMPT_HEADER)[2]
-               .partition("=== SOURCE BUNDLE")[0])
+               .partition(C._ROLE_SLOTS_PROMPT_HEADER)[0])
     assert _FIGURE in section, "wiring witness: the composer was shown the figure as framing"
     assert r.status == "skipped-gate"
     assert any(v.startswith(f"INVENTED PROFILE METRIC {_FIGURE}") for v in r.violations), (
@@ -297,7 +305,7 @@ def test_a_hold_records_the_framing_after_the_blockers(monkeypatch):
     _served(monkeypatch)
     note = _framed_note()
     v = FakeVault(ENTRIES, notes=[note])
-    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV, audit_out=_UNSUPPORTED), FakeCache(),
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_REPLY, audit_out=_UNSUPPORTED), FakeCache(),
                 renderer=FakeRenderer())
     assert r.status == "needs-signoff"
     assert json.loads(note.fm["needs_signoff"]) == [
@@ -305,7 +313,7 @@ def test_a_hold_records_the_framing_after_the_blockers(monkeypatch):
 
 
 class _ChangesConcernsMidCompose:
-    """Composes CLEAN_CV and, DURING that compose call, changes the lead's `triage_concerns` in
+    """Composes CLEAN_REPLY and, DURING that compose call, changes the lead's `triage_concerns` in
     place. `_run_one` binds `fm = note.fm`, so the change is visible to anything re-reading the
     frontmatter at the hold site -- which is exactly the drift this row exists to catch. Audits
     `unsupported`, so the CV is held. Routes compose from audit like the CV engine's doubles."""
@@ -315,10 +323,10 @@ class _ChangesConcernsMidCompose:
         self.note, self.prompts = note, []
 
     def complete(self, prompt):
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+        if prompt.startswith(_COMPOSE):
             self.prompts.append(prompt)
             self.note.fm["triage_concerns"] = FRAMING_CONCERNS[1]
-            return Completion(CLEAN_CV)
+            return Completion(CLEAN_REPLY)
         return Completion(_UNSUPPORTED)
 
 

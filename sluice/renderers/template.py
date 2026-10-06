@@ -2,8 +2,8 @@
 
 This is the renderer the design doc introduces to replace shipping a CV design: the
 template's LAYOUT belongs to the user (their own `.html.j2` file, or the packaged
-default), while sluice supplies only the CONTENT -- the parsed `CvDocument` the
-fabrication gate already certified. Neither jinja2 nor weasyprint is imported at module
+default), while sluice supplies only the CONTENT -- the `CvDocument` sluice
+assembled from the vault and a reply the fabrication gate already certified. Neither jinja2 nor weasyprint is imported at module
 scope: `sluice/` is standard-library only, and `sluice/renderers/__init__.py`'s autoload
 imports every sibling module at process start (including this one) for every command,
 render-related or not, so a module-scope import of either would break commands that
@@ -11,10 +11,8 @@ never touch rendering. Both are imported lazily, inside `_make`, and `TemplateRe
 itself imports jinja2 lazily too so it stays constructible directly (as the tests do)
 without going through `_make` at all.
 
-It also implements the Renderer seam's OPTIONAL `precheck` hook (see
-`sluice/core/protocols.py`), which is how the meta-line grammar below stays THIS
-renderer's requirement instead of the engine's. `script` implements no counterpart and
-is deliberately not gated by it.
+It takes a `CvDocument` and nothing else: there is no composed text for it to parse, so
+no grammar of its own that could refuse a CV the gate passed.
 """
 import os
 
@@ -22,7 +20,6 @@ from sluice.core import plugins
 # The seam's error type, taken from the seam rather than from the sibling implementation
 # that happened to define it first (see `core/protocols.py`).
 from sluice.core.protocols import CvDocument, RenderDependencyError, RenderError
-from sluice.cv.parse import CvParseError, parse_cv
 from sluice.renderers import register
 
 _PACKAGED_DEFAULT = "cv_plain.html.j2"
@@ -44,7 +41,7 @@ _MISSING_EXTRA = (
 
 
 class TemplateRenderer:
-    """Fills a user's Jinja2 template with a parsed CvDocument and writes the PDF via
+    """Fills a user's Jinja2 template with a CvDocument and writes the PDF via
     WeasyPrint. html_module is the WeasyPrint HTML class (or a fake, in tests) --
     injected rather than imported here, so this class can be constructed and
     unit-tested with no native libraries installed at all."""
@@ -137,7 +134,7 @@ class TemplateRenderer:
         # suffix-matches .html/.htm/.xml and the conventional .j2 suffix defeats it. With
         # escaping off, a gate-verified bullet reading "Cut p99 latency to <200ms"
         # renders as an unknown HTML element and WeasyPrint DROPS the text -- the PDF
-        # then silently differs from what validate() approved, and nobody sees it until
+        # then silently differs from what the gate approved, and nobody sees it until
         # after the CV has been sent under the user's name.
         #
         # undefined=StrictUndefined, for the identical reason: Jinja2's DEFAULT
@@ -146,9 +143,9 @@ class TemplateRenderer:
         # a wholly undefined ROOT name raises by default, so `document.nmae` constructs,
         # renders, and produces a PDF silently missing the candidate's name with nothing
         # anywhere to say so. A user's template is free text sluice does not control, and
-        # this is the SAME "silently differs from what validate() approved" harm the
+        # this is the SAME "silently differs from what the gate approved" harm the
         # autoescape choice above already exists to prevent, just on a typo instead of an
-        # unescaped character. `CvDocument` (sluice/cv/parse.py) always populates every
+        # unescaped character. `CvDocument` (core/protocols.py) always populates every
         # field its dataclasses declare, so StrictUndefined has nothing legitimate left
         # to break: every attribute a template can reach is guaranteed present.
         #
@@ -167,44 +164,12 @@ class TemplateRenderer:
                 f"renderer 'template': {self._template_name} is not valid Jinja2: {e}"
             ) from e
 
-    def precheck(self, cv_text: str) -> list[str]:
-        """The Renderer seam's OPTIONAL grammar hook -- see core/protocols.py.
-
-        cv/engine.py calls this inside its compose/gate retry loop and folds the result
-        in with the fabrication gate's violations, so a CV this renderer cannot lay out
-        is re-composed once rather than discovered at render time, after the LLM spend
-        and past the only retry there is.
-
-        NOT a second fabrication gate, and it must never become one: it reports what
-        `parse_cv` reports, which is SHAPE only (see sluice/cv/parse.py's module
-        docstring). The `FORMAT:` prefix matches the shape the engine's other gate
-        messages take, since the string is prompt text fed straight back to the model.
-
-        `script` deliberately has no counterpart. It shells out to arbitrary user code
-        and has no grammar of its own to impose, and the engine applying THIS renderer's
-        grammar to it was measured to report `skipped-gate` on a gate-clean CV that the
-        operator's own script would have rendered.
-        """
-        try:
-            parse_cv(cv_text)
-        except CvParseError as e:
-            return [f"FORMAT: {e}"]
-        return []
-
     def render(self, document, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
-        # TRANSITIONAL: removed in Task 19. Until the engine assembles a CvDocument it still
-        # hands this renderer composed text, which is parsed exactly as before. parse_cv,
-        # not a second gate: the fabrication gate has already run on that text by the time
-        # any renderer sees it (see sluice/cv/parse.py's module docstring). A SHAPE this
-        # parser cannot model raises CvParseError -- which `precheck` above has already
-        # reported to cv/engine.py's retry loop, so reaching this call with an unparseable
-        # CV means the retry was exhausted and the engine chose not to render. Left
-        # uncaught deliberately: it is the loud failure, not the silent one.
-        if isinstance(document, str):
-            document = parse_cv(document)
-        elif not isinstance(document, CvDocument):
-            # Fail loud, never coerce: a template given some other shape would render a
-            # blank or half-filled PDF under the user's name.
+        """Fill the template with the document and write the PDF to `out_dir`; return its
+        path. Every template or WeasyPrint failure surfaces as `RenderError`, never raw."""
+        if not isinstance(document, CvDocument):
+            # Fail loud, never coerce: a template given some other shape (composed text
+            # included) would render a blank or half-filled PDF under the user's name.
             raise RenderError(
                 f"renderer 'template': render() takes a CvDocument, "
                 f"got {type(document).__name__}")
@@ -288,7 +253,7 @@ def _make(cvcfg):
 
 register("template", _make)
 # `weasyprint` was a <pre>-dumping renderer that ignored the CV's structure entirely.
-# `template` supersedes it: same WeasyPrint backend, but the composed CV is parsed and
+# `template` supersedes it: same WeasyPrint backend, but the assembled CV is
 # laid out by the user's own Jinja2 template. Retired rather than silently dropped so a
 # config naming it says what to do instead.
 plugins.register_retired(

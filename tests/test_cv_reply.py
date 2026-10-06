@@ -1,9 +1,11 @@
-"""cv/reply.py: finding the composer's JSON reply and checking its shape (spec \u00a75.2-\u00a75.3)."""
+"""cv/reply.py: finding the composer's JSON reply and checking its shape (#364 spec \u00a75.2-\u00a75.3)."""
 import json
+import unicodedata
 
 import pytest
 
 from sluice.cv.reply import Bullet, Reply, extract_json, parse_reply
+from tests.work_count import bound_digit_reads
 
 SLOTS = ("R1", "R2")
 GOOD = {"profile": "I build reliable systems.",
@@ -15,10 +17,25 @@ def _reply_text(obj=GOOD):
     return json.dumps(obj)
 
 
+def _all_findings(out):
+    """Every finding parse_reply raised, wherever it filed it: the returned list when the
+    reply is refused, else each bullet's text findings, which a Reply carries for
+    cv/selection.py::select to report if it keeps that bullet."""
+    if isinstance(out, list):
+        return out
+    return [f for found in out.bullet_findings.values() for f in found]
+
+
 def _findings(obj):
-    out = parse_reply(obj, SLOTS)
-    assert isinstance(out, list), out
+    out = _all_findings(parse_reply(obj, SLOTS))
+    assert out, "parse_reply raised no finding"
     return out
+
+
+def _accepted(out):
+    """A Reply carrying no finding at all: a bullet whose text was refused also parses to a
+    Reply now, so `isinstance(out, Reply)` alone no longer says its text was accepted."""
+    return isinstance(out, Reply) and not out.bullet_findings
 
 
 # --- extract_json -----------------------------------------------------------------------
@@ -43,12 +60,16 @@ def test_a_decodable_brace_in_chat_before_a_fenced_reply_does_not_win():
 
 
 def test_an_echoed_shape_before_a_fenced_reply_does_not_win():
-    # The fragment carries profile AND roles, so the profile-and-roles preference cannot
-    # choose between it and the reply: only the fenced-first rule picks the fenced reply.
-    # Task 24's witness 11 deletes that rule and must turn THIS row red.
-    echo = '{"profile": "<profile>", "roles": {}}'
-    text = "You asked for " + echo + " so:\n```json\n" + _reply_text() + "\n```"
-    assert extract_json(text) == GOOD
+    # The fragment carries profile AND roles and NO placeholder, so neither the
+    # profile-and-roles preference nor the placeholder preference can choose between it and
+    # the reply: only the fenced-first rule picks the fenced reply. Task 24's witness 11
+    # deletes that rule and turns THIS row red. An echo carrying `<profile>` cannot be the
+    # separating input: the placeholder preference rejects it whatever the fence order, and
+    # this row once used one and stayed green with the fenced-first rule deleted.
+    # The placeholder echo stays as a second input, for the placeholder preference's sake.
+    for echo in ('{"profile": "", "roles": {}}', '{"profile": "<profile>", "roles": {}}'):
+        text = "You asked for " + echo + " so:\n```json\n" + _reply_text() + "\n```"
+        assert extract_json(text) == GOOD, echo
 
 
 def test_a_json_object_in_chat_before_the_reply_does_not_win():
@@ -105,9 +126,67 @@ def test_a_missing_or_blank_profile_is_a_finding():
     assert "REPLY: profile missing or empty" in _findings({"profile": " ", "roles": {}})[0]
 
 
-def test_an_unknown_slot_is_a_finding():
+def test_an_unknown_slot_is_a_finding_that_names_the_valid_ids():
     assert _findings({**GOOD, "roles": {"R9": []}}) == [
-        "REPLY: unknown slot 'R9' -- use only the slot ids given"]
+        "REPLY: unknown slot 'R9' -- use only the slot ids given (R1, R2)"]
+
+
+# A role heading is vault text the model was shown beside each slot id. Keying by it is a
+# slip about WHICH name, not about content, so it maps to its slot when exactly one slot
+# carries it; the mapping adds no model-authored text to the CV.
+HEADINGS = {"R1": "Example Alpha", "R2": "Example Beta"}
+_BULLETS = GOOD["roles"]["R1"]
+
+
+def _parse_h(roles, headings=HEADINGS):
+    return parse_reply({**GOOD, "roles": roles}, SLOTS, headings)
+
+
+def test_a_role_heading_key_maps_to_its_slot():
+    reply = _parse_h({"Example Alpha": _BULLETS})
+    assert isinstance(reply, Reply) and set(reply.roles) == {"R1"}
+
+
+def test_a_role_heading_key_matches_case_and_whitespace_insensitively():
+    reply = _parse_h({"  EXAMPLE   alpha ": _BULLETS})
+    assert isinstance(reply, Reply) and set(reply.roles) == {"R1"}
+
+
+def test_a_heading_shared_by_two_slots_is_never_mapped():
+    # Duplicate headings are legal in a layout; ambiguity must not pick a slot.
+    out = _parse_h({"Example Alpha": _BULLETS},
+                   {"R1": "Example Alpha", "R2": "example  alpha"})
+    assert out == ["REPLY: unknown slot 'Example Alpha' -- use only the slot ids given "
+                   "(R1, R2)"]
+
+
+def test_a_key_matching_a_slot_id_wins_over_a_heading_match():
+    # R2's heading is spelled "R1": the key "R1" is the id of slot R1, not a heading.
+    reply = _parse_h({"R1": _BULLETS}, {"R1": "Example Alpha", "R2": "R1"})
+    assert isinstance(reply, Reply) and set(reply.roles) == {"R1"}
+
+
+def test_a_slot_given_as_its_id_and_its_heading_is_a_finding():
+    out = _parse_h({"R1": _BULLETS, "Example Alpha": _BULLETS})
+    assert out == ["REPLY: slot R1 given twice (as 'R1' and 'Example Alpha') -- give each "
+                   "slot once"]
+
+
+def test_a_blank_heading_names_nothing_a_blank_key_could_match():
+    out = _parse_h({"": _BULLETS, "  ": _BULLETS}, {"R1": "", "R2": "Example Beta"})
+    assert out == ["REPLY: unknown slot '' -- use only the slot ids given (R1, R2)",
+                   "REPLY: unknown slot '  ' -- use only the slot ids given (R1, R2)"]
+
+
+def test_a_heading_that_is_not_text_is_blank_not_its_spelling():
+    # str(None) is "None": a non-str heading must not be matchable by that key.
+    out = _parse_h({"None": _BULLETS}, {"R1": None, "R2": "Example Beta"})
+    assert out == ["REPLY: unknown slot 'None' -- use only the slot ids given (R1, R2)"]
+
+
+def test_no_headings_given_means_no_heading_mapping():
+    assert isinstance(parse_reply({**GOOD, "roles": {"Example Alpha": _BULLETS}}, SLOTS),
+                      list)
 
 
 @pytest.mark.parametrize("bullets,expected", [
@@ -121,6 +200,14 @@ def test_malformed_bullets_are_findings(bullets, expected):
     assert _findings({**GOOD, "roles": {"R1": bullets}}) == [expected]
 
 
+def test_a_cite_with_stray_whitespace_is_the_entry_id():
+    # A model writing " EF1 " means EF1: kept unstripped it would match no bundle entry and
+    # cost the retry as a BAD CITATION.
+    out = parse_reply({**GOOD, "roles": {"R1": [{"text": "Shipped the platform",
+                                                 "cites": [" EF1 "]}]}}, SLOTS)
+    assert _accepted(out) and out.roles["R1"] == (Bullet("Shipped the platform", ("EF1",)),)
+
+
 @pytest.mark.parametrize("text", ["Cut costs [40%] in a year", "Shipped it [EF1]"])
 def test_a_bracket_in_bullet_text_is_a_finding(text):
     assert _findings({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}) == [
@@ -130,6 +217,28 @@ def test_a_bracket_in_bullet_text_is_a_finding(text):
 def test_a_bracket_in_the_profile_is_a_finding():
     assert _findings({**GOOD, "profile": "Grew [500] users."}) == [
         'REPLY: profile contains a bracket -- put entry ids in "cites", never in the text']
+
+
+def test_a_bullet_whose_text_is_refused_is_kept_with_its_findings_filed_by_position():
+    # Whether the finding counts is cv/selection.py::select's call: only it knows whether
+    # the bullet survives the budget. Filed under (slot, 1-based position), the numbering
+    # select and every finding message use.
+    good, bad = {"text": "Shipped it", "cites": ["EF1"]}, {"text": "Grew 2,5x", "cites": ["EF1"]}
+    out = parse_reply({**GOOD, "roles": {"R1": [good, bad]}}, SLOTS)
+    assert isinstance(out, Reply)
+    assert out.roles["R1"] == (Bullet("Shipped it", ("EF1",)), Bullet("Grew 2,5x", ("EF1",)))
+    assert out.bullet_findings == {("R1", 2): (
+        "REPLY: R1 bullet 2 writes a decimal with a comma -- use a point, e.g. 2.5",)}
+
+
+def test_a_reply_refused_on_other_grounds_still_names_each_bullets_text_finding():
+    # With no selection there is nothing to say which bullet would be trimmed, so the
+    # refusal carries every finding, in reply order.
+    out = parse_reply({**GOOD, "profile": "Grew [500] users.",
+                       "roles": {"R1": [{"text": "Grew 2,5x", "cites": ["EF1"]}]}}, SLOTS)
+    assert out == [
+        'REPLY: profile contains a bracket -- put entry ids in "cites", never in the text',
+        "REPLY: R1 bullet 1 writes a decimal with a comma -- use a point, e.g. 2.5"]
 
 
 @pytest.mark.parametrize("text", ["line one\nline two", "a\u2028b", "a\x1bb"])
@@ -180,7 +289,7 @@ def test_missing_skills_means_none():
 def test_unknown_keys_are_ignored_at_the_top_level_and_inside_a_bullet():
     obj = {**GOOD, "notes": "x",
            "roles": {"R1": [{"text": "Shipped it", "cites": ["EF1"], "title": "x"}]}}
-    assert isinstance(parse_reply(obj, SLOTS), Reply)
+    assert _accepted(parse_reply(obj, SLOTS))
 
 
 # --- hardening: pure and never raising on reply content ---------------------------------
@@ -193,7 +302,7 @@ def _deep(n):
 
 
 def test_a_deeply_nested_extra_key_is_not_walked():
-    assert isinstance(parse_reply({**GOOD, "extra": _deep(3000)}, SLOTS), Reply)
+    assert _accepted(parse_reply({**GOOD, "extra": _deep(3000)}, SLOTS))
 
 
 def test_a_deeply_nested_reply_text_is_a_finding_not_a_raise():
@@ -208,20 +317,46 @@ def test_pathological_nesting_is_a_finding_not_a_raise(text):
     assert isinstance(out, list) and out[0].startswith("REPLY:")
 
 
-def test_the_worst_inputs_at_the_cap_return_quickly_with_a_finding():
-    # Each failed raw_decode builds a JSONDecodeError that counts lines up to its position,
-    # so an unbounded number of attempts is quadratic in time. The bound is tight enough
-    # that dropping the prefilter, the attempt budget or the cap turns this red.
-    import time
+def _count_decodes(monkeypatch):
+    """Wrap `json.JSONDecoder.raw_decode` -- the call `cv/reply.py::_candidates` makes per
+    attempt, looked up on the class -- and return a one-element list holding the count."""
+    original = json.JSONDecoder.raw_decode
+    count = [0]
 
+    def counting(self, s, idx=0):
+        count[0] += 1
+        return original(self, s, idx)
+
+    monkeypatch.setattr(json.JSONDecoder, "raw_decode", counting)
+    return count
+
+
+def test_the_worst_inputs_at_the_cap_are_bounded_by_counted_decode_attempts(monkeypatch):
+    # Each failed raw_decode builds a JSONDecodeError that counts lines up to its position,
+    # so the scan's work is (attempts x reply length), and the length is capped. Counting
+    # the attempts measures that work on any host, traced by --cov or not; a wall-clock
+    # bound here measured the runner instead.
     from sluice.cv import reply
+    count = _count_decodes(monkeypatch)
+    # Scope first: the wrapper must see the calls the scan makes, or every bound below
+    # passes on a count that never moves.
+    assert isinstance(extract_json(_reply_text()), dict) and count[0] >= 1
+
     cap = reply._MAX_REPLY_CHARS
-    worst = ["{" * cap, '{"' * (cap // 2), '{"a":"' + "{" * (cap - 10)]
-    start = time.monotonic()
-    outs = [extract_json(t) for t in worst]
-    elapsed = time.monotonic() - start
-    assert all(isinstance(o, list) and o[0].startswith("REPLY:") for o in outs), outs
-    assert elapsed < 1.0, elapsed
+    worst = {"braces": "{" * cap, "keys": '{"' * (cap // 2),
+             "open-string": '{"a":"' + "{" * (cap - 10)}
+    seen = {}
+    for name, text in worst.items():
+        count[0] = 0
+        out = extract_json(text)
+        assert isinstance(out, list) and out[0].startswith("REPLY:"), (name, out)
+        seen[name] = count[0]
+    # The attempt budget: every brace in "keys" passes the prefilter, so only the budget
+    # stops the scan short of one attempt per brace.
+    assert max(seen.values()) <= reply._MAX_DECODE_ATTEMPTS, seen
+    # The prefilter: no brace in "braces" can open an object, so none costs an attempt.
+    # Without it the budget still holds the count, so the budget row cannot witness this.
+    assert seen["braces"] == 0, seen
 
 
 def test_a_reply_over_the_cap_is_a_finding():
@@ -287,12 +422,25 @@ def test_a_number_written_without_digits_is_a_finding(text):
         "REPLY: R1 bullet 1 writes a number without digits -- write numbers with the digits 0-9"]
 
 
-def test_a_cjk_ideograph_is_a_letter_and_is_not_refused():
-    # Accepted residual: a CJK numeral (\u56db\u5341) in model text is a letter to this rule,
-    # so it is not seen as a figure. Refusing it would refuse an employer name holding \u4e09.
-    for text in ("Grew to \u56db\u5341 engineers", "Worked at \u4e09 Example"):
-        out = parse_reply({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}, SLOTS)
-        assert isinstance(out, Reply)
+@pytest.mark.parametrize("text", ["Led \u4e09 teams", "Grew to \u56db\u5341 engineers",
+                                  "Hired \u3007 contractors"])
+def test_a_cjk_numeral_is_a_finding(text):
+    # Category Lo -- a letter to Unicode -- yet it means a number figures() cannot read.
+    assert _findings({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}) == [
+        "REPLY: R1 bullet 1 writes a number without digits -- write numbers with the digits 0-9"]
+
+
+@pytest.mark.parametrize("text", ["Opened the \u793e office", "Ran \u65e5\u672c sales"])
+def test_a_cjk_character_with_no_numeric_value_is_not_refused(text):
+    assert _accepted(_bullet(text))
+
+
+@pytest.mark.parametrize("n", range(1, 10))
+def test_circled_digits_one_to_nine_are_read_not_refused(n):
+    # U+2460-U+2468 carry digit values, so core/tokens.py::figures reads them.
+    from sluice.core.tokens import figures
+    text = f"Grew to {chr(0x245F + n)} teams"
+    assert _accepted(_bullet(text)) and figures(text) == {str(n)}
 
 
 @pytest.mark.parametrize("text,code", [
@@ -312,13 +460,13 @@ def test_a_look_alike_letter_is_a_finding_naming_its_code_point(text, code):
     "Held at 40\u2103", "Cafe\u0301 rollout"])
 def test_text_copied_faithfully_from_evidence_is_not_refused(text):
     out = parse_reply({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}, SLOTS)
-    assert isinstance(out, Reply), out
+    assert _accepted(out), out
 
 
 def test_a_standalone_greek_word_is_not_refused():
     greek = "\u03b1\u03b2\u03b3"
     out = parse_reply({**GOOD, "profile": f"I use the {greek} notation."}, SLOTS)
-    assert isinstance(out, Reply)
+    assert _accepted(out)
 
 
 @pytest.mark.parametrize("sep", ["\u00b7", "\u22c5", "\u2219", "\u066b", "\u066c", "\u201a",
@@ -333,14 +481,14 @@ def test_a_look_alike_separator_between_digits_is_a_finding(sep):
                                   "Grew 8.3x", "Served 3,000 users"])
 def test_an_ordinary_separator_between_digits_is_not_refused(text):
     out = parse_reply({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}, SLOTS)
-    assert isinstance(out, Reply), out
+    assert _accepted(out), out
 
 
 def test_a_circled_digit_is_read_as_a_figure_not_refused():
     # unicodedata.digit gives U+2460 the value 1, so core/tokens.py::figures already sees it.
     out = parse_reply({**GOOD, "roles": {"R1": [{"text": "Grew to \u2460 team",
                                                  "cites": ["EF1"]}]}}, SLOTS)
-    assert isinstance(out, Reply)
+    assert _accepted(out)
 
 
 def _bullet(text):
@@ -356,7 +504,7 @@ def test_a_comma_that_is_not_a_group_is_a_finding(text):
 @pytest.mark.parametrize("text", ["Served 3,000 users", "Served 1,000,000 users",
                                   "Served 50,000 users", "Grew 2.5x, then 7, then 9"])
 def test_a_comma_that_groups_or_ends_a_clause_is_not_refused(text):
-    assert isinstance(_bullet(text), Reply)
+    assert _accepted(_bullet(text))
 
 
 @pytest.mark.parametrize("sp", ["\u200a", "\u2006", "\u2008", "\u2000", "\u2007", "\u205f",
@@ -369,7 +517,7 @@ def test_exotic_whitespace_between_digits_is_a_finding(sp):
 @pytest.mark.parametrize("text", ["Served 10\u00a0000 users", "Served 10\u202f000 users",
                                   "Served 10\u2009000 users"])
 def test_grouping_whitespace_between_digits_is_not_refused(text):
-    assert isinstance(_bullet(text), Reply)
+    assert _accepted(_bullet(text))
 
 
 def test_a_grouping_space_not_in_the_grouping_shape_is_refused():
@@ -389,7 +537,82 @@ def test_a_latin_word_mixing_any_other_script_is_a_finding(text, code):
 
 @pytest.mark.parametrize("text", ["Cut it to 200\u00b5s", "Measured in \u00b5s", "Took 5 \u03bcs"])
 def test_a_micro_sign_opening_a_unit_word_is_not_refused(text):
-    assert isinstance(_bullet(text), Reply)
+    assert _accepted(_bullet(text))
+
+
+# Cyrillic capital O and Greek capital omicron, built with chr() so no look-alike sits in
+# this file's source.
+_CYRILLIC_O, _GREEK_O = chr(0x041E), chr(0x039F)
+
+
+@pytest.mark.parametrize("letter", [_CYRILLIC_O, _GREEK_O])
+@pytest.mark.parametrize("shape", ["Grew revenue 8{}% in a year", "Grew 1{}{}% in a year",
+                                   "Grew revenue {}8% in a year"])
+def test_a_non_latin_letter_against_a_digit_is_a_finding_in_a_bullet_and_the_profile(
+        letter, shape):
+    # "8O%" shows the page 80% while figures() reads only the 8. The word scan alone
+    # misses it: its pattern excludes digits, so the letter is a one-letter word.
+    text = shape.replace("{}", letter)
+    code = f"U+{ord(letter):04X}"
+    assert _findings({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}) == [
+        f"REPLY: R1 bullet 1 uses a look-alike character {code} -- write it as a plain letter"]
+    assert _findings({**GOOD, "profile": text}) == [
+        f"REPLY: profile uses a look-alike character {code} -- write it as a plain letter"]
+
+
+# What renders as no gap is looked through: a combining mark, whitespace other than an
+# ASCII space, and one figure separator ("8.O" reads 8.0, "8-O" a range). A digit is what
+# core/tokens.py::digit_value says, the predicate figures() reads runs with, so a full-width,
+# Arabic-Indic or superscript digit counts on either side.
+@pytest.mark.parametrize("text", [
+    f"Grew 8{chr(0x0301)}{_CYRILLIC_O}%", f"Grew 8{chr(0x00A0)}{_CYRILLIC_O}%",
+    f"Grew 8{chr(0x2009)}{_CYRILLIC_O}%", f"Grew 8{chr(0x202F)}{_CYRILLIC_O}%",
+    f"Grew 8{chr(0x200A)}{_CYRILLIC_O}%", f"Grew 2.{_CYRILLIC_O}%",
+    f"Hired 3-{_CYRILLIC_O} people", f"Grew {_CYRILLIC_O}.8%",
+    f"Grew 8.{chr(0x0301)}{_CYRILLIC_O}%", f"Grew {chr(0xFF18)}{_CYRILLIC_O}%",
+    f"Grew {chr(0x0668)}{_CYRILLIC_O}%", f"Grew {chr(0x00B2)}{_CYRILLIC_O}%",
+    f"Grew {_CYRILLIC_O}{chr(0xFF18)}%"])
+def test_a_non_latin_letter_is_against_a_digit_through_what_renders_as_no_gap(text):
+    out = _findings({**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}})
+    assert out == [
+        "REPLY: R1 bullet 1 uses a look-alike character U+041E -- write it as a plain letter"]
+
+
+def test_the_digit_rule_and_figures_agree_on_every_digit_beside_the_letter():
+    # The differential: wherever figures() reads a digit at a position beside the letter,
+    # the reply check refuses -- one predicate, so neither can end a run the other reads on.
+    from sluice.core.tokens import digit_value, figures
+    digits = [chr(c) for c in range(0x110000)
+              if unicodedata.digit(chr(c), None) is not None
+              and not unicodedata.category(chr(c)).startswith("C")]
+    assert len(digits) > 100, "the sweep found no digits to check"
+    missed = []
+    for d in digits:
+        for text in (f"Grew {d}{_CYRILLIC_O}%", f"Grew {_CYRILLIC_O}{d}%"):
+            assert figures(text) and digit_value(text, text.index(d)) is not None
+            if _accepted(_bullet(text)):
+                missed.append(f"U+{ord(d):04X}")
+    assert missed == []
+
+
+@pytest.mark.parametrize("ohm", [chr(0x03A9), chr(0x2126)])
+@pytest.mark.parametrize("shape", ["Fitted a 10{}", "Fitted a 10{} resistor"])
+def test_the_ohm_after_a_digit_is_a_unit_not_a_look_alike(ohm, shape):
+    # Greek capital omega and the OHM SIGN, allowed after a digit as micro and mu are: a
+    # faithful copy of a unit, and neither reads as a digit. A Cyrillic O there still does.
+    assert _accepted(_bullet(shape.format(ohm)))
+    assert not _accepted(_bullet(shape.format(_CYRILLIC_O)))
+
+
+@pytest.mark.parametrize("text", [f"Grew 8 {_CYRILLIC_O}%", f"Grew 8.. {_CYRILLIC_O}%",
+                                  f"Grew 8..{_CYRILLIC_O}%",
+                                  f"Ran the {_CYRILLIC_O}{chr(0x041A)} desk for 3 years",
+                                  f"Grew 3 {chr(0x03B1)}{chr(0x03B2)}{chr(0x03B3)} teams",
+                                  "Grew revenue 8O% in a year"])
+def test_non_latin_text_apart_from_digits_and_ascii_o_are_not_refused_by_the_digit_rule(text):
+    # A non-Latin word separated from a figure is ordinary text. The ASCII O against a digit
+    # is the accepted residual: Latin, and "5G" or "O2" are real text.
+    assert _accepted(_bullet(text))
 
 
 @pytest.mark.parametrize("text,shown", [("Led 3 100-person teams", "3 100"),
@@ -412,7 +635,7 @@ def test_an_ascii_space_grouped_number_in_the_profile_is_a_finding():
                                   "from 2019 to 2023", "In Q3 120 customers signed",
                                   "Hired 3\u20135 engineers"])
 def test_ordinary_adjacent_numbers_and_an_en_dash_range_are_not_refused(text):
-    assert isinstance(_bullet(text), Reply), _bullet(text)
+    assert _accepted(_bullet(text)), _bullet(text)
 
 
 @pytest.mark.parametrize("text,shown", [("Saved USD3 100 a month", "3 100"),
@@ -427,13 +650,13 @@ def test_a_grouped_number_after_a_code_or_a_comma_group_is_a_finding(text, shown
                                   "In Q3\u202f120 customers", "a multiple of x1 000"])
 def test_a_decimal_fraction_or_a_lone_letter_label_never_heads_a_group(text):
     # "x1 000" is group_reading's stated residual, pinned here as allowed.
-    assert isinstance(_bullet(text), Reply), _bullet(text)
+    assert _accepted(_bullet(text)), _bullet(text)
 
 
 @pytest.mark.parametrize("text", ["Saved R10,000", "Grew x1,000 fold"])
 def test_a_comma_group_after_a_letter_is_not_a_decimal_comma(text):
     # Advising "R10.000" would read as 10.000 and become an invented metric.
-    assert isinstance(_bullet(text), Reply)
+    assert _accepted(_bullet(text))
 
 
 def test_a_huge_comma_chain_never_raises():
@@ -442,11 +665,15 @@ def test_a_huge_comma_chain_never_raises():
 
 
 @pytest.mark.parametrize("sep", [",", " "])
-def test_a_60k_group_chain_is_parsed_in_linear_time(sep):
-    import time
+def test_a_60k_group_chain_is_parsed_in_linear_time(sep, monkeypatch):
+    # The reply's bullet checks consult core/tokens.py::group_reading at every separator,
+    # and a walk back along the chain from each one was quadratic. Bounded by counted digit
+    # reads, not wall-clock time; the reason and the 8-per-character bound are stated in
+    # tests/test_core_tokens.py::test_a_60k_group_chain_is_read_in_linear_time (this pass
+    # measured under 5 per character, reply.py reading digits of its own on top).
     text = "Served 1" + (sep + "000") * 15000 + " users"
     reply = {**GOOD, "roles": {"R1": [{"text": text, "cites": ["EF1"]}]}}
-    start = time.perf_counter()
+    reads = bound_digit_reads(monkeypatch, 8 * len(text))
     out = parse_reply(reply, SLOTS)
-    assert time.perf_counter() - start < 0.5
+    assert reads[0] <= 8 * len(text)
     assert isinstance(out, (Reply, list))

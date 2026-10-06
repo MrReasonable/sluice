@@ -8,7 +8,10 @@ Shared by every sub-app:
   file, overridden last by environment variables. Also holds
   `validate_search_entry`, the shared `sources.<id>.searches`/`searches_spec`
   grammar `ingest/base.py` imports rather than the reverse -- see the source
-  contract discussion below.
+  contract discussion below. Each sub-app's loader reads its own block, with one
+  exception: `load_config` also refuses the retired CV inputs (the root `baseline_rel`
+  and the `cv:` block's `employers`, `refuse_retired_cv_inputs`), so that EVERY command
+  stops on them, not only the commands that load the `cv:` block.
 - `vault.py`: the lead/experience store. Reads and writes an Obsidian-style
   markdown vault without clobbering status, scores, or notes a human or
   another agent has already set: a fresh scrape touches only a `last_seen`
@@ -273,6 +276,24 @@ Shared by every sub-app:
   `CRITERIA_RELPATH`, with a defined abstain: an all-blank `CandidateProfile`
   for a missing document, never `None`). Consumed by `cv/engine.py`,
   `apply/packet.py`, `Vault.preflight` and `cli.py::cmd_init`.
+- `tokens.py` (#364/#365/#368): the ONE tokeniser and whole-term matcher the CV gate and
+  `doctor` share -- `find_term` (a term's token sequence inside one segment, no
+  alphanumeric of any script touching either end), `figures` (the figure reader, with
+  `group_reading` deciding every thousands separator), `tool_items` (the one parser of an
+  entry's `Tools:`) and the decoy validators. In `core/`, not `cv/`, because
+  `core/doctor.py` must answer the same questions the gate answers and `core/` may not
+  import a sub-app; a second copy in doctor is how the two would come to disagree.
+- `layout.py` (#364/#365/#368): the CV Layout note. `parse_layout` validates the
+  frontmatter mapping into a `CvLayout`, or raises `LayoutError` listing EVERY problem
+  with its place; `place` decides where one entry may be cited; `build_slots` builds
+  the per-lead slot table the prompt and the checks share; `placement_counts` feeds
+  doctor's eligibility rows. Pure: the store reads the note's YAML and hands the mapping
+  here (`Vault.read_cv_layout`), so `doctor` and the engine share one reading. Its
+  `fold_employer` runs the name fold `core/names.py::fold_note_name`, which `core/vault.py`
+  imports too: the fold lives in its own module so neither consumer reaches into the other
+  for it (`core/vault.py` does import this module, for `read_cv_layout`).
+- `names.py`: `fold_note_name`, the repo's one NAME fold -- case and canonical equivalence
+  (#205, #299). Pure and stdlib only; see the lead-identity paragraph below.
 
 **How a state file behaves when it cannot be read** is one convention, keyed on
 what a wrong answer COSTS, not on which module happens to own the file. A
@@ -599,18 +620,93 @@ whichever neighbour it was written next to:
    default run re-selects. Unlike the two dedup stores, a missing or
    corrupt marker must fail LOUD rather than refuse: it means "show the notice
    again", which costs one skipped run.
-3. **cv** (`sluice/cv/`): select verified source material, bundle it into
-   a closed set, compose a tailored CV against that bundle (an LLM call
-   over `core.backends`), gate it, render (by default `template`: fill the
-   user's own Jinja2 template — or the packaged one — and write a PDF via
-   WeasyPrint; `script` shells out to an external render script instead), and
-   serve under an opaque, cache-busted filename.
+3. **cv** (`sluice/cv/`): for each shortlisted lead, bundle the verified evidence, ask the
+   model (an LLM call over `core.backends`) for structured CONTENT against that closed
+   bundle, check what came back, assemble the CV from that content and the vault, render it
+   (by default `template`: fill the user's own Jinja2 template — or the packaged one — and
+   write a PDF via WeasyPrint; `script` shells out to an external render script instead),
+   and serve it under an opaque, cache-busted filename (#364/#365/#368).
+
+   The flow, per lead (`cv/engine.py::_run_one`; spec §6.0). First the refusals that cost
+   nothing: not shortlisted, already held for sign-off, stale, a blank Candidate Profile,
+   or a CV Layout note gone since the run's prerequisite check (`skipped-config`). Then the
+   dossier fetch; then everything the attempts share, derived ONCE from one bundle so no
+   stage can rebuild a value from a different one: `cv/bundle.py::build_bundle` over the
+   verified experience entries (plus the Skills Inventory as framing),
+   `core/layout.py::build_slots` (one slot per layout role — `R1`, `R2`, ... — carrying
+   the entry ids that role may cite and its bullet budget), `cv/validate.py::entry_facts`
+   (what each entry licenses) and `cv/selection.py::build_pool` (the closed list SKILLS
+   may draw from). The SAME slot table goes to the prompt and to the checks, so the
+   prompt can never offer a cite the gate then refuses. Each attempt:
+   `cv/compose.py::compose_structured` → `cv/reply.py` (`extract_json`, `parse_reply`) →
+   `cv/selection.py::select` → the checks → at most one retry. The retained attempt is
+   assembled (`cv/document.py::assemble`), audited, rendered, served, and either written
+   as the lead's `tailored_cv` pointer or held for sign-off.
+
+   The modules, by what each owns:
+   - `compose.py`: the prompt and the backend call. The model is told to return ONE
+     JSON object -- `profile`, `roles` (slot id → bullets, each with `text` and `cites`),
+     and `skills` only when there is a pool to pick from and `skills_max` is not `0` --
+     and every rule in the prompt is about content: no text-format contract, no baseline
+     CV, nothing to unwrap. The prompt carries the JD as DATA (never instructions), a
+     lead's triage notes when it has any, the role slots, the skills pool, the bundle,
+     and on the retry the previous attempt's findings and drops.
+   - `reply.py`: reads the reply. Pure, and never raises: every problem is a `REPLY:`
+     finding naming its field, fed to the retry. It finds the JSON object wherever the
+     backend put it (fenced or not, after chat), preferring one with both `profile` and
+     `roles` and no echoed placeholder, and bounds the scan by size and attempts so a
+     hostile reply cannot make it costly. A `roles` key matches a slot id case-insensitively,
+     or failing that the one slot whose role heading it equals (same fold, whitespace
+     collapsed): a heading two slots share is never mapped, and a slot named by two keys
+     is a finding. The unknown-slot finding lists the valid ids. It refuses a
+     duplicate key rather than let
+     `json.loads` keep the last one silently. The text it ACCEPTS is exactly the text
+     that renders -- nothing downstream strips or rewrites it -- so it refuses text the
+     checks would read differently from the PDF: a bracket or line break, an invisible
+     formatting character, a numeral with no digit value (Roman, circled, CJK, a vulgar
+     fraction), a comma decimal (`2,5x`), an unusual separator between two digits, a
+     number grouped with an ASCII space (`3 100`: one number or two, and only the model
+     knows which), a text that is a section heading, and a look-alike letter (a
+     full-width or mathematical letter, a ligature, or one word mixing Latin with
+     another script) that would let a name dodge a whole-term match. A BULLET's text
+     findings are not a refusal of the reply: the bullet is kept with its findings in
+     `Reply.bullet_findings`, and `selection.py` carries them forward only for a bullet
+     it keeps (`Selection.findings`, which the engine counts as violations), so a
+     trimmed bullet's text costs nothing. `skills` alone is
+     never refused: a malformed list is flagged and dropped, since framing never costs
+     a lead.
+   - `selection.py`: chooses what may render. A skill pick off the pool, a duplicate, or
+     one past `skills_max` is DROPPED; bullets past a role's `bullets_max` are TRIMMED,
+     the first N kept. Neither is a refusal and neither is checked, so neither can cost
+     a retry or a lead; both are reported (`skills_dropped`, `bullets_trimmed`) and
+     listed in the retry prompt. The pool is the verified skill notes' names (`Label:`,
+     else the title -- `cv_name`) first, so their spelling wins, then every verified
+     entry's `Tools:`, de-duplicated, minus anything a `cv.fabrication_decoys` term
+     matches. Which kinds supply names is keyed on `EvidenceKind.names_in_skills_pool`,
+     never on a kind's name. `zero_bullet_findings` refuses a selection with no bullet in
+     any role that can carry one, unless every slot's budget is `0` (a headings-only CV
+     the user configured).
+   - `validate.py`: the hard checks over a selection (below).
+   - `document.py`: builds the `CvDocument`. One `Role` per layout role, in layout order,
+     each filled from ITS OWN slot by id -- never by zipping the reply's slots against the
+     layout, whose key order the model chooses. Name (upper-cased) and contact come from
+     the Candidate Profile; heading, dates, location and title from the layout role;
+     certificates and education from the layout; skills from the selection, in the
+     pool's spelling. `to_text` writes the canonical text form (what a `script` renderer
+     receives, and with citations what `cv.rendered.md` records); its meta line is
+     POSITIONAL, `dates | location | title` with an empty field written as empty, so a
+     script reading by position never takes a location for a title. `audit_text` and
+     `model_lines` are what the audit and the style tier read: the model's own text and
+     nothing else.
+   - `bundle.py`, `terms.py`, `slop.py`, `voice.py`, `audit.py`, `artefacts.py`,
+     `render.py`, `config.py`: below, in the paragraph that concerns each.
 
    Every run that reaches composition also leaves its diagnostic artefacts
    (`cv/artefacts.py`) in the lead's working directory,
    `output_dir/<slug(company, role)>/`, the one the PDF is rendered into and
-   never `served_dir`: the exact prompt each attempt sent, each attempt's
-   composed text, the text handed to the renderer, and `run.json` (status,
+   never `served_dir`: the exact prompt each attempt sent, each attempt's reply
+   exactly as received, the CV text sluice built (`cv.rendered.md`, each bullet
+   with its citations, written before the audit), and `run.json` (status,
    attempts, the retained attempt, backend, bundle entry ids, every finding
    list, and a manifest of the files the run wrote). Runs that render nothing,
    a gate failure or a dry run, write them too, because those most need
@@ -623,245 +719,172 @@ whichever neighbour it was written next to:
    this run's. Writing is best-effort but loud: a failure logs a WARNING
    naming the path and sets `CvResult.artefacts_failed`, which `cv run`
    prints, and it never costs the CV. The prompt reaches the file through
-   `compose()`'s `on_prompt` callback, called just before the backend, rather
-   than by rebuilding it, so what is kept cannot drift from what was sent.
+   `compose_structured()`'s `on_prompt` callback, called just before the
+   backend, rather than by rebuilding it, so what is kept cannot drift from
+   what was sent.
 
    Before any of that, `Sluice.compose_cv` refuses ONCE for the whole run if the vault
-   cannot compose at all (#242): no baseline CV at `baseline_rel` (missing, empty or
-   unreadable), or no verified entries in a `cited_by_gate` corpus. It is a property of
-   the INSTALL rather than of a lead, so it is not a per-lead `CvResult` -- it raises
-   through `main`'s usage-error path (exit 2) before the renderer, the backend and the
-   dossier fetch. That ordering is the point: the earlier per-lead behaviour spent a
-   browser fetch for both halves and, for the corpus half, two backend calls before the
-   gate rejected the result. `doctor` reports the same two facts and the two MUST agree,
-   which is why `Vault.preflight`'s `baseline_exists` is `.strip()`-based rather than
-   existence-only and why `core/doctor.py` grades an empty citable corpus SETUP with
-   `blocks=("cv",)` -- `blocks` is the load-bearing half of that agreement, and the one
-   the state rename in #243 deliberately left alone.
+   cannot compose at all (#242; `cv/engine.py::missing_prerequisites`): the CV Layout
+   note is absent, malformed or unreadable (each said its own way, since the remedies
+   differ, and an unreadable note is never reported as absent); a verified experience
+   entry's `Tools:` holds an item the gate cannot use (named, entry and item, on the
+   user's own terminal); no slot can cite any entry while the layout asks for bullets
+   (typically companies the headings do not match); or a `cited_by_gate` corpus cannot
+   be read, or has no verified entries while the layout asks for bullets -- a layout whose
+   every role has `bullets_max: 0` renders headings only and cites nothing, so it needs
+   none (`core/layout.py::asks_for_bullets`, the one predicate for "asks for bullets"). It is a property of the INSTALL rather than of a
+   lead, so it is not a per-lead `CvResult` -- it raises through `main`'s usage-error
+   path (exit 2) before the renderer, the backend and the dossier fetch. `doctor`
+   reports the same facts, and the blocking ones agree by `blocks=("cv",)`: the
+   `cv_layout` row in every state but `ok`, the `Experience Library (Tools)` row, an
+   empty citable corpus graded SETUP (NOTICE, blocking nothing, when the parsed layout
+   asks for no bullets -- `Sluice.doctor` reads the layout first and hands
+   `classify_store` that fact), and -- for the no-citable-slot case -- a DEAD
+   `cv_layout (no citable entry)` row decided by the same `core/layout.py::no_citable_slot`
+   over the same `build_slots`. Its causes stay beside it as the "not on your CV" / "no
+   company" warning counts, which on their own block nothing, because while some entry
+   is citable an entry left off is normally the user's choice. A further
+   check is a WARNING, logged once per run (`run_warnings`): the misattributed-tool
+   check is off on an upgraded vault whose entries carry the retired `Skills:` and none
+   declares `Tools:` -- the sentence is doctor's own row (`classify_attribution`), so
+   the two cannot disagree.
 
-   The gate has two tiers
-   (#167). The HARD tier -- `cv/validate.py`'s fabrication/citation checks,
-   `cv/engine.py`'s own inline STRUCTURAL guards beside them (the exact
-   `WORK EXPERIENCE`/`PROFILE` headers, and the header/contact-block
-   anchors, #99), the renderer's own optional `precheck`, and
-   `cv/slop.py`'s `check_hard` (an em dash or a literal `--`, unscoped over
-   the whole document) -- BLOCKS: a lead with no attempt that ever cleared
-   it is skipped rather than rendered ungated. The gate is handed its source
-   set rather than recovering it: `cv/validate.py`'s second parameter is a
-   `cv/bundle.py` `BundleSources`, built by `bundle_sources(bundle)` from
-   `build_bundle`'s own structured entries, not by re-parsing the rendered
-   bundle text (#174) -- so no line of user free text can mint or rebind a
-   citable `[id]`. Since #165 the bundle has FOUR sections and TWO renderers:
-   `render_bundle` emits the baseline, the verified entries and the negative
-   constraints, and `render_composer_bundle` adds a SKILLS INVENTORY framing
-   section plus one derived negative on top of it. Only the composer sees the
-   second; the #60 advisory audit keeps calling `render_bundle`, because its
-   prompt opens "SOURCE BUNDLE is the ONLY truth" and a claim resting on a
-   skills line alone must stay `unsupported` and stay held for sign-off.
-   Non-citability is structural rather than parsed: `bundle_sources` walks
-   `bundle["entries"]` and never touches `bundle["skills"]`, so a skills figure
-   is licensed in neither the per-entry allowlist nor the wider PROFILE pool.
-   `cv/bundle.py::mention_vocab` RECOGNISES the framing, so the unbundled-term
-   check does not report a declared skill (unless a negative names it), but
-   nothing LICENSES it.
-   Two flags on `EvidenceKind` carry the distinction the single old one cannot:
-   `read_by_composer` (the corpus reaches the prompt) and `cited_by_gate` (the
-   gate may license its content), and `__post_init__` refuses the incoherent
-   combination. That closed three live holes: a later body line shaped
-   like an earlier real code used to rebind that entry's allowlist, so a
-   fabricated figure passed while the entry's own genuine metric was
-   reported invented; an `[XX9]`-shaped line anywhere in the baseline minted
-   a fully citable entry of its own; and, at zero entries, the NEGATIVE
-   CONSTRAINTS block fell through into the PROFILE pool so a do-not-say
-   figure was profile-permitted. That closure has a price, deliberately
-   accepted: `_entry_block` (`cv/bundle.py`) now feeds BOTH the rendered
-   prompt and the gate's allowlist, so a change to how an entry is
-   PRESENTED to the model is also a change to what the gate PERMITS -- the
-   two can no longer drift apart, which is the fix, but they also can no
-   longer be varied independently. It also re-admits two narrow PROFILE-pool
-   widenings the old positional parse excluded as a side effect of its own
-   bugs rather than by design: a `=== 2020 Highlights ===`-shaped line
-   inside the BASELINE now permits its digits in PROFILE prose (the old
-   parser's section-header check matched it first and `continue`d, so 2020
-   never reached the baseline pool at all), and an id-shaped baseline
-   line's own digit -- e.g. the `9` of a stray `[ZZ9]` token -- likewise
-   (the old parser sliced the id token off before harvesting digits for the
-   entry it minted, and by then `seen_id` was already true, so the digit
-   never reached the baseline pool either way). Both are consequences of
-   `bundle_sources` harvesting the baseline block by a single unscoped
-   `\d+` sweep with no positional or shape parse at all, which is also
-   exactly what removes the three holes above.
+   The gate has a HARD tier and a scoped STYLE tier (#167), and both read only the text
+   the MODEL wrote -- the profile and the kept bullets. Vault text is the user's: a
+   heading, a date, a certificate or a skill name renders as written, and no check
+   complains about it. The HARD tier BLOCKS: a lead with no attempt that ever cleared it
+   is skipped rather than rendered ungated. It is the `REPLY` findings above,
+   `zero_bullet_findings`, `cv/slop.py::check_hard` (an em dash or a literal `--`) and
+   `cv/validate.py::check_selection`:
+   - `UNCITED BULLET` / `BAD CITATION`: every kept bullet cites, and only real entry ids.
+   - `WRONG EMPLOYER`: every cite is one its slot may cite. Where an entry may be cited
+     is `core/layout.py::place`: its `Company:` (the whole value AND each `,`/`;`/`/`
+     part) against each role's `employers`, which default to its heading (listing
+     `employers` replaces the heading as a match), then `omitted:` (none), then
+     `any_role:` (every role) -- the widest grant applies only when no part of the
+     company matched anything narrower. A blank or unmatched company is citable NOWHERE, so the model
+     can never move work under an employer the user did not put it under; `any_role:` is
+     the explicit way to make an entry fit everywhere. The message says where the entry
+     DOES belong.
+   - `INVENTED METRIC`: every figure in a bullet appears among its cited entries'
+     figures; `INVENTED PROFILE METRIC`: every figure in the profile, which has no cites,
+     appears in some entry.
+   - `MISATTRIBUTED TOOL`: once any verified entry declares `Tools:` (else the check is
+     off, and every result says so in `attribution_check_off`), a bullet naming a
+     declared tool -- case-sensitively, as a whole term -- must cite an entry that
+     declares it (in any case) or whose own title or body names it under the same case
+     rule (a lowercase name also accepting its sentence-initial capital).
+   - `FABRICATED`: a `cv.fabrication_decoys` term, as a whole term in any case, in the
+     profile or a bullet. A decoy the matcher cannot represent is refused at config load,
+     by position (`core/tokens.py::validate_decoys`).
+
+   FIGURES are read by `core/tokens.py::figures`, the one reader the entry side and the
+   bullet side share. A digit is any character `unicodedata.digit` gives a value, so a
+   figure cannot dodge the gate by script. A figure is a digit run joined across
+   thousands groups: `50,000` is the one figure 50000, and so is the same number grouped
+   with NBSP, U+202F or U+2009. `core/tokens.py::group_reading` is the ONE rule for every
+   separator, used by `figures()` to read a number and by `cv/reply.py` to judge the
+   model's text, so the two cannot disagree. An ASCII-space group is AMBIGUOUS ("Led 3
+   100-person teams"), so in an ENTRY it contributes both readings (the user may have
+   meant either) and in the model's text it is refused. Digits joined by a single `.` or
+   `,` that is not a group are one figure, and decimals match exactly (`3.50` does not
+   license `3.5`). Before a bullet's figures are read, the cited entries' tool names are
+   blanked (`find_term` spans), so a digit inside a declared tool name (`Examplelang3`)
+   is never an invented metric; for the profile, every entry's tools are blanked. The
+   tokeniser and whole-term matcher (`core/tokens.py::find_term`) are shared with
+   `doctor` for the same reason.
+
+   A tool's name is matched, never harvested: `Tools:` items never enter an entry's
+   figures. That rests on `core/tokens.py::tool_items` refusing any item with a word that
+   does not begin with a letter (or a dot then a letter), checked PER WORD -- an item-level
+   check would accept `Result 92`, and blanking it would then remove the real figure
+   `92` from every bullet citing that entry. A digit-led word stays refused whatever it
+   names, which costs some real names (`ISO 9001`) and is stated as an over-refusal: they
+   are structurally the metric shorthand the rule exists to refuse. A letter-led
+   shorthand (`p99`) is a stated residual.
+
+   The gate is HANDED its source set rather than recovering it (#174):
+   `cv/validate.py::entry_facts` reads `build_bundle`'s own structured entries, through
+   `cv/bundle.py::_entry_block` -- the same function that renders each entry into the
+   prompt -- so no line of user free text can mint or rebind a citable `[id]`, and the
+   prompt and the allowlist cannot disagree. The price, deliberately accepted: a change
+   to how an entry is PRESENTED to the model is also a change to what the gate PERMITS.
+   What must not become a source therefore lives in a separate emitter: an entry's
+   `Tools:` line (`_tools_line`), the Skills Inventory framing (`_framing_lines`, which
+   `entry_facts` never reads, so a skills figure is licensed nowhere), and the user's
+   guidance (`cv.negatives`, shown to the composer as THE CANDIDATE'S GUIDANCE and read
+   by no check -- #368: reading prose negatives as bans stripped terms the user's own
+   evidence carries; a real ban belongs in `cv.fabrication_decoys`). Every vault line the
+   prompt shows passes through `_defang`, which quotes one that begins `===`, so an entry body cannot forge one of
+   the prompt's own section headers.
+
+   Registry flags on `EvidenceKind` say what each corpus is for, and every
+   user-facing message keys on them rather than on a kind's name
+   (`core/protocols.py::verify_outcome`): `read_by_composer` (the corpus reaches the
+   prompt), `cited_by_gate` (the gate may license its content -- `experience` alone) and
+   `names_in_skills_pool` (a verified entry's name may be listed under SKILLS -- `skills`).
+   `__post_init__` refuses `cited_by_gate` without `read_by_composer`, since the gate
+   cannot license what the composer never saw. `stories` carries none: captured and
+   reviewed, consumed by nothing yet.
 
    Beside the bundle, not inside it, `compose.py` adds a TRIAGE NOTES
    section after the JD when the lead carries `culture_flags` or
    `triage_concerns` (#329): framing for which entries to lead with, which
    the composer may neither cite nor mention. It sits outside the bundle
-   because lead data is not evidence, so neither `bundle_sources` nor
-   `render_bundle` (the audit's input) can reach it.
+   because lead data is not evidence, so neither `entry_facts` nor
+   `render_audit_bundle` (the audit's input) can reach it.
 
-   Since #168 a fifth field, `Skills:`, on an Experience Library entry licenses
-   skills RELATIONALLY: it names, per entry, which skills that entry evidences,
-   so a CV bullet citing the entry may use those names without tripping the
-   misattribution check below, and a digit inside one of them (`Widget3`) is
-   not read as an invented metric for a bullet citing that same entry. Every
-   token of a `Skills:` item must begin with a letter, or with a dot then a
-   letter so `.NET` is expressible (`cv/bundle.py`'s `SKILL_TOKEN_RE`, checked
-   PER TOKEN rather than per item -- an item-level check would accept
-   `Result 92` because the item begins with `R`, and span removal would then
-   blank the real figure `92` from every bullet citing the entry). A
-   DIGIT-leading token stays refused whatever it names, which costs real values
-   (`ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`, `802.11ac`) and
-   is stated as an over-refusal rather than disguised as a distinction the code
-   draws: nothing separates those from the metric shorthand the rule exists to
-   close. It is fail-loudly at `build_bundle` construction, this module's own
-   house rule, rather than at gate time far from the note that caused it.
-   That construction call sits inside `cv/engine.py`'s per-lead try, but the
-   blast radius is the RUN, not the lead: `build_bundle` runs per lead over the
-   SHARED verified corpus, so one malformed value raises for every lead --
-   measured, three shortlisted leads all returned `cv run`'s `error` outcome
-   from a single bad `Skills:` value. The per-lead try means the run completes
-   rather than aborting, and the proposal and verification commands are
-   untouched, since they do not import `cv/bundle.py` at all.
-   `BundleSources`' per-entry allowlist is now a NamedTuple,
-   `EntrySources(nums, skills)`, rather than a bare digit set, so the two
-   fields travel together keyed by the same entry id and no second id-keyed
-   structure can disagree about what an id licenses. `BundleSources` itself grew from two
-   stored fields (`nums`, `baseline`) to three -- `entries` (`dict[str,
-   EntrySources]`, replacing the old bare `nums` dict), `baseline` (unchanged),
-   and `source_tokens` (new: one token SEQUENCE per source block -- each
-   entry's `Skills:` tokens, each entry's body tokens, and the baseline's
-   tokens -- kept unflattened so a two-word skill can never match an adjacency
-   invented at a block seam). `ids` and `nums` are both DERIVED PROPERTIES, not
-   stored fields: a stored second view could disagree with `entries` about what
-   an id licenses, the exact redundancy #174 removed one level up, and every
-   pre-#168 `validate()` caller keeps reading `sources.nums` unchanged.
+   The STYLE tier never blocks: `cv/slop.py`'s `check_phrases` (~40 case-insensitive
+   AI-tell stems) and `cv/terms.py`'s unbundled-term check (#194, on by default via
+   `cv.term_check`, reported apart as `CvResult.terms`: a term the model names that
+   appears nowhere in `cv/bundle.py::term_vocabulary` -- the entries, their tools, the
+   Skills Inventory framing and the CV Layout's own text). It is SCOPED to
+   `cv/document.py::model_lines` -- the profile and the kept bullets -- since the only
+   way to answer a phrase complaint about an employer, certificate or skill name is to
+   rename the thing it names. An OPT-IN model-judged check (`cv.voice_check`, off by
+   default, `cv/voice.py`) rides the same retry once the hard tier is clean, shown the
+   same lines joined: a judgment of the draft's VOICE, for an AI-tell clause a fixed
+   phrase list cannot catch -- it fails open on a backend error, like the advisory audit
+   below, and is skipped when that text is blank. EITHER a HARD finding OR a surviving
+   STYLE/VOICE finding triggers exactly one retry with the findings, and the previous
+   reply's drops, fed back, and the loop RETAINS the HARD-clean attempt with the fewest
+   STYLE/VOICE findings (a tie keeps the later one, and an attempt whose voice check
+   failed never displaces one whose voice was measured), so a retry that comes back
+   hard-dirty (or simply fails) never bins a lead the first attempt already cleared, and
+   a style-worse retry never replaces a cleaner first draft -- a phrase may never cost a
+   lead. At shipped defaults (`cv.style_hold` off, `cv.slop_allow` empty -- full
+   enforcement of every stem) that retry is the one real cost: a hard-clean draft still
+   using a stem costs a second compose call, mitigated by the prompt already instructing
+   the model against the same list (rendered from `cv/slop.py`'s `_PHRASES`, so the two
+   cannot drift). Every reader past the loop -- assembly, audit, render, the result --
+   reads the RETAINED attempt, by one rebind, so the CV rendered and the CV audited are
+   the same one.
 
-   The framing/citable split states which of the three evidence kinds gets
-   which `EvidenceKind` flag: `experience` carries both (`cited_by_gate=True,
-   read_by_composer=True`); `skills` carries `read_by_composer` alone (framing
-   only, licensing nothing -- see above); `stories` carries neither (captured
-   and reviewed, consumed by nothing yet). `__post_init__` refuses
-   `cited_by_gate=True` without `read_by_composer=True`, because the gate
-   cannot license content the composer never emitted into the bundle in the
-   first place.
+   Above the hard gate sits a softer, human-facing layer (#60): an advisory LLM audit
+   (`audit.py`) reads the model's text with its cites (`cv/document.py::audit_text`)
+   against `cv/bundle.py::render_audit_bundle` -- the entries with their tools, since
+   the gate licenses a tool through `Tools:`, and the guidance; never the Skills
+   Inventory, so a claim resting on a skills line alone stays `unsupported` -- and never
+   sees a date, title, certificate or education line, which are the user's own data. An
+   `unsupported` flag still renders and serves the PDF (it passed the hard gate) but
+   WITHHOLDS the send-ready `tailored_cv` pointer, so `apply` cannot select it; under
+   `cv.require_signoff` an audit that could not run at all holds the same way (#333). `cv.style_hold` (#167, off by
+   default) gives a surviving STYLE or VOICE finding the SAME consequence, deliberately
+   as a SEPARATE config key rather than riding `cv.require_signoff`: that flag's True
+   default was chosen for FABRICATION, and riding it would mean an unconfigured install
+   withholds `tailored_cv` on any of ~40 case-insensitive stems out of the box. The hold
+   is recorded in two frontmatter keys (`pending_cv`, `needs_signoff`) — the note's
+   `status` stays `shortlist` (never-regress is untouched); the CV is simply invisible
+   to apply without the pointer. A held lead is skipped on re-run so a
+   non-deterministic re-audit cannot promote it by luck. (`needs-signoff` and
+   `skipped-needs-signoff` are `CvResult` run-report labels, not `status`-key values.)
+   `job-sluice cv signoff --lead X` promotes the held CV after the candidate reviews the
+   flagged claims; `--discard` rejects it and frees a fresh compose. A hold also records
+   the triage notes the composer was given, as `framing\t` entries after the blockers
+   (`core/leads.py::framing_entries`); they never cause a hold, and `cv signoff` and MCP
+   `cv_signoff` show them apart from the claims. The default is on for fabrication
+   (`cv.require_signoff`); neither signoff flag touches the pure hard gate.
 
-   `cv/validate.py` gained two CONTAINMENT rows alongside the gate's existing
-   citation and number checks (#168), and they differ from each other by
-   design, in both what they scope against and how they compare. Row 1,
-   MISATTRIBUTED SKILL, scans a WORK bullet's own prose CASE-SENSITIVELY
-   (`_names_skill`) against the vocabulary of skills NOT licensed by that
-   bullet's own cited entries -- the bundle's whole skill vocabulary minus the
-   union the cited entries themselves license -- and ABSTAINS entirely for that
-   bullet unless EVERY entry it cites declares a non-empty `Skills:`: measured
-   otherwise, a bullet citing a partially-annotated entry and naming a skill
-   drawn straight from that entry's own body text was flagged a hard violation.
-   Case-sensitivity and the per-entry abstain are both deliberate under-fires,
-   the direction a hard gate must err. Row 2, UNSOURCED SKILL, checks the
-   SKILLS region's own emitted lines (`skills_by_line`, the third value
-   `section_spans` now returns) CASE-INSENSITIVELY (`_in_source`) against
-   `sources.source_tokens` -- did the model invent this line at all, regardless
-   of which entry (if any) it might belong to -- and ALWAYS runs, never
-   conditional on a non-empty vocabulary, because `section_spans` is pure over
-   text and a SKILLS section emitted on an unannotated vault must still be
-   checked by something. Row 1 answers "is this attributed to the right entry";
-   row 2 answers "did you invent this at all", over a different corpus (the
-   bundle's whole source TEXT, not one entry's licensed names) at a different
-   granularity (a whole emitted line, not a scan through free prose). Both rows
-   share one tokeniser and one subsequence primitive (`_tokens`/`_subseq`) so
-   the vocabulary the gate BUILDS cannot drift from the one it SEARCHES with;
-   only the case-folding and the corpus differ.
-
-   Row 2's own SKILLS run (`section_spans`' `in_skills` extraction) ends at a
-   heading the FORMAT CONTRACT defines -- `PROFILE`, `WORK EXPERIENCE`,
-   `CERTIFICATES`, `EDUCATION`, each of which already has its own branch in that
-   loop -- or at a non-blank non-bullet line reached while `in_work` is live,
-   and at nothing else. Every other non-bullet line keeps the run alive: a group
-   heading (`Languages`), and an off-contract section header (`PUBLICATIONS`,
-   `PROJECTS`, `AWARDS`) in either capitalisation. The rule used to end the run
-   at any ALL-CAPS line instead, which left a shouted group heading
-   (`LANGUAGES`) ending it and its bullets checked by nothing at all under
-   `cv.renderer: script` -- and decided two identical situations oppositely on
-   capitalisation alone, since the Title-Case spelling of the same unmodelled
-   section WAS swallowed and checked. Replacing the shoutiness heuristic with
-   the contract's own closed set closes that hole and removes the asymmetry.
-   ONE residual remains, in the OVER-checking direction and accepted on purpose:
-   an off-contract section emitted AFTER a SKILLS run has its bullets
-   containment-checked as skills, so a genuine entry there can be flagged
-   `UNSOURCED SKILL`. "Shout the heading" is no longer an answer to that; the
-   remedy is to emit the section BEFORE SKILLS or not at all, since
-   `compose._RULES` asks for none of the three. Under the shipped `template`
-   renderer that document is refused by `parse_cv` whatever the gate says, so
-   the added exposure is `cv.renderer: script` alone. The direction is
-   deliberate: over-checking costs a retry a human can answer, under-checking
-   ships an ungated line, and for a containment gate that is the right way
-   round. Pinned by four rows in `tests/test_cv_skills_containment.py`:
-   `test_a_bullet_under_a_group_heading_is_still_row_2_checked`,
-   `test_only_a_contract_heading_ends_the_run` (which derives the heading set
-   from `tests/template_content.py`'s `composer_headings()` rather than typing
-   it), `test_an_off_contract_section_after_skills_is_over_checked`, and
-   `test_a_group_heading_while_work_is_live_still_ends_the_run`.
-
-   The STYLE tier
-   (`cv/slop.py`'s `check_phrases`, ~40 case-insensitive AI-tell stems,
-   alongside `cv/terms.py`'s unbundled-term check, #194, on by default via
-   `cv.term_check`, whose findings are reported apart from the phrase ones as
-   `CvResult.terms`) never blocks; it is also SCOPED, unlike the hard tier --
-   `cv/validate.py`'s `section_spans` (the gate's own line split, extracted
-   so nothing keeps a second copy) yields the PROFILE-prose and WORK-bullet
-   lines -- two of the THREE regions the function now returns, since #168's
-   Task 3 added a SKILLS region alongside them, deliberately left out here --
-   since the only way to answer a phrase complaint about an employer,
-   certificate or education line is to rename the thing it names. An OPT-IN
-   model-judged check (`cv.voice_check`, off by default, `cv/voice.py`) rides the
-   same retry once the hard tier is clean: a model judgment of the draft's
-   VOICE, for an AI-tell clause a fixed phrase list cannot catch -- it fails
-   open on a backend error, like the advisory audit below. It is scoped by
-   the SAME two of `section_spans`' three regions, because the reason for
-   that scoping is a property of the tier and not of the phrase list: the
-   engine rejoins those lines into the text it hands `run_voice`, so the model
-   never sees an employer, certificate, education, or SKILLS line it could
-   complain about, and skips the call entirely when that text is blank. What
-   the model gives up is document context (the contact block, section headers and the
-   employer/date/role meta lines) -- acceptable because those lines are
-   transcribed declared facts rather than composed prose, and the prompt
-   already forbids judging content. EITHER a HARD finding OR a surviving
-   STYLE/VOICE finding triggers
-   exactly one retry with the findings fed back, and the loop RETAINS the
-   HARD-clean draft with the fewest STYLE/VOICE findings across it (a tie
-   keeps the later one, and an attempt whose voice check failed never displaces one whose
-   voice was measured), so a retry that comes back hard-dirty (or simply
-   fails) never bins a lead the first attempt already cleared, and a
-   style-worse retry never replaces a cleaner first draft -- a phrase may
-   never cost a lead. At shipped defaults
-   (`cv.style_hold` off, `cv.slop_allow` empty -- full enforcement of every
-   stem) that retry is the one real cost change: a hard-clean draft still
-   using one of the ~40 stems in prose costs a second compose call,
-   mitigated by `compose.py`'s own prompt already instructing the model
-   against the same list (rendered from `cv/slop.py`'s `_PHRASES` so the two
-   cannot drift). Above the hard gate sits a softer, human-facing layer
-   (#60): an advisory LLM audit (`audit.py`) flags claims the bundle does
-   not support, and an `unsupported` flag still renders and serves the PDF
-   (it passed the hard gate) but WITHHOLDS the send-ready `tailored_cv`
-   pointer, so `apply` cannot select it. `cv.style_hold` (#167, off by
-   default) gives a surviving STYLE or VOICE finding the SAME consequence,
-   deliberately as a SEPARATE config key rather than riding
-   `cv.require_signoff`: that flag's True default was chosen for
-   FABRICATION, and riding it would mean an unconfigured install withholds
-   `tailored_cv` on any of ~40 case-insensitive stems out of the box. The
-   hold is recorded in two NEW frontmatter keys (`pending_cv`,
-   `needs_signoff`) — the note's `status` stays `shortlist` (never-regress
-   is untouched); the CV is simply invisible to apply without the pointer. A
-   held lead is skipped on re-run so a non-deterministic re-audit cannot
-   promote it by luck. (`needs-signoff` and `skipped-needs-signoff` are
-   `CvResult` run-report labels, not `status`-key values.) `job-sluice cv
-   signoff --lead X` promotes the held CV after the candidate reviews the
-   flagged claims; `--discard` rejects it and frees a fresh compose.
-   A hold also records the triage notes the composer was
-   given, as `framing\t` entries after the blockers
-   (`core/leads.py::framing_entries`); they never cause a hold, and
-   `cv signoff` and MCP `cv_signoff` show them apart from the claims.
-   The default is on for fabrication (`cv.require_signoff`); neither signoff
-   flag touches the pure hard gate.
 4. **apply** (`sluice/apply/`): select eligible leads, stage the rendered
    CV file and a prep packet, and record the applied transition
    (never-clobber). Actual ATS form submission is human-driven; this
@@ -1074,6 +1097,11 @@ Two modules and a composition root make the seams real:
   that matters most, because a quiet wrong default means writing the user's
   leads somewhere they did not ask for.
 - `core/protocols.py`: `Store`, `Fetcher`, `Renderer`. Interfaces, plus the
+  cross-module CV types: `SECTION_HEADINGS`, `CvDocument`/`Role` (what a renderer
+  receives), `CvLayout`/`LayoutRole` and `LayoutError` (the CV Layout's contract),
+  `EVIDENCE_KINDS` and `verify_outcome` -- here because `core/layout.py` and
+  `core/doctor.py` need them and `core/` may not import a sub-app (`cv/document.py`
+  re-exports `SECTION_HEADINGS`, so it still has one home). Plus the
   obligations no signature can carry -- `Fetcher` gained an unconditional
   THREAD-SAFETY one at #309 (every method safe on one shared instance, distinct
   tab ids, independent tab handles), because triage may fetch dossiers over a
@@ -1149,10 +1177,11 @@ What deferred the propose tool was the gate, not the store. An evidence body rea
 ids by parsing the rendered bundle, `nums[cur] = set(...)` was an ASSIGNMENT rather
 than a union -- so an LLM-authored body shaped like a citation code REBOUND another
 entry's permitted numbers, and a write tool would have handed that bypass to whatever
-calls this MCP server. #174 deleted that parse: the gate is handed a structural
-`BundleSources`, and no body line can mint or rebind an id.
+calls this MCP server. #174 deleted that parse: the gate is handed the structured
+entries (today through `cv/validate.py::entry_facts`), and no body line can mint or
+rebind an id.
 
-What survives is smaller. `bundle_sources` harvests every digit in an entry's own
+What survives is smaller. `entry_facts` harvests every figure in an entry's own
 block, so a citation-shaped token in a body still contributes ITS digits to that entry
 -- the residual #174's design accepts, and the one
 `core/vault.py`'s `_refuse_citation_shaped_body` refuses outright on both evidence
@@ -1444,8 +1473,8 @@ name is built from the company string verbatim, so a byte-for-byte match seated 
 per spelling, each with its own status — one spelling holding a live `shortlist` while its twin
 held a `dismiss`, so dismissing the role under one did not stop it returning as `new` under the
 other. It also wedged replication silently: a case-insensitive filesystem cannot hold the pair,
-and Syncthing reports the folder `state=idle` while delivering neither note. `_fold_note_name` is
-the one fold, and every path that resolves a lead by NAME goes through it — `_locate`,
+and Syncthing reports the folder `state=idle` while delivering neither note.
+`core/names.py::fold_note_name` is the one fold, and every path that resolves a lead by NAME goes through it — `_locate`,
 `_archived_match`, `read_leads`' report, and `reconcile_names`. That is a LOWER BOUND, not the
 whole set: #298 added two consumers that fold to choose an archive FILENAME rather than to
 resolve a lead (`_folded_archive_names`, `_archive_name_candidates`), and they are bound by the
@@ -1462,6 +1491,13 @@ two strings **are** the same text. COMPATIBILITY equivalence (NFKD/NFKC) would b
 superscript with its digit, and every such step claims two differently spelled names are one job.
 `core/leads.py`'s `_norm_tokens` does apply NFKD — that compares token SETS for the human-gated
 dedupe report, never filenames for a write decision, and the choice must not be carried across.
+
+A THIRD kind of consumer folds to match an EMPLOYER: `core/layout.py::fold_employer` runs an
+entry's `Company:` and a CV Layout role's `employers` (its heading by default) through `fold_note_name`
+(plus whitespace collapsing) to decide where the entry may be cited. That raises the cost of
+widening the fold: every widening makes more company spellings match a role, which LOOSENS
+`WRONG EMPLOYER` -- work cited under a role it does not belong to -- so the fold must not widen
+for the CV's sake either.
 
 `_locate` probes the exact name FIRST and folds only on a miss, which is what keeps the cost
 where it was — the exact probe does not move as the store grows, while the folded listing is about
@@ -2065,13 +2101,16 @@ sentence cannot be.
   mapping a store invents: `skills` names its keyword axis `Domain`, and
   without the override `cv/bundle.py`'s `rank()` scored a `platform` skill
   zero against the keyword `platform`.
-  This seam has a second, OPTIONAL member too: `preflight() -> dict`, the same
-  shape as the renderer seam's `precheck` below (undeclared on the `Protocol`
-  for the identical reason -- an optional member must stay optional to
-  declare). `job-sluice doctor` reaches it via `getattr(store, "preflight", None)`;
+  `read_cv_layout()` (#364/#365/#368) is MUST-support, like `read_candidate_profile`, with
+  its outcomes kept apart: `None` for an absent note, `LayoutError` for a malformed one,
+  and `OSError`/`ValueError` for one that cannot be read, which must never read as absent
+  (#242). The store has no baseline-CV member any more: nothing reads a baseline CV.
+  This seam has a second, OPTIONAL member too: `preflight() -> dict`,
+  undeclared on the `Protocol` because a Protocol member is a REQUIRED member
+  and this one must stay optional. `job-sluice doctor` reaches it via `getattr(store, "preflight", None)`;
   an implementation that omits it reports nothing for that component rather
   than being treated as broken. `Vault.preflight` returns FACTS only (does the
-  vault directory exist, is the baseline CV readable, is a Judging Profile
+  vault directory exist, is a Judging Profile
   present, a `<kind>_total`/`<kind>_verified`/`<kind>_pending` triple for each
   of the three evidence corpora (#164: `experience` -- the pre-#164
   `experience_total`/`experience_verified` names kept as-is since `doctor`
@@ -2102,7 +2141,7 @@ sentence cannot be.
 - **renderer**: `sluice/renderers/`, selected by `cv.renderer:` (default
   `template`). Implementations: `template` (fills a user's own Jinja2 template --
   or the packaged default at `sluice/templates/cv_plain.html.j2` when
-  `cv.template` is blank -- with the parsed CV, then renders it via WeasyPrint;
+  `cv.template` is blank -- with the `CvDocument`, then renders it via WeasyPrint;
   needs `pip install -e '.[render]'`) and `script` (the full-control escape
   hatch: shells out to an external render script at `cv.render_script`). Note
   the shipped `render_script` default points at a file that does not exist in
@@ -2111,28 +2150,14 @@ sentence cannot be.
   fixed `<pre>` dump with no template -- is RETIRED: selecting it now raises,
   naming `template` as the replacement, rather than silently falling through
   to a default or a confusing "unknown adapter" error.
-  This seam has a second, OPTIONAL member: `precheck(cv_text) -> list[str]`.
-  A renderer implements it when the composed CV must satisfy a grammar of its
-  own that the fabrication gate does not model — `template` does (its meta-line
-  grammar), `script` deliberately does not, since it shells out to arbitrary
-  user code and has no grammar to impose. `cv/engine.py` reaches it through
-  `getattr(renderer, "precheck", None)` inside its compose/gate retry loop and
-  folds the strings in with the gate's violations, so a formatting complaint
-  reaches the model's one retry instead of arriving at render time, after the
-  LLM spend and past the only recovery there is. It is NOT a second fabrication
-  gate and must not become one: it reports SHAPE, never facts. Keeping it on
-  the renderer is what stops one implementation's requirements binding the
-  whole seam — measured, the engine calling `parse_cv` unconditionally reported
-  `skipped-gate` under `cv.renderer: script` for a gate-clean CV that script
-  would have rendered. `precheck` still carries renderer-SPECIFIC grammar only
-  (`template`'s meta-line format); the pre-`PROFILE` name/contact header block
-  is enforced separately, by three inline STRUCTURAL guards in `cv/engine.py`
-  itself (#99: header line count, name anchor; a third added on review,
-  comparing the contact lines' actual content against `contact_block(profile)`
-  -- #133/#107: the candidate's identity now comes from the vault's Candidate
-  Profile note, not a `cv.name`/`cv.contact` config key), because that shape is
-  what `cv/compose.py`'s prompt requested of every renderer alike, not a layout
-  requirement any one renderer owns.
+  A renderer receives the `CvDocument` sluice ASSEMBLED (`render(document, out_dir, *,
+  neutral_name)`) and lays it out; nothing parses CV text. `template` hands the document
+  to the template; `script` writes `cv/document.py::to_text(document)` (citation-free) for
+  its external script. There is no grammar hook (#364/#365/#368, spec §7.2): the CV's
+  structure is data sluice built, so no renderer has a grammar of its own that could
+  refuse a gate-clean CV, and `cv/engine.py` asks a renderer for nothing but `render`.
+  The earlier optional `precheck` hook, and the engine's inline header guards, existed
+  because the model wrote the whole CV as text; both went with that.
 - **fetcher**: `sluice/fetchers/`, selected by `fetcher:` (default `camofox`).
   Implementations: `camofox` (the headless-browser HTTP server). ONE instance is
   shared across triage's fetch workers when `dossier_concurrency > 1`
@@ -2181,8 +2206,7 @@ sentence cannot be.
   construction rather than by reading a flag.
 - **sources**: `ingest/sources/`, the registry all of the above are modelled on.
   A source may optionally implement `company_from_url(url) -> str | None`
-  (#109), the same optional-member shape as `Store.preflight`/
-  `Renderer.precheck` above -- `Sluice.triage()` threads `sources.get` into
+  (#109), the same optional-member shape as `Store.preflight` above -- `Sluice.triage()` threads `sources.get` into
   `triage.engine.run` as `get_source`, the same lazy inside-the-method import
   `ingest()` already uses; `triage/` itself never imports `sluice.ingest`
   directly. A `BrowserListSource` subclass may also override `parse` itself for
@@ -2269,15 +2293,14 @@ classifies each as `ok`/`degraded`/`dead`/`setup`, then does the same for a seco
 component checks -- the renderer (does `cv.renderer` actually construct, catching a
 missing `render` extra or WeasyPrint's native libraries before the dossier fetch and
 LLM spend rather than after), the store's on-disk artefacts (the vault directory,
-the baseline CV -- present AND non-empty, matching the refusal below rather than mere
-existence -- the Judging Profile, a verified/pending row for each of the three evidence
+the Judging Profile, a verified/pending row for each of the three evidence
 corpora (#164: Experience Library, Skills Inventory, STAR Stories; NOTICE, except that a
 CITABLE corpus with nothing verified is SETUP and blocks `cv`, because #242 makes `cv run`
 refuse exactly that vault -- a NOTICE there would call the install fine about the thing
 that stops the next command),
 and -- #133/#107 -- the Candidate Profile note's own declared name/contact, checked
 here rather than as a separate identity-fields row, via the Store seam's OPTIONAL
-`preflight()` hook), track's Google adapter, the Camofox profile an ingest run will
+`preflight()` hook), the CV rows (#364/#365/#368, below), track's Google adapter, the Camofox profile an ingest run will
 drive, the current posture of every list-typed setting -- abstaining, or its own role's
 equivalent, or active,
 and the shared dossier cache's cached-JD length distribution (#169) -- how many entries
@@ -2292,60 +2315,35 @@ makes `load_cv_config()` raise, which `Sluice.doctor` catches ahead of the
 deliberately-guarded `self.renderer()`/`self.store()` constructions below it (triage's config
 loads first, unguarded -- it has no cv-shaped legacy-key hazard of its own) and turns into one
 DEAD `cv-config` row naming the real error, rather than a traceback out of the one command a
-user runs because something -- possibly that very config -- is wrong; only the three checks
+user runs because something -- possibly that very config -- is wrong; only the checks
 that actually read `cv_cfg` (cv's own backend targets, the renderer, cv's row in the
-gate-posture sweep, and #165's negatives-vs-Skills-Inventory cross-check, which sits inside
-the store branch but is gated on the same condition) are skipped, and the report is
-otherwise full -- the store's Candidate
-Profile row, track/Google, camofox and every other sub-app's gate rows are unrelated to
-`cv_cfg` and still run. Backend
+gate-posture sweep, and the fabrication-decoys cross-check) are skipped, and the report is
+otherwise full -- the store's Candidate Profile row, the CV Layout rows, track/Google,
+camofox and every other sub-app's gate rows are unrelated to `cv_cfg` and still run. Backend
 classification has no roles since #333: a keyless backend is `setup` (see the state model
 below) and a keyed-but-broken one is `dead`, and either blocks every sub-app that uses it. Component
-classification adds a fifth state, `notice`, for the gate-posture rows -- and, since
-#165, for the `cv.negatives[i]` rows reporting a configured negative that contradicts the
-verified Skills Inventory, which name an INDEX and an overlap COUNT rather than the
-user's own text, since a report is returned whole to MCP clients. #260 narrowed what
-counts as a contradiction there: the overlap is taken against the stems the line NEGATES
--- within each clause, every stem after the first word of a small shipped negation
-vocabulary (`core/doctor.py`'s `_NEGATION_WORDS`, modelled on `core/health.py`'s
-`_LOGIN_SEGMENTS`), the vocabulary's own words excepted -- not against the whole line.
-That exception is load-bearing rather than tidiness: `never` and `without` both clear the
-length floor, so a vocabulary word left in the set is a matchable term like any other. The bare intersection it replaced called
-any shared four-character stem a contradiction, so a pure formatting rule about the SKILLS
-section was reported against the very skills it formats, with advice ("remove the line, or
-remove the skill") that deletes a working rule; and it scaled the wrong way, since every
-newly verified skill widens the term set. The narrowing fails toward abstain, which is the
-direction this row already prefers: it names no term, so a false report is worse than a
-missed one. #168's Task 10 added a
-second cross-reference between the same two corpora, `core/doctor.py`'s
-`classify_skills_reconciliation`: up to two more `notice` rows, `Skills
-Inventory (unclaimed)` (an inventory skill no experience entry's `Skills:` claims) and
-`Experience Library (unmatched)` (an entry's `Skills:` name absent from the inventory) --
-each suppressed at zero and, the same posture, reporting only a COUNT rather than the
-skill's own name. Unlike the `cv.negatives[i]` check just named, it is not one of the
-`cv_cfg`-gated checks a few sentences up: it needs only both evidence corpora to be
-readable, so it still runs when `cv_cfg` failed to load. #259 added a `store`-component row
-of its own, `core/doctor.py`'s `classify_skills_request`: `Experience Library (Skills)`,
-`notice`, emitted ONLY while no verified experience entry carries a `Skills:` value at all.
-That is the precondition a composed SKILLS section actually has -- `cv/engine.py` asks for
-one with `skills_requested=any(es.skills for es in sources.entries.values())` over the FULL
-verified set (`cv/bundle.py`'s `rank` orders and never excludes), so one corpus-wide fact
-decides it for every lead. The Skills Inventory is not in that chain, and its own row's
-`<verified> / <total>` ratio was being read as if it were -- verifying the whole inventory
-changes nothing, which is the misreading this row corrects, so it takes the `store`
-component to be read beside it. It is SUPPRESSED by any entry the gate would not
-read as blank, not merely reported differently, and that covers two shapes for one reason:
-an entry that genuinely annotates the field, and one `_skill_items` REFUSES -- a non-blank
-nameless value (`...`), or one it cannot split at all -- which raises out of `build_bundle`
-and fails every lead. Firing on the second would announce that no CV gets a SKILLS section
-about a corpus that composes no CV at all, so the row is emitted only where doctor's own
-split and `_skill_items` agree that nothing is annotated. `core/doctor.py`'s
-`_declared_skills` is what draws that line: it returns a set of names, or None for a value
-the gate could not read, and the two rows map that None differently on purpose -- the
-reconciliation to no claimed NAME, this row to a suppression. Reporting the refused corpus
-is `classify_store`'s job, via the per-kind DEAD row it already emits from a store's
-`<kind>_error`. This row also abstains on an EMPTY corpus, where `classify_store`'s own
-SETUP row already blocks `cv`.
+classification adds a fifth state, `notice`, for the gate-posture rows and the
+informational evidence counts.
+
+The CV rows (#364/#365/#368, `core/doctor.py`'s `classify_cv_layout`, `classify_tools`,
+`classify_cv_eligibility`, `classify_skill_labels`, `classify_attribution`, `classify_decoys`) read the store ONCE in
+`Sluice.doctor` -- the layout in its own `try`, so one bad note never collapses the other
+store rows (#259) -- and classify purely. They report COUNTS, positions and the command that
+lists the entries (`job-sluice experience list`), never an entry title, a tool, a skill or a
+decoy, because a report reaches MCP clients whole. `cv_layout` is SETUP when absent and DEAD
+when malformed or unreadable, blocking `cv` in every state but `ok`, in step with
+`missing_prerequisites`; `Experience Library (Tools)` is DEAD and blocks `cv` while any
+verified entry's `Tools:` holds an item the gate cannot use; `cv_layout (no citable entry)`
+is DEAD and blocks `cv` when no role can cite any verified entry while the layout asks for
+bullets, the case `missing_prerequisites` refuses. The rest are DEGRADED warnings
+that block nothing and are listed by default: verified entries no CV can cite ("not on your
+CV", "no company"), verified skill notes with no `Label:` and a slug-shaped title
+(`classify_skill_labels` -- a note `skills add` made before 4.0, which a CV lists under its
+slugged title; the shape test is `evidence_slug` itself, so a hand-titled note is left out), the attribution
+check off on an upgraded vault, and a
+`cv.fabrication_decoys` entry matching the user's own `Tools:`, skill names or layout text --
+which keeps that tool or skill off every SKILLS list while layout text renders regardless.
+The skill names come from `cv/selection.py` itself, so this row and the pool agree.
 A gate row whose role IS
 declared never affects `exit_code`, under `--strict` or otherwise, because an abstaining
 gate (an unconfigured preference simply passes every lead through) is the shipped default
@@ -2360,7 +2358,7 @@ gate shipping without a role cannot reach here, because the build fails first.
 **The `setup` state, and the verdict that reads it (#243).** Five states, not four: `setup`
 is a component the user has not SUPPLIED yet, as distinct from one they supplied that does not
 work. The split matters because `doctor` is the command `init` tells a new user to run next,
-and on a fresh install every dead row was the former -- no baseline CV, no verified evidence,
+and on a fresh install every dead row was the former -- no CV Layout, no verified evidence,
 no Candidate Profile, no `render` extra, no vault -- so the happy path printed a screenful of
 rows across four states, several of them `dead`, and exited 1. The reassurance that this was expected had to
 live in README prose, because the exit code said otherwise.
@@ -2381,11 +2379,9 @@ sub-app. `Vault` records which case it is at construction (`vault_dir_is_default
 the last moment the distinction exists; `core/protocols.py` states the obligation for a second
 store, and a store that stays silent gets the louder reading.
 
-A missing or empty baseline CV is `setup`. An UNREADABLE one is not a `baseline_rel` row at all
--- `Vault.preflight` lets the `PermissionError` propagate, deliberately, rather than reading it
-as absent, so the whole store report collapses to one `store`/`preflight` `dead` row carrying the
-real error text. (A baseline that is a symlink out of the vault reads `ok`: `preflight` reads
-through it. The symlink refusals are on the evidence directories, not here.)
+A missing CV Layout note is `setup`; a malformed or UNREADABLE one is `dead`, its own
+`cv_layout` row carrying the reason through the same path-free formatter the evidence rows use,
+since the store raises rather than reading it as absent.
 
 The renderer fork is DECLARED by the seam, not inferred: `core/protocols.py`'s
 `RenderDependencyError` (a `RenderError` subclass, so every existing `except RenderError` still
@@ -2540,9 +2536,9 @@ structural guarantee: a note edited mid-batch could in principle make two CVs in
 `cv run` disagree. Both are correct for what each artefact needs. `apply` must pin
 `today` anyway (the same clock-freezing reasoning as above), and the profile rides
 along on that same resolved snapshot. `cv` is self-consistent WITHIN a lead regardless —
-`cv_name`/`cv_contact` are derived once at the top of `run_one` and feed both the
-compose prompt and the `#99`/`#100` STRUCTURAL guards for that SAME lead, so no composed
-CV is ever validated against an identity other than the one it was built under; the
+the profile is read once at the top of `_run_one`, and that one read supplies both the
+name the compose prompt uses and the name and contact block `cv/document.py::assemble`
+writes, so no CV carries an identity other than the one it was composed under; the
 per-lead read costs nothing beside a dossier fetch and up to two LLM calls. Do not
 thread `profile` through `cv/engine.py::run_one` to match apply's shape unless a real
 correctness bug turns up — that ripple was weighed against this PR's cost and rejected

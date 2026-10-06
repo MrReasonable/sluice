@@ -1,17 +1,15 @@
 # sluice/cv/bundle.py
-"""Closed, verified-only CV source bundle. The composer, the validate gate, and the
-strip step all share the short company-prefixed [id] codes assigned here. The FULL
-verified set is emitted (JD keywords order/emphasise, never exclude) so the
-employer-completeness gate is always satisfiable from cited entries."""
+"""Closed, verified-only CV source bundle. The composer, the checks over a selection, and
+the strip step all share the short company-prefixed [id] codes assigned here. The FULL
+verified set is emitted (JD keywords order/emphasise, never exclude), so every entry the
+CV Layout places is available to be cited."""
 import re
-from typing import NamedTuple
 
 from sluice.core.layout import layout_text
 from sluice.core.stem import stem_all as _stem_all
 
-# The one tokeniser and its per-token rule now live in core/tokens.py, where core/doctor.py
-# can share them; these names stay importable from here for cv/terms.py and cv/validate.py.
-from sluice.core.tokens import TOKEN_RULE_RE as SKILL_TOKEN_RE
+# The one tokeniser lives in core/tokens.py, where core/doctor.py shares it; the name stays
+# importable from here for cv/terms.py.
 from sluice.core.tokens import WORD_RE as _WORD_RE
 from sluice.core.tokens import tool_items
 
@@ -73,51 +71,14 @@ def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
     return sorted(entries, key=score, reverse=True)
 
 
-# The skills-shaped negative, DERIVED rather than hand-typed (#165). `cv.negatives` is a
-# prose shadow of the Skills Inventory and drifts from it; this line names no skill, so it
-# cannot go stale. It does NOT, on its own, stop a stale CONFIGURED negative disagreeing
-# with the inventory -- `core/doctor.py`'s classify_negatives_vs_skills is what makes that
-# disagreement visible.
-#
-# It names the TWO CLAIM sources and deliberately NOT the SKILLS INVENTORY, which is the
-# whole point of the section being framing. An earlier revision listed all three, on the
-# reasoning that a source omitted from the most strongly worded block of the prompt reads
-# to the composer as a source it must not use. That reasoning is right for a source and
-# wrong here: naming a technology IS a claim, so permitting one that appears only in the
-# framing section is exactly what `compose._RULES` forbids two lines above ("never
-# introduce a claim that rests on it alone: every fact in the CV must still come from the
-# BASELINE CV or a VERIFIED EXPERIENCE ENTRY"). The two must agree, and
-# `test_the_derived_constraint_names_the_same_claim_sources_as_the_prompt_rule` is what
-# holds them together -- it reads the real `_RULES` rather than restating it.
-#
-# Named `_PROMPT` so tests/test_prompt_neutrality.py's discovery reaches it: that sweep
-# finds `*build*prompt*` functions and PROMPT-named constants, and this is shipped,
-# model-facing text. It is also listed in that file's `_KNOWN_PROMPTS`, so a rename cannot
-# silently drop it from the sweep -- discovery alone has no falsifier.
-#
-# It is NOT stored on the bundle, and `extra` is not a convenience. `bundle["negatives"]`
-# is read by BOTH renderers, and this constraint is about the COMPOSER's task; the auditor
-# is not composing. It used to matter more literally still: while this string named the
-# SKILLS INVENTORY, storing it on the bundle handed the ADVISORY auditor a sentence naming
-# a source it cannot see -- the D11 widening arriving as prose rather than as a section,
-# measured before it was fixed.
-_DERIVED_NEGATIVE_PROMPT = ("claim no technology, language, framework or tool that is not "
-                            "named in the BASELINE CV or the VERIFIED EXPERIENCE ENTRIES "
-                            "above")
-
-
-def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
-                 skills=()) -> dict:
-    # Fail loudly at construction (#168, this module's house rule -- see
-    # `core/tokens.py::TOKEN_RULE_RE`'s own comment). `_skill_items` is otherwise only reached lazily, from `bundle_sources`,
-    # which most callers invoke well after `build_bundle` -- an entry with a malformed
-    # `Skills:` value would then surface far from the note that caused it, at gate time
-    # instead of at load time. Called for its validation side effect only: the returned
-    # items are discarded here and re-derived (identically) by `bundle_sources` later.
-    for e in entries:
-        _skill_items(e)
+def build_bundle(entries, negatives, jd_keywords, prefix_map, skills=()) -> dict:
+    """Assemble the evidence bundle: entries ranked by the JD keywords and given citable
+    codes, the negative constraints, and the skills framing. Skills are ranked but never
+    code-assigned, since an `[id]` is what makes a thing citable."""
+    # No `Tools:` validation here: `missing_prerequisites` refuses a malformed item before
+    # any spend, and `entry_facts` raises on one regardless of the caller.
     ranked = rank(entries, jd_keywords)
-    return {"baseline": baseline, "entries": assign_codes(ranked, prefix_map),
+    return {"entries": assign_codes(ranked, prefix_map),
             "negatives": list(negatives),
             # Ranked by the same JD keywords so the most relevant framing leads -- but NOT
             # code-assigned: an [id] is what makes a thing citable, and the whole point of
@@ -127,36 +88,38 @@ def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
 
 
 def _entry_block(entry: dict) -> list[str]:
-    """The lines ONE entry contributes to the rendered bundle.
+    """The lines ONE entry contributes to the bundle.
 
-    The single definition of what an entry is made of, shared by `render_bundle` (which
-    joins these into the prompt) and `bundle_sources` (which harvests this entry's
-    permitted numbers from them). Sharing it is what makes the prompt and the allowlist
-    unable to disagree -- see #174.
+    The single definition of what an entry is made of, shared by the composer's entries
+    section and the auditor's (`_entries_section`) and by `cv/validate.py::entry_facts`,
+    which harvests this entry's permitted figures from them. Sharing it is what makes the
+    prompt and the allowlist unable to disagree -- see #174.
 
     THE RULE, and it is narrower than it looks: every line this function returns is a
     SOURCE for that entry, and nothing else is. Not "whatever the model was shown" -- the
-    NEGATIVE CONSTRAINTS block is shown to the model and is deliberately not citable
-    (#31). So a line added here becomes citable by that entry -- witnessed: appending a
-    per-entry "do NOT claim N" caution here widens every entry's allowlist, and it is
-    caught: `test_the_rendered_prompt_has_not_drifted` and
-    `test_the_allowlist_still_matches_the_frozen_prompt` (tests/test_cv_bundle.py) both go
-    red, because the caution line lands in `FROZEN_BUNDLE_TEXT`'s co-variant comparison
-    but the frozen reference does not carry it. Presentation that must not become a
-    source belongs in `_source_section`/`render_composer_bundle`, not here -- and note it
-    must go in the one the intended AUDIENCE reads: `render_bundle` is the auditor's.
+    guidance section is shown to the model and is deliberately not citable (#31), and an
+    entry's `Tools:` line (`_tools_line`) is a separate emitter for the same reason. So a
+    line added here becomes citable by that entry -- witnessed: appending a per-entry "do
+    NOT claim N" caution here widens every entry's figures, and it is caught:
+    `test_the_allowlist_still_matches_the_frozen_prompt` (tests/test_cv_bundle.py) goes red,
+    because the caution line lands in the entry's figures but the frozen reference does not
+    carry it. Presentation that must not become a source belongs in `_entries_section` or
+    the renderers, not here.
 
     That enforcement is a RATCHET, not an impossibility, and the honest limit is this: it
     catches a widening only against the FROZEN literal. Re-capture `FROZEN_BUNDLE_TEXT`
     after widening this function -- which its own comment invites a maintainer to do --
-    and both tests move with the mutant and stay green. Nothing here can tell a
-    deliberate prompt change from a silent allowlist widening; a human reading the freeze
-    diff is what still has to. Same shape as this repo's fixture-digest ratchet
+    and the comparison moves with the mutant and stays green. The guard that does not
+    compare against that literal is
+    `test_entry_facts_sentinels_hold_independent_of_the_frozen_literal`, which names the
+    figures an entry must and must not carry. Nothing here can tell a deliberate prompt
+    change from a silent allowlist widening; a human reading the freeze diff is what still
+    has to. Same shape as this repo's fixture-digest ratchet
     (`tests/test_fixture_name_neutrality.py`): a value pinned by a literal certifies
     against that literal, never against the world.
 
     Excludes the inter-entry blank line for the same reason: it is presentation, carries
-    no digits, and `_source_section` owns it.
+    no digits, and `_entries_section` owns it.
     """
     lines = [f"[{entry['id']}] ({entry.get('company','')}) {entry.get('title','')} "
              f"| metrics={entry.get('metrics','')}"]
@@ -165,107 +128,18 @@ def _entry_block(entry: dict) -> list[str]:
     return lines
 
 
-def _baseline_block(bundle: dict) -> list[str]:
-    """The baseline CV's SOURCE lines -- no header, no blank, no slice.
-
-    Sibling of `_entry_block`, same rule: every line returned is a source, this time for
-    the PROFILE-only pool. It holds no header deliberately. An earlier draft returned the
-    header too and had `bundle_sources` drop it with `block[1:]`, which has two live
-    mutants: keep a second header and its future digits become citable in the one region
-    with no BAD-CITATION backstop behind it (`validate.py`'s profile sweep); drop the
-    header and `[1:]` eats the real baseline instead, so every baseline-sourced profile
-    figure is reported INVENTED and the lead is skipped. Owning no presentation removes
-    both.
-    """
-    return [bundle["baseline"]]
-
-
-
-
-def _skill_items(entry: dict) -> list[str]:
-    """The `Skills:` items for one entry, blank-safe.
-
-    Accepts the comma spelling AND a YAML block list: `_parse_fm_spaced` joins a block
-    list to the identical comma string, so both arrive here the same way -- which is why
-    a collector written for one shape alone sweeps clean over the other.
-
-    A BLANK value yields [], and that is load-bearing: `_evidence_entries` materialises
-    every declared field via `fm.get(k, "")`, so every existing note carries
-    `Skills == ""` the day #168 lands. Blank is absent (SC5).
-    """
-    raw = (entry.get("fields") or {}).get("Skills", "")
-    items = [t.strip() for t in raw.split(",") if t.strip()]
-    for item in items:
-        tokens = _WORD_RE.findall(item)
-        if not tokens:
-            # A NON-BLANK item that tokenises to NOTHING -- `...`, `.`, `-`, `#` alone.
-            # Refused rather than carried as a token-less item, because a token-less item
-            # is not inert: it is non-empty, so it makes `entries[eid].skills` TRUTHY, and
-            # row 1's abstain (`if all(sources.entries[c].skills for c in cites)`) is
-            # keyed on exactly that truthiness. Measured -- with `Skills: ""` a bullet
-            # naming another entry's skill is clean, and with `Skills: "..."` the same
-            # bullet returns MISATTRIBUTED SKILL. So a punctuation typo silently switched
-            # a hard gate row ON for the whole vault, which is the quiet-wrong-default bug
-            # class this codebase engineers out everywhere else.
-            #
-            # It is also a REGRESSION GUARD on the trailing-dot tokeniser fix: before it,
-            # `...` was one token and `SKILL_TOKEN_RE` refused it loudly. Widening
-            # `_WORD_RE` to drop trailing dots turned that loud error into quiet
-            # activation. `-` was already in this state beforehand (no `_WORD_RE`
-            # alternative ever matched a lone hyphen), so this closes a pre-existing hole
-            # in the same line.
-            raise ValueError(
-                f"skill {item!r} is invalid: it contains no name at all, and a value that "
-                "is non-empty but nameless would still switch the misattribution check on "
-                "for every entry -- leave the field blank instead to mean 'not annotated'")
-        for token in tokens:
-            if not SKILL_TOKEN_RE.match(token):
-                raise ValueError(
-                    f"skill {item!r} is invalid: every token must begin with a letter, "
-                    f"or a dot then a letter (.NET) -- {token!r} does not, and the "
-                    "numeric gate's span removal would blank a real figure. A token "
-                    "leading with a DIGIT stays refused whatever it names (ISO 9001, "
-                    "Web 2.0, 3D, 5S): nothing distinguishes it from metric shorthand")
-    return items
-
-
-def _entry_skills_line(entry: dict) -> list[str]:
-    """The lines ONE entry contributes as SKILL sources.
-
-    Sibling of `_entry_block` and `_baseline_block`, carrying the INVERTED contract:
-    every token here is a SKILL source for this entry, and NO DIGIT of it is a numeric
-    source. That is why it is a separate function -- `_entry_block`'s stated rule is that
-    every line it returns is harvested by `bundle_sources` into `nums`, so folding these
-    in would license every digit inside every skill name at once (`Example Widget3` -> `3`).
-
-    Deliberately not named `_skills_block`, matching `_framing_lines`' precedent for the
-    same reason: the `_*_block` names in this module mean "numeric source".
-
-    NOT part of `_entry_block`'s own emission, and not reached by `render_bundle`'s call
-    to `_source_section` -- that call passes no `entry_lines` override, so it gets
-    `_entry_block` alone. `render_bundle` is the #60 ADVISORY audit's corpus, and a skill
-    claim resting on `Skills:` alone must read `unsupported` to the auditor -- exactly the
-    D11 guarantee `render_composer_bundle` already holds for the framing section. Only
-    `render_composer_bundle` folds this function's output in, by passing `_source_section`
-    an `entry_lines` override that appends it to `_entry_block`'s own lines -- see
-    `_source_section`'s docstring for why that is a safe default to invert.
-    """
-    items = _skill_items(entry)
-    return [f"skills={', '.join(items)}"] if items else []
-
-
 def _framing_lines(skill: dict) -> list[str]:
     """The lines ONE skills entry contributes to the COMPOSER's prompt (#165).
 
-    Deliberately NOT named `_skills_block`. In this module `_entry_block` and
-    `_baseline_block` carry a stated contract -- every line returned is a SOURCE the
-    fabrication gate may license -- and these lines are the opposite of that. Nothing that
-    LICENSES reads these lines: `bundle_sources` walks `bundle["entries"]` and
-    never touches `bundle["skills"]`, which is what makes a skills figure licensed nowhere.
-    `mention_vocab` (#194) does read them, to RECOGNISE a declared skill as not invented --
-    a STYLE-tier question, kept off `BundleSources` so it cannot become a licence. Folding
-    these into `_entry_block`, or teaching `bundle_sources` to read them, licenses every
-    skills digit at once; `test_a_skills_digit_is_licensed_in_neither_pool` catches that.
+    Deliberately NOT named `_skills_block`. `_entry_block` carries a stated contract --
+    every line returned is a SOURCE the fabrication gate may license -- and these lines are
+    the opposite of that. Nothing that LICENSES reads these lines: `entry_facts` walks
+    `bundle["entries"]` and never touches `bundle["skills"]`, which is what makes a skills
+    figure licensed nowhere. `term_vocabulary` (#194) does read them, to RECOGNISE a
+    declared skill as not invented -- a STYLE-tier question, kept off the hard gate's facts
+    so it cannot become a licence. Folding these into `_entry_block`, or teaching
+    `entry_facts` to read them, licenses every skills digit at once;
+    `test_a_skills_digit_is_licensed_in_neither_pool` catches that.
 
     Reads `fields` by the kind's own frontmatter names rather than the floor keys:
     `EVIDENCE_KINDS["skills"]` maps only `best_for <- Domain`, so Proficiency, Evidence
@@ -287,314 +161,8 @@ def _framing_lines(skill: dict) -> list[str]:
     return lines
 
 
-def _source_section(bundle: dict, entry_lines=_entry_block) -> list[str]:
-    """Everything up to and including the last entry: the lines BOTH audiences see --
-    unless `entry_lines` overrides what one entry contributes.
-
-    `entry_lines` is a per-entry LINE EMITTER, defaulting to `_entry_block` -- the narrow,
-    auditor-safe shape. `render_bundle` (the #60 ADVISORY audit's corpus) calls this with
-    no argument, so a caller who forgets one gets the SAFE default. That is the OPPOSITE
-    hazard from the one `render_composer_bundle`'s own docstring cites for rejecting a
-    keyword flag on `render_bundle` itself: there, a forgetful default WIDENED what the
-    auditor could see (it would get the framing section too). Here, a forgetful default
-    only NARROWS what the composer would have seen, and can never leak a skill source to
-    the auditor -- so a flag is safe at THIS seam even though it was rejected one level up.
-    `render_composer_bundle` passes `lambda e: _entry_block(e) + _entry_skills_line(e)` to
-    add its own per-entry skill line, through the ONE loop both callers already share.
-
-    A second, near-duplicate loop was the first design here and was rejected: a line added
-    to this loop later would need remembering to add to a second copy too, and nothing
-    would go red if a maintainer forgot -- the exact drift class a shared loop closes.
-    """
-    lines = ["=== BASELINE CV (authoritative for dates/employers/certs) ==="]
-    lines += _baseline_block(bundle)
-    lines += ["",
-              "=== VERIFIED EXPERIENCE ENTRIES (the ONLY permitted source; cite by [id]) ==="]
-    for e in bundle["entries"]:
-        lines += entry_lines(e)
-        lines.append("")
-    return lines
-
-
-def _negatives_section(bundle: dict, extra: tuple = ()) -> list[str]:
-    """The NEGATIVE CONSTRAINTS block.
-
-    `extra` is prepended and is NOT part of `bundle["negatives"]`, so a constraint meant
-    for one audience cannot reach the other by riding shared state. That is not
-    hypothetical: the derived skills constraint (#165) NAMES the SKILLS INVENTORY
-    section, and stored on the bundle it was rendered to the advisory auditor too --
-    handing it a sentence naming a source it cannot see.
-    """
-    return (["=== NEGATIVE CONSTRAINTS (must NOT appear) ==="]
-            + [f"- {n}" for n in list(extra) + list(bundle["negatives"])])
-
-
-def render_bundle(bundle: dict) -> str:
-    """Render the SOURCE bundle: the prompt text the ADVISORY audit sees.
-
-    The `[id]` codes and the `=== SECTION ===` headers used to be a parsing contract with
-    `cv/validate.py`, which recovered the citable ids from this text. It no longer does
-    (#174): ids and entry boundaries come from `build_bundle`'s structure via
-    `bundle_sources`, so no line of user free text can mint or rebind one. The headers
-    are now presentation only, and the section builders own ALL of them -- `_entry_block`
-    and `_baseline_block` own only source lines.
-
-    This function does NOT emit `bundle["skills"]`, and that omission is load-bearing
-    rather than incidental -- see `render_composer_bundle` (#165, D11).
-
-    `tests/test_cv_bundle.py::test_the_rendered_prompt_has_not_drifted` pins this
-    function's exact output, because it is the prompt a live LLM call receives.
-    """
-    return "\n".join(_source_section(bundle) + _negatives_section(bundle))
-
-
-def render_composer_bundle(bundle: dict) -> str:
-    """`render_bundle` plus the framing the COMPOSER gets and the auditor must not see.
-
-    A separate function rather than a flag on `render_bundle`. There are two consumers of
-    a rendered bundle and they want opposite things: `cv/engine.py`'s compose call, and
-    the #60 ADVISORY audit (via `cv/audit.py`), whose prompt opens "SOURCE BUNDLE is the
-    ONLY truth". Showing the auditor the framing section would make a CV claim resting on
-    a skills line alone read as SUPPORTED -- where today it is `unsupported` and, at the
-    shipped `cv.require_signoff: true`, withholds the send-ready pointer until a human
-    signs off. #165's D3 calls such a claim illegitimate, so widening the auditor's source
-    set disarms the one layer that catches it.
-
-    A keyword flag was the first design and was rejected twice over: its default widened
-    (a caller who forgets it gets the framing), and it did not even work, because the
-    derived negative NAMES the section and rode `bundle["negatives"]` into both spellings.
-    A second function has no default to get wrong, and leaves the audit call site
-    unedited, which is the strongest available form of "the auditor sees what it sees
-    today".
-
-    Framing goes AFTER the entries it frames and BEFORE the hard "must NOT appear" list.
-    Placement is measured, not stylistic: emitted BEFORE the entries, the pre-#174 oracle
-    in tests/test_cv_bundle.py folds these digits into `baseline` and disagrees with
-    `bundle_sources`. Omitted ENTIRELY when the inventory is empty -- an empty header
-    would assert to the model that the candidate holds no skills, a negative claim it may
-    act on.
-
-    Passes its own `entry_lines` override to `_source_section` (#168) -- never calls
-    `render_bundle` or duplicates its loop -- so every entry's own `_entry_skills_line`
-    belongs in the composer's prompt ALONE. That inclusion is, unlike the SKILLS INVENTORY
-    framing above, NOT conditional on `bundle["skills"]`: a `Skills:` field declared on an
-    entry is a source in its own right, independent of whether a separate Skills Inventory
-    note exists at all. Gating it on the inventory's presence would silently drop a
-    candidate's own declared entry skills from the one prompt that is supposed to see
-    them, whenever they had not also filed a Skills Inventory note.
-    """
-    lines = _source_section(bundle, entry_lines=lambda e: _entry_block(e) + _entry_skills_line(e))
-    if bundle.get("skills"):
-        lines += ["=== SKILLS INVENTORY (framing only; NOT citable, introduces no facts) ==="]
-        for sk in bundle["skills"]:
-            lines += _framing_lines(sk)
-        lines.append("")
-        lines += _negatives_section(bundle, extra=(_DERIVED_NEGATIVE_PROMPT,))
-    else:
-        lines += _negatives_section(bundle)
-    return "\n".join(lines)
-
-
-class EntrySources(NamedTuple):
-    """What ONE bundle entry licenses. Numbers and skills travel together because they are
-    keyed by the same id: two separate id-keyed dicts could disagree about what an id is,
-    which is what `BundleSources.ids`' docstring argues against. Collapsed, key equality is
-    structural even for the hand-built values the suite constructs -- so no `validate()`
-    guard is needed, and none is added: a guard there would NARROW THE WAYS IN rather than
-    remove the capability, the distinction #174's own docstring draws."""
-    nums: frozenset[str]
-    skills: frozenset[str]
-
-
-class BundleSources(NamedTuple):
-    """What the fabrication gate is allowed to treat as a source, keyed by entry id.
-
-    Handed to `cv/validate.py` instead of the rendered bundle TEXT (#174). The gate used
-    to recover this by re-parsing that text, which meant any line of user free text could
-    decide what an id was: a body line shaped like an existing code REBOUND that entry's
-    permitted numbers, so a fabricated figure passed AND the entry's real metric was
-    reported INVENTED. Passing the derived value removes the gate's capability to be
-    fooled, rather than narrowing the ways in.
-
-    `ids` is a derived property rather than a third field. Carrying it as data would
-    re-create, one level up, the exact redundancy this fixes -- two structures that can
-    disagree about what an id is.
-    """
-    # Row 1's per-entry vocabulary. ONE id-keyed structure carrying both the numeric and the
-    # skill allowlist, so the two cannot disagree about what an id is -- see EntrySources.
-    entries: dict[str, EntrySources]
-    baseline: frozenset[str]
-    # Row 2's vocabulary: the WORDS of the bundle's source text, as one token SEQUENCE per
-    # source block. A different question (did you invent this) at a different granularity
-    # (bundle-wide), which `baseline` and the entries' digit sets cannot answer. Sequences
-    # rather than a set, because a skill can be two words and no single token is one.
-    #
-    # Its NESTING needs a shape check somewhere: a flat `tuple[str, ...]` is valid Python
-    # and iterates as CHARACTERS in row 2's matcher, so every skill reads UNSOURCED and
-    # every lead goes `skipped-gate` -- silently, on a value that LOOKS right. Measured:
-    # `BundleSources(entries={...}, baseline=frozenset(), source_tokens=("Example",
-    # "Query"))` was accepted and reported the one declared skill as unsourced.
-    #
-    # That check lives in `validate()`, beside its `isinstance(sources, BundleSources)`
-    # guard -- see there. An earlier version of THIS comment said Task 4 had added it; it
-    # had not, so the harm described as prevented was live, which is what the final review
-    # of this branch caught. It is NOT here at construction, and that is the same call
-    # `EntrySources`' docstring makes for key equality: `bundle_sources` below builds this
-    # value correctly by construction, so the only producer that can get the shape wrong
-    # is a caller building one by hand, and the gate is where such a value arrives.
-    source_tokens: tuple[tuple[str, ...], ...]
-
-    @property
-    def ids(self):
-        return self.entries.keys()
-
-    @property
-    def nums(self):
-        """The per-entry numeric allowlists, DERIVED -- same reason `ids` is derived: a
-        stored second view could disagree with `entries` about what an id licenses.
-        Keeps every existing `validate()` consumer (`sluice/cv/validate.py`) working
-        unchanged across #168's rename of the stored field from `nums` to `entries`, so
-        plumbing the bundle stays genuinely INERT for the gate -- Task 2 changes no
-        production file outside this one."""
-        return {eid: es.nums for eid, es in self.entries.items()}
-
-
-def bundle_sources(bundle: dict) -> BundleSources:
-    """Derive the citable ids and their permitted numbers, skills and source vocabulary
-    from the bundle's STRUCTURE.
-
-    Ids and entry boundaries come from `build_bundle`; the numbers come from exactly the
-    lines that entry contributed to the prompt, via the shared `_entry_block`. Nothing
-    here parses the rendered text, so nothing here can invent an id.
-
-    `bundle["negatives"]` is read by NOTHING HERE -- `_negatives_section` renders it into
-    both prompts, but no digit of it reaches this derivation. #31 established that exclusion by where the
-    negatives happened to land in the text, which failed at zero entries -- with no ids
-    the negatives fell through into the baseline pool and a do-not-say figure was
-    profile-permitted (measured). It is now a property of the derivation.
-
-    The `[{id}] ` token is sliced by LENGTH from the known id, never matched out of the
-    text: `_entry_block` puts it first on line 0, and that offset-0 contract is what
-    `test_the_allowlist_still_matches_the_frozen_prompt` pins.
-
-    `source_tokens` (#168, SC4) is built in this SAME pass, from the SAME per-entry
-    `items`/`body` values that fill `EntrySources.skills` -- one entry's skill vocabulary
-    and its row-2 source text can never disagree about what that entry declared, because
-    both come from one read of it. Kept as one token SEQUENCE per source block (entry
-    skills, entry body, baseline), never flattened into a single list: row 2 searches for
-    a skill's token SUBSEQUENCE, and a flat list would invent adjacencies across block
-    seams that exist nowhere in the user's prose (see
-    `test_source_tokens_are_per_block_so_a_two_word_skill_cannot_match_across_a_seam`).
-    """
-    entries: dict[str, EntrySources] = {}
-    blocks: list[tuple] = []
-    for e in bundle["entries"]:
-        eid = e["id"]
-        if eid in entries:
-            # Fail loudly at construction. Naming the id and NOT the entry is deliberate:
-            # the entry holds the user's own CV prose, and this message reaches a log.
-            raise ValueError(f"duplicate bundle entry id {eid!r}: ids must be unique, "
-                             "since each one keys its own allowlist")
-        block = _entry_block(e)
-        block[0] = block[0][len(eid) + 2:]   # drop the leading `[{eid}]`
-        entry_nums = frozenset(re.findall(r"\d+", "\n".join(block)))
-        items = _skill_items(e)
-        # ONE id-keyed structure: `nums` and `skills` cannot disagree about what an id is,
-        # so the key equality holds for hand-built values too and needs no guard.
-        entries[eid] = EntrySources(entry_nums, frozenset(items))
-        # Row 2's vocabulary, SC4: entry `Skills:` + the entry's BODY + the baseline.
-        # Enumerated, never "everything _source_section contributes" -- that larger set
-        # also carries the presentation headers and `_entry_block`'s head line, under
-        # which an emitted `- Example Alpha` would be a licensed skill token.
-        #
-        # Kept as one token SEQUENCE PER BLOCK, never flattened: row 2 searches for a
-        # skill's token subsequence, and a flat list would invent adjacencies across
-        # block seams that exist nowhere in the user's prose.
-        # TOKENISED, not stored whole: row 2 searches for a skill's token SEQUENCE, so a
-        # block holding the item `"Example Query"` as ONE element can never match the needle
-        # ["Example", "Query"] -- a multi-word skill declared only in `Skills:` would be
-        # refused as unsourced, which is the opposite of what declaring it means.
-        #
-        # A block seam is the ONLY seam this preserves. Punctuation INSIDE a block is
-        # transparent to `_WORD_RE`, so a multi-word needle may match across a sentence
-        # boundary: with the body `"The estate ran on Example Query. Example Framework came
-        # later."`, the emitted skills `Query Example` and `Example Query Example Framework`
-        # are both SOURCED. That is fail-OPEN, and it is stated rather than left to be
-        # rediscovered -- but it is CONSISTENCY, not a new class. A comma or a semicolon
-        # never blocked a match either (`"Example Query, Example Framework"` has always
-        # matched `Query Example`), and the full stop only appeared to, by the accident
-        # that `[A-Za-z0-9#+.]+` glued it to the token before it -- an accident that
-        # simultaneously produced three FALSE refusals on ordinary sentence-final skill
-        # names, which is why it was removed rather than kept. Pinned by
-        # `test_row_2_matches_across_a_sentence_seam_inside_one_block`
-        # (tests/test_cv_skills_containment.py) so it is a recorded property with a
-        # falsifier, not an accident anyone can quietly reverse.
-        blocks.append(tuple(t for item in items for t in _WORD_RE.findall(item)))
-        blocks.append(tuple(_WORD_RE.findall(e.get("body", ""))))
-    baseline_block = _baseline_block(bundle)
-    baseline = frozenset(re.findall(r"\d+", "\n".join(baseline_block)))
-    blocks.append(tuple(_WORD_RE.findall("\n".join(baseline_block))))
-    # `skills` and `nums` are keyed in ONE pass here -- but that is not why their key sets
-    # agree, and an earlier version of this comment got the reason wrong in a way that
-    # invited a guard nobody needs. They agree because there is only ONE id-keyed
-    # structure: `nums` is a DERIVED property over `entries` (see `BundleSources.nums`), so
-    # every `BundleSources` has equal key sets, hand-built ones included, and there is
-    # nothing for a caller to get out of step. `validate()` therefore does NOT re-check
-    # them -- the earlier comment claimed it did, citing a Task 4 that added no such
-    # check -- and adding one would assert that a dict's keys equal its own keys.
-    #
-    # What the failure mode WOULD be, if the two were ever stored separately again: row 1
-    # reads a missing `skills` key as an abstain, so a mismatched value would skip
-    # attribution checking SILENTLY. That is the reason to keep them collapsed, not a
-    # reason for a guard. `source_tokens` is the field that genuinely does need one, and
-    # it has one -- in `validate()`, see its own comment above.
-    return BundleSources(entries, baseline, tuple(b for b in blocks if b))
-
-
-def mention_vocab(bundle: dict) -> frozenset[str]:
-    """Every case-folded token the composer was SHOWN as source or framing, minus the
-    negatives: what the unbundled-term check (cv/terms.py, #194) RECOGNISES.
-
-    A STYLE-tier pool, and deliberately NOT a `BundleSources` field. That type is the
-    hard gate's licensing contract, and this set carries the two things the contract
-    excludes -- each entry's heading line and the Skills Inventory framing -- because the
-    question here is different: not "is this claim supported" (row 2, cv/audit.py) but "did
-    the composer INVENT this term". A declared skill was not invented, and flagging it
-    would make the only answer "delete a true skill". Keeping the pool off the licensing
-    type is what stops a later HARD row reading it by accident
-    (`tests/test_cv_mention_vocab.py::test_the_vocabulary_cannot_widen_the_hard_gate`).
-
-    Built from STRUCTURE through the same per-section emitters the prompt uses, never by
-    re-reading rendered text (#174), so a presentation header's words are not in it.
-
-    The negatives are SUBTRACTED by term, not merely left out as a source: "never claim X"
-    reports X even when an inventory note also names it -- PROVIDED X is written
-    name-shaped in the negative itself, because only a negative's own CANDIDATE tokens
-    (`cv/terms.py::candidates`) are subtracted. "never claim Examplelang" qualifies (arm
-    (iii), mid-sentence); "never claim examplelang", all lowercase, subtracts nothing.
-    Never its ordinary words, either:
-    a free-text negative such as "do not overstate platform leadership" would otherwise
-    remove `platform` from the vocabulary, and a capitalised `Platform` elsewhere in the CV
-    would then be reported on every lead.
-
-    The job description is not in it, on purpose: a JD is the likeliest place an invented
-    term comes from.
-    """
-    lines = list(_baseline_block(bundle))
-    for e in bundle["entries"]:
-        lines += _entry_block(e) + _entry_skills_line(e)
-    for s in bundle.get("skills", ()):
-        lines += _framing_lines(s)
-    words = {t.casefold() for line in lines for t in _WORD_RE.findall(line or "")}
-    # Imported here, not at module scope: cv/terms.py imports this module at ITS module
-    # scope, so a top-level import in this direction would be a cycle.
-    from sluice.cv.terms import candidates
-    banned = {t.casefold() for n in bundle["negatives"] for t in candidates(n)}
-    return frozenset(words - banned)
-
-
 # The structured composer's claim-source constraint (#364/#365/#368). Names the entries
-# alone: under spec D2 the baseline CV is not read when composing, so naming it would point
+# alone: under #364 D2 the baseline CV is not read when composing, so naming it would point
 # the model at a source it cannot see.
 _TOOLS_SOURCE_PROMPT = ("in the profile and the bullets, claim no technology, language, "
                         "framework or tool that is not named in the VERIFIED EXPERIENCE "
@@ -633,7 +201,7 @@ def _defang(lines: list[str]) -> list[str]:
 
 
 def _guidance_section(bundle: dict) -> list[str]:
-    """`cv.negatives`, shown as what it now is (spec D7): the user's free-text guidance to
+    """`cv.negatives`, shown as what it now is (#364 D7): the user's free-text guidance to
     the composer. No check reads it and nothing in it is a source. Empty when there is
     none, so no bare header is emitted."""
     if not bundle["negatives"]:
@@ -651,7 +219,7 @@ def _entries_section(bundle: dict, heading: str) -> list[str]:
 
 def render_structured_bundle(bundle: dict) -> str:
     """The composer's source text: entries with their tools, the Skills Inventory as
-    framing, sluice's own tools rule, the guidance. No baseline (spec D2)."""
+    framing, sluice's own tools rule, the guidance. No baseline (#364 D2)."""
     lines = _entries_section(bundle, _ENTRIES_HEADER_PROMPT)
     if bundle.get("skills"):
         lines.append(_INVENTORY_HEADER_PROMPT)
@@ -668,7 +236,7 @@ def render_structured_bundle(bundle: dict) -> str:
 def render_audit_bundle(bundle: dict) -> str:
     """The advisory auditor's truth: the entries WITH their tools -- the hard gate licenses
     a tool through Tools:, so the auditor must see the same evidence or every tool-naming
-    bullet would read unsupported and be held (spec §6.4) -- and the guidance. No baseline,
+    bullet would read unsupported and be held (#364 spec §6.4) -- and the guidance. No baseline,
     no inventory."""
     lines = _entries_section(bundle, _AUDIT_ENTRIES_HEADER_PROMPT)
     return "\n".join(lines + _guidance_section(bundle))

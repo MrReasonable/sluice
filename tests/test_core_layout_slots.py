@@ -1,4 +1,4 @@
-"""core/layout.py: which entry may be cited under which role (spec §4.3, D6)."""
+"""core/layout.py: which entry may be cited under which role (#364 spec §4.3, D6)."""
 from sluice.core.layout import (Placement, build_slots, employers_of, layout_text,
                                 no_citable_slot, place, placement_counts)
 from sluice.core.protocols import CvLayout, LayoutRole
@@ -118,9 +118,31 @@ def test_layout_text_carries_every_string_the_composer_is_shown():
     assert sorted(lines) == sorted(values)
 
 
-def test_any_role_beats_a_role_match():
-    layout = _layout(ALPHA, any_role=("Example Alpha",))
-    assert place(layout, "Example Alpha") == Placement("any_role", frozenset({0}))
+def test_a_role_match_beats_any_role():
+    # Precedence is role > omitted > any_role (core/layout.py::place): any_role is the
+    # widest grant, so a narrower answer from any part wins.
+    layout = _layout(ALPHA, GROUP, any_role=("Example Alpha",))
+    assert place(layout, "Example Alpha") == Placement("role", frozenset({0}))
+
+
+def test_an_omitted_part_beats_an_any_role_part():
+    layout = _layout(ALPHA, GROUP, any_role=("Example Cartography",),
+                     omitted=("Example Tidal",))
+    assert place(layout, "Example Tidal / Example Cartography") == Placement(
+        "omitted", frozenset())
+
+
+def test_a_role_part_beats_an_any_role_part():
+    layout = _layout(ALPHA, GROUP, any_role=("Example Cartography",))
+    assert place(layout, "Example Alpha / Example Cartography") == Placement(
+        "role", frozenset({0}))
+
+
+def test_an_any_role_part_alone_is_eligible_everywhere():
+    layout = _layout(ALPHA, GROUP, any_role=("Example Cartography",),
+                     omitted=("Example Tidal",))
+    assert place(layout, "Example Robotics / Example Cartography") == Placement(
+        "any_role", frozenset({0, 1}))
 
 
 def test_an_entry_can_match_two_roles():

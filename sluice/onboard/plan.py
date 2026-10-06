@@ -285,8 +285,8 @@ def _render_candidate(candidate_answers):
     text = "\n".join(lines)
     # THE round trip: re-read the bytes about to be written through the real reader, and compare
     # per-field against what was asked for, before this function ever returns them. A value that
-    # fails here would otherwise compare its OWN corrupted self against itself in cv/engine.py's
-    # #99 STRUCTURAL guard -- passing every gate while shipping a wrong name as the PDF's headline.
+    # fails here would otherwise reach cv/document.py::assemble, which writes the note's name as
+    # the PDF's headline with nothing to compare it against -- a wrong name, shipped silently.
     parsed = parse_frontmatter(text)
     for field, wanted in values.items():
         got = parsed.get(field, "")

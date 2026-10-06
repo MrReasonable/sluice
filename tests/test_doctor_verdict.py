@@ -279,11 +279,7 @@ def test_the_verdict_and_the_table_can_never_disagree_about_a_row():
     in a bucket is a row `--verbose` prints in that same state. Swept over a real
     `classify_store` result rather than hand-built rows."""
     rows = classify_store({
-        "vault_exists": True, "baseline_exists": False, "criteria_present": True,
-        # The unsupplied arm: a default `baseline_rel` nobody has written yet. Absent, this
-        # fact takes the louder DEAD reading (#243), which would make this fixture produce
-        # a broken row and assert about the wrong thing.
-        "baseline_rel_is_default": True,
+        "vault_exists": True, "criteria_present": True,
         "experience_total": 0, "experience_verified": 0,
         "skills_total": 0, "skills_verified": 0,
         "stories_total": 0, "stories_verified": 0,
@@ -658,34 +654,30 @@ def test_a_vault_the_user_named_and_that_is_gone_is_dead_and_exits_one(
     assert report.exit_code() == 1
 
 
-def test_a_baseline_the_user_named_and_that_is_gone_is_dead_and_exits_one(
-        monkeypatch, tmp_path):
-    """The `baseline_rel` arm of the same rule, unreachable through the hand-built facts
-    dicts the other tests use. A user who set `baseline_rel` told sluice where their CV
-    IS; if it is not there they renamed or moved it, every `cv run` refuses before any
-    spend, and `doctor` -- the command they run to find out why -- must not answer
-    "Nothing is broken." Measured before the fix: `setup`, exit 0.
-    """
+def test_a_cv_layout_the_user_broke_is_dead_and_exits_one(monkeypatch, tmp_path):
+    """Ported from the retired baseline_rel row: a CV Layout note that exists but does not
+    parse means every `cv run` refuses before any spend, and `doctor` -- the command run to
+    find out why -- must not answer "Nothing is broken". An ABSENT note stays the quiet
+    unsupplied case."""
     from sluice.core.app import Sluice
+    from sluice.core.protocols import CV_LAYOUT_RELPATH
     from sluice.core.vault import Vault
 
     vault_dir = tmp_path / "vault"
-    (vault_dir / "My CV").mkdir(parents=True)
+    vault_dir.mkdir()
     monkeypatch.setenv("VAULT_DIR", str(vault_dir))
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/claude")
-
-    named = Vault(str(vault_dir), baseline_rel="My CV/renamed.md")
-    assert named.preflight()["baseline_rel_is_default"] is False
-    monkeypatch.setattr(Sluice, "store", lambda self: named)
-    report = Sluice().doctor(offline=True)
-    assert {c.subject: c for c in report.components}["baseline_rel"].state == DEAD
-    assert report.exit_code() == 1
-
-    # ...and the shipped default, absent, stays the quiet unsupplied case.
     monkeypatch.setattr(Sluice, "store", lambda self: Vault(str(vault_dir)))
     report = Sluice().doctor(offline=True)
-    assert {c.subject: c for c in report.components}["baseline_rel"].state == SETUP
+    assert {c.subject: c for c in report.components}["cv_layout"].state == SETUP
     assert report.exit_code() == 0
+
+    note = vault_dir / CV_LAYOUT_RELPATH
+    note.parent.mkdir(parents=True)
+    note.write_text("---\nroles: [\n---\n", encoding="utf-8")
+    report = Sluice().doctor(offline=True)
+    assert {c.subject: c for c in report.components}["cv_layout"].state == DEAD
+    assert report.exit_code() == 1
 
 
 def test_a_blocking_degraded_row_prints_without_strict(capsys):
