@@ -68,6 +68,15 @@ def test_an_entry_taller_than_a_screen_is_never_shown():
     assert [t for t, _ in shown] == ["next"] and oversize == ["tall"] and rest == []
 
 
+def test_an_entry_with_a_terminal_control_character_is_never_shown():
+    """A carriage return, ESC or similar can overwrite what the terminal displays, so the
+    human would approve bytes they never saw. Such an entry goes to the CLI, which
+    escapes it (core/safeout.py). Newlines and tabs are ordinary text and stay."""
+    for bad in ("hidden\rshown", "a\x1b[2Kb", "x\x07y", "line\u2028sep"):
+        shown, rest, oversize = m._pack_form([("bad", bad), ("ok", "fine\n\tindented")])
+        assert [t for t, _ in shown] == ["ok"] and oversize == ["bad"], repr(bad)
+
+
 def test_a_huge_queue_of_short_entries_still_shows_a_form():
     shown, rest, oversize = m._pack_form([(f"t{i}", "x") for i in range(9000)])
     assert shown and not oversize and len(shown) + len(rest) == 9000

@@ -1734,8 +1734,11 @@ def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
 # exactly that one violation) -- proving the checker actually fires on what it
 # claims to catch, not merely that it passes vacuously against clean code.
 
+# `sluice.core.safeout` joined for verify_evidence: a pure character-class check with no
+# write path, so it cannot be a route around Sluice's write methods -- which is the
+# boundary this list exists to hold.
 _ISOLATION_ALLOWED_MODULES = frozenset({
-    "sluice.core.app", "sluice.core.leads", "sluice.core.status",
+    "sluice.core.app", "sluice.core.leads", "sluice.core.safeout", "sluice.core.status",
 })
 
 # Every WRITE method on the Store protocol (sluice/core/protocols.py), DERIVED off

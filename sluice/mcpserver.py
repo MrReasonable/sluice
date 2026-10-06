@@ -41,6 +41,7 @@ from sluice.core.leads import (
     slug_matches,
     split_framing,
 )
+from sluice.core.safeout import is_control
 from sluice.core.status import CANONICAL, TRIAGE_OWNED, normalize
 
 # `list_leads`'s company/role/url and `get_lead`'s fm/body are all scraped verbatim
@@ -163,6 +164,14 @@ def _describe(title: str, body: str) -> str:
     return f"{title}\n{body}"
 
 
+def _hides_text(text: str) -> bool:
+    """A character that can make the terminal show something other than the stored
+    bytes -- a carriage return or escape sequence can overwrite what is displayed. Same
+    class core/safeout.py escapes on CLI output, minus newline and tab, which are
+    ordinary text in an entry."""
+    return any(is_control(ch) for ch in text if ch not in "\n\t")
+
+
 def _entry_lines(title: str, body: str) -> int:
     """Estimated display lines for one checkbox: its label, its wrapped description,
     and the blank line after it."""
@@ -175,13 +184,15 @@ def _pack_form(entries):
     """Fill one form with entries that fit about one screen; returns (shown, titles left
     for a later form, titles too big for any form). An entry over _DESC_MAX_CHARS, or
     taller than a whole form, is never shown: the client would cut the first, and the
-    second would run off a screen that does not scroll in every terminal (tmux) -- either
-    way the human would approve text they did not see. Such an entry is reported
+    second would run off a screen that does not scroll in every terminal (tmux), and an
+    entry carrying a terminal control character could overwrite what is displayed --
+    each way the human would approve text they did not see. Such an entry is reported
     wherever it sits in the queue, for the CLI's per-entry review instead."""
     shown, rest, oversize, used = [], [], [], 0
     for title, body in entries:
         lines = _entry_lines(title, body)
-        if len(_describe(title, body)) > _DESC_MAX_CHARS or lines > _FORM_LINES:
+        if (len(_describe(title, body)) > _DESC_MAX_CHARS or lines > _FORM_LINES
+                or _hides_text(_describe(title, body))):
             oversize.append(title)
             continue
         # First fit, not strict order: a later short entry fills the room a tall one
