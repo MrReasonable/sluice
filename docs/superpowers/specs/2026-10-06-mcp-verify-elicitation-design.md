@@ -155,7 +155,8 @@ design showed no entry text at all -- an Accept approved unseen entries. A probe
 the client's actual rendering: each checkbox DESCRIPTION is shown in full as plain text, any
 number of lines, cut with "..." at about 2,000 characters; and the dialog does not scroll in a
 tmux pane. The design therefore changed: a one-line message; each entry's title and text in
-its own checkbox description; entries over 1,900 characters never shown (CLI instead); forms
+its own checkbox description; entries over 1,900 characters or taller than one form never
+shown (CLI instead); forms
 packed to about one screen (80-column wrap estimate, 30 lines), with the overflow named in
 `not_shown_titles` (renamed from `remaining`, which a model misread as "nothing left").
 

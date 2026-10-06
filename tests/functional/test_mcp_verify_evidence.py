@@ -105,7 +105,7 @@ def test_form_shows_every_entry_in_full_under_its_checkbox(tmp_path):
 
 def test_long_corpus_reports_not_shown_and_a_second_call_shows_the_rest(tmp_path):
     names = [f"Example entry {i}" for i in range(12)]
-    cfg, app = _seed(tmp_path, *names, body="x" * 1500)
+    cfg, app = _seed(tmp_path, *names, body="x" * 900)
     first = _call(cfg, _all(True))
     assert first["not_shown"] > 0 and first["promoted"]
     second = _call(cfg, _all(True))
@@ -116,7 +116,7 @@ def test_unticking_everything_still_lets_the_rest_of_the_queue_be_reached(tmp_pa
     """Unticked entries stay pending, so a bare second call would rebuild the SAME form.
     The report names what was never shown, and calling with those names reaches it."""
     names = [f"Example entry {i}" for i in range(12)]
-    cfg, app = _seed(tmp_path, *names, body="x" * 1500)
+    cfg, app = _seed(tmp_path, *names, body="x" * 900)
     seen = []
     first = _call(cfg, _all(False), seen=seen)
     shown_first = {p["description"].split("\n")[0]
