@@ -164,12 +164,30 @@ def _describe(title: str, body: str) -> str:
     return f"{title}\n{body}"
 
 
+# Bidi overrides and isolates reorder how a line DISPLAYS, so the human would read the
+# stored text in a different order. Zero-width characters are deliberately absent: they
+# are common in pasted text and change nothing a reader sees.
+_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+
+
 def _hides_text(text: str) -> bool:
     """A character that can make the terminal show something other than the stored
-    bytes -- a carriage return or escape sequence can overwrite what is displayed. Same
-    class core/safeout.py escapes on CLI output, minus newline and tab, which are
-    ordinary text in an entry."""
-    return any(is_control(ch) for ch in text if ch not in "\n\t")
+    bytes -- a carriage return or escape sequence can overwrite what is displayed, a bidi
+    override reorders it. The control class is core/safeout.py's, the one CLI output is
+    escaped against, minus newline and tab, which are ordinary text in an entry."""
+    return any((is_control(ch) and ch not in "\n\t") or ch in _BIDI_CONTROLS
+               for ch in text)
+
+
+def _set_aside_reason(kind: str, text: str) -> str:
+    """Why an entry was left out of every form, naming the actual cause."""
+    if _hides_text(text):
+        why = "it contains a control character that could change what the form displays"
+    elif len(text) > _DESC_MAX_CHARS:
+        why = "it is too long for the form to show in full"
+    else:
+        why = "it is too tall to fit one form without scrolling"
+    return f"{why} -- run `job-sluice {kind} verify` for this one"
 
 
 def _entry_lines(title: str, body: str) -> int:
@@ -966,8 +984,9 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
         report["not_found"], report["failed"] = found["not_found"], found["failed"]
         shown, rest, oversize = _pack_form(found["entries"])
         message = _render_form(shown, phrase)
-        report["failed"] += [(t, f"too big to show in full in a review form -- run `job-sluice {kind} "
-                                 f"verify` for this one") for t in oversize]
+        bodies = dict(found["entries"])
+        report["failed"] += [(t, _set_aside_reason(kind, _describe(t, bodies[t])))
+                             for t in oversize]
         if not shown:
             # "nothing_pending" only when the queue is genuinely empty: a name that
             # matched nothing, or entries too long or unreadable, must not let the model

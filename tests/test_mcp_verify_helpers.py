@@ -72,9 +72,22 @@ def test_an_entry_with_a_terminal_control_character_is_never_shown():
     """A carriage return, ESC or similar can overwrite what the terminal displays, so the
     human would approve bytes they never saw. Such an entry goes to the CLI, which
     escapes it (core/safeout.py). Newlines and tabs are ordinary text and stay."""
-    for bad in ("hidden\rshown", "a\x1b[2Kb", "x\x07y", "line\u2028sep"):
+    for bad in ("hidden\rshown", "a\x1b[2Kb", "x\x07y", "line\u2028sep",
+                "bidi\u202eetats", "iso\u2067late\u2069"):
         shown, rest, oversize = m._pack_form([("bad", bad), ("ok", "fine\n\tindented")])
         assert [t for t, _ in shown] == ["ok"] and oversize == ["bad"], repr(bad)
+
+
+def test_a_zero_width_space_does_not_send_an_entry_to_the_cli():
+    """Common in text pasted from the web, and it hides nothing."""
+    shown, _, oversize = m._pack_form([("zw", "pasted\u200btext")])
+    assert [t for t, _ in shown] == ["zw"] and not oversize
+
+
+def test_set_aside_reasons_name_the_actual_cause():
+    assert "long" in m._set_aside_reason("experience", "y" * 3000)
+    assert "tall" in m._set_aside_reason("experience", "\n".join(["l"] * 60))
+    assert "control" in m._set_aside_reason("experience", "a\rb")
 
 
 def test_a_huge_queue_of_short_entries_still_shows_a_form():
