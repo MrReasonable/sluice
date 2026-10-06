@@ -52,14 +52,16 @@ fabrication gate, and it has exactly one writer, reached only through a human's 
 are two ways to give it: the CLI's `job-sluice <kind> verify`, which asks `[y/N]` per entry, or
 `verify_evidence` under `--write`, which has your MCP client show a review form with each entry's
 full text under its own checkbox, about a screen of entries at a time, and verifies only the
-entries you leave ticked and accept. An entry too long to show in full is left for the CLI. The tool takes no
+entries you tick and accept. An entry the form cannot show in full and faithfully -- too long,
+too tall, or carrying a control or bidi character -- is left for the CLI. The tool takes no
 argument that approves on your behalf, so an agent can open the form but cannot answer it.
 `propose_evidence` puts an entry in the queue and stops there, and the CLI's `verify` carries no
 `--all` and no `--yes`, because a bulk flag is a promotion with no human in it.
 
 `verify_evidence` needs a client on the 2026-07-28 MCP protocol that supports form elicitation
 (Claude Code does); any other client is told to use the CLI, and nothing is written. Boxes start
-ticked so a batch takes one click — read the entries before you accept.
+unticked, so an entry you could not see — a form that runs off a small terminal — can never be
+approved by Accept.
 
 That is deliberate and load-bearing. Verifying evidence is one of the three things
 [`AI-SETUP.md`](AI-SETUP.md) reserves to you, alongside logging into job boards and pressing send:
