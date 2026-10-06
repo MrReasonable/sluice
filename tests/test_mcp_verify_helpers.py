@@ -41,8 +41,16 @@ def test_pack_form_fills_about_one_screen_and_keeps_order():
     entries = [(f"t{i}", "x" * 200) for i in range(10)]   # ~3 wrapped lines + 3 each
     shown, rest, oversize = m._pack_form(entries)
     assert 1 < len(shown) < 10 and not oversize
-    assert [t for t, _ in shown] + rest == [t for t, _ in entries]
+    assert sorted([t for t, _ in shown] + rest) == sorted(t for t, _ in entries)
     assert sum(m._entry_lines(t, b) for t, b in shown) <= m._FORM_LINES
+
+
+def test_a_later_entry_that_fits_fills_the_gap_a_tall_one_left():
+    """Fewer forms means fewer clicks: order inside a form does not matter, and the
+    entries left over are named in not_shown_titles whatever their position."""
+    short, tall = "x" * 60, "y" * 1800  # 4 + 28 lines: the tall one cannot join
+    shown, rest, _ = m._pack_form([("a", short), ("tall", tall), ("b", short)])
+    assert [t for t, _ in shown] == ["a", "b"] and rest == ["tall"]
 
 
 def test_an_entry_too_long_for_a_description_is_never_shown():
