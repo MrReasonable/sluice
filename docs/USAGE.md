@@ -880,10 +880,10 @@ Library alone, and since #165 a verified `skills` entry reaches the composer as 
 without becoming citable. A non-empty result carries a `content_warning` --
 entry text is written by the user, and reaches the calling agent as data to read, never
 as instructions to follow. Proposing an entry needs `--write` (`propose_evidence`,
-below); **verifying one is not possible through MCP at any privilege level** -- there is
-no such tool, deliberately, because verification is what makes an entry citable and
-promotion stays interactive-only (`job-sluice <kind> verify`). See
-`sluice/mcpserver.py`'s `list_evidence` docstring for why.
+below), and so does verifying one (`verify_evidence`, below), which promotes only what
+the user ticks in a review form their client shows them -- verification is what makes
+an entry citable, so a human approves every one, here or through `job-sluice <kind>
+verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
 
 **With `--write`**, these further tools are registered:
 
@@ -925,14 +925,25 @@ promotion stays interactive-only (`job-sluice <kind> verify`). See
   set `job-sluice <kind> add` exposes as flags); an undeclared key is refused by
   name, `verified` among them. The entry lands in the pending inbox, which the
   verified read cannot see, so it is **not citable by the CV fabrication gate and
-  not visible to `list_evidence`'s default view** until a human runs `job-sluice
-  <kind> verify`. Every successful response says so in its own `detail`. A name
+  not visible to `list_evidence`'s default view** until a human verifies it, through
+  `verify_evidence` or `job-sluice <kind> verify`. Every successful response says so in
+  its own `detail`. A name
   already taken -- in the pending queue or in the verified corpus -- comes back as
   `outcome: "refused"` carrying the store's own message, rather than as an error:
   the MCP SDK discards an exception's text, and "pick another name" is the one
   recovery a caller needs to be able to act on. Malformed input (an unknown kind, an
   undeclared field key, an unusable name) still raises and reaches the client as a
   tool error.
+- `verify_evidence(kind, names=None)` -- show the user every pending entry of `kind`
+  (or just those `names` picks; names only narrow, never approve) in one review form,
+  each entry's full text in its own code block and every box ticked, and verify only
+  the entries they leave ticked and accept. An entry whose text changed after the form
+  was built is reported `changed` and left pending. If the entries do not fit in one
+  form, `remaining` says how many are left and a second call shows them; one too long
+  for any form is reported for `job-sluice <kind> verify`. It needs a client on the
+  2026-07-28 MCP protocol that supports form elicitation (Claude Code does); any other
+  client gets `outcome: "unsupported_client"` and nothing is written. There is no
+  argument that approves on the user's behalf.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`

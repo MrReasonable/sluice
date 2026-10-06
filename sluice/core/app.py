@@ -67,10 +67,11 @@ def pending_evidence_detail(kind: str) -> str:
     for a skills entry concludes their skills are feeding their CVs' citations and stops
     looking."""
     from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
-    return (f"proposed only -- it does nothing until a human runs `job-sluice {kind} verify` "
-            f"to {verify_outcome(EVIDENCE_KINDS[kind])}. It is not visible to "
-            "list_evidence's default view, and there is deliberately no tool here that "
-            "promotes one.")
+    return (f"proposed only -- it does nothing until a human verifies it, to "
+            f"{verify_outcome(EVIDENCE_KINDS[kind])}: call verify_evidence so they can tick "
+            f"it in a review form, or have them run `job-sluice {kind} verify`. It is not "
+            "visible to list_evidence's default view, and nothing here verifies it without "
+            "their tick.")
 
 
 def evidence_kinds_text() -> str:

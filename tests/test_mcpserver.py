@@ -1625,7 +1625,7 @@ def test_propose_evidence_tool_says_in_the_response_that_the_entry_is_not_citabl
     the easy regression: it leaves the agent to guess which of three commands to run."""
     out = _propose(_app(tmp_path), kind="experience")
     assert out["detail"] == pending_evidence_detail("experience")
-    assert "it does nothing until a human runs" in out["detail"]
+    assert "it does nothing until a human verifies it" in out["detail"]
     assert "`job-sluice experience verify`" in out["detail"]
 
 
@@ -1649,7 +1649,7 @@ def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path
                           fields={}, body="")["detail"]
         swept.append(kind)
         assert detail == pending_evidence_detail(kind), kind
-        assert "it does nothing until a human runs" in detail, (
+        assert "it does nothing until a human verifies it" in detail, (
             f"{kind}: the response no longer says the proposal is inert -- an unverified "
             f"entry is citable in no kind")
         assert ("citable" in detail) == EVIDENCE_KINDS[kind].cited_by_gate, (
@@ -1923,9 +1923,10 @@ def test_only_propose_evidence_and_only_at_write_true_is_registered():
         assert matched == _EXPECTED_EVIDENCE_WRITE_TOOLS[write], (
             f"the evidence write/verify tools registered under write={write} are "
             f"{sorted(matched)}, expected "
-            f"{sorted(_EXPECTED_EVIDENCE_WRITE_TOOLS[write])} -- a VERIFY tool must "
-            f"never appear at either level, and propose_evidence must never appear "
-            f"below --write; registered tools were {sorted(names)}")
+            f"{sorted(_EXPECTED_EVIDENCE_WRITE_TOOLS[write])} -- no evidence write or "
+            f"verify tool may appear below --write, and at --write only "
+            f"propose_evidence and verify_evidence; registered tools were "
+            f"{sorted(names)}")
         assert "list_evidence" in names, "the read tool is missing; this row would be vacuous"
 
 

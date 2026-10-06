@@ -1148,8 +1148,8 @@ built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#
 extended #131, extended again #164 and #175) is the first one: a Model Context
 Protocol server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`,
 `health`, `list_evidence`) always, and the write-capable tools (`dismiss_lead`,
-`apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`) under
-`--write`. No COUNT of those is stated here on purpose: "five" stood in this paragraph,
+`apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`,
+`verify_evidence`) under `--write`. No COUNT of those is stated here on purpose: "five" stood in this paragraph,
 in `mcpserver.py`'s own module docstring, in `build_server`, in `cli.py`'s `--write`
 help, in `docs/USAGE.md` and in both MCP test files, and every one went stale the
 moment #175 registered a sixth. No count of THOSE either — three reviewers tallied
@@ -1172,12 +1172,17 @@ unescaped. One residual is deliberate in both: a newline is never escaped, so an
 still forges an extra output line -- bounded, because hiding or repositioning prior output needs
 CR or ESC, and both of those are escaped.
 
-`list_evidence` has a PROPOSE counterpart since #175 and still has no VERIFY
-counterpart at any privilege level -- that, not "read-only", is the standing property.
-Proposing lands an entry under `_inbox/`, which `read_evidence` cannot see, so it is
-inert until a human promotes it; VERIFYING is what makes it citable, and a second
-promotion path is a new trust root rather than a convenience (#164's central
-decision, unchanged).
+`list_evidence` has a PROPOSE counterpart since #175 and a VERIFY counterpart,
+`verify_evidence`, both under `--write`. Proposing lands an entry under `_inbox/`, which
+`read_evidence` cannot see, so it is inert until a human promotes it. VERIFYING is what
+makes it citable, so the standing property is that a human approves every promotion
+(#164's central decision, unchanged): `verify_evidence` returns an SEP-2322
+`InputRequiredResult` carrying a review form with every pending entry in full, the client
+shows it to the user, and on the protocol's retry only entries the client returned an
+explicit `true` for -- and whose current text still hashes to what was shown -- reach
+`Store.verify_evidence` through `Sluice.promote_reviewed_evidence`. The tool takes no
+argument that approves. It guards against the model accidentally making its own claims
+citable, not against a client configured to answer the form for the user.
 
 What deferred the propose tool was the gate, not the store. An evidence body reaches
 `cv/validate.py`'s fabrication-gate bundle verbatim, and while that gate recovered its

@@ -3201,11 +3201,11 @@ def _build_parser() -> argparse.ArgumentParser:
     mcp_serve.add_argument(
         "--write", action="store_true",
         help="also register the write-capable tools (dismiss_lead, apply_record, "
-             "cv_run, cv_signoff, create_lead, propose_evidence) -- off by default, "
-             "since this is a per-registration trust decision about one MCP client, "
-             "not a property of the install. propose_evidence only PROPOSES an "
-             "evidence entry for review; nothing here can verify one, so nothing "
-             "here can make a CV cite it")
+             "cv_run, cv_signoff, create_lead, propose_evidence, verify_evidence) -- "
+             "off by default, since this is a per-registration trust decision about "
+             "one MCP client, not a property of the install. propose_evidence only "
+             "PROPOSES an evidence entry; verify_evidence shows pending entries to the "
+             "user in a review form and verifies only the ones they tick")
     mcp_serve.set_defaults(func=cmd_mcp_serve)
 
     init = top.add_parser("init", help="scaffold a config, a Judging Profile and a Candidate Profile")
