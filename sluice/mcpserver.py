@@ -900,6 +900,85 @@ def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
             "detail": pending_evidence_detail(kind)}
 
 
+def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
+                         elicitation, responses, state) -> dict:
+    """One leg of the verify loop, with the protocol stripped off so tests reach it
+    without mcp. `responses` is None on the first leg; on the retry it is the client's
+    answer to the one form (build_server keys it "verify").
+
+    First leg: read the pending entries and return {"ask": ...} carrying the form and a
+    state binding each checkbox to the hash of the exact text shown. Second leg: promote
+    each entry the human ticked whose CURRENT text still hashes to what they saw;
+    anything edited since is reported `changed`, never promoted.
+
+    What this guards is the MODEL accidentally making its own claims citable: there is
+    no argument through which it can approve, and nothing is promoted that the human did
+    not see in full and tick. It is not hardened against a client or hook configured to
+    answer the form for the user -- that is the user's own tooling acting for them."""
+    report = {"outcome": "", "promoted": [], "changed": [], "skipped": [], "failed": [],
+              "remaining": 0, "not_found": [], "detail": ""}
+    # Raises ValueError for an unknown kind before anything is read or shown -- the same
+    # SDK tool error list_evidence gives for one.
+    phrase = sluice.evidence_verify_outcome(kind, subject="them")
+    if not _can_elicit(protocol_version, elicitation):
+        report["outcome"] = "unsupported_client"
+        report["detail"] = (f"this client cannot show a review form -- run "
+                            f"`job-sluice {kind} verify` in a terminal instead")
+        return report
+
+    if responses is None:
+        found = sluice.pending_evidence_for_review(kind=kind, names=names)
+        report["not_found"], report["failed"] = found["not_found"], found["failed"]
+        shown, remaining, oversize = _pack_form(found["entries"], _VERIFY_FORM_BUDGET)
+        report["failed"] += [(t, f"too long for a review form -- run `job-sluice {kind} "
+                                 f"verify` for this one") for t in oversize]
+        if not shown:
+            report["outcome"] = "nothing_pending"
+            report["detail"] = "no pending entries to review"
+            return report
+        return {"ask": {"message": _render_form(shown, phrase),
+                        "schema": _form_schema(shown),
+                        "state": _encode_state(kind, shown, remaining)}}
+
+    decoded = _decode_state(state)
+    action = getattr(responses, "action", None)
+    if decoded is None or decoded["kind"] != kind:
+        report["outcome"] = "invalid_state"
+        report["detail"] = ("the review form's state did not come back intact; "
+                            "nothing was verified")
+        return report
+    titles = [title for _, title, _ in decoded["entries"]]
+    report["remaining"] = int(decoded.get("remaining", 0))
+    if action != "accept":
+        report["outcome"] = "declined" if action == "decline" else "cancelled"
+        report["skipped"] = titles
+        report["detail"] = "nothing was verified"
+        return report
+    ticked = _approved_keys(getattr(responses, "content", None))
+    approved_titles = {title: sha for key, title, sha in decoded["entries"] if key in ticked}
+    report["skipped"] = [t for t in titles if t not in approved_titles]
+    current = dict(sluice.pending_evidence_for_review(
+        kind=kind, names=list(approved_titles))["entries"]) if approved_titles else {}
+    approved = []
+    for title, sha in approved_titles.items():
+        text = current.get(title)
+        if text is None or _sha(text) != sha:
+            report["changed"].append(title)
+        else:
+            approved.append((title, text))
+    result = sluice.promote_reviewed_evidence(kind=kind, approved=approved)
+    report["promoted"] = result["promoted"]
+    report["changed"] += result["changed"]
+    report["failed"] += result["failed"]
+    report["outcome"] = "completed"
+    report["detail"] = (f"verified {len(report['promoted'])}, left "
+                        f"{len(report['skipped'])} unticked, {len(report['changed'])} "
+                        f"changed since review, {len(report['failed'])} failed"
+                        + (f"; {report['remaining']} more pending -- call again to review "
+                           f"them" if report["remaining"] else ""))
+    return report
+
+
 def build_server(config, write: bool = False):
     """Build one `Sluice(config)`, register the read tools (list_leads, get_lead,
     doctor, health, list_evidence) always plus, when write=True, the write-capable
@@ -940,7 +1019,14 @@ def build_server(config, write: bool = False):
     tests/functional/test_mcp_contract.py's asyncio.gather sanity check are
     validating against -- replaces #105's open dispatch-model caveat."""
     try:
-        from mcp.server.mcpserver import MCPServer
+        from mcp.server.mcpserver import Context, MCPServer
+        from mcp_types import (
+            CallToolResult,
+            ElicitRequest,
+            ElicitRequestFormParams,
+            InputRequiredResult,
+            TextContent,
+        )
     except ImportError as e:
         raise McpNotInstalled(
             "the 'mcp' package is not installed -- run `pip install job-sluice[mcp]`"
@@ -1061,6 +1147,37 @@ def build_server(config, write: bool = False):
             f"{evidence_verify_effects()} A name already taken comes back as "
             'outcome="refused", not an error.')
         mcp_server.tool(name="propose_evidence")(propose_evidence_tool)
+
+        # The one tool that returns an InputRequiredResult (SEP-2322): the human's answer
+        # comes back on the protocol's retry as ctx.input_responses. Still a SYNC def,
+        # dispatched to a worker thread like every other tool here.
+        def verify_evidence_tool(kind: str, names: list[str] | None = None,
+                                 ctx: Context = None) -> CallToolResult | InputRequiredResult:
+            responses = ctx.input_responses
+            caps = ctx.session.client_capabilities
+            out = verify_evidence_step(
+                sluice, kind=kind, names=names, protocol_version=ctx.protocol_version,
+                elicitation=getattr(caps, "elicitation", None),
+                responses=None if responses is None else responses.get("verify"),
+                state=ctx.request_state)
+            if "ask" in out:
+                ask = out["ask"]
+                return InputRequiredResult(
+                    input_requests={"verify": ElicitRequest(params=ElicitRequestFormParams(
+                        mode="form", message=ask["message"],
+                        requested_schema=ask["schema"]))},
+                    request_state=ask["state"])
+            return CallToolResult(content=[TextContent(type="text", text=json.dumps(out))])
+
+        # Derived, and assigned before registering, for the reason given above
+        # list_evidence_tool: a hand-typed kind list goes stale when EVIDENCE_KINDS grows.
+        verify_evidence_tool.__doc__ = (
+            f"Show pending evidence entries ({evidence_kinds_text()}) to the human in one "
+            "review form and verify only the ones they tick. `names` narrows which pending "
+            "entries are offered; it never approves anything. There is no argument that "
+            "approves on the human's behalf. Clients that cannot show a form get "
+            f'outcome="unsupported_client". {evidence_verify_effects()}')
+        mcp_server.tool(name="verify_evidence")(verify_evidence_tool)
 
     return mcp_server
 
