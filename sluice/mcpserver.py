@@ -226,8 +226,8 @@ def _pack_form(entries):
 def _render_form(shown, outcome_phrase: str) -> str:
     """ONE line: Claude Code folds the message after three, so nothing that matters may
     sit below the first. The entries themselves are in the checkbox descriptions."""
-    return (f"Review {len(shown)} evidence entries below. Ticked ones are verified, which "
-            f"will {outcome_phrase}. Untick anything wrong.")
+    return (f"Tick each of these {len(shown)} evidence entries you have read and confirm; "
+            f"ticking verifies it, which will {outcome_phrase}.")
 
 
 def _form_schema(shown) -> dict:
@@ -235,13 +235,12 @@ def _form_schema(shown) -> dict:
     description carries the entry's title and full text -- the only part of the form
     Claude Code shows in full (see _DESC_MAX_CHARS).
 
-    Boxes start TICKED by the owner's decision, so reviewing a batch is one click rather
-    than a "yes" per entry. That is opt-out, unlike the CLI's `[y/N]`, and it is a
-    trade: _approved_keys stops a client that leaves a box OUT of its answer, but a
-    client (or a reflexive Accept) that sends the defaults back approves them all. The
-    form's own text tells the human to untick what is wrong."""
+    Boxes start UNTICKED (owner's ruling, 2026-10-06): a form can run off a small or split
+    terminal and the dialog does not scroll everywhere, so a box the human cannot see must
+    not be approvable by Accept. They tick each entry they have read; _approved_keys then
+    counts only an explicit True."""
     return {"type": "object", "properties": {
-        f"entry_{i}": {"type": "boolean", "default": True,
+        f"entry_{i}": {"type": "boolean", "default": False,
                        "description": _describe(title, body)}
         for i, (title, body) in enumerate(shown, 1)}}
 
@@ -1027,29 +1026,12 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     ticked = _approved_keys(getattr(responses, "content", None))
     approved_titles = {title: sha for key, title, sha in decoded["entries"] if key in ticked}
     report["skipped"] = [t for t in titles if t not in approved_titles]
-    fresh = (sluice.pending_evidence_for_review(kind=kind, names=list(approved_titles))
-             if approved_titles else {"entries": [], "failed": [], "not_found": []})
-    current = dict(fresh["entries"])
-    # An entry that left the queue between the legs -- verified through the CLI, or
-    # deleted -- is not "changed": telling the user it was edited sends them looking
-    # for an edit that never happened. An unreadable one keeps its own reason.
-    report["no_longer_pending"] = list(fresh["not_found"])
-    report["failed"] += fresh["failed"]
-    approved = []
-    for title, sha in approved_titles.items():
-        text = current.get(title)
-        if text is None:
-            continue  # already reported above, as gone or as unreadable
-        # The PRIMARY guard against promoting an edit nobody saw: the text handed to the
-        # store below is this fresh re-read, so the store's own compare-and-set has
-        # nothing older to compare it against (measured by deleting this comparison).
-        if _sha(text) != sha:
-            report["changed"].append(title)
-        else:
-            approved.append((title, text))
-    result = sluice.promote_reviewed_evidence(kind=kind, approved=approved)
+    # The hash check against what the human saw lives in the facade, shared with any
+    # other route (Sluice.promote_shown_evidence), which re-reads by exact title.
+    result = sluice.promote_shown_evidence(kind=kind, shown=list(approved_titles.items()))
     report["promoted"] = result["promoted"]
-    report["changed"] += result["changed"]
+    report["changed"] = result["changed"]
+    report["no_longer_pending"] = result["no_longer_pending"]
     report["failed"] += result["failed"]
     report["outcome"] = "completed"
     report["detail"] = (f"verified {len(report['promoted'])}, left "

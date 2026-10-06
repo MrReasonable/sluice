@@ -65,6 +65,36 @@ def test_promote_reviewed_isolates_one_failure(tmp_path):
     assert [t for t, _ in out["failed"]] == ["example-gone"]
 
 
+def _sha(text):
+    import hashlib
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def test_promote_shown_promotes_only_text_matching_what_was_shown(tmp_path):
+    """The check that an entry was not edited after the human saw it lives HERE, in the
+    facade both routes share -- not in a front-end -- so it holds without mcp."""
+    app = _app(tmp_path)
+    _propose(app, "Example alpha")
+    _propose(app, "Example beta")
+    texts = dict(app.pending_evidence_for_review(kind="experience")["entries"])
+    out = app.promote_shown_evidence(kind="experience", shown=[
+        ("example-alpha", _sha(texts["example-alpha"])),
+        ("example-beta", _sha(texts["example-beta"] + "edited")),
+        ("example-gone", _sha("whatever")),
+    ])
+    assert out["promoted"] == ["example-alpha"] and out["changed"] == ["example-beta"]
+    assert out["no_longer_pending"] == ["example-gone"] and out["failed"] == []
+    assert [e["title"] for e in app.list_evidence(kind="experience")] == ["example-alpha"]
+
+
+def test_promote_shown_reads_by_exact_title_not_by_slug(tmp_path):
+    """A ticked title must not drag in a DIFFERENT pending entry its slug matches."""
+    app = _app(tmp_path)
+    _propose(app, "Example alpha")
+    out = app.promote_shown_evidence(kind="experience", shown=[("Example alpha", _sha("x"))])
+    assert out["no_longer_pending"] == ["Example alpha"] and out["promoted"] == []
+
+
 @pytest.mark.parametrize("kind,expected", [
     ("experience", "make it citable"), ("skills", "make it available to a CV's skills list"),
     ("stories", "mark it reviewed")])

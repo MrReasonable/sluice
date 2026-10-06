@@ -170,6 +170,35 @@ def test_first_leg_not_found_reaches_the_final_report(tmp_path):
     assert out["promoted"] == ["example-alpha"] and out["not_found"] == ["No such entry"]
 
 
+def test_first_leg_set_aside_reaches_the_final_report(tmp_path):
+    """An entry too long for any form must still be named in the ONLY report the model
+    reads, the second leg's, with its reason."""
+    cfg, app = _seed(tmp_path, "Example short")
+    app.add_evidence(kind="experience", name="Example huge", fields=_FIELDS, body="z" * 3000)
+    out = _call(cfg, _all(True))
+    assert out["promoted"] == ["example-short"]
+    assert [t for t, _ in out["failed"]] == ["example-huge"]
+    assert _citable(app) == ["example-short"]
+
+
+def test_ticked_entry_unreadable_between_legs_is_reported_failed(tmp_path, monkeypatch):
+    from sluice.core.vault import Vault
+
+    cfg, app = _seed(tmp_path, "Example alpha")
+
+    def break_reads_then_accept(params):
+        def unreadable(self, kind, title):
+            raise OSError("simulated unreadable entry")
+        monkeypatch.setattr(Vault, "read_pending_evidence_text", unreadable)
+        return "accept", {"entry_1": True}
+
+    out = _call(cfg, break_reads_then_accept)
+    assert [t for t, _ in out["failed"]] == ["example-alpha"]
+    assert out["promoted"] == out["changed"] == out["no_longer_pending"] == []
+    monkeypatch.undo()
+    assert _citable(app) == []
+
+
 def test_unreadable_only_entry_is_nothing_shown_not_nothing_pending(tmp_path, monkeypatch):
     from sluice.core.vault import Vault
 
