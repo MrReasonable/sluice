@@ -1192,7 +1192,14 @@ class RateSource(Protocol):
 
 
 class Renderer(Protocol):
-    """Turn composed CV text into a PDF, and return the path written.
+    """Turn a CvDocument into a PDF, and return the path written.
+
+    `render(document, out_dir, *, neutral_name="CV.pdf")` receives the CvDocument sluice
+    ASSEMBLED from the vault and a checked reply (#364/#365/#368 spec section 7); nothing
+    parses CV text, and a renderer that needs text writes
+    `cv/document.py::to_text(document)`. TRANSITIONAL: until the engine switches over, a
+    `str` is still accepted and parsed, and the optional `precheck` still runs on it; this
+    sentence is deleted with the `str` branch in Task 19.
 
     A renderer is only ever reached AFTER the fabrication gate has passed. It must not
     be given the power to bypass it: no renderer validates, and no renderer is called
@@ -1240,7 +1247,7 @@ class Renderer(Protocol):
     imposing another's requirements is the inversion this hook exists to undo.
     """
 
-    def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str: ...
+    def render(self, document: "CvDocument", out_dir: str, *, neutral_name: str = "CV.pdf") -> str: ...
 
 
 @dataclass

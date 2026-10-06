@@ -2739,11 +2739,14 @@ def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
     # missing Judging Profile, say: the judge falls back to its built-in criteria) appears
     # only under `--strict`, where it decides the exit code.
     strict_only = [c for c in v.degraded_rows
-                   if strict and c not in v.degraded_blocking_rows]
+                   if strict and c not in v.degraded_blocking_rows
+                   and c not in v.warning_rows]
     for heading, rows in (("Still to set up", v.setup_rows),
                           ("Not working", v.broken_rows),
                           ("Working, but not properly",
-                           v.degraded_blocking_rows + strict_only)):
+                           v.degraded_blocking_rows + strict_only),
+                          # D14: degraded rows that block nothing but are worth reading.
+                          ("Worth a look (these block nothing)", v.warning_rows)):
         if not rows:
             continue
         print(f"\n{heading}:")
@@ -2781,7 +2784,8 @@ def _print_doctor_verdict(report, *, offline, strict, exit_code) -> None:
         # A REMAINDER, and worded as one. `quiet` excludes the degraded rows already
         # printed above, so phrasing it as a total ("N degraded") contradicted the screen
         # it sat on -- three degraded rows, one listed, and a footnote saying two.
-        quiet = [c for c in v.degraded_rows if c not in v.degraded_blocking_rows]
+        quiet = [c for c in v.degraded_rows
+                 if c not in v.degraded_blocking_rows and c not in v.warning_rows]
         if quiet:
             print(f"({len(quiet)} more degraded, not listed, which --strict also fails on.)")
     print("Run `job-sluice doctor --verbose` for every check.")

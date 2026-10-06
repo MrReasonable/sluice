@@ -128,7 +128,7 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     # own argument list could drift from the one actually sent, and a diagnostic that
     # differs from what the model saw is worse than none.
     assert _text(lead / "prompt.attempt-1.txt") == be.compose_prompts[0]
-    assert _text(lead / "cv.attempt-1.md") == CLEAN_CV
+    assert _text(lead / "reply.attempt-1.txt") == CLEAN_CV
     assert _text(lead / "cv.rendered.md") == rend.rendered[0]
 
     run = _run_record(tmp_path)
@@ -151,8 +151,8 @@ def test_a_rendered_run_keeps_the_prompt_the_draft_and_a_run_record_beside_the_p
     assert os.path.basename(run["rendered_pdf"]) == "CV.pdf"
     assert run["error"] is None
     assert run["artefact_errors"] == []
-    assert sorted(run["files"]) == ["cv.attempt-1.md", "cv.rendered.md",
-                                    "prompt.attempt-1.txt"]
+    assert sorted(run["files"]) == ["cv.rendered.md", "prompt.attempt-1.txt",
+                                    "reply.attempt-1.txt"]
     assert (datetime.fromisoformat(run["started_at"])
             <= datetime.fromisoformat(run["finished_at"]))
     assert run["run_id"]
@@ -185,8 +185,8 @@ def test_a_gate_failure_that_renders_nothing_still_leaves_both_attempts_to_read(
     # Attempt 2's prompt is the RETRY prompt carrying attempt 1's findings -- the only place
     # those survive, since the result line prints the last attempt's findings alone.
     assert "YOUR PREVIOUS DRAFT FAILED THE GATE" in _text(lead / "prompt.attempt-2.txt")
-    assert _text(lead / "cv.attempt-1.md") == _UNCITED_CV
-    assert _text(lead / "cv.attempt-2.md") == _UNCITED_CV
+    assert _text(lead / "reply.attempt-1.txt") == _UNCITED_CV
+    assert _text(lead / "reply.attempt-2.txt") == _UNCITED_CV
     assert not (lead / "cv.rendered.md").exists()
 
     run = _run_record(tmp_path)
@@ -222,7 +222,7 @@ def test_the_rendered_text_is_the_retained_draft_even_when_a_later_attempt_was_w
     assert rend.rendered == [STYLE_DIRTY_CV]
 
     lead = _lead_dir(tmp_path)
-    assert _text(lead / "cv.attempt-2.md") == HARD_DIRTY_CV
+    assert _text(lead / "reply.attempt-2.txt") == HARD_DIRTY_CV
     assert _text(lead / "cv.rendered.md") == STYLE_DIRTY_CV
     run = _run_record(tmp_path)
     assert run["attempt_count"] == 2
@@ -240,7 +240,7 @@ def test_retained_attempt_names_the_draft_kept_when_a_hard_clean_retry_is_style_
     assert rend.rendered == [STYLE_DIRTY_CV]
 
     lead = _lead_dir(tmp_path)
-    assert _text(lead / "cv.attempt-2.md") == STYLE_DIRTIER_CV
+    assert _text(lead / "reply.attempt-2.txt") == STYLE_DIRTIER_CV
     assert _text(lead / "cv.rendered.md") == STYLE_DIRTY_CV
     run = _run_record(tmp_path)
     assert run["attempt_count"] == 2
@@ -269,7 +269,7 @@ def test_a_retry_whose_compose_raised_is_recorded_against_that_attempt(tmp_path)
     # Written BEFORE the backend call, so a compose that hangs or raises still leaves the
     # prompt that caused it on disk.
     assert _text(lead / "prompt.attempt-2.txt") == be.compose_prompts[1]
-    assert not (lead / "cv.attempt-2.md").exists()
+    assert not (lead / "reply.attempt-2.txt").exists()
     run = _run_record(tmp_path)
     assert run["attempt_count"] == 2
     assert run["retained_attempt"] == 1
@@ -287,7 +287,7 @@ def test_a_later_run_clears_every_artefact_an_earlier_run_left_that_it_does_not_
     first, _be, _rend = _run(tmp_path, [STYLE_DIRTY_CV, HARD_DIRTY_CV])
     assert first.status == "rendered"
     lead = _lead_dir(tmp_path)
-    for stale in ("prompt.attempt-2.txt", "cv.attempt-2.md", "cv.rendered.md"):
+    for stale in ("prompt.attempt-2.txt", "reply.attempt-2.txt", "cv.rendered.md"):
         assert (lead / stale).exists(), f"the first run never wrote {stale}: nothing to clear"
     # An attempt number the engine does not reach today is still this module's name, so a
     # larger retry budget later cannot leave one behind.
@@ -301,12 +301,12 @@ def test_a_later_run_clears_every_artefact_an_earlier_run_left_that_it_does_not_
 
     second, _be, _rend = _run(tmp_path, [CLEAN_CV], dry_run=True)
     assert second.status == "dry-run"
-    for stale in ("prompt.attempt-2.txt", "cv.attempt-2.md", "cv.rendered.md",
+    for stale in ("prompt.attempt-2.txt", "reply.attempt-2.txt", "cv.rendered.md",
                   "prompt.attempt-3.txt"):
         assert not (lead / stale).exists(), f"{stale} from the earlier run survived"
     run = _run_record(tmp_path)
     assert run["status"] == "dry-run"
-    assert sorted(run["files"]) == ["cv.attempt-1.md", "prompt.attempt-1.txt"]
+    assert sorted(run["files"]) == ["prompt.attempt-1.txt", "reply.attempt-1.txt"]
     for kept in ("CV.pdf", "notes.txt", "cv.attempt-1.md.orig"):
         assert (lead / kept).exists(), f"{kept} is not an artefact, and was deleted"
 
@@ -328,7 +328,7 @@ def test_a_dry_run_writes_the_artefacts_and_nothing_else(tmp_path):
     assert run["status"] == "dry-run"
     assert run["dry_run"] is True
     assert run["retained_attempt"] == 1
-    assert _text(_lead_dir(tmp_path) / "cv.attempt-1.md") == CLEAN_CV
+    assert _text(_lead_dir(tmp_path) / "reply.attempt-1.txt") == CLEAN_CV
     assert not (_lead_dir(tmp_path) / "cv.rendered.md").exists()
     assert rend.rendered == []
     assert v.written == {} and v.fields == {}
@@ -391,12 +391,12 @@ def test_text_that_cannot_be_encoded_flags_that_file_and_keeps_the_rest(tmp_path
 
     lead = _lead_dir(tmp_path)
     # Encoded before the file is opened, so the refusal leaves no truncated file behind.
-    assert not (lead / "cv.attempt-1.md").exists()
+    assert not (lead / "reply.attempt-1.txt").exists()
     run = _run_record(tmp_path)
     assert "prompt.attempt-1.txt" in run["files"]
-    assert "cv.attempt-1.md" not in run["files"]
-    assert any("cv.attempt-1.md" in e for e in run["artefact_errors"])
-    assert any(str(lead / "cv.attempt-1.md") in rec.getMessage() for rec in caplog.records)
+    assert "reply.attempt-1.txt" not in run["files"]
+    assert any("reply.attempt-1.txt" in e for e in run["artefact_errors"])
+    assert any(str(lead / "reply.attempt-1.txt") in rec.getMessage() for rec in caplog.records)
 
 
 def test_a_stale_artefact_that_cannot_be_cleared_is_reported_not_ignored(tmp_path, caplog):
@@ -406,14 +406,14 @@ def test_a_stale_artefact_that_cannot_be_cleared_is_reported_not_ignored(tmp_pat
     refuses a directory on every platform and for every user, where a permission bit does
     not stop root."""
     lead = _lead_dir(tmp_path)
-    (lead / "cv.attempt-9.md").mkdir(parents=True)
+    (lead / "reply.attempt-9.txt").mkdir(parents=True)
     with caplog.at_level("WARNING"):
         r, _be, _rend = _run(tmp_path, [CLEAN_CV])
     assert r.status == "rendered"
     assert r.artefacts_failed is True
     run = _run_record(tmp_path)
-    assert any("cv.attempt-9.md" in e for e in run["artefact_errors"]), run["artefact_errors"]
-    assert any(str(lead / "cv.attempt-9.md") in rec.getMessage() for rec in caplog.records)
+    assert any("reply.attempt-9.txt" in e for e in run["artefact_errors"]), run["artefact_errors"]
+    assert any(str(lead / "reply.attempt-9.txt") in rec.getMessage() for rec in caplog.records)
 
 
 class _UnreadableCorpusVault(FakeVault):
@@ -431,7 +431,7 @@ def test_a_run_that_fails_before_composing_leaves_the_last_diagnosis_alone(tmp_p
     assert first.status == "skipped-gate"
     lead = _lead_dir(tmp_path)
     before = {p.name: p.read_bytes() for p in lead.iterdir()}
-    assert "run.json" in before and "cv.attempt-2.md" in before
+    assert "run.json" in before and "reply.attempt-2.txt" in before
 
     note = Note(dict(_LEAD_FM))
     [r] = run_batch(_UnreadableCorpusVault(ENTRIES, notes=[note]), _cfg_at(tmp_path),
@@ -507,3 +507,36 @@ def test_the_artefacts_flag_survives_a_run_that_raises(tmp_path):
                     _ScriptedBackend([CLEAN_CV]), FakeCache(), renderer=_BrokenRenderer())
     assert r.status == "error"
     assert r.artefacts_failed is True
+
+
+def test_a_reply_is_saved_under_a_name_that_promises_nothing_about_its_content(tmp_path):
+    from sluice.cv.artefacts import RunArtefacts
+    rec = RunArtefacts(dry_run=True)
+    rec.begin(str(tmp_path), lead="x", entry_ids=[], dossier_failed=False,
+              skills_unreadable=False)
+    rec.composed(1, "chat then {}")
+    assert (tmp_path / "reply.attempt-1.txt").read_text(encoding="utf-8") == "chat then {}"
+
+
+def test_a_3x_runs_attempt_files_are_cleared_by_the_next_run(tmp_path):
+    from sluice.cv.artefacts import RunArtefacts
+    (tmp_path / "cv.attempt-1.md").write_text("old draft", encoding="utf-8")
+    (tmp_path / "cv.attempt-2.md").write_text("old draft", encoding="utf-8")
+    RunArtefacts(dry_run=True).begin(str(tmp_path), lead="x", entry_ids=[],
+                                     dossier_failed=False, skills_unreadable=False)
+    assert not list(tmp_path.glob("cv.attempt-*.md"))
+
+
+def test_the_run_record_carries_the_selection_report(tmp_path):
+    from sluice.cv.artefacts import RunArtefacts
+    from sluice.cv.engine import CvResult
+    rec = RunArtefacts(dry_run=True)
+    rec.begin(str(tmp_path), lead="x", entry_ids=[], dossier_failed=False,
+              skills_unreadable=False)
+    rec.finish(CvResult("x", "dry-run", skills_dropped=["'A': not one of your skills"],
+                        bullets_trimmed=["R1 (Example Alpha): kept 2 of 3"],
+                        attribution_check_off=True))
+    record = json.loads((tmp_path / "run.json").read_text(encoding="utf-8"))
+    assert record["skills_dropped"] == ["'A': not one of your skills"]
+    assert record["bullets_trimmed"] == ["R1 (Example Alpha): kept 2 of 3"]
+    assert record["attribution_check_off"] is True

@@ -64,3 +64,50 @@ def test_script_renderer_rejects_a_directory(tmp_path):
     d.mkdir()
     with pytest.raises(RenderError, match="not a file"):
         ScriptRenderer(str(d), python_bin="/usr/bin/python3", home=str(tmp_path))
+
+
+def test_every_registered_renderer_takes_a_document():
+    import inspect
+    from sluice.core import plugins
+    from sluice.renderers import template, script  # noqa: F401  (self-registering)
+    names = plugins.available("renderer")
+    assert {"template", "script"} <= set(names), names
+    for cls in (template.TemplateRenderer, script.ScriptRenderer):
+        params = list(inspect.signature(cls.render).parameters)
+        assert params == ["self", "document", "out_dir", "neutral_name"], (cls, params)
+
+
+def test_the_script_renderer_hands_its_script_the_canonical_citation_free_text(
+        tmp_path, monkeypatch):
+    from sluice.cv import render as render_mod
+    from sluice.renderers.script import ScriptRenderer
+    from tests.test_cv_document import _assembled
+    from tests.test_cv_script_golden import GOLDEN
+
+    script = tmp_path / "render.py"
+    script.write_text("", encoding="utf-8")
+    seen = {}
+
+    def runner(argv, **_kw):
+        clean, pdf = argv[2], argv[3]
+        with open(clean, encoding="utf-8") as fh:
+            seen["text"] = fh.read()
+        open(pdf, "wb").close()
+
+        class Done:
+            returncode, stderr = 0, ""
+        return Done()
+
+    r = ScriptRenderer(str(script), python_bin="python3", home=str(tmp_path))
+    real = render_mod.render
+    monkeypatch.setattr(render_mod, "render", lambda *a, **kw: real(*a, runner=runner, **kw))
+    r.render(_assembled().document, str(tmp_path / "out"))
+    assert seen["text"] == GOLDEN
+
+
+def test_the_script_renderer_refuses_a_wrong_argument_type(tmp_path):
+    script = tmp_path / "render.py"
+    script.write_text("", encoding="utf-8")
+    r = ScriptRenderer(str(script), python_bin="python3", home=str(tmp_path))
+    with pytest.raises(RenderError, match="renderer 'script'"):
+        r.render(42, str(tmp_path / "out"))
