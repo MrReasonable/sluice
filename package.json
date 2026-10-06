@@ -6,6 +6,6 @@
     "rulesync": "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
   },
   "devDependencies": {
-    "rulesync": "16.29.0"
+    "rulesync": "26.0.0"
   }
 }
