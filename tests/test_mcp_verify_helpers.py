@@ -63,10 +63,30 @@ def test_build_form_keeps_the_whole_message_within_budget():
     assert len(message) <= 2000
 
 
+def test_a_huge_queue_of_short_entries_still_shows_a_form():
+    """The header reserve must not scale with the WHOLE queue, or a big enough backlog of
+    short entries leaves no budget for any of them."""
+    entries = [(f"t{i}", "x") for i in range(9000)]
+    shown, rest, oversize, message = m._build_form(entries, "make them citable", 8000)
+    assert shown and len(message) <= 8000 and not oversize
+
+
+def test_ticked_default_is_a_recorded_decision():
+    """Boxes start ticked by the owner's choice (one click for a batch). The guard is
+    _approved_keys: a client that leaves a box out of its answer approves nothing --
+    it does NOT protect against a client that sends the defaults back as true."""
+    assert all(p["default"] is True
+               for p in m._form_schema([("a", "x")])["properties"].values())
+    assert m._approved_keys({"entry_1": True}) == {"entry_1"}
+
+
 def test_state_round_trips_and_binds_each_key_to_the_shown_text_hash():
     shown = [("example-alpha", "body a"), ("example-beta", "body b")]
-    state = m._decode_state(m._encode_state("experience", shown, rest=["t3", "t4"]))
+    state = m._decode_state(m._encode_state(
+        "experience", shown, rest=["t3", "t4"], not_found=["nope"],
+        failed=[["t9", "unreadable"]]))
     assert state["kind"] == "experience" and state["rest"] == ["t3", "t4"]
+    assert state["not_found"] == ["nope"] and state["failed"] == [["t9", "unreadable"]]
     assert state["entries"] == [
         ["entry_1", "example-alpha", hashlib.sha256(b"body a").hexdigest()],
         ["entry_2", "example-beta", hashlib.sha256(b"body b").hexdigest()]]

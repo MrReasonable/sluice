@@ -174,7 +174,9 @@ def _pack_form(entries, budget: int):
     widest = len(entries)
     shown, rest, oversize, used = [], [], [], 0
     for title, body in entries:
-        size = len(_entry_block(widest, title, body))
+        # +1 for the newline _render_form joins blocks with, so separators are paid for
+        # by the entries actually shown rather than reserved for the whole queue.
+        size = len(_entry_block(widest, title, body)) + 1
         if size > budget:
             oversize.append(title)
         elif not rest and used + size <= budget:
@@ -199,7 +201,7 @@ def _render_form(shown, outcome_phrase: str) -> str:
 def _build_form(entries, outcome_phrase: str, budget: int):
     """Pack and render one form whose WHOLE message -- header and separators included
     -- stays within `budget`. Returns (shown, rest, oversize, message)."""
-    reserve = len(_form_header(len(entries), outcome_phrase)) + len(entries)
+    reserve = len(_form_header(len(entries), outcome_phrase))
     shown, rest, oversize = _pack_form(entries, budget - reserve)
     return shown, rest, oversize, _render_form(shown, outcome_phrase)
 
@@ -215,12 +217,15 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _encode_state(kind: str, shown, rest=()) -> str:
+def _encode_state(kind: str, shown, rest=(), not_found=(), failed=()) -> str:
     """Plain JSON, deliberately unsigned: the threat is the model accidentally approving,
     not a client forging protocol state (see the spec's threat model). `rest` -- the
     titles that did not fit this form -- rides along so the final report can name them:
-    unticked entries stay pending, so a bare second call would rebuild the same form."""
-    return json.dumps({"kind": kind, "rest": list(rest), "entries": [
+    unticked entries stay pending, so a bare second call would rebuild the same form.
+    `not_found` and `failed` ride along for the same reason: the model only ever sees
+    the SECOND leg's report, so what the first leg could not show must reach it."""
+    return json.dumps({"kind": kind, "rest": list(rest), "not_found": list(not_found),
+                       "failed": [list(f) for f in failed], "entries": [
         [f"entry_{i}", title, _sha(body)] for i, (title, body) in enumerate(shown, 1)]})
 
 
@@ -930,7 +935,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     not see in full and tick. It is not hardened against a client or hook configured to
     answer the form for the user -- that is the user's own tooling acting for them."""
     report = {"outcome": "", "promoted": [], "changed": [], "skipped": [], "failed": [],
-              "remaining": 0, "remaining_titles": [], "not_found": [], "detail": ""}
+              "remaining": 0, "remaining_titles": [], "not_found": [],
+              "no_longer_pending": [], "detail": ""}
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
     phrase = sluice.evidence_verify_outcome(kind, subject="them")
@@ -961,7 +967,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
             return report
         return {"ask": {"message": message,
                         "schema": _form_schema(shown),
-                        "state": _encode_state(kind, shown, rest)}}
+                        "state": _encode_state(kind, shown, rest, report["not_found"],
+                                               report["failed"])}}
 
     decoded = _decode_state(state)
     action = getattr(responses, "action", None)
@@ -974,6 +981,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     rest = decoded.get("rest") if isinstance(decoded.get("rest"), list) else []
     report["remaining_titles"] = rest
     report["remaining"] = len(rest)
+    report["not_found"] = list(decoded.get("not_found") or [])
+    report["failed"] = [tuple(f) for f in decoded.get("failed") or []]
     if action != "accept":
         report["outcome"] = "declined" if action == "decline" else "cancelled"
         report["skipped"] = titles
@@ -982,15 +991,23 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     ticked = _approved_keys(getattr(responses, "content", None))
     approved_titles = {title: sha for key, title, sha in decoded["entries"] if key in ticked}
     report["skipped"] = [t for t in titles if t not in approved_titles]
-    current = dict(sluice.pending_evidence_for_review(
-        kind=kind, names=list(approved_titles))["entries"]) if approved_titles else {}
+    fresh = (sluice.pending_evidence_for_review(kind=kind, names=list(approved_titles))
+             if approved_titles else {"entries": [], "failed": [], "not_found": []})
+    current = dict(fresh["entries"])
+    # An entry that left the queue between the legs -- verified through the CLI, or
+    # deleted -- is not "changed": telling the user it was edited sends them looking
+    # for an edit that never happened. An unreadable one keeps its own reason.
+    report["no_longer_pending"] = list(fresh["not_found"])
+    report["failed"] += fresh["failed"]
     approved = []
     for title, sha in approved_titles.items():
         text = current.get(title)
+        if text is None:
+            continue  # already reported above, as gone or as unreadable
         # The PRIMARY guard against promoting an edit nobody saw: the text handed to the
         # store below is this fresh re-read, so the store's own compare-and-set has
         # nothing older to compare it against (measured by deleting this comparison).
-        if text is None or _sha(text) != sha:
+        if _sha(text) != sha:
             report["changed"].append(title)
         else:
             approved.append((title, text))
@@ -1001,7 +1018,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     report["outcome"] = "completed"
     report["detail"] = (f"verified {len(report['promoted'])}, left "
                         f"{len(report['skipped'])} unticked, {len(report['changed'])} "
-                        f"changed since review, {len(report['failed'])} failed"
+                        f"changed since review, {len(report['no_longer_pending'])} no "
+                        f"longer pending, {len(report['failed'])} failed"
                         + (f"; {report['remaining']} more were not shown -- call again "
                            f"with names={json.dumps(rest)} to review them"
                            if rest else ""))
