@@ -2513,6 +2513,13 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # the whole point of the value; both halves are already here as invented, so this
     # ratchet's question needs no outside knowledge for this one either.
     "Example Framework / Example Query",
+    # Invented for #364/#365 (tests/test_cv_selection.py): spelling variants of reviewed
+    # values -- a plural, a trailing full stop, lower case -- that the skill-pick matcher
+    # must keep or drop by its own rule. Each is a variant of a value already above.
+    "Example Queries",
+    "Example Query.",
+    "example query",
+    "examplelang",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.

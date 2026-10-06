@@ -86,6 +86,7 @@ _CALL_SITES = {
     ("core/usage.py", "complete"): (None, 1),
     ("cv/audit.py", "run_audit"): ("cv-audit", 1),
     ("cv/compose.py", "compose"): ("cv-compose", 1),
+    ("cv/compose.py", "compose_structured"): ("cv-compose", 1),
     ("cv/voice.py", "run_voice"): ("cv-voice", 1),
     ("track/classify.py", "classify"): ("track-classify", 1),
     ("triage/judge.py", "judge"): ("triage-judge", 1),
