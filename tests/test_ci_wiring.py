@@ -783,10 +783,17 @@ def test_coverage_reports_and_does_not_gate():
 
 def test_package_json_runs_the_locked_binary_by_path():
     """`npm run` PREPENDS node_modules/.bin to PATH, it does not restrict PATH. Measured: with
-    no node_modules, a bare `rulesync` silently ran a global 9.2.0 and exited 0."""
+    no node_modules, a bare `rulesync` silently ran a global 9.2.0 and exited 0.
+
+    The emitted-output guard is chained on so the LOCAL command checks what it wrote, not only
+    CI. Measured on the pinned version: a hooks.json in Claude Code's native nested shape emits the
+    repo's PreToolUse guards with no command, exit 0, and no warning on either stream -- the
+    pinned version before it at least printed one -- so a developer's own safety hooks went inert
+    with nothing said. `python3`, not `python`: a stock macOS has no bare `python`."""
     manifest = json.loads((ROOT / "package.json").read_text())
     assert manifest["scripts"]["rulesync"] == (
         "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*'"
+        " && python3 scripts/guard_emitted_outputs.py ."
     )
 
 
