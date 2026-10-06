@@ -1271,7 +1271,7 @@ class CvDocument:
 # how. Beside the Candidate Profile, which supplies the name and contact.
 CV_LAYOUT_RELPATH = "Job Applications/CV Layout.md"
 
-# The canonical CV text's section headings, in the order `to_text` in cv/document.py writes
+# The canonical CV text's section headings, in the order `cv/document.py::to_text` writes
 # them. Here rather than in cv/document.py because core/layout.py must refuse a layout
 # heading equal to one and core/ may not import a sub-app; cv/document.py re-exports it.
 SECTION_HEADINGS = ("PROFILE", "WORK EXPERIENCE", "CERTIFICATES", "EDUCATION", "SKILLS")

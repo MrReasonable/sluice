@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+from sluice.core.layout import Slot
+from sluice.core.protocols import LayoutRole
 from sluice.cv.slop import _PHRASES
 
 _SLUICE = Path(__file__).resolve().parent.parent / "sluice"
@@ -100,6 +102,45 @@ _SYNTHETIC = "SYNTHETIC {}"
 # shape all four of cv/ and triage/'s builders share) covered with no edit to this file.
 # A builder that takes something else fails LOUDLY in `_render` rather than silently
 # dropping out of the sweep.
+def _structured_findings():
+    """One finding of each kind the text pipeline never produced -- `REPLY:`, `WRONG
+    EMPLOYER`, `MISATTRIBUTED TOOL` -- made by the REAL checks over synthetic input. The
+    retry block shows them to the model, so their wording is prompt text, and a placeholder
+    string in their place would sweep none of it."""
+    from sluice.core.layout import Slot
+    from sluice.core.protocols import LayoutRole
+    from sluice.cv.reply import Bullet, parse_reply
+    from sluice.cv.selection import Selection
+    from sluice.cv.validate import EntryFacts, check_selection
+    slots = (Slot("R1", LayoutRole("SYNTHETIC heading", "01/2020", "present"), ("SY1",), None),
+             Slot("R2", LayoutRole("SYNTHETIC group", "01/2010", "12/2019"), ("SY2",), None))
+    facts = {"SY1": EntryFacts(frozenset(), ("Examplelang",), "SYNTHETIC", "role",
+                               ("SYNTHETIC heading",)),
+             "SY2": EntryFacts(frozenset(), ("Examplelangscript",), "SYNTHETIC", "role",
+                               ("SYNTHETIC group",))}
+    selection = Selection(profile="SYNTHETIC profile.", skills=(), roles={
+        "R1": (Bullet("Built SYNTHETIC tooling.", ("SY2",)),       # WRONG EMPLOYER
+               Bullet("Ran Examplelangscript jobs.", ("SY1",))),    # MISATTRIBUTED TOOL
+        "R2": ()})
+    refused = parse_reply({"roles": {}}, ("R1", "R2"))                # REPLY: no profile
+    assert isinstance(refused, list), "premise: a reply with no profile is refused"
+    return tuple(check_selection(selection, slots, facts) + refused)
+
+
+def _structured_audit_excerpt():
+    """What the auditor reads under structured composition -- cv/document.py::audit_text
+    over a synthetic selection -- so its per-bullet block is swept inside the audit prompt."""
+    from sluice.core.layout import Slot
+    from sluice.core.protocols import LayoutRole
+    from sluice.cv.document import audit_text
+    from sluice.cv.reply import Bullet
+    from sluice.cv.selection import Selection
+    slot = Slot("R1", LayoutRole("SYNTHETIC heading", "01/2020", "present"), ("SY1",), None)
+    selection = Selection(profile="SYNTHETIC profile.", skills=(),
+                          roles={"R1": (Bullet("Built SYNTHETIC tooling.", ("SY1",)),)})
+    return audit_text(selection, (slot,))
+
+
 _SYNTHETIC_ARGS = {
     "sluice.track.classify.build_prompt": {
         "msg": {"headers": {"from": "sender@example.invalid",
@@ -132,6 +173,19 @@ _SYNTHETIC_ARGS = {
     # when it is not, so a defaulted render would sweep none of that shipped text.
     "sluice.cv.compose.build_prompt": {"skills_requested": True,
                                        "triage_framing": ("SYNTHETIC framing",)},
+    # The structured composer (#364/#365/#368). `slots` is required and must be real Slot
+    # objects; the rest are DEFAULTED and each gates a conditional block -- the skills
+    # pool, the retry findings and drops, and the triage framing -- so a defaulted render
+    # would sweep none of that shipped text. The findings are REAL ones (see the helper).
+    "sluice.cv.compose.build_structured_prompt": {
+        "slots": (Slot("R1", LayoutRole("SYNTHETIC heading", "01/2020", "present",
+                                        title="SYNTHETIC title"), ("SY1",), 3),
+                  Slot("R2", LayoutRole("SYNTHETIC group", "01/2010", "12/2019"), (), 0)),
+        "pool": ("SYNTHETIC skill",), "skills_max": 2,
+        "prior_findings": _structured_findings(), "prior_drops": ("SYNTHETIC drop",),
+        "triage_framing": ("SYNTHETIC framing",)},
+    # The auditor's CV text is the excerpt audit_text builds, not a placeholder string.
+    "sluice.cv.audit.build_audit_prompt": {"cv_text": _structured_audit_excerpt()},
 }
 
 # A floor, not a roster: every prompt known when this was written must still be swept, so
@@ -140,6 +194,12 @@ _SYNTHETIC_ARGS = {
 # not have to be listed here first.
 _KNOWN_PROMPTS = frozenset({
     "sluice.cv.compose.build_prompt",
+    "sluice.cv.compose.build_structured_prompt",
+    "sluice.cv.bundle._TOOLS_SOURCE_PROMPT",
+    "sluice.cv.bundle._ENTRIES_HEADER_PROMPT",
+    "sluice.cv.bundle._INVENTORY_HEADER_PROMPT",
+    "sluice.cv.bundle._GUIDANCE_HEADER_PROMPT",
+    "sluice.cv.bundle._AUDIT_ENTRIES_HEADER_PROMPT",
     "sluice.cv.audit.build_audit_prompt",
     "sluice.cv.voice.build_voice_prompt",
     "sluice.triage.prompt.build_system_prompt_from",
@@ -367,3 +427,35 @@ def test_render_refuses_an_override_that_names_no_parameter(monkeypatch):
     monkeypatch.setitem(_SYNTHETIC_ARGS, "x.build_x_prompt", {"no_such_param": True})
     with pytest.raises(AssertionError, match="not a parameter"):
         _render(build_x_prompt, "x.build_x_prompt")
+
+
+def test_the_swept_structured_prompt_carries_every_conditional_block():
+    # Each block below reaches the rendered prompt only through an override in
+    # _SYNTHETIC_ARGS; delete one and the sweep would pass over a render without it.
+    from sluice.cv import compose
+    rendered = _discover_prompts()["sluice.cv.compose.build_structured_prompt"]
+    for block in (compose._ROLE_SLOTS_PROMPT_HEADER, compose._SKILLS_POOL_PROMPT_HEADER,
+                  compose._RETRY_FINDINGS_PROMPT_HEADER, compose._RETRY_DROPS_PROMPT_HEADER,
+                  compose._TRIAGE_FRAMING_PROMPT_HEADER, compose._JSON_SHAPE_PROMPT):
+        assert block in rendered, block
+
+
+def test_the_swept_structured_prompt_carries_the_whole_enforced_ban_list():
+    rendered = _discover_prompts()["sluice.cv.compose.build_structured_prompt"]
+    assert [p for p in _PHRASES if p not in rendered] == []
+
+
+def test_the_retry_block_sweeps_one_finding_of_each_new_kind():
+    # They reach the rendered prompt only through _structured_findings(); a placeholder in
+    # its place would leave the sweep green over none of their wording.
+    rendered = _discover_prompts()["sluice.cv.compose.build_structured_prompt"]
+    for kind in ("REPLY:", "WRONG EMPLOYER", "MISATTRIBUTED TOOL"):
+        assert kind in rendered, kind
+
+
+def test_the_swept_audit_prompt_carries_the_per_bullet_block():
+    # The excerpt reaches the rendered audit prompt only through the cv_text override.
+    from sluice.core.protocols import SECTION_HEADINGS
+    rendered = _discover_prompts()["sluice.cv.audit.build_audit_prompt"]
+    assert SECTION_HEADINGS[0] in rendered
+    assert "- Built SYNTHETIC tooling. [SY1]" in rendered

@@ -187,6 +187,12 @@ Read the category that opens each line:
   set (the baseline plus every entry), not in a cited entry — so adding an `[id]` to
   profile prose does not answer it, and is not meant to: the gate refuses to let prose
   launder a citation.
+- `WRONG EMPLOYER` — a **WORK bullet** citing an entry that does not belong to the role it
+  sits under: the entry belongs to another role on the CV, to a company left off it, or to no
+  company at all. The fix is the citation, or the entry's `Company:` and the CV Layout.
+- `MISATTRIBUTED TOOL` — a **WORK bullet** naming a tool that some verified entry lists in
+  `Tools:` but none of the entries it cites lists or mentions. Right tool, wrong role: the
+  fix is the citation.
 - `FABRICATED` / `MISSING EMPLOYER` / `NOT REVERSE-CHRONOLOGICAL` — whole-document checks.
 - `STRUCTURAL` — the composed CV's shape, not its content: a missing `PROFILE` /
   `WORK EXPERIENCE` header, or a header block that does not match the Candidate Profile

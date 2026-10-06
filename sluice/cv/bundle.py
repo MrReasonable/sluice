@@ -6,12 +6,14 @@ employer-completeness gate is always satisfiable from cited entries."""
 import re
 from typing import NamedTuple
 
+from sluice.core.layout import layout_text
 from sluice.core.stem import stem_all as _stem_all
 
 # The one tokeniser and its per-token rule now live in core/tokens.py, where core/doctor.py
 # can share them; these names stay importable from here for cv/terms.py and cv/validate.py.
 from sluice.core.tokens import TOKEN_RULE_RE as SKILL_TOKEN_RE
 from sluice.core.tokens import WORD_RE as _WORD_RE
+from sluice.core.tokens import tool_items
 
 
 def _prefix(company: str, prefix_map: dict) -> str:
@@ -589,3 +591,98 @@ def mention_vocab(bundle: dict) -> frozenset[str]:
     from sluice.cv.terms import candidates
     banned = {t.casefold() for n in bundle["negatives"] for t in candidates(n)}
     return frozenset(words - banned)
+
+
+# The structured composer's claim-source constraint (#364/#365/#368). Names the entries
+# alone: under spec D2 the baseline CV is not read when composing, so naming it would point
+# the model at a source it cannot see.
+_TOOLS_SOURCE_PROMPT = ("in the profile and the bullets, claim no technology, language, "
+                        "framework or tool that is not named in the VERIFIED EXPERIENCE "
+                        "ENTRIES above")
+
+# The section headers the composer and the auditor read. Named *PROMPT* so
+# tests/test_prompt_neutrality.py sweeps them with every other shipped prompt text.
+_ENTRIES_HEADER_PROMPT = ("=== VERIFIED EXPERIENCE ENTRIES (the ONLY source for the profile "
+                          "and bullets; cite by id) ===")
+_INVENTORY_HEADER_PROMPT = ("=== SKILLS INVENTORY (framing for the profile and bullets; a "
+                            "source only for the skills list) ===")
+_GUIDANCE_HEADER_PROMPT = "=== THE CANDIDATE'S GUIDANCE (follow it; it is not a source) ==="
+_AUDIT_ENTRIES_HEADER_PROMPT = ("=== VERIFIED EXPERIENCE ENTRIES (the ONLY truth; cited by "
+                                "id) ===")
+
+
+def _tools_line(entry: dict) -> list[str]:
+    """An entry's Tools:, shown beside its block. A SEPARATE emitter from `_entry_block`
+    on purpose: `entry_facts` harvests figures from `_entry_block` alone, so a digit inside
+    a tool name (`Examplelang9`) can never license a figure."""
+    items = tool_items(entry)
+    return [f"tools={', '.join(items)}"] if items else []
+
+
+def _defang(lines: list[str]) -> list[str]:
+    """Vault text (an entry body, an inventory field, a guidance line) is rendered
+    verbatim, so a line of it beginning `===` would read as one of this prompt's own
+    section headers -- a forged boundary. Prefix such a line with a quote marker. The ONE
+    helper for both renderings. Presentation only: the gate reads structured entries
+    (#174), never this text, so nothing it licenses changes."""
+    out: list[str] = []
+    for line in lines:
+        for part in str(line).split("\n"):
+            out.append("> " + part if part.lstrip().startswith("===") else part)
+    return out
+
+
+def _guidance_section(bundle: dict) -> list[str]:
+    """`cv.negatives`, shown as what it now is (spec D7): the user's free-text guidance to
+    the composer. No check reads it and nothing in it is a source. Empty when there is
+    none, so no bare header is emitted."""
+    if not bundle["negatives"]:
+        return []
+    return [_GUIDANCE_HEADER_PROMPT] + _defang([f"- {n}" for n in bundle["negatives"]])
+
+
+def _entries_section(bundle: dict, heading: str) -> list[str]:
+    lines = [heading]
+    for e in bundle["entries"]:
+        lines += _defang(_entry_block(e) + _tools_line(e))
+        lines.append("")
+    return lines
+
+
+def render_structured_bundle(bundle: dict) -> str:
+    """The composer's source text: entries with their tools, the Skills Inventory as
+    framing, sluice's own tools rule, the guidance. No baseline (spec D2)."""
+    lines = _entries_section(bundle, _ENTRIES_HEADER_PROMPT)
+    if bundle.get("skills"):
+        lines.append(_INVENTORY_HEADER_PROMPT)
+        for sk in bundle["skills"]:
+            lines += _defang(_framing_lines(sk))
+        lines.append("")
+    # Sluice's own rule, outside the guidance section: guidance is the user's and "not a
+    # source", while this is a constraint the engine enforces.
+    if bundle.get("skills") or any(_tools_line(e) for e in bundle["entries"]):
+        lines += [_TOOLS_SOURCE_PROMPT, ""]
+    return "\n".join(lines + _guidance_section(bundle))
+
+
+def render_audit_bundle(bundle: dict) -> str:
+    """The advisory auditor's truth: the entries WITH their tools -- the hard gate licenses
+    a tool through Tools:, so the auditor must see the same evidence or every tool-naming
+    bullet would read unsupported and be held (spec §6.4) -- and the guidance. No baseline,
+    no inventory."""
+    lines = _entries_section(bundle, _AUDIT_ENTRIES_HEADER_PROMPT)
+    return "\n".join(lines + _guidance_section(bundle))
+
+
+def term_vocabulary(bundle: dict, layout) -> frozenset[str]:
+    """What the unbundled-term check (cv/terms.py, #194) recognises: every word of the
+    entries, their tools, the Skills Inventory framing and the CV Layout. It subtracts
+    NOTHING -- #368: reading prose negatives as bans stripped terms the user's own evidence
+    carries. A real "never claim X" belongs in cv.fabrication_decoys, a hard check."""
+    lines: list[str] = []
+    for e in bundle["entries"]:
+        lines += _entry_block(e) + _tools_line(e)
+    for s in bundle.get("skills", ()):
+        lines += _framing_lines(s)
+    lines.append(layout_text(layout))
+    return frozenset(t.casefold() for line in lines for t in _WORD_RE.findall(line or ""))
