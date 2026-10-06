@@ -44,6 +44,7 @@ from sluice.core.leads import (
 )
 from sluice.core.layout import parse_layout
 from sluice.core.log import get_logger
+from sluice.core.names import fold_note_name
 from sluice.core.protocols import (
     CANDIDATE_PROFILE_RELPATH,
     CRITERIA_RELPATH,
@@ -64,7 +65,6 @@ except ImportError:  # pragma: no cover - yaml is a declared dependency
     yaml = None
 
 _LEADS_SUBDIR = os.path.join("Job Applications", "Job Leads")
-_MYCV_BASELINE = os.path.join("My CV", "CV.md")
 _CRITERIA_RELPATH = CRITERIA_RELPATH
 # Public: `sluice init` offers this as the vault question's default. Imported by `cli.py` and
 # PASSED to the catalogue rather than imported by it -- the pure question data must not depend on
@@ -190,7 +190,7 @@ _SLUG_SAFE = re.compile(r"\A[a-z0-9][a-z0-9-]*\Z")
 # This used to mirror `cv/validate.py`'s `_ID_RE`, and was pinned textually equal to it,
 # because that regex was how the gate decided which ids EXISTED -- it parsed them out of
 # the rendered bundle text. #174 deleted it: the gate is now handed its ids structurally
-# (`cv/bundle.py`'s `bundle_sources`), so there is no pattern in cv/ left to be equal to.
+# (`cv/validate.py`'s `entry_facts`), so there is no pattern in cv/ left to be equal to.
 #
 # The source of truth is now the GENERATOR, `cv/bundle.py`'s `assign_codes`/`_prefix`:
 # `_prefix` coerces any company to exactly two A-Z letters, and `assign_codes` appends a
@@ -344,7 +344,7 @@ def _refuse_citation_shaped_body(body: str) -> None:
     bypass is gone and this function is no longer what stands between a body line and a
     rebound allowlist.
 
-    It still earns its place, for a smaller and now-accurate reason. `bundle_sources`
+    It still earns its place, for a smaller and now-accurate reason. `entry_facts`
     harvests every digit in an entry's own block, and a citation-shaped token in a body
     contributes ITS digits to that entry: a body reading `[NC1] delivered 987 things`
     puts `1` (from `NC1`) into that entry's permitted set. #174's design records that as
@@ -460,95 +460,6 @@ def _is_note_file(path: str) -> bool:
         return stat.S_ISREG(os.stat(path).st_mode)
     except (FileNotFoundError, NotADirectoryError):
         return False
-
-
-def _fold_note_name(name: str) -> str:
-    """The identity fold for a note NAME: two names that fold equal name one lead (#205).
-
-    Every path that resolves a lead by NAME goes through it, and that is the obligation
-    rather than a list: `_locate` (so a re-scrape under a different company casing resolves
-    to the note already on disk instead of minting a sibling), `_archived_match` (so the same
-    re-scrape cannot walk past a merged-away loser and RESURRECT it), `read_leads`' collision
-    report (so what the read path calls a collision is what the write path calls one
-    identity), and `reconcile_names` (so the rename pass neither MINTS a pair nor reports a
-    note as its own blocker). Deliberately not stated as a count: it shipped saying THREE and
-    was stale within the same branch, which is this repo's most-repeated finding applied to
-    its own docstring. `tests/test_vault_case_identity.py` sweeps the roster instead.
-
-    A second copy of this rule kept in step by a comment is the #30 failure mode; here it
-    would be worse than usual, because the consumers disagree SILENTLY -- a `_locate` that
-    folds against an `_archived_match` that does not is measurably a resurrection, and a
-    `reconcile_names` that does not is measurably a newly-minted pair. Both were live on this
-    branch before review.
-
-    CASE AND CANONICAL EQUIVALENCE, and no further -- that is the line not to blur.
-    `_norm_location` folds case AND applies NFKD AND drops combining marks AND collapses
-    non-word runs, because it compares two values for whether they describe the same PLACE.
-    This compares two FILENAMES for whether they are the same note, and every widening past
-    CANONICAL equivalence is a claim that two differently-SPELLED names are one job -- which,
-    applied to a name, silently merges two real postings and is unrecoverable in the
-    direction that matters. Canonical equivalence is not such a widening: it says the two
-    strings ARE the same text, which is why #299 folded it in and why compatibility
-    (NFKD/NFKC, which merges a superscript with its digit) stays out. Do not carry
-    `_norm_location`'s NFKD across on the strength of the shared word "normalize".
-
-    `casefold`, not `lower`: `lower` is a per-character map that leaves the German sharp s
-    alone, so a company written "STRASSE" and one written "Straße" would answer as two
-    identities under `lower` and one under `casefold`. Matching `_norm_location`'s choice
-    also means the two folds cannot disagree on a value they both see.
-
-    NORMALIZATION is folded too (#299), and the shape is UAX #15's CANONICAL CASELESS MATCH
-    (definition D145), `NFD(toCasefold(NFD(x)))` -- not the `NFC(casefold(x))` most reach
-    for. The two are not interchangeable: on some inputs the naive form is NARROWER, so it
-    would seat two notes for one employer -- the defect this fold exists to close, surviving
-    in a corner. Deliberately NO COUNT of such inputs here. A draft of this paragraph gave
-    one, and it was not reproducible: four readers sweeping "every assigned code point"
-    arrived at different numbers because the phrase does not say what each point is compared
-    AGAINST, and every one of those numbers was consistent with its own sweep. The witness
-    is executable instead --
-    `tests/test_vault_case_identity.py::test_the_fold_is_the_DEFINED_caseless_match_not_the_naive_composition`
-    pins one pair that the pre-#299 fold and the naive form each classify as two identities
-    and this one classifies as one, so the row reddens if either is restored. The load-bearing
-    half is normalizing to NFD BEFORE casefolding; the TRAILING NFD is a no-op on every
-    single code point (that much did reproduce, on two UCD versions) and is kept because the
-    definition specifies it and single code points say nothing about multi-character
-    sequences, where casefolding can expand a character into marks needing reordering.
-    `casefold` alone is a case mapping and normalizes nothing, so the composed and decomposed
-    spellings of one accented employer folded APART and each seated its own note -- measured
-    on Linux against shipped code as `created, created`, and a two-accent name seated FOUR.
-    The harm is the paragraph above, unchanged, plus the replication half: a
-    normalization-INSENSITIVE filesystem (macOS APFS, in both its case-sensitive and
-    case-insensitive variants -- measured) cannot hold the pair at all.
-
-    No compatibility NORMALIZATION -- that is the line, and it is NOT the same line as "no
-    compatibility equivalence", which is where a draft of this paragraph drew it and was
-    wrong. `casefold` is FULL Unicode case folding, and its own mappings already decompose the
-    fi/ff/ffi ligatures: measured, `_fold_note_name` calls U+FB01 + "le" and "file" one
-    identity, with no NFKD involved. So a ligature merging with its letters is on the
-    PERMITTED side, as a property of case folding this function cannot decline without
-    hand-rolling a fold. What must stay out is NFKD/NFKC, which would additionally merge a
-    superscript with its digit and a full-width letter with its ASCII form -- measured, both
-    of those are two identities today and must remain so, because merging them claims two
-    differently-SPELLED names are one job. `_norm_location` does reach for NFKD -- do not
-    carry that across: it compares token SETS for a human-gated report, not filenames for a
-    write decision.
-
-    A SECOND kind of consumer since #298, and the reason this function's roster is a lower
-    bound rather than "every path that resolves a lead by NAME":
-    `_folded_archive_names`/`_archive_name_candidates` fold to choose an archive FILENAME --
-    asking what a REPLICA would conflate, not what is one lead. The two questions agree today
-    and share this one fold deliberately, because a second copy is the #30 hazard. They can
-    diverge, and the pressures at the compatibility boundary are OPPOSITE: widening is cheap
-    for the filename question (it costs a numeric suffix, and on a stamp-failed archive a
-    re-created duplicate -- see `_reserve_and_move`) and forbidden for the identity one
-    (it merges two jobs). If a replica filesystem is ever found that conflates something
-    identity must not, split them then -- not before.
-
-    Stdlib only, deliberately: `unicodedata` ships the UCD and `casefold` is genuine Unicode
-    full case folding from `CaseFolding.txt`. PyICU and `precis-i18n` were considered and
-    rejected -- both are third-party, against this package's stdlib-only rule, and
-    `precis-i18n`'s `NFKC_Casefold` is the compatibility fold this paragraph just refused."""
-    return unicodedata.normalize("NFD", unicodedata.normalize("NFD", name).casefold())
 
 
 def _holds_a_note(path: str) -> bool:
@@ -680,7 +591,7 @@ def _unreadable_reason(exc: Exception) -> str:
     return str(exc)
 
 class Vault:
-    def __init__(self, dir: str | None = None, *, baseline_rel: str = _MYCV_BASELINE,
+    def __init__(self, dir: str | None = None, *,
                  location_noise_words=(), lead_layout: str = ""):
         # expanduser at CONSTRUCTION, so every route in agrees: the factory's env-or-config value,
         # a direct `Vault(dir)`, and the default below. A literal `~` is never what anyone means by
@@ -706,7 +617,6 @@ class Vault:
         # into the verdict, per this seam's facts-not-verdicts rule.
         self._dir_is_default = not (dir or os.environ.get("VAULT_DIR"))
         self.leads_dir = os.path.join(self.dir, _LEADS_SUBDIR)
-        self.baseline_rel = baseline_rel
         self._name_max_cache: int | None = None
         # Fed raw into same_opportunity -> _compare_locations, which tokenizes it. #5's
         # split policy knob; empty by default (abstain). See core/config.py.
@@ -918,7 +828,7 @@ class Vault:
             return found
         # #205: nothing at the EXACT name. Before letting the walk conclude "absent" --
         # the branch that creates, and the branch that records a merged_away in seen.db --
-        # look again for a note whose name folds equal (see _fold_note_name). Boards render
+        # look again for a note whose name folds equal (see fold_note_name). Boards render
         # one employer several ways, the note name is built from the company string
         # verbatim, and without this each spelling seats its own note with its own status:
         # the reported store held one spelling at `shortlist` score 86 while its twin held
@@ -956,11 +866,11 @@ class Vault:
         # every OSError and answers False, which would read an unstatable path as absent --
         # the exact trap `_is_note_file` exists to close, on the exact branch where reading
         # absent-for-present creates a duplicate or records an irreversible seen.db row.
-        want = _fold_note_name(f"{name}.md")
+        want = fold_note_name(f"{name}.md")
         for dirpath in dirs:
             try:
                 with os.scandir(dirpath) as it:
-                    entries = [e.path for e in it if _fold_note_name(e.name) == want]
+                    entries = [e.path for e in it if fold_note_name(e.name) == want]
             except (FileNotFoundError, NotADirectoryError):
                 # ONLY the two that genuinely mean "no directory there" -- a subfolder
                 # deleted, or replaced by a file, since the walk that filled `_scan_dirs`.
@@ -1169,7 +1079,7 @@ class Vault:
             #
             # `re.IGNORECASE` looked like it did that and does NOT, which is why this is a
             # fold rather than a flag. IGNORECASE is a simple per-character case mapping
-            # while `_fold_note_name` is a full `casefold`, and the two disagree wherever a
+            # while `fold_note_name` is a full `casefold`, and the two disagree wherever a
             # fold changes LENGTH -- a sharp s against a written-out double s is the
             # reachable case. Measured: the flag left the pre-filter NARROWER than the
             # decision on that population, so the entry was dropped before its recorded name
@@ -1181,9 +1091,9 @@ class Vault:
             # matches where the original literal pattern did not. Sluice never writes one;
             # a hand-made one fails toward SUPPRESSION, the recoverable direction, and the
             # recorded-name comparison below still gates every decision.
-            folded = re.compile(re.escape(_fold_note_name(name)) + r"(?:\.\d+)?\.md\Z")
+            folded = re.compile(re.escape(fold_note_name(name)) + r"(?:\.\d+)?\.md\Z")
             for entry in entries:
-                if not folded.match(_fold_note_name(entry)):
+                if not folded.match(fold_note_name(entry)):
                     continue
                 path = os.path.join(merged_dir, entry)
                 # No `except OSError` here, deliberately. The nearest neighbour, read_leads,
@@ -1233,7 +1143,7 @@ class Vault:
                 seated = _archived_from(inner)
                 if seated is None:
                     seated = entry[:-len(".md")]
-                if _fold_note_name(seated) != _fold_note_name(name):
+                if fold_note_name(seated) != fold_note_name(name):
                     # A collision counter appended to a DIFFERENT note's name, or a legacy
                     # entry whose counter cannot be told from a title that genuinely ends
                     # in `.` plus digits. Either way this archive is not this candidate.
@@ -1713,7 +1623,7 @@ class Vault:
         # this sweep, and it was measured wrong rather than reasoned wrong. The notes
         # themselves are still filtered normally; only what the report LOOKS at is not.
         #
-        # Keyed on the FOLD of the slug (`_fold_note_name`, the same rule `_locate` and
+        # Keyed on the FOLD of the slug (`fold_note_name`, the same rule `_locate` and
         # `_archived_match` resolve by), so what the read path calls a collision is exactly
         # what the write path calls one identity. Groups are reported only when they hold
         # more than one DISTINCT slug: a group whose slugs are all identical is the
@@ -1721,7 +1631,7 @@ class Vault:
         # would teach a reader to skip both.
         by_fold: dict = {}
         for slug in every_slug:
-            by_fold.setdefault(_fold_note_name(slug), set()).add(slug)
+            by_fold.setdefault(fold_note_name(slug), set()).add(slug)
         for folded, slugs in by_fold.items():
             if len(slugs) < 2:
                 continue
@@ -2114,7 +2024,7 @@ class Vault:
                 # floor analogue (skills' Proficiency/Evidence/Signal Value) stays
                 # reachable.
                 "fields": {k: fm.get(k, "") for k in spec.fields},
-                # Presence only, never the value: a retired key is not data (spec §4.2).
+                # Presence only, never the value: a retired key is not data (#364 spec §4.2).
                 "legacy": {k: bool(str(fm.get(k, "") or "").strip())
                            for k in spec.legacy_fields},
             })
@@ -2412,7 +2322,8 @@ class Vault:
         `rel` must stay INSIDE the store. An absolute path makes os.path.join discard
         self.dir entirely, and "../" walks out -- either would let the one wholesale-write
         primitive on a never-clobber contract scribble anywhere on the disk, including over
-        `My CV/CV.md`, which is the fabrication gate's ground truth. Not currently
+        a verified evidence entry, which is what the fabrication gate's truth is made of.
+        Not currently
         reachable (the only caller passes a config constant), which is exactly when to
         close it.
         """
@@ -2435,11 +2346,6 @@ class Vault:
         _atomic_write(path, text)
         return path
 
-    def read_baseline(self) -> str:
-        """Where the baseline CV lives is the store's business (configured on the
-        store), not a path a caller passes in."""
-        return _read(os.path.join(self.dir, self.baseline_rel))
-
     def preflight(self) -> dict:
         """`sluice doctor`'s optional Store hook (see core/protocols.py's `Store`
         docstring for the contract this implements and the no-writes rule it must
@@ -2451,17 +2357,6 @@ class Vault:
         every other existence check in this module follows, and for the same
         reason -- a vault doctor cannot even STAT is a fact worth a loud
         failure, not a quiet False.
-
-        `baseline_exists` calls `read_baseline()` itself rather than merely
-        stat-checking the path (`_is_note_file` would report a 0-byte or
-        permission-denied file as "exists"), because doctor's whole point is
-        answering "would a REAL cv run actually succeed here" -- and reading is
-        the exact operation a real run performs. Only `(FileNotFoundError,
-        IsADirectoryError)` -- both genuinely "no baseline here" -- are read as
-        absent; a real PermissionError propagates out of this method entirely
-        (to the caller's own broad handler) rather than being folded into a
-        quiet False, matching this module's own rule that an unreadable file
-        must be loud, never read as empty.
 
         Deliberately does NOT walk `leads_dir` (2627 notes in the vault this was
         built against): doctor is a preflight meant to run often and cheaply, not
@@ -2498,16 +2393,6 @@ class Vault:
             # and those have opposite verdicts (see core/doctor.py:classify_store).
             return {"vault_exists": False,
                     "vault_dir_is_default": self._dir_is_default}
-        try:
-            # `.strip()`, not mere existence, and matching `criteria_present` below rather than
-            # the older existence-only reading. `cv/engine.py`'s `missing_prerequisites`
-            # refuses on `not baseline.strip()`, so an existence-only fact here made doctor and
-            # cv disagree on a reachable state: measured, a whitespace-only `My CV/CV.md`
-            # reported `baseline_rel  ok  found` while the very next `cv run` refused the same
-            # vault. A file of blank lines is a file, but not a CV to tailor.
-            baseline_exists = bool(self.read_baseline().strip())
-        except (FileNotFoundError, IsADirectoryError):
-            baseline_exists = False
         # `experience_total`/`experience_verified` keep their pre-#164 names: doctor
         # already consumes them by name, and a parallel `experience_entries` key
         # would leave two sources for the same fact -- the drift shape this codebase
@@ -2525,7 +2410,7 @@ class Vault:
             # symlinked out of the vault, the OSError `_evidence_dir` correctly raises
             # unwound past this loop and out of `preflight` entirely, so `Sluice.doctor`'s
             # catch-all printed a single `store | preflight | DEAD` row and NOTHING else --
-            # no baseline row, no Judging Profile row, and no `Candidate Profile | dead |
+            # no Judging Profile row, and no `Candidate Profile | dead |
             # blocks: cv`. A user whose `cv run` says `skipped-config` runs `doctor` to
             # find out why and was told only about a corpus nothing reads.
             #
@@ -2570,14 +2455,6 @@ class Vault:
             candidate = {"candidate_error": _unreadable_reason(exc)}
         return {
             "vault_exists": True,
-            "baseline_exists": baseline_exists,
-            # (#243) Compared by VALUE, not recorded at construction like
-            # `vault_dir_is_default` above -- and the difference is forced, not stylistic.
-            # `stores/vault.py:_make` always passes `config.baseline_rel`, which always has
-            # a value, so "was this argument supplied?" is True for everyone and would
-            # answer nothing. What distinguishes the cases here is whether the value is
-            # still the shipped one.
-            "baseline_rel_is_default": self.baseline_rel == _MYCV_BASELINE,
             "criteria_present": bool(self.read_criteria().strip()),
             **counts,
             **candidate,
@@ -3218,7 +3095,7 @@ class Vault:
                     (n.slug, "note is a symlink; this pass does not reorganise a "
                              "structure the user deliberately built"))
                 continue
-            if _fold_note_name(target) == _fold_note_name(n.slug):
+            if fold_note_name(target) == fold_note_name(n.slug):
                 # FOLDED (#205, widened by #299) to stay in step with layer 1 below, which
                 # reaches the vault through `_locate` and therefore matches up to case AND
                 # canonical equivalence. Left exact, a note whose re-derived target differs
@@ -3284,7 +3161,7 @@ class Vault:
         # equivalence going unapplied on a WRITE.
         by_target: dict = {}
         for n, target in survivors:
-            by_target.setdefault(_fold_note_name(target), []).append((n, target))
+            by_target.setdefault(fold_note_name(target), []).append((n, target))
         to_move = []
         for group in by_target.values():
             if len(group) > 1:
@@ -3942,7 +3819,7 @@ def _fold_group_report(names) -> tuple:
 def _folded_archive_names(dest_dir: str) -> frozenset:
     """Every name in `dest_dir`, folded -- what a replica's filesystem would conflate.
 
-    "Folded" is `_fold_note_name`, which covers case AND canonical equivalence since #299.
+    "Folded" is `fold_note_name`, which covers case AND canonical equivalence since #299.
     Both halves of this pre-filter must use it: fold here differently from
     `_archive_name_candidates` and the skip silently stops firing for exactly the pairs the
     widening added. The one-fold roster sweep in tests/test_vault_case_identity.py pins it.
@@ -3962,13 +3839,13 @@ def _folded_archive_names(dest_dir: str) -> frozenset:
     OSError, logs it by name, and leaves that loser ACTIVE to self-heal on the next run. It
     does mean a dest_dir that is writable but not readable now fails where it previously
     succeeded -- deliberate, and the loud direction."""
-    return frozenset(_fold_note_name(n) for n in os.listdir(dest_dir))
+    return frozenset(fold_note_name(n) for n in os.listdir(dest_dir))
 
 
 def _archive_name_candidates(base: str, taken_folded) -> Iterator[str]:
     """Yield the basenames to ATTEMPT, in order: `base`, then `<stem>.1.md`, `<stem>.2.md`
     ... skipping any that a replica's filesystem would conflate with a name already there --
-    which since #299 means case AND Unicode composition, since `_fold_note_name` covers both.
+    which since #299 means case AND Unicode composition, since `fold_note_name` covers both.
 
     Separated from the reservation below so the DECISION is testable where the defect cannot
     be reproduced. Measured 2026-09-09 on APFS AS SHIPPED -- case-INSENSITIVE, the macOS
@@ -3999,7 +3876,7 @@ def _archive_name_candidates(base: str, taken_folded) -> Iterator[str]:
     stem = base[:-3] if base.endswith(".md") else base
     candidate, n = base, 1
     while True:
-        if _fold_note_name(candidate) not in taken_folded:
+        if fold_note_name(candidate) not in taken_folded:
             yield candidate
         candidate, n = f"{stem}.{n}.md", n + 1
 

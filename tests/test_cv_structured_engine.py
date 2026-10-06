@@ -1,7 +1,6 @@
 """The structured CV loop (#364/#365/#368), driven through fakes.
 
-Built beside run_one until Task 18 makes it run_one, so every row calls
-run_one_structured. Spec §6.0 (the order per attempt), §6.4 (audit scope), §7.1
+#364 spec §6.0 (the order per attempt), §6.4 (audit scope), §7.1
 (assembly), §9.1 (the layout refusal), §12.1 (Retention, Audit scope, Vault text, Budgets,
 Provenance) and §12.2 (the engine contract).
 """
@@ -17,8 +16,8 @@ from sluice.core.backends import BackendError
 from sluice.core.protocols import (CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH,
                                    CandidateProfile, CvDocument)
 from sluice.cv.document import to_text
-from sluice.cv.engine import run_one_structured
-from tests.structured_cv import (ENTRIES, GOOD_R1, GOOD_R2, Cache, FakeVault, Note,
+from sluice.cv.engine import run_one
+from tests.structured_cv import (ENTRIES, GOOD_R1, GOOD_R2, LAYOUT, Cache, FakeVault, Note,
                                  RecordingRenderer, ReplyBackend, cfg, layout_with, reply)
 
 CAPPED = layout_with(role0={"bullets_max": 1})
@@ -30,7 +29,7 @@ DIRTY = reply(roles={"R1": [{"text": "Grew the team to 99", "cites": ["EA1"]}],
 STYLED = reply(roles={"R1": [{"text": "Fostered a team that grew from 3 to 8",
                               "cites": ["EA1"]}],
                       "R2": [GOOD_R2]})
-# Spec §12.1 Retention: attempt 1 is hard-clean with one surviving style finding plus drops
+# #364 spec §12.1 Retention: attempt 1 is hard-clean with one surviving style finding plus drops
 # (an off-pool pick, an over-budget bullet); attempt 2 is hard-dirty with DIFFERENT drops.
 ATTEMPT_1 = reply(roles={"R1": [{"text": "Fostered a team that grew from 3 to 8",
                                  "cites": ["EA1"]},
@@ -45,9 +44,9 @@ ATTEMPT_2 = reply(profile="I ship platforms.",
 
 def _run(replies, *, vault=None, config=None, dry_run=False, **backend_kw):
     be, rend, v = ReplyBackend(replies, **backend_kw), RecordingRenderer(), vault or FakeVault()
-    res = run_one_structured(Note(), v, config or cfg(), be, Cache(), renderer=rend,
+    res = run_one(Note(), v, config or cfg(), be, Cache(), renderer=rend,
                              dry_run=dry_run)
-    # Spec §12.1: every scripted draft must be composed. A row that scripts a retry the loop
+    # #364 spec §12.1: every scripted draft must be composed. A row that scripts a retry the loop
     # never asked for would otherwise pass while testing an attempt that never ran -- so
     # the check is here, on every row, rather than on the rows that remember to ask.
     be.assert_consumed()
@@ -62,7 +61,7 @@ def _out_dir():
 
 def test_a_vault_without_a_cv_layout_is_refused_before_any_spend():
     cache, be = Cache(), ReplyBackend([])
-    res = run_one_structured(Note(), FakeVault(layout=None), cfg(), be, cache,
+    res = run_one(Note(), FakeVault(layout=None), cfg(), be, cache,
                              renderer=RecordingRenderer())
     assert (res.status, cache.calls, be.compose_prompts) == ("skipped-config", 0, [])
     assert CV_LAYOUT_RELPATH in res.error
@@ -132,11 +131,11 @@ def test_a_retry_lists_the_previous_replys_drops():
     assert "- 'Example Ghost': not one of your skills" in retry
 
 
-# --- the engine contract (spec §12.2) -------------------------------------------------
+# --- the engine contract (#364 spec §12.2) -------------------------------------------------
 
 def test_a_reply_with_no_bullets_anywhere_is_refused_on_both_attempts():
     # A hard-clean reply with an empty role list everywhere would otherwise assemble a CV of
-    # headings alone; only a layout whose every budget is 0 may ask for that (D10).
+    # headings alone; only a layout whose every budget is 0 may ask for that (#364 D10).
     empty = reply(roles={"R1": [], "R2": []})
     res, be, rend, _v = _run([empty, empty])
     assert len(be.compose_prompts) == 2
@@ -144,6 +143,16 @@ def test_a_reply_with_no_bullets_anywhere_is_refused_on_both_attempts():
         "skipped-gate",
         ["REPLY: no bullets in any role that can carry them -- write bullets for the roles "
          "that list citable entries"], [])
+
+
+def test_a_reply_keyed_entirely_by_role_headings_renders_on_one_compose():
+    # Measured: a composer keyed `roles` by heading on both attempts, because the retry
+    # never said which ids were valid. A heading names exactly one slot, so it is read.
+    keyed = reply(roles={"Example Alpha": [GOOD_R1], "example beta": [GOOD_R2]})
+    res, be, rend, _v = _run([keyed])
+    assert (res.status, len(be.compose_prompts)) == ("rendered", 1)
+    [(doc, _out)] = rend.rendered
+    assert [r.bullets for r in doc.work] == [[GOOD_R1["text"]], [GOOD_R2["text"]]]
 
 
 def test_the_retry_happens_exactly_once():
@@ -210,7 +219,7 @@ def test_the_voice_judge_is_shown_only_the_models_text():
         f"I build reliable systems.\n{GOOD_R1['text']}\n{GOOD_R2['text']}\n")
 
 
-# --- audit scope (spec §6.4) ----------------------------------------------------------
+# --- audit scope (#364 spec §6.4) ----------------------------------------------------------
 
 def test_the_auditor_reads_only_the_models_text_and_the_tools_of_what_it_cites():
     capped = reply(roles={"R1": [GOOD_R1, {"text": "Ran the Examplelang rollout",
@@ -227,7 +236,7 @@ def test_the_auditor_reads_only_the_models_text_and_the_tools_of_what_it_cites()
     assert "tools=Examplelang" in be.audit_prompts[0]
 
 
-# --- vault text is never refused (spec §6.1, §6.3) -------------------------------------
+# --- vault text is never refused (#364 spec §6.1, §6.3) -------------------------------------
 
 DASHED = layout_with(role0={"heading": "Example Alpha — Example Northgate",
                             "employers": ("Example Alpha",)},
@@ -247,6 +256,17 @@ def test_vault_text_with_an_em_dash_or_a_slop_stem_renders_without_a_finding():
     assert (doc.skills, doc.certificates) == (["Example Synergy"], ["Example Synergy — Master"])
 
 
+def test_a_non_latin_letter_against_a_digit_in_vault_text_renders_untouched():
+    # The digit look-alike rule (cv/reply.py::_lookalike) reads the MODEL's text only: the
+    # same Cyrillic capital O in a certificate the user wrote is theirs and renders as is.
+    cert = "Example Scrum Master 8" + chr(0x041E)
+    res, _be, rend, _v = _run([reply()],
+                              vault=FakeVault(layout=layout_with(certificates=(cert,))))
+    assert (res.status, res.violations) == ("rendered", [])
+    [(doc, _out)] = rend.rendered
+    assert doc.certificates == [cert]
+
+
 def test_the_same_em_dash_or_slop_stem_in_a_bullet_is_the_models_and_is_found():
     dashed = reply(roles={"R1": [{"text": "Grew the team — from 3 to 8", "cites": ["EA1"]}],
                           "R2": [{"text": "Built synergy while cutting build time by 40%",
@@ -257,7 +277,7 @@ def test_the_same_em_dash_or_slop_stem_in_a_bullet_is_the_models_and_is_found():
     assert any(s.startswith("SLOP synergy") for s in res.slop)
 
 
-# --- budgets (spec §4.1, D10) -----------------------------------------------------------
+# --- budgets (#364 spec §4.1, D10) -----------------------------------------------------------
 
 def test_an_over_budget_bullet_costs_no_retry_and_is_never_audited():
     over = reply(roles={"R1": [GOOD_R1, {"text": "Leveraged Examplezz to reach 99",
@@ -270,6 +290,41 @@ def test_an_over_budget_bullet_costs_no_retry_and_is_never_audited():
     assert "Examplezz" not in be.audited()[0]
 
 
+# A bullet the reply checks would refuse: a bracket AND a comma decimal.
+REFUSED_TEXT = {"text": "Grew [the team] 2,5x", "cites": ["EA1"]}
+
+
+def test_a_trimmed_bullet_whose_text_is_refused_costs_no_retry():
+    # #364 spec §2, §4.3: a bullet over budget never renders, so its text can never cost a retry.
+    over = reply(roles={"R1": [GOOD_R1, REFUSED_TEXT], "R2": [GOOD_R2]})
+    res, be, _rend, _v = _run([over], vault=FakeVault(layout=CAPPED))
+    assert (res.status, len(be.compose_prompts)) == ("rendered", 1)
+    assert res.bullets_trimmed == ["R1 (Example Alpha): kept 1 of 2"]
+    assert res.violations == []
+
+
+def test_a_refused_bullet_in_a_slot_with_no_eligible_entry_costs_no_retry():
+    # No entry names Example Gamma as its company, so R3's budget is 0 and its bullets trim.
+    gamma = dataclasses.replace(LAYOUT.roles[1], heading="Example Gamma",
+                                employers=("Example Gamma",))
+    layout = dataclasses.replace(LAYOUT, roles=(*LAYOUT.roles, gamma))
+    ghost = reply(roles={"R1": [GOOD_R1], "R2": [GOOD_R2],
+                         "R3": [{"text": "Grew 2,5x", "cites": ["EA1"]}]})
+    res, be, _rend, _v = _run([ghost], vault=FakeVault(layout=layout))
+    assert (res.status, len(be.compose_prompts)) == ("rendered", 1)
+    assert res.violations == []
+
+
+def test_a_kept_bullet_whose_text_is_refused_drives_the_retry():
+    # The control for the two rows above: the same text, KEPT, is refused as before.
+    kept = reply(roles={"R1": [REFUSED_TEXT], "R2": [GOOD_R2]})
+    res, be, rend, _v = _run([kept, kept], vault=FakeVault(layout=CAPPED))
+    assert (res.status, len(be.compose_prompts), rend.rendered) == ("skipped-gate", 2, [])
+    finding = ('REPLY: R1 bullet 1 contains a bracket -- put entry ids in "cites", never in '
+               "the text")
+    assert finding in res.violations and f"- {finding}" in be.compose_prompts[1]
+
+
 def test_a_layout_of_zero_budgets_renders_headings_only():
     zero = dataclasses.replace(CAPPED, roles=tuple(
         dataclasses.replace(r, bullets_max=0) for r in CAPPED.roles))
@@ -280,7 +335,20 @@ def test_a_layout_of_zero_budgets_renders_headings_only():
         ("Example Alpha", []), ("Example Beta", [])]
 
 
-# --- the attribution switch (spec §4.2, §6.6) -------------------------------------------
+def test_a_layout_of_zero_budgets_renders_with_no_experience_entry_at_all():
+    # The headings-only CV cites nothing, so missing_prerequisites lets it through without a
+    # verified entry (#364 spec §5.2, D10) -- and the loop must then render it, not fail on an
+    # empty bundle.
+    zero = dataclasses.replace(CAPPED, roles=tuple(
+        dataclasses.replace(r, bullets_max=0) for r in CAPPED.roles))
+    res, be, rend, _v = _run([reply(roles={}, skills=())],
+                             vault=FakeVault(layout=zero, experience=[]))
+    assert (res.status, len(be.compose_prompts)) == ("rendered", 1)
+    [(doc, _out)] = rend.rendered
+    assert [r.bullets for r in doc.work] == [[], []]
+
+
+# --- the attribution switch (#364 spec §4.2, §6.6) -------------------------------------------
 
 MISATTRIBUTED = reply(roles={"R1": [GOOD_R1],
                              "R2": [{"text": "Cut build time by 40% with Examplelang",
@@ -291,6 +359,17 @@ def test_a_misattributed_tool_is_refused_while_any_entry_declares_tools():
     res, _be, _rend, _v = _run([MISATTRIBUTED, MISATTRIBUTED])
     assert (res.status, res.attribution_check_off) == ("skipped-gate", False)
     assert any(v.startswith("MISATTRIBUTED TOOL 'Examplelang'") for v in res.violations)
+
+
+def test_a_configured_decoy_in_the_profile_skips_the_lead_through_run_one():
+    # `cv.fabrication_decoys` must REACH the gate: check_selection's decoy rows are unit
+    # rows, and the engine's call is what a configured list depends on. Otherwise clean,
+    # so the decoy is the only reason either attempt fails.
+    decoyed = reply(profile="I build reliable systems on Exampledecoy.")
+    res, be, rend, _v = _run([decoyed, decoyed],
+                             config=cfg(fabrication_decoys=["Exampledecoy"]))
+    assert (res.status, len(be.compose_prompts), rend.rendered) == ("skipped-gate", 2, [])
+    assert "FABRICATED: contains 'Exampledecoy'" in res.violations
 
 
 def test_with_no_entry_declaring_tools_the_check_is_off_and_the_result_says_so():
@@ -304,6 +383,25 @@ def test_with_no_entry_declaring_tools_the_check_is_off_and_the_result_says_so()
 
 # --- the Skills Inventory never costs a lead (#165) --------------------------------------
 
+def test_each_evidence_kind_is_read_once_per_lead():
+    # The framing and the pool come from ONE read of the inventory, so one compose cannot
+    # frame one revision of it and offer picks from another.
+    _res, _be, _rend, v = _run([reply()])
+    assert sorted(v.evidence_reads) == ["experience", "skills"]
+
+
+def test_a_reader_asked_for_unverified_evidence_raises_past_the_inventory_handler(
+        monkeypatch):
+    # The per-lead reader refuses an unverified read, and that refusal is a BUG, so it must
+    # not be degraded to the unreadable-inventory warning the #165 handler gives.
+    import sluice.cv.engine as engine
+    monkeypatch.setattr(engine, "named_entries",
+                        lambda reader: reader("skills", verified_only=False))
+    with pytest.raises(TypeError, match="verified evidence only"):
+        run_one(Note(), FakeVault(), cfg(), ReplyBackend([reply()]), Cache(),
+                renderer=RecordingRenderer())
+
+
 def test_an_unreadable_skills_inventory_composes_without_its_framing_or_its_names():
     res, be, _rend, _v = _run([reply()], vault=FakeVault(skills_error=OSError("unreadable")))
     assert (res.status, res.skills_unreadable) == ("rendered", True)
@@ -311,7 +409,7 @@ def test_an_unreadable_skills_inventory_composes_without_its_framing_or_its_name
     assert "Example Query" not in prompt and "- Examplelang" in prompt
 
 
-# --- what a run leaves behind (spec §7.4) ------------------------------------------------
+# --- what a run leaves behind (#364 spec §7.4) ------------------------------------------------
 
 def test_each_reply_is_kept_raw_and_the_run_record_carries_the_selection_report():
     chatty = "Here you go: " + reply(
@@ -338,7 +436,7 @@ def test_a_dry_run_audits_and_records_but_renders_and_writes_nothing():
         assert f"- {GOOD_R1['text']} [EA1]" in fh.read()
 
 
-# --- provenance (spec §12.1, four parts) -------------------------------------------------
+# --- provenance (#364 spec §12.1, four parts) -------------------------------------------------
 
 # Part 1: every leaf of the document, and where its value comes from. Closed: no default
 # arm, so a field added to CvDocument or Role without a decision fails here.

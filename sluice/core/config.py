@@ -11,6 +11,7 @@ from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.language import parse_listing_languages
 from sluice.core.leads import LEAD_LAYOUTS, Lead
 from sluice.core.paths import config_file
+from sluice.core.protocols import CV_LAYOUT_RELPATH
 from sluice.core.urlguard import parse_allow_hosts
 
 try:
@@ -55,14 +56,6 @@ class Config:
     # above, and named here for the same reason: which implementation is live must
     # be answerable by reading config, not by reasoning about import order.
     rates: str = "frankfurter"
-    # Where the store keeps the baseline CV. A STORE location, so it lives here: once the
-    # store is resolved from the root Config, a `cv.baseline_rel` could not reach the store
-    # that has to honour it. It used to work only because cv/engine.py passed it down by
-    # hand (`vault.read_baseline(cvcfg.baseline_rel)`), which is the coupling this seam
-    # exists to remove. Moving it silently would have been the worse bug -- a user pointing
-    # at a curated baseline would get a stale one, with the fabrication gate still green --
-    # so load_cv_config RAISES on the old key rather than dropping it.
-    baseline_rel: str = "My CV/CV.md"
     # Where the vault lives (#80). It had no config key at all before, so it was
     # settable only by a VAULT_DIR env var that does not survive a new shell. Blank
     # means UNSET: stores/vault.py:_make does `env or this or None` and lets
@@ -709,8 +702,8 @@ def refuse_retired_dossier_dir(block: str, data: dict) -> None:
     class it most consistently engineers out.
 
     The message names the key and its replacement and NEVER echoes the value. That
-    differs deliberately from the `cv.baseline_rel` raise it is modelled on:
-    `baseline_rel` is a store-RELATIVE name, while this is a host path usually under a
+    is the same ruling the retired `cv.baseline_rel` and `cv.employers` refusals make
+    (neither echoes a value); this one's reason is that a host path usually sits under a
     home directory, and an exception travels further (logs, bug reports, pasted
     tracebacks) than the config file it came from. `dossier_allow_hosts` above already
     rules that way for the same reason.
@@ -721,6 +714,31 @@ def refuse_retired_dossier_dir(block: str, data: dict) -> None:
             f"cv share ONE dossier cache, and two keys could split it -- with cv then "
             f"re-fetching every dossier over the network. Move it out of the `{block}:` "
             f"block to a root `dossier_dir:` key.")
+
+
+def refuse_retired_cv_inputs(data: dict) -> None:
+    """Raise if a config still sets either input #364/#365/#368 retired (D11).
+
+    The root `baseline_rel` named the baseline CV, which nothing reads now: a CV's structure
+    comes from the CV Layout note. `cv.employers` was the completeness roster MISSING
+    EMPLOYER checked, and the CV Layout's roles now say which employers a CV shows. Both
+    RAISE rather than being dropped by the loaders' hasattr filter, because a user who set
+    either would otherwise watch it stop meaning anything with no word said -- and here in
+    `load_config`, which every command runs, so the first command after an upgrade says so.
+
+    Neither VALUE is echoed: a CV path or an employer list is personal, and an exception
+    travels further than the config file it came from."""
+    if "baseline_rel" in data:
+        raise ValueError(
+            "the root `baseline_rel` key is retired: sluice no longer reads a baseline CV. "
+            "A CV's roles, dates and headings now come from the CV Layout note "
+            f"({CV_LAYOUT_RELPATH}, shape in docs/CONFIGURATION.md) -- delete the key.")
+    cv = data.get("cv")
+    if isinstance(cv, dict) and "employers" in cv:
+        raise ValueError(
+            f"cv.employers is retired: the CV Layout note ({CV_LAYOUT_RELPATH}) "
+            "now says which employers a CV shows, as its roles -- delete the key, and give "
+            "each role in the layout the employers its entries name.")
 
 
 def refuse_retired_locations(data: dict) -> None:
@@ -793,6 +811,9 @@ def _safe_scalar_repr(value) -> str:
 
 
 def load_config(path: str | None = None) -> Config:
+    """Build the root `Config`: code defaults, then the YAML file at `path` (else the
+    resolved config file), then env vars. A malformed or retired key raises at construction,
+    naming the key rather than its value."""
     data = {}
     path = path or config_file()
     if path and os.path.exists(path) and yaml is not None:
@@ -802,6 +823,7 @@ def load_config(path: str | None = None) -> Config:
     # Before any field is read, so a retired key is reported rather than dropped in the
     # silence a `data.get` would give it.
     refuse_retired_locations(data)
+    refuse_retired_cv_inputs(data)
 
     sources = {}
     # #176: a scalar here reached `.items()` and died with a bare AttributeError
@@ -967,7 +989,6 @@ def load_config(path: str | None = None) -> Config:
     # A key can therefore die at either end, and only enumerating BOTH finds them.
     return Config(sources=sources, notify=notify,
                   store=str(data.get("store") or "vault"),
-                  baseline_rel=str(data.get("baseline_rel") or "My CV/CV.md"),
                   vault_dir=str(data.get("vault_dir") or ""),
                   dossier_dir=str(data.get("dossier_dir") or ""),
                   record_usage=_flag(data.get("record_usage"), "record_usage"),

@@ -35,7 +35,7 @@ did, and run the next — or never run the later ones at all.
 |---|---|
 | **ingest** | Drives a headless browser over the job boards you enable and writes each posting into your vault as a markdown note. Already-seen leads are skipped. |
 | **triage** | Scores each new lead — deterministic rules first, then an LLM judge reading the criteria *you* wrote in your vault — and sets its status. |
-| **cv** | For a shortlisted lead, composes a CV tailored to that posting from evidence you have verified, behind a gate that refuses to let it invent anything, then renders a PDF. |
+| **cv** | For a shortlisted lead, asks the model for a profile, bullets and skill picks tailored to that posting from evidence you have verified, behind a gate that refuses to let it invent anything. Sluice assembles the CV itself from your vault (headings, dates, name, certificates, education) and renders a PDF. |
 | **apply** | Stages the CV and a prep packet for the application. You press send. |
 | **track** | Reads your email and calendar and moves leads along the funnel as replies, rejections and interviews arrive. |
 
@@ -121,7 +121,7 @@ the rest still runs.
 | Ten minutes of answers about what you want | the judge's criteria | every gate abstains, so nothing is filtered out |
 | An LLM backend — an API key, or the `claude` CLI | `triage`'s judge, `cv`'s composer | `triage run --no-llm` still classifies deterministically |
 | A [Camofox](https://github.com/jo-inc/camofox-browser) browser server | `ingest run`, `ingest test-source`, job-description fetches | no scraping; `job-sluice leads add` files a job you found yourself, and the rest runs on leads already in the vault |
-| A baseline CV at `baseline_rel` (default `My CV/CV.md`) | `cv run` | refused before any fetch or backend call |
+| A CV Layout note at `Job Applications/CV Layout.md` | `cv run` | refused before any fetch or backend call |
 | At least one **verified** experience entry | `cv run` | refused before any spend, naming the two commands that fix it |
 | A Candidate Profile note with a name and contact details | `cv run`, `apply prep` | `cv run` refuses (`skipped-config`); `apply prep` builds the packet with your identity simply absent |
 | cairo, pango and gdk-pixbuf, plus the `render` extra | PDF output | set `cv.renderer: script` to shell out to your own renderer |
@@ -213,15 +213,15 @@ Still to set up:
   cv.renderer
       renderer 'template' could not load its rendering backend: pip install
 ...
-  baseline_rel
-      baseline CV not found, or empty, at the configured path -- cv run cannot
-      compose without it
   Experience Library
       0 verified / 0 total entries -- only verified entries are citable by the CV
       fabrication gate -- cv run refuses to compose without at least one
   Candidate Profile
       no name or no contact details -- cv run refuses to compose (skipped-config)
       before any backend call
+  cv_layout
+      no CV Layout note at Job Applications/CV Layout.md -- every heading, date,
+      location and title on a CV comes from it (docs/CONFIGURATION.md)
   google client libs
       not importable (No module named 'google') -- track run cannot reconcile
 ...
@@ -304,9 +304,10 @@ silent, asymmetric and hard to undo.
 - **Status never regresses out of the application lifecycle.** Triage may never touch a lead that
   has been applied to, terminals are never advanced out of, and a lead you merged away is not
   silently re-created by a later scrape.
-- **The CV cannot invent things.** Every bullet must cite real evidence, and every number must
-  appear in the entry it cites. A figure that appears nowhere in your source material blocks
-  rendering outright.
+- **The CV cannot invent things.** Every bullet must cite verified evidence that your CV Layout
+  places under its role, and every number must appear in the entry it cites. A figure that appears nowhere in
+  your source material blocks rendering outright. Headings, dates, your name and your
+  qualifications come from your vault, never from the model.
 - **An empty setting abstains.** Unconfigured means "no opinion", never "match nothing". Getting
   this backwards would bin an entire job hunt in silence — it happened once, and a test now fails
   the build if it recurs.
@@ -328,7 +329,7 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice track` | reconcile the funnel from email and calendar signals, and mint the Google credential doing so requires (`run`, `confirm`, `dismiss`, `auth`) |
 | `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `dismiss`, `reconcile`, `rename`) |
 | `job-sluice experience` | capture and verify experience evidence — the CV gate's only citable source (`add`, `list`, `verify`) |
-| `job-sluice skills` | capture and verify skills evidence, shown to the composer as framing (`add`, `list`, `verify`) |
+| `job-sluice skills` | capture and verify skills: framing for the composer, and a verified note's name can appear in a CV's SKILLS section (`add`, `list`, `verify`) |
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
 | `job-sluice health` | per-source scrape baseline and retire state |
 | `job-sluice usage` | what this install spent on LLM calls, by stage and by model |

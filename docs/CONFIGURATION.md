@@ -32,7 +32,6 @@ sweep keyed on list defaults.
 | `store` | `"vault"` | — | which store implementation; an unknown name raises at construction, listing the valid ones |
 | `fetcher` | `"camofox"` | — | which browser-automation implementation |
 | `rates` | `"frankfurter"` | — | which service answers for exchange rates, used by the pay-floor conversion. An unknown name raises at construction and lists the valid ones. Selecting it does not by itself make a run fetch — `triage.refresh_fx_rates` decides that |
-| `baseline_rel` | `"My CV/CV.md"` | — | your baseline CV's path, relative to the store root |
 | `vault_dir` | `""` | `VAULT_DIR` | `./vault`, relative to the cwd — the one path sluice deliberately does **not** relocate to XDG, since it's your Obsidian directory, not sluice's state |
 | `dossier_dir` | `""` | `DOSSIER_DIR` | `<XDG_CACHE_HOME>/sluice/dossiers` — shared cache for triage's and cv's job-ad fetches |
 | `min_jd_chars` | `0` | — | the floor below which a fetched job ad is treated as not having arrived, so the dossier cache refuses to persist it and triage refuses to spend a judge call on it; `0` turns the band off entirely. ROOT, not per-sub-app — triage and cv share the one `dossier_dir` cache, so two different floors over it would mean whichever sub-app ran last decides whether an entry exists. Rejects YAML bools, same reasoning as `lead_ttl_days` above |
@@ -127,17 +126,20 @@ block is commented out in `sluice.yaml.example`.
 **raises at load**, naming the vault note below and its five identity frontmatter keys. See
 the Candidate Profile section that follows this table.
 
+Two keys are retired and stop every command until removed: `baseline_rel` (which named a
+baseline CV) and this block's `employers` list. A `baseline_rel` left inside this block stops
+every command that loads it. The CV Layout note replaces both (see its section below).
+
 | Key | Default | Meaning |
 |---|---|---|
-| `employers` | `[]` | every name must appear verbatim (case-sensitive) in each tailored CV; empty skips the per-employer completeness check |
-| `fabrication_decoys` | `[]` | known-hallucination strings — a hard fail if any appear in the composed CV |
+| `fabrication_decoys` | `[]` | terms the composer must never claim. A CV whose profile or bullets name one, as a whole term in any case, is refused, and a tool or skill one matches is never offered for the SKILLS section. A decoy the matcher cannot represent -- a non-Latin or accented word, or one holding a hyphen or other punctuation (inner dots, `#` and `+` are fine) -- is refused when the config loads, by its position in the list. Write a hyphenated compound with a space (`co founder` matches `co-founder`) |
 | `served_prefix` | `"CV"` | must match `apply.served_prefix` |
 | `prefix_map` | `{}` | |
-| `negatives` | `[]` | free-text constraints prepended to the bundle's NEGATIVE CONSTRAINTS block. Since #165 a skills-shaped negative is largely redundant: with a non-empty Skills Inventory the bundle derives its own cross-reference, and `job-sluice doctor` reports any line here that FORBIDS a skill the inventory holds -- a line that merely mentions one is not reported (#260). Keep it for the negatives an inventory cannot express ("never claim a certification the Experience Library does not evidence") |
+| `negatives` | `[]` | your guidance to the composer, in your own words: shown to it, read by no check. A real "never claim X" belongs in `fabrication_decoys` |
 | `ttl_days` | `7` | dossier cache TTL for cv |
 | `require_signoff` | `true` | a safety valve, not a preference — ships **on**; an `unsupported` audit claim withholds the send-ready pointer until `job-sluice cv signoff`. Rejects non-bool values (see `lead_ttl_days` above for why) |
 | `voice_check` | `false` | opt-in (#167): whether the model-judged voice check runs at all, gating a **new LLM call** — off by default so an unconfigured install never starts spending the moment it upgrades, the `company_resolve_llm` precedent. The deterministic phrase matches reach the composer's retry either way, so leaving this off does not make the underlying fix inert. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
-| `term_check` | `true` | #194: whether a term named in PROFILE prose or a WORK bullet that appears nowhere in what the composer was shown (baseline, experience entries, their `Skills:`, the Skills Inventory — never the job description) drives the composer's one retry. Deterministic and spends nothing unless it fires; it never bins a lead, and holds only under `style_hold`. Turn it off if a thin vault makes it fire on ordinary words. Rejects non-bool values |
+| `term_check` | `true` | #194: whether a term named in PROFILE prose or a WORK bullet that appears nowhere in what the composer was shown (experience entries, their `Tools:`, the Skills Inventory, the CV Layout — never the job description) drives the composer's one retry. Deterministic and spends nothing unless it fires; it never bins a lead, and holds only under `style_hold`. Turn it off if a thin vault makes it fire on ordinary words. Rejects non-bool values |
 | `style_hold` | `false` | opt-in (#167): whether a style finding that survives the retry (a slop stem, an unbundled term or a voice flag) **withholds** the send-ready pointer. Deliberately does **not** ride `require_signoff` (`true` by default, chosen for fabrication, not style) — turning this on means a hard-clean CV containing any of ~40 case-insensitive AI-tell stems (`sluice/cv/slop.py`) has `tailored_cv` withheld until the source wording is fixed. Rejects non-bool values, same reasoning as `lead_ttl_days` above |
 | `slop_allow` | `[]` | phrases sluice checks for that you legitimately use in your own voice. **Not** abstain-shaped like every other list default above — it *subtracts* from a shipped list, so empty means **full enforcement**, the `dossier_allow_hosts` polarity. An entry that is not one of those phrases raises at load, listing the valid ones (they are stems: `"leverage"`, not an inflection like `"leveraged"`). A phrase sluice has since RENAMED is migrated for you with a warning rather than refused — a build guard requires any phrase leaving the list to be recorded with its replacement first, so a rename on our side does not stop your `cv` commands loading |
 | `renderer` | `"template"` | `template` or `script`; `weasyprint` (the old bundled renderer) is **retired** and raises, naming `template` as the replacement |
@@ -195,6 +197,113 @@ resolve to one `how_heard` key (the computed lead source wins only when
 compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them, and `job-sluice doctor`
 (same doc) for how a blank name/contact — or a legacy `cv.name`/`cv.contact` left in
 `sluice.yaml` from before this note existed — is reported.
+
+## CV Layout (vault note)
+
+`Job Applications/CV Layout.md` decides what every CV shows, in what order: each role's
+heading, dates, location and title, which of your experience entries may be cited under it,
+and your certificates and education. `cv run` refuses until it exists, and `doctor` says so.
+Every CV is assembled from it: the model never writes a heading, a date, your name or a
+certificate.
+
+The note is YAML frontmatter. Every value in angle brackets below is a placeholder to
+replace, and the `Example` names stand for your own employers; a copy that keeps a
+placeholder is refused, naming where it is:
+
+```yaml
+---
+# skills_max: <n>                     # optional; absent = no cap, 0 = no SKILLS section
+roles:                                # CV order, top to bottom; required, at least one
+  - heading: "Example Alpha"          # required: the employer, as the CV prints it
+    from: "<MM/YYYY>"                 # required
+    to: "<MM/YYYY or present>"        # required
+    location: "<location>"            # optional
+    title: "<title>"                  # optional
+    # bullets_max: <n>                # optional; absent = no cap, 0 = the heading only
+  - heading: "Example Northgate"      # a roll-up: one heading over several employers
+    from: "<MM/YYYY>"
+    to: "<MM/YYYY>"
+    employers:                        # optional; default: the heading itself
+      - "Example Beta"
+      - "Example Meridian"
+any_role:                             # optional: companies whose entries fit any role
+  - "<company>"
+omitted:                              # optional: companies left off the CV on purpose
+  - "<company>"
+certificates:                         # optional
+  - "<certificate>"
+education:                            # optional; one item per qualification
+  - "<institution, dates | qualification>"
+---
+```
+
+**One item per line.** In YAML's inline style (`[a, b]`) an unquoted comma SPLITS an item, so
+`employers: [Example, Inc]` is two employers. Write each item on its own `- ` line, as above,
+or quote it.
+
+**Which entries a role may cite.** An experience entry is matched to a role when its
+`Company:` -- or one of its parts split on `,` `;` `/` -- equals one of the role's
+`employers` or, when the role lists none, its heading. Listing `employers` replaces the
+heading as a match, so include the heading there too if entries name it. Matching ignores
+case and runs of spaces (including non-breaking ones), but not a missing space (`ExampleCo`
+is not `Example Co`), and an accented letter must still match its accented spelling. An entry whose company is under `any_role:` may be cited under any role; one under
+`omitted:`, under none. When a `Company:` has parts that match more than one of these, a
+role's `employers` win, then `omitted:`, then `any_role:` -- so `Example Tidal / Example
+Cartography`, with the first part omitted and the second under `any_role:`, is cited nowhere,
+and a part matching a role keeps the entry to that role. An entry with no `Company:`, or one matching nothing, is cited
+nowhere: `doctor` counts them ("not on your CV", "no company") and `job-sluice experience
+list` shows each entry's company.
+
+**Budgets.** `bullets_max` caps one role's bullets: the first N the model wrote are kept, the
+rest reported as trimmed and never refused, however they were written -- a trimmed bullet
+never reaches the CV, so it never costs a retry. `skills_max` caps the SKILLS section. Absent means no
+cap; `0` means none. A role with no entry it may cite is shown heading-only.
+
+**Rules the note is checked against:** `from`/`to` are `MM/YYYY` (`to` may be `present`, in
+any case), and `from` is not after `to`; `heading`, `location` and `title` hold no `|` and are
+not a CV section heading; no value holds a line break or control character; an unknown key
+inside a role is an error, and so is a near miss of a top-level key (`skill_max`); a company
+both omitted and listed elsewhere is an error, and so is one under both `any_role:` and a role's
+`employers` (the role wins, so the `any_role:` listing would do nothing). Other top-level keys
+are yours (`tags:`, `aliases:`) and are ignored. Every problem is reported at once, each with its place.
+
+### `Tools:` on experience entries
+
+List the named tools an entry used: tools, technologies, languages, platforms, standards and
+named methods, such as `Terraform`, `React`, `WCAG` or `Scrum`. Write them comma-separated or as
+a block list (`job-sluice experience add --tools "..."` writes the comma-separated form). Once
+any verified entry declares `Tools:`, a CV bullet naming one, spelled as declared, must cite an
+entry that lists it, or whose own title or body names it in that spelling (the
+misattributed-tool check), and every listed tool can be picked for your SKILLS section. Every
+word of a tool's name must begin with a letter (or a dot then a letter), so a
+name with a digit-led word, such as `ISO 9001`, is refused: a name shaped like a figure would let an
+invented figure hide inside it. `cv run` refuses such an entry by name before composing, and
+`doctor` counts them.
+
+Leave general practices and concepts out: `security`, `coaching`, `pairing`, `architecture` and
+words like them. Each declared item is matched as a whole term, case-sensitively as you spelled
+it, in every WORK bullet of every CV, against the `Tools:` of every verified entry. A hyphenated
+compound still counts, because a hyphen is not part of a word: `security-focused` matches a
+declared `security`. A bullet that uses a declared word must cite an entry that declares it or
+names it in its own title or body, or the CV draws a `MISATTRIBUTED TOOL` finding. That finding
+blocks: the composer retries once, and if no attempt clears the hard gate the lead is skipped. A
+practice word turns ordinary prose ("improved security across the estate") into that refusal on
+any lead whose bullet happens to cite a different entry. Practices belong in a Skills Inventory
+note instead (`job-sluice skills add`), whose `Label:` can appear in SKILLS without being
+checked in bullets.
+
+Upgrading from 3.x: `Skills:` is no longer read. Copy the named tools from each entry's
+`Skills:` into `Tools:` and leave the practice words out (put any you want listed under SKILLS
+in a Skills Inventory note).
+
+### `Label:` on Skills Inventory notes
+
+A verified skill note's name can appear in a CV's SKILLS section: its `Label:` if set, else
+its title. `skills add --name` sets the label to the name exactly as typed (unless `--label`
+gives another), which survives the filename's slug. A note `skills add` made before 4.0 has no
+`Label:`, so it reaches a CV under its slug: `doctor` counts the notes with no `Label:` and a
+slug-shaped title ("cv skills (no Label)"), leaving out a note you titled by hand with its real
+name, and `job-sluice skills list` shows each note's `Label:` (`(none)` when blank).
 
 ## `apply:`
 

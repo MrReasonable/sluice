@@ -17,8 +17,9 @@ from sluice.ingest import sources as _sources
 
 from tests.harness import (
     FakeGoogleClient,
-    GATE_FAILING_CV,
-    PASSING_CV,
+    GATE_FAILING_REPLY,
+    PASSING_BULLETS,
+    PASSING_REPLY,
     ScriptedBackend,
     build_harness,
 )
@@ -62,8 +63,8 @@ def test_a_clean_lead_reaches_rejected(tmp_path, monkeypatch):
 
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS)
     backend = ScriptedBackend(
-        cv_by_company={"Example Foundry": PASSING_CV,
-                       "Example Telemetry": GATE_FAILING_CV},
+        cv_by_company={"Example Foundry": PASSING_REPLY,
+                       "Example Telemetry": GATE_FAILING_REPLY},
         # Every kept lead is shortlisted, so both reach the CV hop.
         default_verdict="shortlist",
         # The rejection email that ends the walk, matched by its subject marker.
@@ -93,8 +94,8 @@ def test_a_clean_lead_reaches_rejected(tmp_path, monkeypatch):
     assert results["Example Telemetry"].status == "skipped-gate"
     # THE fabrication-gate assertion, at the composition-root level: the recorder
     # saw exactly the one clean CV -- exact equality, so it catches both a
-    # spurious extra render and the drifted CV being rendered past the gate.
-    assert h.recorder.rendered == [PASSING_CV]
+    # spurious extra render and the gate-failing reply being rendered past the gate.
+    assert [d.work[0].bullets for d in h.recorder.rendered] == [PASSING_BULLETS]
     # On disk: the clean lead's CV reached the output dir; the gate-failing lead's
     # never did. (A global "output dir empty" check would be wrong -- the clean
     # lead renders a real PDF there.)

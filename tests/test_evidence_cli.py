@@ -47,6 +47,38 @@ def test_add_exposes_one_flag_per_user_field_and_no_verified_flag():
         parser.parse_args(["skills", "add", "--name", "x", "--verified", "2099-01-01"])
 
 
+@pytest.mark.parametrize("argv", [["--skills", "Examplelang"], ["--skills"]])
+def test_the_retired_skills_flag_names_tools_and_writes_nothing(tmp_path, monkeypatch, capsys,
+                                                                argv):
+    # 4.0 retired `Skills:` for `Tools:`; a bare "unrecognized arguments" would not say so.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    with pytest.raises(SystemExit) as exc:
+        main(["experience", "add", "--name", "alpha"] + argv)
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "--skills was retired" in err and "use --tools instead" in err
+    assert "Traceback" not in err
+    # Swept where it runs, like every other command message (see
+    # test_no_command_message_names_a_taxonomy_word): this branch is not in that sequence.
+    from sluice.onboard.questions import expresses_a_preference
+    assert not expresses_a_preference(err)
+    assert Vault(str(tmp_path)).read_pending_evidence("experience") == []
+
+
+def test_the_retired_skills_flag_is_hidden_and_only_where_it_existed(capsys):
+    parser = _build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["experience", "add", "--help"])
+    out = capsys.readouterr().out
+    assert "--tools" in out and "--skills" not in out
+    # Only `experience` ever took --skills (its EvidenceKind's legacy_fields), so any other
+    # kind still refuses it as an unknown argument rather than pointing at a --tools it lacks.
+    for kind in (k for k, spec in EVIDENCE_KINDS.items() if "Skills" not in spec.legacy_fields):
+        with pytest.raises(SystemExit):
+            parser.parse_args([kind, "add", "--name", "x", "--skills", "y"])
+        assert "use --tools instead" not in capsys.readouterr().err, kind
+
+
 def test_verify_offers_no_bulk_flag():
     """No --all, no --yes: this is the gate's trust root, and a bulk flag is the
     --verified hole one level up."""
@@ -83,7 +115,7 @@ def test_add_writes_the_per_field_flag_values_into_frontmatter(tmp_path, monkeyp
     assert entries[0]["fields"] == {
         "Proficiency": "expert", "Domain": "backend",
         "Evidence": "shipped X", "Signal Value": "high",
-        # The typed name is kept in Label (D13).
+        # The typed name is kept in Label (#364 D13).
         "Label": "widget",
     }
 
@@ -94,9 +126,9 @@ def test_add_promises_citability_only_for_the_corpus_the_gate_reads(tmp_path, mo
 
     Every kind's confirmation line said "run `job-sluice <kind> verify` to make it
     citable", while the gate LICENSES `experience` alone. Keyed on
-    `EvidenceKind.cited_by_gate` and swept over the whole registry, so no kind can be
-    fixed while its siblings keep the false line -- and so a flag change carries
-    this row rather than failing it.
+    `EvidenceKind.cited_by_gate`, then (D12, #364/#365/#368) on `names_in_skills_pool`, and
+    swept over the whole registry, so no kind can be fixed while its siblings keep the
+    false line -- and so a flag change carries this row rather than failing it.
     """
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     cited = [k for k, s in EVIDENCE_KINDS.items() if s.cited_by_gate]
@@ -106,6 +138,9 @@ def test_add_promises_citability_only_for_the_corpus_the_gate_reads(tmp_path, mo
         out = capsys.readouterr().out
         if spec.cited_by_gate:
             assert "to make it citable" in out, kind
+        elif spec.names_in_skills_pool:
+            assert "to make it available to a CV's skills list" in out, kind
+            assert "citable" not in out, kind
         else:
             assert "to mark it reviewed" in out, kind
             assert "citable" not in out, kind
@@ -174,11 +209,11 @@ def test_list_prints_the_verified_set_and_pending_prints_the_inbox_set(tmp_path,
     assert "beta" in pending_out and "alpha" not in pending_out
 
 
-def test_experience_list_surfaces_the_skills_field(tmp_path, monkeypatch, capsys):
-    """#168 Task 10: `experience list` is the resolving command core/doctor.py's skills
-    reconciliation rows point a user at, so the `Skills:` value itself has to be
-    visible somewhere a plain listing shows it -- the reconciliation rows never carry
-    it themselves (core/doctor.py's own "no doctor row carries user-authored text"
+def test_experience_list_surfaces_the_tools_field(tmp_path, monkeypatch, capsys):
+    """#168 Task 10, carried to `Tools:` (#364/#365/#368): `experience list` is the
+    resolving command core/doctor.py's unusable-`Tools:` row points a user at, so the
+    `Tools:` value itself has to be visible somewhere a plain listing shows it -- the
+    doctor row never carries it itself (core/doctor.py's own "no doctor row carries user-authored text"
     rule).
 
     Written directly into the vault rather than through `add`, so the entry is
@@ -189,19 +224,19 @@ def test_experience_list_surfaces_the_skills_field(tmp_path, monkeypatch, capsys
     os.makedirs(exp, exist_ok=True)
     with open(os.path.join(exp, "alpha.md"), "w", encoding="utf-8") as fh:
         fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-                 "Skills: Example Widget, Example Framework\n"
+                 "Tools: Example Widget, Example Framework\n"
                  "verified: 2026-08-25\n---\nBody.\n")
 
     assert main(["experience", "list"]) == 0
     out = capsys.readouterr().out
     assert "alpha" in out
-    assert "Skills: Example Widget, Example Framework" in out
+    assert "Tools: Example Widget, Example Framework" in out
 
 
-def test_experience_list_omits_a_blank_skills_line(tmp_path, monkeypatch, capsys):
-    """Blank is absent (SC5, cv/bundle.py:_skill_items): an entry with no `Skills:`
-    annotation -- the common case for every note that predates #168 -- must not print
-    a bare trailing "Skills: " on every line, which would be noise on every entry
+def test_experience_list_omits_a_blank_tools_line(tmp_path, monkeypatch, capsys):
+    """Blank is absent (SC5, core/tokens.py::tool_items): an entry with no `Tools:`
+    annotation -- the common case for every note that predates #364 -- must not print
+    a bare trailing "Tools: " on every line, which would be noise on every entry
     rather than a signal on the ones that actually declare one."""
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     exp = Vault(str(tmp_path))._evidence_dir("experience")
@@ -213,58 +248,58 @@ def test_experience_list_omits_a_blank_skills_line(tmp_path, monkeypatch, capsys
     assert main(["experience", "list"]) == 0
     out = capsys.readouterr().out
     assert "alpha" in out
-    assert "Skills:" not in out
+    assert "Tools:" not in out
 
 
-def test_experience_list_omits_a_whitespace_only_skills_line(tmp_path, monkeypatch,
+def test_experience_list_omits_a_whitespace_only_tools_line(tmp_path, monkeypatch,
                                                              capsys):
     """The blank case's other spelling, and the QUOTED form is the one that matters --
-    measured, not assumed. An unquoted `Skills:    ` never reaches this code as
+    measured, not assumed. An unquoted `Tools:    ` never reaches this code as
     whitespace at all: `_parse_fm_spaced` hands back `''` for it, so a test written that
-    way passes with or without the fix. `Skills: "   "` survives verbatim, and that is a
+    way passes with or without the fix. `Tools: "   "` survives verbatim, and that is a
     shape a human editing their own Obsidian vault can produce.
 
-    It must read as ABSENT, because it already does everywhere else -- `_skill_items`
+    It must read as ABSENT, because it already does everywhere else -- `tool_items`
     splits on commas and drops each item that is empty after stripping, so this entry
-    declares no skill to the bundle at all. Measured before the fix: it printed a bare
-    `Skills:` suffix with nothing after it.
+    declares no tool to the bundle at all. Measured before the fix: it printed a bare
+    `Tools:` suffix with nothing after it.
 
     A second note carries a real annotation, so the assertion cannot pass because the
-    listing showed no skills field at all."""
+    listing showed no tools field at all."""
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     exp = Vault(str(tmp_path))._evidence_dir("experience")
     os.makedirs(exp, exist_ok=True)
     with open(os.path.join(exp, "alpha.md"), "w", encoding="utf-8") as fh:
         fh.write("---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-                 'Skills: "   "\nverified: 2026-08-25\n---\nBody.\n')
+                 'Tools: "   "\nverified: 2026-08-25\n---\nBody.\n')
     with open(os.path.join(exp, "beta.md"), "w", encoding="utf-8") as fh:
         fh.write("---\nCompany: Example Beta\nCategory: \nBest For: \nMetrics: \n"
-                 "Skills: Example Widget\nverified: 2026-08-25\n---\nBody.\n")
+                 "Tools: Example Widget\nverified: 2026-08-25\n---\nBody.\n")
 
     assert main(["experience", "list"]) == 0
     out = capsys.readouterr().out
     lines = {ln.split("  ")[0]: ln for ln in out.splitlines() if ln.strip()}
     assert "alpha" in lines and "beta" in lines, out
     # Bound to locals before the assertions, and asserted without a trailing message.
-    # `tests/test_fixture_name_neutrality.py`'s skills collector is colon-anchored and
+    # `tests/test_fixture_name_neutrality.py`'s tools collector is colon-anchored and
     # scans comments too, so asserting the label directly against a SUBSCRIPT expression
-    # made it read the rest of that source line as a declared skill value -- a false
-    # positive with no fixture behind it, the same shape `dict(Skills=...)` avoids
+    # made it read the rest of that source line as a declared tool value -- a false
+    # positive with no fixture behind it, the same shape `dict(Tools=...)` avoids
     # elsewhere in this suite. Deliberately not reproduced here for that same reason.
     alpha, beta = lines["alpha"], lines["beta"]
-    assert "Skills:" not in alpha
+    assert "Tools:" not in alpha
     # SCOPE: the surfacing still works, so the line above is not passing because the
     # whole field stopped being printed.
-    assert "Skills: Example Widget" in beta
+    assert "Tools: Example Widget" in beta
 
 
-def test_skills_list_does_not_show_a_skills_field(tmp_path, monkeypatch, capsys):
-    """The `skills` kind declares no `Skills` frontmatter field at all
-    (`EVIDENCE_KINDS["skills"].fields`) -- experience's `Skills:` surfacing must not
+def test_skills_list_does_not_show_a_tools_field(tmp_path, monkeypatch, capsys):
+    """The `skills` kind declares no `Tools` frontmatter field at all
+    (`EVIDENCE_KINDS["skills"].fields`) -- experience's `Tools:` surfacing must not
     leak onto a listing of an unrelated kind. The premise is asserted explicitly
-    rather than assumed, so a future registry edit that DID give `skills` a `Skills`
+    rather than assumed, so a future registry edit that DID give `skills` a `Tools`
     field would fail this test for the right reason instead of the wrong one."""
-    assert "Skills" not in EVIDENCE_KINDS["skills"].fields
+    assert "Tools" not in EVIDENCE_KINDS["skills"].fields
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     assert main(["skills", "add", "--name", "alpha", "--proficiency", "expert"]) == 0
     capsys.readouterr()
@@ -280,21 +315,39 @@ def test_skills_list_does_not_show_a_skills_field(tmp_path, monkeypatch, capsys)
     assert main(["skills", "list"]) == 0
     out = capsys.readouterr().out
     assert "alpha" in out
-    assert "Skills:" not in out
+    assert "Tools:" not in out
 
 
-def test_the_cli_gate_itself_ignores_a_skills_field_the_registry_does_not_declare(
+def test_skills_list_shows_each_notes_label_and_none_where_it_has_none(tmp_path, monkeypatch,
+                                                                       capsys):
+    # doctor's "cv skills (no Label)" row counts the notes without one and names this
+    # command, so the listing must show which they are.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    skills = Vault(str(tmp_path))._evidence_dir("skills")
+    os.makedirs(skills, exist_ok=True)
+    with open(os.path.join(skills, "examplelang.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nLabel: Examplelang\nverified: 2026-08-25\n---\nBody.\n")
+    with open(os.path.join(skills, "examplequery.md"), "w", encoding="utf-8") as fh:
+        fh.write("---\nverified: 2026-08-25\n---\nBody.\n")
+    assert main(["skills", "list"]) == 0
+    lines = {ln.split("  ")[0]: ln for ln in capsys.readouterr().out.splitlines() if ln}
+    labelled, bare = lines["examplelang"], lines["examplequery"]
+    assert labelled.endswith("Label: Examplelang")
+    assert bare.endswith("Label: (none)")
+
+
+def test_the_cli_gate_itself_ignores_a_tools_field_the_registry_does_not_declare(
         monkeypatch, capsys):
     """The test above drives a REAL vault, where `core/vault.py`'s `_evidence_entries`
-    already never populates `fields["Skills"]` for a kind that does not declare it
+    already never populates `fields["Tools"]` for a kind that does not declare it
     (`{k: fm.get(k, "") for k in spec.fields}`) -- so it cannot tell the CLI's OWN
-    `"Skills" in spec.fields` gate (`cmd_evidence_list`) apart from that upstream
-    invariant. Measured: forcing `show_skills = True` unconditionally in
+    `"Tools" in spec.fields` gate (`cmd_evidence_list`) apart from that upstream
+    invariant. Measured: forcing `the field gate open` unconditionally in
     `cmd_evidence_list` left every test in this file GREEN, including the one above,
     whose own docstring claims to guard exactly this leak.
 
     This test drives `cmd_evidence_list` through a STUB `Sluice.list_evidence` that
-    violates the upstream invariant on purpose -- a `Skills` key on a `skills`-kind
+    violates the upstream invariant on purpose -- a `Tools` key on a `skills`-kind
     entry, a shape the real Vault never produces -- so only the CLI's own gate stands
     between that key and the printed line."""
     from sluice.core.app import Sluice
@@ -303,11 +356,11 @@ def test_the_cli_gate_itself_ignores_a_skills_field_the_registry_does_not_declar
         Sluice, "list_evidence",
         lambda self, *, kind, pending=False: [
             {"title": "alpha", "verified": "2026-08-25",
-             "fields": {"Skills": "Example Ghost"}}])
+             "fields": {"Tools": "Example Ghost"}}])
     assert main(["skills", "list"]) == 0
     out = capsys.readouterr().out
     assert "alpha" in out
-    assert "Skills:" not in out
+    assert "Tools:" not in out
 
 
 def test_verify_with_a_non_matching_id_prints_to_stderr_and_exits_1(tmp_path, monkeypatch,
@@ -835,7 +888,7 @@ def test_the_wizard_leaves_the_body_blank_when_the_user_skips_it(tmp_path, monke
 
 def test_skills_add_keeps_the_typed_name_in_label_when_the_filename_is_a_slug(
         tmp_path, monkeypatch):
-    # D13: a skill's CV name must survive the filename slug.
+    # #364 D13: a skill's CV name must survive the filename slug.
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     assert main(["skills", "add", "--name", "Examplelang#"]) == 0
     entries = Vault(str(tmp_path)).read_pending_evidence("skills")
@@ -847,3 +900,24 @@ def test_an_explicit_label_wins_over_the_name(tmp_path, monkeypatch):
     assert main(["skills", "add", "--name", "widget", "--label", "Example Widget"]) == 0
     entries = Vault(str(tmp_path)).read_pending_evidence("skills")
     assert entries[0]["fields"]["Label"] == "Example Widget"
+
+
+def test_experience_list_shows_each_entrys_company_and_tools(tmp_path, monkeypatch, capsys):
+    """The doctor rows for entries no CV can cite report COUNTS (a doctor row never carries
+    user-authored text), so this is where a user finds WHICH entries: by the company and the
+    tools each one declares. The notes are written straight into the vault so both are
+    verified."""
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    exp = Vault(str(tmp_path))._evidence_dir("experience")
+    os.makedirs(exp, exist_ok=True)
+    for name, company, tools in (("alpha", "Example Alpha", "Examplelang"), ("beta", "", "")):
+        with open(os.path.join(exp, f"{name}.md"), "w", encoding="utf-8") as fh:
+            fh.write(f"---\nCompany: {company}\nCategory: \nBest For: \nMetrics: \n"
+                     f"Tools: {tools}\nverified: 2026-08-25\n---\nBody.\n")
+    assert main(["experience", "list"]) == 0
+    lines = {ln.split("  [")[0]: ln for ln in capsys.readouterr().out.splitlines()}
+    assert "Company: Example Alpha" in lines["alpha"] and "Tools: Examplelang" in lines["alpha"]
+    # The label and its value are checked apart: written as one string, the fixture-name
+    # sweep reads it as a company called "(none)".
+    beta = lines["beta"]
+    assert "(none)" in beta.partition("Company")[2] and "Tools" not in beta

@@ -15,7 +15,7 @@ def _make(config):
 
     The store still owns its own DEFAULT (`Vault.__init__`'s `./vault`); what the
     factory now supplies is a configured value, exactly as it already does for
-    `baseline_rel`. `None` falls through to the constructor's own chain.
+    `vault_dir`. `None` falls through to the constructor's own chain.
 
     Precedence is computed HERE and not moved into `Vault.__init__` (#80). Putting
     `os.environ.get("VAULT_DIR")` ahead of the constructor's `dir` parameter would make
@@ -30,7 +30,6 @@ def _make(config):
     nowhere to persist it.
     """
     return Vault(os.environ.get("VAULT_DIR") or config.vault_dir or None,
-                 baseline_rel=config.baseline_rel,
                  location_noise_words=config.location_noise_words,
                  lead_layout=config.lead_layout)
 

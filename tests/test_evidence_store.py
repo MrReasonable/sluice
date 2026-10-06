@@ -147,7 +147,9 @@ def test_read_by_composer_names_exactly_the_kinds_the_cv_engine_reads():
 
     src = (pathlib.Path(__file__).resolve().parents[1] / "sluice" / "cv" / "engine.py"
            ).read_text(encoding="utf-8")
-    reached = set(re.findall(r"""read_evidence\(\s*["']([a-z]+)["']""", src))
+    # `read_once` is run_one's per-lead memo over `read_evidence` (each kind read once per
+    # lead), so a kind it names is a kind the engine reads.
+    reached = set(re.findall(r"""(?:read_evidence|read_once)\(\s*["']([a-z]+)["']""", src))
     assert reached, ("the sweep found no evidence read in sluice/cv/engine.py -- the "
                      "matcher is broken, not the engine; without this the equality below "
                      "would compare two empty sets and pass vacuously")
@@ -157,14 +159,14 @@ def test_read_by_composer_names_exactly_the_kinds_the_cv_engine_reads():
         f"read_by_composer")
 
 
-def test_cited_by_gate_is_exactly_what_bundle_sources_actually_licenses():
+def test_cited_by_gate_is_exactly_what_the_gate_actually_licenses():
     """#164 derived this by grepping the engine, on the assumption that a corpus the engine
     READS is a corpus the gate CITES. #165 broke that assumption on purpose: skills reach
     the composer's prompt and are licensed nowhere.
 
     So derive it by EXECUTION instead. Give each read kind a distinct sentinel digit, build
-    a real bundle, and ask `bundle_sources` which sentinels it licensed. A source grep
-    cannot answer this -- citability is decided by `bundle_sources`, which walks
+    a real bundle, and ask `entry_facts` which sentinels it licensed. A source grep
+    cannot answer this -- citability is decided by `entry_facts`, which walks
     `bundle["entries"]` and knows nothing about kinds -- and this oracle cannot go stale,
     because it IS the mechanism.
     """
@@ -177,12 +179,14 @@ def test_cited_by_gate_is_exactly_what_bundle_sources_actually_licenses():
     b = B.build_bundle(
         [{"title": "t", "company": "Example Co", "best_for": "", "category": "",
           "metrics": sentinels["experience"], "body": ""}],
-        "baseline", [], [], {},
+        [], [], {},
         skills=[{"title": "s", "best_for": "", "body": "",
                  "fields": {"Domain": "", "Proficiency": sentinels["skills"],
                             "Evidence": "", "Signal Value": ""}}])
-    sources = B.bundle_sources(b)
-    licensed = set().union(*sources.nums.values(), sources.baseline)
+    from sluice.core.protocols import CvLayout, LayoutRole
+    from sluice.cv.validate import entry_facts
+    layout = CvLayout(roles=(LayoutRole("Example Co", "01/2020", "present"),))
+    licensed = set().union(*(f.figures for f in entry_facts(b, layout).values()))
     assert sentinels["experience"] in licensed, (
         "the experience sentinel was not licensed -- the fixture is wrong, and the "
         "equality below would pass for the wrong reason")
@@ -1093,6 +1097,11 @@ def test_the_registry_flags_are_what_this_change_intends():
 
 
 def test_a_legacy_field_reports_presence_outside_fields(tmp_path, monkeypatch):
+    # The registry is patched to declare an invented legacy field, `Retired`, rather than
+    # using the shipped `Skills`: the mechanism under test is "whatever legacy_fields names
+    # is reported as presence and kept out of fields", and only a name the shipped registry
+    # does not hard-wire can show the store reads the REGISTRY rather than a spelled-out
+    # `Skills`. The row below covers the shipped field itself.
     import dataclasses
     from sluice.core import protocols
     spec = dataclasses.replace(protocols.EVIDENCE_KINDS["experience"],
@@ -1107,3 +1116,18 @@ def test_a_legacy_field_reports_presence_outside_fields(tmp_path, monkeypatch):
     assert by_title["one"]["legacy"] == {"Retired": True}
     assert by_title["two"]["legacy"] == {"Retired": False}
     assert "Retired" not in by_title["one"]["fields"]
+
+
+def test_a_legacy_skills_line_is_surfaced_as_presence_and_never_written(tmp_path):
+    v = Vault(str(tmp_path / "vault"))
+    v.propose_evidence("experience", name="alpha", fields={"Company": "Example Alpha"})
+    [pending] = v.read_pending_evidence("experience")
+    with open(pending["path"], encoding="utf-8") as fh:
+        raw = fh.read().replace("---\n", "---\nSkills: Examplelang\n", 1)
+    with open(pending["path"], "w", encoding="utf-8") as fh:
+        fh.write(raw)
+    assert v.verify_evidence("experience", "alpha", today="2026-09-03", reviewed=raw)
+    [entry] = v.read_evidence("experience")
+    assert "Skills" not in entry["fields"] and entry["legacy"] == dict(Skills=True)
+    with pytest.raises(ValueError, match="Skills"):
+        v.propose_evidence("experience", name="beta", fields={"Skills": "Examplelang"})

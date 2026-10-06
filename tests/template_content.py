@@ -163,29 +163,16 @@ def _decode_css_escapes(literal: str) -> str:
 
 
 def composer_headings() -> set[str]:
-    """The section headings a template may legitimately print.
+    """The section headings a template may legitimately print: DERIVED from
+    core/protocols.py::SECTION_HEADINGS, the one tuple cv/document.py::to_text writes
+    (#364/#365/#368) -- never from a rendered prompt, whose all-caps lines include the
+    substituted candidate name and would admit that literal into the allowlist for the
+    template no-content guards and the shipped-file leak sweep.
 
-    DERIVED from `cv/parse.py`'s own grammar -- the sections the parser models -- never
-    from `_RULES`. Reading `_RULES` STATICALLY misses the conditional SKILLS block
-    (compose.py's `{skills_block}`, only interpolated when `build_prompt` is called with
-    `skills_requested=True`), which would reject that heading permanently and turn a
-    genuine, gate-clean SKILLS section into a leak-sweep false positive the moment a
-    template renders it (#168 Task 13). RENDERING `_RULES` instead -- an earlier revision
-    of this fix -- is worse: `{name_heading}` is `name.upper()` on its own line, so a
-    rendered set of "every all-caps alphabetic line" ADMITS THE SUBSTITUTED CANDIDATE
-    NAME into what is the ALLOWLIST for three template no-content guards plus the
-    shipped-file leak sweep. Four reviewers independently measured that a template could
-    then print that literal name with every negative guard green. Anchoring on the
-    parser's grammar is immune to both failure modes: it is independent of `_RULES`
-    entirely (so it is not self-certifying against the very prompt it allowlists for),
-    and it carries `SKILLS` automatically the day the parser accepts the section (#168
-    Task 7), with no dependency on whether any given compose call actually requested it.
-
-    Callers must assert it is non-empty: `set() <= anything` is True, so a derivation
-    that silently stopped matching would make every comparison below pass.
-    """
-    from sluice.cv.parse import _TRAILING_SECTIONS
-    return {"PROFILE", "WORK EXPERIENCE"} | set(_TRAILING_SECTIONS)
+    Callers must assert it is non-empty: `set() <= anything` is True, so a derivation that
+    silently stopped matching would make every comparison below pass."""
+    from sluice.core.protocols import SECTION_HEADINGS
+    return set(SECTION_HEADINGS)
 
 
 def _css_regions(text: str) -> list[str]:

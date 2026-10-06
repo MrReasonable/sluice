@@ -1,4 +1,4 @@
-"""cv/selection.py: what a reply may render (spec §4.4, §6.0, §6.2, D10)."""
+"""cv/selection.py: what a reply may render (#364 spec §4.4, §6.0, §6.2, D10)."""
 from sluice.core.layout import Slot
 from sluice.core.protocols import LayoutRole
 from sluice.cv.reply import Bullet, Reply
@@ -33,6 +33,17 @@ def test_the_pool_takes_inventory_names_first_then_tools_deduplicated():
     named = [{"title": "Example Query", "fields": {}}]
     experience = [{"fields": {"Tools": "example query, Examplelang"}}]
     assert build_pool(named, experience) == ("Example Query", "Examplelang")
+
+
+def test_a_look_alike_skill_pick_is_dropped_never_rendered():
+    # A pick is never text-checked as a bullet or the profile is: it renders only as a POOL
+    # value, in the pool's spelling, so a look-alike spelling matches nothing and is dropped.
+    # Built with chr() so no look-alike sits in this file's source.
+    pick = "Examplel" + chr(0x0430) + "ng"            # Cyrillic small a
+    sel = select(_reply(skills=[pick, "Examplelang8" + chr(0x041E)]), (), POOL, None)
+    assert sel.skills == ()
+    assert sel.skills_dropped == (f"{pick!r}: not one of your skills",
+                                  f"{'Examplelang8' + chr(0x041E)!r}: not one of your skills")
 
 
 def test_a_decoy_matching_item_never_enters_the_pool():
@@ -125,7 +136,7 @@ def test_a_headings_only_layout_renders_with_no_bullets_and_no_finding():
 
 
 def test_the_pool_holds_exactly_the_names_of_kinds_flagged_for_it():
-    # Execution-derived sibling of the cited_by_gate test (spec §4.4, D12): offer one
+    # Execution-derived sibling of the cited_by_gate test (#364 spec §4.4, D12): offer one
     # verified entry of EVERY kind, each with a distinct sentinel name, through the reader
     # the engine uses, and ask whose names reached the pool.
     from sluice.core.protocols import EVIDENCE_KINDS
@@ -157,3 +168,17 @@ def test_the_pool_follows_the_flag_not_the_kind_name(monkeypatch):
 
     assert build_pool(named_entries(read_evidence), []) == ("Example Zephyr Stories",)
     assert asked and all(asked), "the pool read unverified entries"
+
+
+def test_only_a_kept_bullets_text_findings_are_reported():
+    # cv/reply.py files a refused bullet's findings by (slot, position) and keeps the
+    # bullet; select reports them only for what it keeps, so a bullet trimmed by budget, or
+    # by a slot with no eligible entry (budget 0), never costs a retry (#364 spec §2, §4.3).
+    bullets = _bullets(2)
+    reply = Reply("I build.", {"R1": bullets, "R2": bullets, "R3": bullets}, (), False,
+                  {("R1", 2): ("trimmed R1",), ("R2", 1): ("no eligible R2",),
+                   ("R3", 2): ("kept R3",)})
+    slots = (_slot("R1", "Example Alpha", budget=1),
+             _slot("R2", "Example Beta", budget=0, eligible=(), bullets_max=None),
+             _slot("R3", "Example Gamma"))
+    assert select(reply, slots, (), None).findings == ("kept R3",)

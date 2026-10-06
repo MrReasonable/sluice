@@ -1184,6 +1184,11 @@ It is built only if the measurement requires it.
 - **A decoy the shared ASCII tokeniser cannot represent is refused at load.** A Unicode-aware
   tokeniser is out of scope.
 - **Spelled-out numbers ("five hundred") are not figure-checked**, as today.
+- **An ASCII letter written against a digit is not refused.** `8O%` (a capital O), `2l0` or
+  `3l%` shows the page a figure `figures()` reads only the digits of, and passes, because
+  `5G`, `O2` and `10l` are real text. A NON-Latin letter against a digit (a Cyrillic or Greek
+  capital O) is refused as a look-alike; the advisory audit is the only check on the ASCII
+  case.
 - **No fallback for an install without a CV Layout.** Composing refuses until one exists.
   Keeping the baseline as a second structure source would preserve the text-copying path
   this design removes.

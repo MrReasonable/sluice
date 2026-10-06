@@ -117,7 +117,7 @@ class EvidenceKind:
     Each is derived rather than hand-asserted, and DIFFERENTLY, because only one of them
     can be answered by reading source. `read_by_composer` is derived by grepping
     `cv/engine.py` for `read_evidence("<kind>")`. `cited_by_gate` cannot be -- citability
-    is decided by `cv/bundle.py:bundle_sources`, which walks `bundle["entries"]` and knows
+    is decided by `cv/validate.py::entry_facts`, which walks `bundle["entries"]` and knows
     nothing about kinds -- so it is derived by EXECUTION: build a bundle carrying one entry
     per kind with a distinct sentinel digit and ask which sentinels were licensed. See
     tests/test_evidence_store.py.
@@ -138,9 +138,9 @@ class EvidenceKind:
     cited_by_gate: bool = False
     # Whether cv/engine.py puts this corpus in the COMPOSER's bundle at all. SPLIT from
     # `cited_by_gate` at #165, which made the two non-equivalent for the first time:
-    # `skills` reaches the prompt as a FRAMING section whose digits `bundle_sources`
+    # `skills` reaches the prompt as a FRAMING section whose digits `entry_facts`
     # licenses nowhere, and which the #60 ADVISORY audit is deliberately not shown either
-    # (cv/bundle.py's two renderers). #164 wrote ONE flag because "read" and "cited" then
+    # (cv/bundle.py's `render_audit_bundle`). #164 wrote ONE flag because "read" and "cited" then
     # coincided; collapsing them again would make `doctor` tell a user their skills are
     # citable, which is the over-claim `cited_by_gate` was introduced to prevent.
     read_by_composer: bool = False
@@ -152,7 +152,7 @@ class EvidenceKind:
     # prompt or MCP proposal can carry one.
     legacy_fields: tuple = ()
     # A verified entry's CV NAME (its `Label:`, else its title) may be listed in a CV's
-    # SKILLS section (spec D12). The NAMES route only: an experience entry's `Tools:` reach
+    # SKILLS section (#364 D12). The NAMES route only: an experience entry's `Tools:` reach
     # the pool through core/tokens.py::tool_items whatever this flag says.
     names_in_skills_pool: bool = False
 
@@ -256,17 +256,18 @@ CAPABILITY_BUCKETS = (READY, NEEDS_SETUP, DEGRADED_CAP, BROKEN)
 
 
 EVIDENCE_KINDS = {
-    # The one kind the fabrication gate licenses, and -- until the next commit -- the only
-    # one the composer is handed at all. TWO flags since #165: `read_by_composer` says the
-    # corpus reaches the prompt, `cited_by_gate` says the gate may license its content.
-    # They coincide here and diverge for `skills`.
+    # The one kind the fabrication gate licenses. Since #165 `read_by_composer` and
+    # `cited_by_gate` are separate flags: the first says the corpus reaches the prompt, the
+    # second that the gate may license its content. They coincide here and diverge for
+    # `skills`.
     #
-    # `Skills` (#168) is the skill->role association stored here rather than on the skill
-    # note: it is where the gate already reads, so a per-entry frozenset slots in beside
-    # `nums` with no name join. No `floor_map` entry -- it has no floor analogue, exactly
-    # like the skills kind's own Proficiency/Evidence/Signal Value.
+    # `Tools` (#364/#365/#368, spec §4.2) is the attribution index: the tools an entry
+    # declares it used. It replaces #168's `Skills`, and lives here rather than on a skill
+    # note for #168's reason -- it is where the gate already reads, so a per-entry set slots
+    # in beside the entry's figures with no name join. No `floor_map` entry: it has no floor
+    # analogue, exactly like the skills kind's own Proficiency/Evidence/Signal Value.
     #
-    # DECLARING it made it live immediately across several independent readers of
+    # DECLARING a field makes it live immediately across several independent readers of
     # `spec.fields` -- an argparse flag builder (`cli.py`), an interactive prompt
     # builder (the evidence wizard), a note serializer (`_render_evidence_note`'s
     # unknown-field refusal and its blank-line default), and a note materializer
@@ -275,28 +276,25 @@ EVIDENCE_KINDS = {
     # one of them changes: grep `spec.fields`/`EvidenceKind.fields` across `sluice/` for
     # the current set rather than trusting a count typed here.
     #
-    # The BUNDLE and the GATE consume it too, now. `cv/bundle.py`'s `_skill_items`
-    # extracts an entry's `Skills:` items (validating every token begins with a letter,
-    # or span removal below would blank a real figure); `_entry_skills_line` folds them
-    # into the COMPOSER's prompt alone, never the #60 advisory audit's; and
-    # `bundle_sources` carries them into `EntrySources.skills`, keyed by entry id beside
-    # `EntrySources.nums`. `cv/validate.py` reads that allowlist through two containment
-    # rows: MISATTRIBUTED SKILL (a WORK bullet naming a skill no entry it cites
-    # declares) and UNSOURCED SKILL (a SKILLS-region line the bundle's own source text
-    # does not contain).
+    # The BUNDLE, the GATE, the skills pool and doctor consume it through ONE parser,
+    # `core/tokens.py::tool_items`, which splits an entry's `Tools:` on commas and refuses
+    # an item the gate cannot match as a whole term (one that begins with a digit, for
+    # instance) -- so doctor's row, the run's refusal and the gate cannot disagree about
+    # what an item is. `cv/validate.py::entry_facts` carries each entry's items into the
+    # MISATTRIBUTED TOOL check (a bullet naming a tool no entry it cites declares), and
+    # `cv/selection.py::build_pool` offers them as skill picks.
     #
-    # A digit inside a Skills value is NOT licensed by the gate: `_entry_skills_line`'s
-    # own docstring states it is deliberately excluded from `_entry_block`'s emission,
-    # so no digit from "Example Widget3" ever joins `EntrySources.nums` -- a skill's
-    # digits are never citable as a metric in their own right. The only place a skill's
-    # digit interacts with digit-checking at all is `validate.py`'s
-    # `_strip_skill_spans`, which removes a CITED entry's own declared skill spans from
-    # a bullet's prose before invented-digit extraction, so the `3` in a genuinely
-    # declared "Widget3" is not itself flagged a fabricated metric on the bullet that
-    # names it.
+    # A tool's digits are never licensed as a metric: `tool_items` values are matched as
+    # terms, never added to an entry's figures, so the `3` in "Examplelang3" is not a
+    # citable number.
     "experience": EvidenceKind("Job Applications/Experience Library",
-                               ("Company", "Category", "Best For", "Metrics", "Skills"),
-                               cited_by_gate=True, read_by_composer=True),
+                               ("Company", "Category", "Best For", "Metrics", "Tools"),
+                               cited_by_gate=True, read_by_composer=True,
+                               # #364/#365/#368 (spec §4.2): `Tools:` is the attribution
+                               # index now. `Skills:` is no longer read; the store reports
+                               # only whether an entry still carries it, so doctor and
+                               # `cv run` can say the check is off on an upgraded vault.
+                               legacy_fields=("Skills",)),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
     # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
     # `best_for` was the empty string for every skill, so a skills entry in domain
@@ -326,6 +324,20 @@ EVIDENCE_KINDS = {
                             ("Company", "Best For")),
 }
 
+
+
+def verify_outcome(spec, subject: str = "it") -> str:
+    """What `verify` actually BUYS for this kind, as a verb phrase -- the one place, so no
+    message can over-claim on its own (#164 review, M2). Keyed on the kind's flags, never its
+    name: `cited_by_gate` first (the gate may license its content), then
+    `names_in_skills_pool` (#364 D12: a verified note's name may appear in a CV's skills list).
+    Here rather than in sluice/evidence/ so core/doctor.py and core/app.py can say the same
+    thing; `subject` lets the init wizard's plural summary share the sentence."""
+    if spec.cited_by_gate:
+        return f"make {subject} citable"
+    if spec.names_in_skills_pool:
+        return f"make {subject} available to a CV's skills list"
+    return f"mark {subject} reviewed"
 
 class VaultConflict(RuntimeError):
     """A modify-write refused because the stored note changed since it was read.
@@ -597,17 +609,15 @@ class Store(Protocol):
     that location resolves to one key, and the first to acknowledge silences the notice
     for the rest, whose leads are then dismissed unannounced.
 
-    OPTIONAL MEMBER -- `preflight() -> dict`. Not declared below, for the identical
-    reason `Renderer.precheck` is not: a Protocol member is a REQUIRED member, and the
-    whole point of this hook is that a store may omit it. `sluice doctor` (core/app.py)
-    reaches it via `getattr(store, "preflight", None)` and reports nothing for that
-    component when it is absent, rather than treating an unimplemented hook as a
-    failure -- the same shape `cv/engine.py` already gives the renderer seam's optional
-    `precheck`.
+    OPTIONAL MEMBER -- `preflight() -> dict`. Not declared below, because a Protocol
+    member is a REQUIRED member, and the whole point of this hook is that a store may omit
+    it. `sluice doctor` (core/app.py) reaches it via `getattr(store, "preflight", None)`
+    and reports nothing for that component when it is absent, rather than treating an
+    unimplemented hook as a failure.
 
     A store implements `preflight` to answer "can a run actually use me right now?"
     with facts doctor cannot get any other way -- for the vault: does the configured
-    directory exist, is the baseline CV readable, is a Judging Profile present, how
+    directory exist, is a Judging Profile present, how
     many Experience Library entries are verified, and (#133/#107) is a candidate name
     declared and is a contact block declared -- the two facts `cv/engine.py`'s
     `skipped-config` refusal already gates a real compose on. It returns FACTS, not
@@ -633,7 +643,7 @@ class Store(Protocol):
     the relocation notice on a dedup store is keyed on the resolved path NOT existing,
     so a "harmless" preflight probe would silently disable it for every later run this
     process makes. `Vault.preflight` therefore only `stat`s paths and reads documents
-    through the store's own existing read methods (`read_baseline`, `read_criteria`,
+    through the store's own existing read methods (`read_criteria`,
     `read_evidence`/`read_pending_evidence` per kind, `read_candidate_profile` -- it does
     NOT go through a kind-specific spelling), never opens a store's OWN
     internal state file (a SQLite-backed store's preflight must not connect to its
@@ -718,7 +728,7 @@ class Store(Protocol):
         A store MAY match that recorded identity up to an equivalence of its own, and it
         MUST then apply the SAME equivalence on every path that resolves a lead -- the
         create walk as well as the archive probe. The vault matches note names up to CASE
-        and to CANONICAL EQUIVALENCE (#205 and #299, `_fold_note_name`), because a board
+        and to CANONICAL EQUIVALENCE (#205 and #299, `fold_note_name`), because a board
         renders one employer several ways and two boards may publish the same accented name
         in different composition forms. It stops at compatibility NORMALIZATION: a store MUST
         NOT apply NFKC/NFKD, which would call a superscript and its digit, or a full-width
@@ -1022,11 +1032,6 @@ class Store(Protocol):
         already taken in the verified set, before mutating anything."""
         ...
 
-    def read_baseline(self) -> str:
-        """The baseline CV. Where it lives is the store's business, configured on the
-        store -- not a path passed in by a caller who should not know paths exist."""
-        ...
-
     def read_criteria(self) -> str:
         """The user's judging criteria -- who they are, what they want, what they refuse.
         Returns "" when unset, and the caller then falls back to the shipped default,
@@ -1049,8 +1054,8 @@ class Store(Protocol):
     def read_candidate_profile(self) -> CandidateProfile:
         """The candidate's own identity and application-form data.
 
-        MUST-support, like read_baseline/read_criteria -- NOT optional like
-        preflight/precheck. An optional member would push a `getattr` None-branch
+        MUST-support, like read_criteria -- NOT optional like
+        `Store.preflight`. An optional member would push a `getattr` None-branch
         into four callers and hand cv a "the store cannot say" case with no safe
         answer: composing without a name is the fabrication risk #99 exists to
         stop, and refusing on a store that merely did not implement the hook
@@ -1085,8 +1090,8 @@ class Store(Protocol):
         that stays inside (`a/../b.md`) is accepted -- the rule is containment of the
         resolved path, not a ban on the characters, and a second store that rejected the
         characters would disagree with this one on the same key. This is the one wholesale-write primitive on
-        a never-clobber contract, so an escape would let it scribble over `My CV/CV.md`,
-        the fabrication gate's ground truth.
+        a never-clobber contract, so an escape would let it scribble over a verified
+        evidence entry, which is what the fabrication gate's truth is made of.
 
         The complementary requirement, because callers distinguish the two outcomes by
         TRUTHINESS: a successful write must return a NON-EMPTY handle. A store returning
@@ -1197,9 +1202,9 @@ class Renderer(Protocol):
     `render(document, out_dir, *, neutral_name="CV.pdf")` receives the CvDocument sluice
     ASSEMBLED from the vault and a checked reply (#364/#365/#368 spec section 7); nothing
     parses CV text, and a renderer that needs text writes
-    `cv/document.py::to_text(document)`. TRANSITIONAL: until the engine switches over, a
-    `str` is still accepted and parsed, and the optional `precheck` still runs on it; this
-    sentence is deleted with the `str` branch in Task 19.
+    `cv/document.py::to_text(document)`. Anything but a CvDocument raises `RenderError`
+    naming the renderer: coercing a wrong object would hand the template or the script
+    junk, and a string is no longer a CV a renderer may be given.
 
     A renderer is only ever reached AFTER the fabrication gate has passed. It must not
     be given the power to bypass it: no renderer validates, and no renderer is called
@@ -1224,30 +1229,16 @@ class Renderer(Protocol):
     costs a needless alarm rather than a silent "everything is fine" on an install that
     cannot render.
 
-    OPTIONAL SECOND METHOD -- `precheck(cv_text) -> list[str]`. Not declared below,
-    because a Protocol member is a REQUIRED member and the whole point of this hook is
-    that a renderer may omit it; `cv/engine.py` reaches it via
-    `getattr(renderer, "precheck", None)` and skips the call when it is absent.
-
-    A renderer implements `precheck` when it needs the composed CV to satisfy a GRAMMAR
-    of its own -- something the fabrication gate does not model and cannot be extended to
-    model (the gate is out of scope, and a second gate beside it would be a way around
-    the real one). The engine calls it INSIDE its compose/gate retry loop and folds the
-    returned strings in with the gate's violations, so a renderer-specific formatting
-    complaint reaches the model's one retry rather than arriving after the LLM spend with
-    no recovery. Return `[]` for "nothing to say"; the strings are prompt text, so they
-    must name what is wrong and what was expected.
-
-    It is a per-RENDERER obligation and must not be hoisted into the engine. Measured
-    2026-08-06 on a genuinely gate-clean CV carrying a PUBLICATIONS section: with the
-    `template` renderer's grammar applied unconditionally, `cv.renderer: script` reported
-    `skipped-gate` and rendered nothing, although the operator's own script would have
-    laid that section out fine. `script` shells out to arbitrary user code and has no
-    grammar to impose, so it deliberately does NOT implement this -- one seam member
-    imposing another's requirements is the inversion this hook exists to undo.
+    NO GRAMMAR HOOK (#364/#365/#368, spec §7.2). The CV's structure is data sluice
+    assembles, so there is no composed text for a renderer to parse and no grammar of its
+    own that could refuse a gate-clean CV, and `cv/engine.py` asks a renderer for nothing
+    but `render`. A renderer receives the document whole and lays it out.
     """
 
-    def render(self, document: "CvDocument", out_dir: str, *, neutral_name: str = "CV.pdf") -> str: ...
+    def render(self, document: "CvDocument", out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
+        """Lay the whole `CvDocument` out as a PDF under `out_dir` and return its path.
+        Failures raise `RenderError`."""
+        ...
 
 
 @dataclass

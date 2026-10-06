@@ -181,7 +181,10 @@ tunables go in the relevant `*Config` dataclass and `sluice.yaml.example` — ne
 logic. Only `load_config` names its fields explicitly; the four sub-app loaders are
 `hasattr`-filtered `setattr` loops, so a new ROOT field is dead until `load_config` names it, and
 the sub-app loaders must not be "fixed" into naming theirs (`load_track_config`'s merged-denylist
-branch lives in that loop).
+branch lives in that loop). One exception to each loader reading only its own block:
+`load_config` also refuses the retired CV inputs (`core/config.py::refuse_retired_cv_inputs`: the
+root `baseline_rel` and the `cv:` block's `employers`, #364/#365/#368), because it runs on every command, so
+the first command after an upgrade stops on them rather than the key going quietly dead.
 
 **Every RELOCATABLE path goes through `core/paths.py` (#80).** One `resolve()`, one order — env var,
 then config key, then the XDG base directory for that `kind`. An explicitly-named value — env var or
@@ -527,7 +530,8 @@ away and re-scraping it as `EXAMPLE CO` rather than `Example Co` returned `creat
 exact-casing control suppressed correctly — the guard worked and the re-scrape walked past it.
 Folding can only suppress MORE, never resurrect more, and it does not widen `seen.db`, since that
 arm stays gated on `url_proven`, which no name folding can manufacture. The fold has ONE home,
-`core/vault.py`'s `_fold_note_name`, and EVERY path that resolves a lead by name goes through it —
+`core/names.py`'s `fold_note_name` (its own module, so the vault store and `core/layout.py` both
+import it and neither reaches into the other for the fold), and EVERY path that resolves a lead by name goes through it —
 `_locate`, `_archived_match`, `read_leads`' report and `reconcile_names`. Do not restate that as a
 count; it shipped as three and was stale inside the same branch. A `_locate` that folds against an
 `_archived_match` that does not is measurably a resurrection, and a `reconcile_names` that does not
@@ -545,6 +549,11 @@ not filenames for a write decision. The fold ALSO has a second kind of consumer 
 `_folded_archive_names`/`_archive_name_candidates` fold to choose an archive FILENAME rather than
 to resolve a lead, and both halves must fold identically or the collision skip silently stops
 firing.
+A THIRD kind since #364/#365/#368: `core/layout.py::fold_employer` matches an experience
+entry's `Company:` to a CV Layout role through the same fold (whitespace collapsed on top),
+imported from `core/names.py` like every other consumer. It sits on the IDENTITY side -- a wider fold makes
+more entries eligible for more roles, which loosens `WRONG EMPLOYER` -- so the fold must not
+widen for it either.
 `_merged/` is load-bearing retention, not
 scratch: do not prune it. The lead scan is recursive (#1), so `_merged/` is excluded from it BY NAME
 (`_PRIVATE_SUBDIRS`, at the TOP LEVEL only) rather than by the accident that a flat `os.listdir` never descended into
@@ -654,70 +663,144 @@ shared, not per sub-app: `Sluice.dossier_cache()` reads `self.config.min_jd_char
 `triage()` and `compose_cv()`'s cache, since the two already share one dossier cache directory (#80)
 and must agree on the floor.
 
-**The CV fabrication gate is hard.** `cv/validate.py` is pure and deterministic: every WORK bullet
-must cite a real bundle `[id]` and every number in a bullet must appear in a cited entry; the PROFILE
-prose (which has no per-bullet citations) has a source-set-wide numeric floor — a figure present
-nowhere in the source set (the baseline plus every entry, never the NEGATIVE CONSTRAINTS the bundle
-also carries, and never the SKILLS INVENTORY framing section #165 added — `bundle_sources` walks
-`bundle["entries"]` alone, so a skills figure is licensed in neither pool, and `compose.py`'s rules
-tell the model so) is a violation, citations stripped with render's exact `_CITE_RE` — and — enforced
-beside it in `cv/engine.py`, since `validate` returns `[]` rather than complaining — a composed
-CV missing the exact `WORK EXPERIENCE`/`PROFILE` headers fails closed, since the section-keyed
-checks would otherwise silently not run. The TRIAGE NOTES section #329 added sits outside the
-bundle entirely; a figure present only in it, echoed into PROFILE prose or a WORK bullet, is
-refused; CERTIFICATES, EDUCATION and a WORK company or `dates | location | role` line carry no
-figure check at all. That verdict, together with `cv/engine.py`'s own inline STRUCTURAL
-guards beside it (the header checks just named, plus the three name/contact-block anchors described
-below), `cv/slop.py`'s unscoped HARD tier (an em dash or a literal `--`), and the renderer's own
-optional `precheck`, form the HARD gate: a non-empty finding list blocks rendering, and a lead with no
-attempt that ever cleared it is skipped — a CV is never rendered ungated. The gate is HANDED its
-source set rather than recovering it: `validate`'s second parameter is `cv/bundle.py`'s
-`BundleSources`, built by `bundle_sources(bundle)` from `build_bundle`'s own structured entries,
-never by re-parsing the rendered bundle TEXT (#174) — so no line of user free text can mint or
-rebind a citable `[id]`. That closed three live holes: a later body line shaped like an EARLIER
-real code used to REBIND that entry's allowlist, so a fabricated figure passed while the entry's
-own genuine metric was reported invented; an `[XX9]`-shaped line anywhere in the BASELINE minted a
-fully citable entry of its own; and, at zero entries, the NEGATIVE CONSTRAINTS block fell through
-into the PROFILE pool so a do-not-say figure was profile-permitted. That closure has a price: `cv/bundle.py`'s
-`_entry_block` now feeds BOTH the rendered prompt and the gate's allowlist, so a change to how an
-entry is presented to the model is also a change to what the gate permits — deliberate, since it is
-what removes the three holes above, but the two can no longer be varied independently. It also
-re-admits two narrow PROFILE-pool widenings the old positional parse excluded as a side effect of
-its own bugs: a `=== 2020 Highlights ===`-shaped BASELINE line now permits its digits in PROFILE
-prose, and an id-shaped baseline line's own digit (the `9` of a stray `[ZZ9]`) does too — see
-`docs/ARCHITECTURE.md` for the mechanism. The SCOPED STYLE tier
-(#167) has these members, and none of them blocks: `cv/slop.py`'s ~40 AI-tell stems,
-`cv/terms.py`'s unbundled-term check (#194, on by default via `cv.term_check`; its findings are
-`CvResult.terms`, reported apart from the phrase stems' `slop`), and the opt-in
-model-judged `cv/voice.py` check (`cv.voice_check`). The scoping is a property of the TIER, so it
-covers all of them — `cv/engine.py` matches the stems against, and shows the model, exactly the
-PROFILE-prose/WORK-bullet lines — two of the THREE regions `cv/validate.py`'s own `section_spans`
-yields (#168's Task 3 added a SKILLS region alongside them, deliberately excluded here) — never the
-whole document, because a complaint naming an employer, certificate or education line is answerable
-only by renaming the thing it names. A surviving finding from any of them ALSO drives the retry: the
-engine retries composition exactly once when the HARD gate fails OR a STYLE/VOICE finding survives,
-feeding every finding back, and RETAINS the HARD-clean draft with the fewest STYLE/VOICE findings
-across that retry (a tie keeps the later one, and an attempt whose voice check failed never displaces
-one whose voice was measured), so a worse or failed second attempt can never bin a
-lead the first one already cleared, and a style-worse retry never replaces a cleaner first draft — a
-phrase may never cost a lead. At shipped defaults (`cv.slop_allow` empty, `cv.style_hold` off) the
-retry still fires on a phrase hit, so a hard-clean draft using one of the ~40 stems in prose costs a
-second compose call; `compose.py`'s own prompt bans the identical list (rendered from `cv/slop.py`'s
-`_PHRASES`, so the two cannot drift), which is what keeps that cost the exception rather than the
-rule. See
-`docs/ARCHITECTURE.md` for the full two-tier mechanics. Above the hard gate sits a softer,
-human-facing layer (#60, on by default via `cv.require_signoff`): an advisory LLM audit
-(`cv/audit.py`) catches the qualitative fabrication the deterministic gate cannot, and an
-`unsupported` flag WITHHOLDS the send-ready `tailored_cv` pointer (via
-`Store.sign_off`/`hold_for_signoff`, cleared by `job-sluice cv signoff`) rather than blocking
-rendering. An audit that could not RUN holds the same way (#333, an `unaudited` entry): it used to
-fail open, serving a CV nothing had reviewed. The hold is recorded in two frontmatter keys, `pending_cv` and `needs_signoff`; the
-note's `status` stays `shortlist`, so never-regress is untouched. `needs-signoff` is the
-`CvResult` RUN-REPORT label for that outcome, never a `status`-key value — `docs/ARCHITECTURE.md`
-states the same distinction, and this file used to contradict it. `cv.style_hold` (#167, off by default) gives a surviving STYLE/VOICE finding the SAME
-consequence, deliberately a SEPARATE key from `cv.require_signoff` — that flag's True default was
-chosen for FABRICATION, and riding it would withhold `tailored_cv` on any of ~40 stems out of the box
-on an unconfigured install. Neither signoff flag touches the pure hard gate.
+**A CV is assembled, never parsed (#364/#365/#368).** `cv run` asks the backend for a JSON
+reply -- a profile, cited bullets per role SLOT, and skill picks from a closed list -- and
+sluice builds the `CvDocument` itself (`cv/document.py::assemble`): the CV Layout note
+(`Job Applications/CV Layout.md`, parsed by `core/layout.py`) gives every role's heading,
+dates, location and title and which experience entries each role may cite, and the Candidate
+Profile gives the name and contact. The model writes no heading, date, name, contact,
+certificate or education line, so the gate checks none of them, and no such check must be
+added: a check that refuses vault text makes the user prove their own data. The checks exist
+to catch the MODEL putting words in the user's mouth, and stop there. `cv/engine.py` refuses a
+lead before any dossier fetch or LLM spend (`skipped-config`) while the Candidate Profile's
+derived name or contact block is blank, or the CV Layout note is gone -- the name becomes the
+PDF's headline, and a blank one is the quiet wrong default this codebase engineers out.
+`cv/reply.py` reads a reply: `extract_json` tries fenced blocks first, then each plausible
+`{`, and takes the first decoded object carrying `profile` and `roles` and no example
+placeholder -- so chat around the JSON (a backend such as `claude --print` is an agent, and
+talks) is ignored rather than parsed -- and an object with a duplicate key is never read
+with one value silently winning: it is set aside, and is a finding when no other candidate
+carries the full shape. `parse_reply` shape-checks it into a typed `Reply` or returns
+`REPLY:` findings; slot ids match case-insensitively, and a role heading naming exactly one
+slot reads as that slot. A BULLET whose text fails a check is
+the exception: it stays in the `Reply` with its findings filed under
+`Reply.bullet_findings` by (slot, position), because only the selection knows whether it
+survives the budget. `cv/selection.py::select` decides what
+may render: skill picks off the pool, then duplicates, then beyond `skills_max` are DROPPED
+-- in that order, so a rejected pick never uses up the cap -- and bullets beyond a role's
+budget are TRIMMED, the first N kept (a slot with no eligible entry has budget 0). It
+carries forward the text findings of the KEPT bullets only (`Selection.findings`), which the
+engine adds to the attempt's violations. A drop is reported (`skills_dropped`,
+`bullets_trimmed`) and never refused -- a trimmed bullet's text findings included -- so it
+never costs a retry or a lead.
+
+**The fabrication gate is hard, and reads only what the model wrote.**
+`cv/validate.py::check_selection` runs over the SELECTION -- the profile and the kept bullets,
+never vault text: every kept bullet cites entries that exist (`UNCITED BULLET`, `BAD
+CITATION`) and are eligible for its slot (`WRONG EMPLOYER`); every figure in a bullet appears
+among its cited entries' figures, and every figure in the profile among some entry's
+(`INVENTED METRIC`, `INVENTED PROFILE METRIC`); a tool from the entries' `Tools:` vocabulary
+that a bullet names in its declared spelling must be declared (in any case) by a cited entry,
+or named in that entry's own title or body (`MISATTRIBUTED TOOL`), a check that runs only
+while some verified entry declares `Tools:`, which every composed result reports
+(`CvResult.attribution_check_off`); and a `fabrication_decoys` term matches as a whole token
+sequence, never across a sentence break (`FABRICATED`). A FIGURE is a digit run read whole
+(`core/tokens.py::figures`): any character `unicodedata.digit` gives a value counts as a
+digit, normalised to ASCII on both sides, so a figure cannot dodge the gate by script;
+thousands groups joined by a comma, NBSP, narrow NBSP or thin space read as one number
+(`50,000` is `50000`), and digits joined by a single `.` are one figure (`8.3`, never the
+licensed `8` and `3`). `core/tokens.py::group_reading` is the one rule for every group
+separator, used both by `figures` and by `cv/reply.py`, so the two cannot disagree. Declared
+`Tools:` names are blanked by their own token spans before figures are read (a bullet's cited
+entries' tools; for the profile, every entry's), never by substring. An em dash or a literal
+`--` in the same texts (`cv/slop.py::check_hard`) is the hard slop tier and reports in `slop`.
+`REPLY:` findings are HARD too: a reply that cannot be read, a bracket or line break in a
+text, a section heading given as content, no bullets in any role that can carry them, an
+invisible format character anywhere -- and, in the MODEL's text, these number shapes
+(`cv/reply.py::_text_findings`): a character with a numeric value `figures` cannot read
+(`unicodedata.numeric` gives one and `unicodedata.digit` does not, in ANY category: a Roman
+numeral, a circled number above nine, a vulgar fraction, a CJK numeral, which is a letter --
+category Lo -- to Unicode; a circled digit or a superscript has a digit value and is read, not
+refused), a decimal written with a comma
+(`2,5x` would read as 25), digits split by a separator `figures` cannot join, and an
+ASCII-space group (`Led 3 100-person teams` is three teams or 3100, so `figures` reads that
+shape both ways on the entry side and the model may not write it). A residual, stated: a
+number grouped by a space after a lone-letter prefix (`x1 000`) reads
+as two figures and is not refused, because the label rule cannot tell it from `Q3 120`
+(`core/tokens.py::group_reading`). Look-alike letters are
+a `REPLY:` finding too, for the whole-term checks' sake -- a full-width or other compatibility form,
+or a word mixing Latin with another script, which would let a tool or decoy name dodge a
+match -- and so is a non-Latin letter touching a digit (a Cyrillic or Greek O in `8O%` reads
+as 80 on the page while `figures` reads 8; the word scan cannot see it, since its pattern
+excludes digits). "Touching" looks through what renders as no gap -- a combining mark,
+whitespace other than an ASCII space, one figure separator (`8.O` reads 8.0) -- and a digit is
+`core/tokens.py::digit_value`, the one predicate `figures` reads runs with, so the two cannot
+disagree on where a run starts or ends. A second residual, stated: an ASCII letter touching a digit (`8O%` with a
+Latin O, `2l0`) is NOT refused, because `5G`, `O2` and `10l` are real text, so only its
+digits are checked and the advisory audit is the one backstop. `check_selection` has ONE accumulator, extended only by `v.append(<CATEGORY> ...)`
+with the category inline: `tests/test_docs_claims.py` derives the gate's categories from
+exactly that shape and pins `docs/TROUBLESHOOTING.md` to them, so a category reached any
+other way is documented by nothing.
+
+**An entry's figures and tools each have one home.** `cv/validate.py::entry_facts` takes an
+entry's figures from `cv/bundle.py::_entry_block` -- the lines the composer is shown for it,
+minus its own `[id]` code -- and its tools from `core/tokens.py::tool_items`, shown by a
+SEPARATE emitter (`_tools_line`), so a digit inside a tool's name never licenses a figure.
+The gate is HANDED its source set rather than recovering it (#174): `entry_facts` walks the
+bundle's structured entries, never the rendered prompt text, so no line of vault free text
+can mint or rebind a citable `[id]`. A line added to `_entry_block` becomes a source for that
+entry; the frozen-literal guards in `tests/test_cv_bundle.py` are the ratchet, and
+re-freezing `FROZEN_BUNDLE_TEXT` after widening `_entry_block` moves that comparison with the
+widening -- only `test_entry_facts_sentinels_hold_independent_of_the_frozen_literal` does not
+move with it -- so read the freeze diff. Nothing else licenses a figure: not the guidance
+(`cv.negatives`), not the Skills Inventory, not the CV Layout, not the triage notes (#329),
+and not a baseline CV, which nothing reads. `core/tokens.py` is the one tokeniser and term
+matcher, shared with `doctor` because `core/` may not import a sub-app. A `Tools:` item with
+a token that begins with a digit is refused before any spend (`missing_prerequisites`),
+since a name shaped like a figure would let an invented figure vanish with it.
+
+**The retry contract.** A HARD finding, or a STYLE/VOICE finding that survives (#167, #194),
+drives EXACTLY one retry, fed the findings and the previous reply's drops. The loop RETAINS the
+hard-clean attempt with the fewest style/voice findings -- a tie keeps the later one, and an
+attempt whose voice check failed never displaces one whose voice was measured -- and a lead
+with no hard-clean attempt is skipped, never rendered. `best` holds the retained SELECTION,
+drops included, and the rebind after the loop is the one assignment every later reader goes
+through: `assemble`, `cv.rendered.md`, the audit and the render all take the retained
+attempt. The STYLE tier -- `cv/slop.py`'s AI-tell stems, `cv/terms.py`'s unbundled-term check
+against `cv/bundle.py::term_vocabulary` (on by default via `cv.term_check`, reported in
+`CvResult.terms`), and the opt-in model-judged `cv/voice.py` check (`cv.voice_check`) -- reads
+the model's text only (`cv/document.py::model_lines`), because a complaint about an employer,
+certificate or skill name is answerable only by renaming the thing it names. At shipped
+defaults a phrase hit still costs the second compose call; `cv/compose.py`'s prompt bans the
+identical list (less `cv.slop_allow`), rendered from `cv/slop.py`'s `_PHRASES`, which is what keeps that the
+exception. `term_vocabulary` is built from the entries, their tools, the Skills Inventory and
+the CV Layout, and subtracts NOTHING (#368: reading prose negatives as bans stripped terms the
+user's own evidence carried). `cv.negatives` is free-text guidance to the composer that no
+deterministic check reads (the advisory auditor is shown it, `cv/bundle.py::render_audit_bundle`); a ban belongs in `cv.fabrication_decoys`.
+
+**The advisory audit and the holds.** Above the hard gate an LLM audit (`cv/audit.py`) reads
+`cv/document.py::audit_text` -- the profile and each kept bullet with its cites, under its
+role heading for context, and no other vault text (no date, location, title, certificate,
+education line or skill), which it has no truth for -- against
+`cv/bundle.py::render_audit_bundle`, which carries each entry's `Tools:` line so a tool the
+gate licensed does not read as unsupported. An `unsupported` flag, or an audit that could not
+run (#333), WITHHOLDS the send-ready `tailored_cv` pointer under `cv.require_signoff` (on by
+default) via `Store.hold_for_signoff`, cleared by `job-sluice cv signoff`. The hold is
+recorded in `pending_cv` and `needs_signoff`; the note's `status` stays `shortlist`, so
+never-regress is untouched, and `needs-signoff` is the `CvResult` run-report label, never a
+`status` value. `cv.style_hold` (off by default) gives a surviving STYLE/VOICE finding the
+same consequence, deliberately a SEPARATE key: `require_signoff`'s True default was chosen for
+fabrication, and riding it would withhold `tailored_cv` on a phrase.
+
+**The Renderer seam takes the document.** `Renderer.render(document, out_dir, *,
+neutral_name)`: `template` renders the `CvDocument` directly; `script` is handed
+`cv/document.py::to_text(document)` without citations -- the meta line POSITIONAL
+(`dates | location | title`, always three fields), dates joined by an en dash -- pinned by the
+literal in `tests/test_cv_script_golden.py`, captured from the old pipeline. There is no
+`precheck` (removed in #364/#365/#368) and no renderer grammar to keep in step with the gate:
+a renderer receives data, so it can refuse nothing the gate certified, and it is reached only
+past the hard gate. `CvDocument`/`Role` live in `core/protocols.py` and keep their exact
+fields, because user templates are written against them.
 
 **Citability has ONE writer: `Store.verify_evidence` (#164).** The `verified:` frontmatter key is
 what makes an evidence entry citable by the gate above, and `verify_evidence` is the only thing in
@@ -749,16 +832,24 @@ and would need the whole set of refusals above rebuilt around it. This list said
 tool" until #175, which made that reading actively wrong: `propose_evidence` IS an MCP write tool
 and is not a promotion path, so the phrase would have argued against the one thing on this axis
 that shipped while leaving the one that must not ship unnamed. What makes something a promotion
-path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carries TWO flags since #165, because
-the questions stopped having one answer: `read_by_composer` says the corpus reaches the composer's
-prompt, `cited_by_gate` says the fabrication gate may LICENSE its content. `experience` is both,
-`skills` is the first only (shown as framing, licensed by nothing: it is RECOGNISED by
-`cv/bundle.py::mention_vocab`, so the unbundled-term check does not report a declared skill (unless a
-negative names it), but nothing LICENSES it), `stories` is neither, and
-`__post_init__` refuses `cited_by_gate` without `read_by_composer` since the gate cannot license
-what the composer never emitted. Every user-facing message that says what `verify` buys is keyed on
-`cited_by_gate` rather than asserting citability for all three -- keying it on the wrong flag
-re-creates the over-claim the flag exists to prevent.
+path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carries a flag per question, because the questions stopped having one answer:
+`read_by_composer` says the corpus reaches the composer's prompt, `cited_by_gate` says the
+fabrication gate may LICENSE its content, and `names_in_skills_pool` (#364/#365/#368, D12)
+says a verified note's NAME -- its `Label:`, else its title (`cv/selection.py::cv_name`) -- may
+appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` items reach the
+skills pool through `tool_items` whatever that flag says); `skills` is read and named, and is
+RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
+declared skill, but nothing LICENSES it; `stories` is neither. `__post_init__` refuses
+`cited_by_gate` without `read_by_composer`, since the gate cannot license what the composer
+never emitted. `legacy_fields` is presence-only: the store reports
+whether a note still carries a retired field (`Skills` on experience) as a boolean under the
+entry's own `legacy` key, never its value and never inside `fields`, so no flag, wizard
+prompt or proposal can carry it as data again. `add`'s unverified notice, the `init` wizard's
+summary and the MCP `propose_evidence` RESULT say what verifying buys through
+`core/protocols.py::verify_outcome`, keyed on `cited_by_gate` and then `names_in_skills_pool`,
+and `core/doctor.py::classify_store`'s per-kind row branches on the same two flags in the same
+order -- keying such a message on the wrong flag re-creates the over-claim the flags exist to
+prevent.
 
 **Where that boundary STOPS, stated rather than implied: a human editing their own vault.** The
 vault is the user's Obsidian directory and hand-editing it is a first-class workflow here, so a
@@ -766,7 +857,8 @@ note hand-placed in an evidence kind's own directory carrying `verified:` IS cit
 `read_evidence("experience")` returns it under the default `verified_only=True`, and nothing in
 `sluice/` inspects a file it never wrote. `_refuse_citation_shaped_body` does not reach it either,
 since that runs on the two WRITE paths (`_render_evidence_note` and `verify_evidence`), which is
-why it is a NARROWING and #174 — `validate()`'s signature change — is the close on the gate side.
+why it is a NARROWING and #174 -- the gate reading structured entries (`cv/validate.py::entry_facts`)
+rather than parsing bundle text -- is the close on the gate side.
 That is the same posture the rest of the store takes (never-clobber protects the user's edits, it
 does not police them). What must not be claimed is that the single-writer property makes the
 citable set unreachable by any other means: it makes it unreachable THROUGH SLUICE. The symlink
@@ -774,158 +866,6 @@ refusals in `Vault._evidence_dir` and `_evidence_entry_path` are the same bounda
 other axis — a store may refuse to reach OUTSIDE the vault the user named, and does, on every
 directory component below it and on the entry file itself; what is inside that vault is the
 user's.
-
-**The gate is blind to the name/contact block, and that block renders as the PDF's headline (#99).**
-`cv/validate.py` never inspects anything before `PROFILE`; `cv/parse.py`'s grammar takes the LAST
-non-blank line before `PROFILE` as the name and everything before it as contact, with zero shape check
-on either. Measured on the real production path: a composer's routine one-sentence preamble ahead of
-the CV proper desyncs that assignment silently -- a LinkedIn-URL contact line became the parsed name,
-the real name landed in contact, `validate()` reported zero violations, and the CV would have rendered.
-`cv/engine.py`'s retry loop closes this with three inline STRUCTURAL guards, in the same shape as the
-`WORK EXPERIENCE`/`PROFILE` header checks beside them: the header block's LINE COUNT must match
-`contact_block(profile)`'s lines plus one (the name), its LAST line must case-fold-match
-`full_name(profile)`, and the lines BEFORE that last one must equal `contact_block(profile)`'s own
-non-empty lines verbatim. The third guard was added on CodeRabbit's review of the first two (PR #100):
-a same-count preamble occupying exactly the contact slot, with the name still correctly anchored,
-passed both of the first two checks while silently dropping the real contact information. It runs LAST,
-after the name-anchor check, because a same-count REORDERING also fails the content comparison and the
-anchor check's message is the more specific diagnosis for that shape. All three compare against
-`cv_name`/`cv_contact` (#133/#107: `cv/engine.py` derives both once per lead, before any spend, as
-`full_name(profile)`/`contact_block(profile)` off the vault's Candidate Profile note --
-`core/candidate.py`) -- ground truth `cv/parse.py` never has, since it is pure and takes only `text` --
-and all three live in the engine rather than reaching them through `cv.parse` or a renderer's
-`precheck`, for the same reason as each other: `precheck` only reaches the `template` renderer (`script`
-implements none at all, `test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar`),
-while these guards must bind every renderer alike, because the shape they enforce is what `compose.py`'s
-own prompt REQUESTED, not what any one renderer's LAYOUT needs. **The engine may guard what the prompt
-required; only a renderer may guard what its own layout needs.** A composed CV whose derived
-`full_name(profile)`/`contact_block(profile)` are blank needs no preamble at all to fail the same way --
-it is the model complying exactly with what the vault declared, and no STRUCTURAL check can distinguish
-a blank derived name from a genuine one. There is no placeholder sentinel this GATE compares
-against any more: identity moved out of `cv.name`/`cv.contact` config keys and into the vault
-note (#133/#107), so a derived value that is blank just IS blank -- "" cannot collide with a real
-name the way the old `"Your Name"` default theoretically could. (The literal string no longer
-ships at all: `cv/compose.py`'s `build_prompt`/`compose` made `name` a required KEYWORD-ONLY
-argument with no default, closing even the unreachable path rather than leaving an inert
-placeholder behind it -- the one production caller, `cv/engine.py`'s `run_one`, already passed
-`name=cv_name` explicitly, so nothing there changed; `compose.py`'s own unit tests now pass a
-fixture identity instead of relying on a shipped default. `contact` keeps its `""` default,
-deliberately: an empty contact block is the neutral, already-abstain-shaped value this codebase
-uses throughout, not a placeholder that could misrepresent anyone.) `cv/engine.py` therefore also refuses to compose at all
-while either derived value is blank, before any dossier fetch or LLM spend (`skipped-config`), mirroring
-the `#9` staleness guard beside it -- the same "quiet wrong default" posture this codebase takes
-elsewhere (e.g. `cv/config.py`'s `load_cv_config`, which raises loudly rather than silently drop a
-legacy `cv.name`/`cv.contact` left in a config file), applied here to the single most visible line of an
-artefact sent under the user's identity.
-
-**`compose.py` recovers the artefact from an agentic backend's conversational envelope (#28).**
-`claude --print` is Claude Code, an agent, not a completion endpoint: given a "compose X" prompt it
-may write a file and summarise, ask clarifying questions, hedge about missing tools, comply with a
-drifted output format, or -- the shape that survived #91's argv fix and #99/#100's header guards --
-comply with everything except "no preamble, acknowledgement, commentary, separator, or closing
-remark", wrapping an otherwise gate-clean CV in a short conversational aside on one or both sides,
-delimited by a markdown-style `---` line. `slop.py`'s unqualified `DOUBLE-HYPHEN-DASH` rule correctly
-rejects a bare `---` either way -- the fix is not to weaken that gate but to recover the real CV
-before it reaches the gate at all. `compose()`'s `_unwrap_agent_envelope` strips a short aside
-(fewer than four non-blank lines) from before the first such fence and/or after the last one, but
-ONLY when none of those lines is one of the CV's own section headers OR shaped like one of its
-entries (a bullet, or a pipe-separated `dates | LOCATION | Role` meta line); a fence anywhere else, or
-one with genuine CV content on either side, is left untouched, because guessing wrong there would
-silently discard a real section rather than merely fail a gate that retries. It closes the specific
-gap the original fix candidate for `#28` (a two-fence-only unwrap) left open: a model complying with
-"no preamble" still appends a closing remark behind a SINGLE fence, which a two-fence-only unwrap
-cannot see. The entry-shape check itself closes two content-loss findings from this fix's own
-`/review-pr` round, both confirmed by execution rather than argued from the code: a genuine final
-WORK EXPERIENCE entry (company line, meta line, one cited bullet) is exactly as short and as
-header-free as a real conversational aside, and so is a section's own body when a fence lands right
-after that section's header rather than before it, since the header is then on the wrong side of the
-fence for the header check alone to see. Checking for the entry's own shape catches both without
-needing to remember what already appeared on the other side of a fence. The one gap still accepted
-is a fence positioned between the name and `PROFILE` -- never observed on the real production path,
-since every captured case wraps the WHOLE CV rather than a sub-slice of its own header, and a bare
-name line has neither a section header nor an entry shape to be caught by -- which this function may
-still misread as a genuine leading aside and strip along with the real name; that degrades safely
-rather than silently, because the resulting headerless CV still trips the `#99` STRUCTURAL count
-guard immediately above and forces the ordinary retry rather than shipping nameless.
-
-**A renderer's `precheck` must never be STRICTER than that gate** -- with two narrowly-scoped,
-individually-justified exceptions, both stated below with the test that licenses them ("the refusal
-must be answerable WITHOUT inventing content"); read to the end of this section before concluding a
-given refusal violates the rule. `cv/engine.py`'s retry loop also
-calls the Renderer seam's optional `precheck(cv_text) -> list[str]` (`core/protocols.py`) and folds
-its strings in with the gate's violations, so a renderer's own grammar reaches the model's one retry
-rather than arriving after the LLM spend. That makes it the one place a formatting rule can bin a
-lead the gate certified clean: gate passes → precheck refuses → compose, gate green, retry, fail,
-lead binned. Instances of it shipped on the `template` renderer's parser REPEATEDLY, each found by
-someone happening to think of a case and adding a row: the en dash, the em dash, the word `to`, the
-terminal token's casing and spelling, a single-digit month, a case-drifted section header, a blank
-line under a trailing header, an en-dash CERTIFICATES marker, a LOCATION field nothing upstream can
-supply — and, on a second review round, that same LOCATION field spelled as a BLANK MIDDLE pipe
-(`dates |  | Role`), which was refused while the two-field spelling of the identical fact was
-accepted. Deliberately no total — the count is not derivable from anything executable, two files
-carried different numbers, and this repo has already been bitten by a stale count in prose twice
-(`core/paths.py`'s ingress sites). The LOCATION one is the worst shape: the only actionable reading
-of "add the missing field" is *invent a city*, so a parser refusal became fabrication pressure aimed
-at the feature that exists to prevent fabrication. Widen the parser, never `cv/validate.py`.
-
-`tests/test_cv_parse.py`'s implication sweep is the standing check, and **its coverage is narrower
-than the rule** — read this before concluding a case is already swept. It asserts
-`validate(cv, sources) == [] ⇒ parse_cv(cv) does not raise` with the antecedent COMPUTED from the
-real gate per row, over one alphabet: separator × terminal token × start-month width, applied to the
-FIRST role's date range in one fixture. So it covers `parts[0]` of one meta line and nothing else.
-Known un-swept axis, measured: a FOUR-field meta line
-(`02/2023–present | Example Location A | Staff Engineer | Platform`) is gate-CLEAN and
-refused. That one is left refusing on purpose — four fields is genuinely malformed and the message
-names the expected shape, so the retry can act on it — but it is a gap in the sweep, not a case the
-sweep passed.
-
-The name/contact misassignment (#99, above) is a THIRD gate-clean, un-swept case, and it is
-deliberately NOT a third exception to the implication: `parse_cv` still does not raise on it, on
-purpose, because the parser has no ground truth to refuse against and tightening it would only
-protect the `template` renderer for zero added coverage on the path that actually ships. Protection
-lives at `cv/engine.py` instead, comparing the same header block against the vault-derived
-`cv_name`/`cv_contact` (`core/candidate.py`) -- `cvcfg` carries neither field as of #133/#107.
-`test_a_preamble_line_is_gate_clean_and_parsed_without_refusal_on_purpose`
-(`tests/test_cv_parse.py`) pins this as intentional, the same way the two exceptions below are
-pinned — read it before "fixing" this by widening the parser after all.
-
-A REPEATED trailing header (`CERTIFICATES` … `EDUCATION` … `CERTIFICATES` again) is the second
-deliberate refusal of gate-clean input, and it was added rather than inherited: measured, it was
-gate-clean AND slop-clean AND parsed without raising, returning `certificates == []` with the second
-block's entries gone — and since the template guards each section with `{% if document.certificates
-%}`, the heading vanished with them, so the PDF was indistinguishable from a candidate who holds
-none. `SKILLS` joined `CERTIFICATES`/`EDUCATION` as a third trailing section at #168's Task 7, and
-the same refusal covers a repeated `SKILLS` header identically — the message names whichever
-sections are actually live by deriving them from `_TRAILING_SECTIONS` rather than hand-listing a
-pair that would go stale the moment a third joined it. Both exceptions pass the same test, and it is
-the test to apply to any third: the refusal must
-be answerable WITHOUT inventing content (here, merge the two headings). That is exactly what the
-LOCATION refusal failed, and why that one went the other way. The repeat is refused even when it
-turns out to be empty and so drops nothing; that over-refusal is stated in `cv/parse.py` rather than
-disguised as a distinction the code draws.
-
-The one place a parser may legitimately be stricter is a WORK bullet marker, and there the
-requirement is EQUALITY with the gate, not merely "no wider": a marker `validate.py` does not also
-citation-check would render an UNCITED bullet into the PDF ungated, while one it checks and the
-parser rejects is the governing bug class again. `_TRAILING_MARKERS` (CERTIFICATES/EDUCATION/SKILLS,
-none of which the gate ever citation-checks, so that half of the bypass argument still has no force
-there) is a separate, wider tuple from `_BULLET_MARKERS` for exactly that reason — never widen the
-shared one. SKILLS is not fully exempt, though: it is the FIRST trailing section the hard gate DOES
-check, via containment rather than citation (`UNSOURCED SKILL`, #168), so a marker this tuple
-accepts that `validate.py`'s `_SKILLS_MARKERS` does not recognise as a bullet would let that line
-slip past `skills_lines` entirely and reach the PDF uncontained — a bypass of the NEW check even
-though the citation argument still has no force. What that argument establishes is a FLOOR and not an
-equality, and the distinction is load-bearing in one direction only: `_SKILLS_MARKERS` must never be
-NARROWER than `_TRAILING_MARKERS`, while staying WIDER costs nothing, because the gate is
-renderer-independent and `_TRAILING_MARKERS` is the `template` renderer's own grammar — pinning the
-gate to it by equality would let a later narrowing on the parser side narrow the gate too, for every
-renderer, with the guard still green. The two are pre-shaped equal today, which is their shape rather
-than their obligation, and the containment check strips with the identical character set before
-comparing — so never narrow either alone. `tests/test_cv_parse.py::test_the_work_bullet_markers_are_
-exactly_what_the_gate_citation_checks` is the one guard over both relations: EQUALITY on the WORK
-pair, the floor on the SKILLS pair. A second row asserting SKILLS equality shipped beside it on the
-#168 branch, contradicting that same file's own reasoning, and was removed rather than softened into
-a duplicate.
 
 **Neutrality: no personal data in this repo.** No employer names, role preferences, locations,
 contact details, hostnames, or absolute paths in `sluice/` or `tests/`. The judge's criteria are read
@@ -1144,23 +1084,14 @@ turning the one documented machine-readable channel unparseable on a single scra
   production impls — `template` (the default: fills a user's Jinja2 template, or the packaged
   default, via WeasyPrint; `pip install -e '.[render]'`) and `script` (the external shell-out
   escape hatch) — selected by `cv.renderer`, so by-name selection between real implementations is
-  already LIVE there. That seam has a second, OPTIONAL member, `precheck(cv_text) ->
-  list[str]`: a renderer implements it only when the composed CV must satisfy a grammar of its own
-  (`template` does, `script` does not, and the engine reaches it through `getattr` so an absent one
-  gates nothing). Keeping it on the renderer is what stops one implementation's requirements binding
-  the whole seam — measured, the engine imposing `template`'s grammar unconditionally reported
-  `skipped-gate` under `cv.renderer: script` for a gate-clean CV. Being optional means it is the one
-  seam member NOTHING types, so the engine checks the RETURN at the call site and raises naming the
-  renderer: a `precheck` returning a bare `str` was otherwise spread one CHARACTER per violation into
-  the retry prompt. `Sluice.compose_cv` resolves the renderer on a `--dry-run` too, purely so this
-  hook runs — a dry run reporting no violations where a real run reports `skipped-gate` is a preview
-  that false-greens the input it is previewing; a `RenderError` during that construction is caught,
-  WARNED about by name, and the dry run proceeds. Store and fetcher have one production impl each (`vault`,
-  `camofox`); the STORE seam has since grown the same OPTIONAL shape, `preflight() -> dict`, reached
-  via `getattr` exactly like `precheck` and for the same reason (an implementation that cannot say is
-  not one that is broken) — `job-sluice doctor` (see below) is the one caller, and `Vault.preflight`
-  answers with FACTS (vault dir, baseline CV, Judging Profile, a total/verified/pending count for
-  each of the three evidence corpora -- #164: `experience` (keeping its pre-#164
+  already LIVE there. A renderer is handed the assembled `CvDocument` and nothing else (see the
+  CV paragraphs above), and `Sluice.compose_cv` constructs no renderer for a `--dry-run`, which
+  never renders -- but it still looks `cv.renderer`'s NAME up in the registry, so an unknown or
+  retired name fails the preview before any backend call exactly as it fails the real run. Store and fetcher have one production impl each (`vault`,
+  `camofox`); the STORE seam has an OPTIONAL member, `preflight() -> dict`, reached via `getattr`
+  because an implementation that cannot say is not one that is broken — `job-sluice doctor` (see below) is the one caller, and `Vault.preflight`
+  answers with FACTS (vault dir, Judging Profile, a total/verified/pending count for
+  each evidence corpus -- #164: `experience` (keeping its pre-#164
   `experience_total`/`experience_verified` names since `doctor` already consumes them),
   `skills`, `stories`, iterated off `EVIDENCE_KINDS` rather than hand-listed -- and, #133/#107,
   whether a candidate name and a contact block are declared), never
@@ -1170,7 +1101,7 @@ turning the one documented machine-readable channel unparseable on a single scra
   differs in shape, though: `Sluice.backend()` resolves the stage's provider (or a one-run override)
   and wraps it in `RetryingBackend`, and its factory takes resolved construction params
   (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
-  other three do. Route new implementations through those seams (a self-registering module) rather than
+  other seams do. Route new implementations through those seams (a self-registering module) rather than
   around them.
 - `.rulesync/` is canonical. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the other AI-tool outputs are
   generated and gitignored; edit the source, then regenerate. **`.claude/settings.json` is the one

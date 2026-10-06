@@ -248,10 +248,10 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     "A", "A-B", "Acme", "Alpha", "Aye", "B", "Beavni", "Bee", "Beta", "C", "Conflicted",
     "D", "E", "Example", "Example Alpha", "Example Analytics",
     "Example Beta",
-    "Example Candidate", "Example Cartography", "Example Cert", "Example Cloud",
+    "Example Candidate", "Example Cert", "Example Cloud",
     "Example Co", "EXAMPLE CO", "example co",
     "Example Data", "Example Decoy", "Example Leverage",
-    "Example Location", "Example Practitioner", "Example Publication",
+    "Example Location",
     "Example Robotics", "Example Scrum",
     "Example Synergy", "Example University",
     "Example Foundry", "Example Ltd", "Example Meridian", "Example MeridianRemote",
@@ -271,6 +271,33 @@ _REVIEWED_FIXTURE_IDENTITIES = frozenset({
     # `lead_slug=`, the position this file's collector actually sweeps -- it had been
     # sitting in an unswept `lead=` kwarg.
     "other-lead",
+    # Reviewed when #364/#365/#368 routed the structured CV's positions (layout headings,
+    # employers, any_role, omitted, a document's company) onto this roster (#364 spec §12.2). Each
+    # is an `Example ...` or `SYNTHETIC ...` invention or a spelling variant of a name
+    # already above; none names a firm. "Introduced" means this redesign wrote the value;
+    # "newly reached" means a pre-existing fixture the new collectors now see.
+    #   - `Example, Inc` and `Inc`: introduced (tests/test_core_layout_store.py,
+    #     tests/test_core_layout_slots.py) -- an employer named with a comma, and the half a
+    #     YAML flow list splits off it (tests/test_fixture_name_neutrality.py documents the
+    #     split row).
+    #   - `Example  Beta`: introduced (tests/test_core_layout.py) -- a double-spaced variant of
+    #     the reviewed `Example Beta`, the input `fold_employer` must collapse.
+    #   - `Example Alpha 31`, `Example Northgate 2020`: newly reached (tests/test_cv_bundle.py)
+    #     -- digit-suffixed variants of reviewed names, there to make a prefix unambiguous.
+    #   - `Example Alpha — Example Northgate`: introduced -- two reviewed names joined, a
+    #     grouped layout heading.
+    #   - `Example Cartography`: newly reached (tests/test_core_layout.py,
+    #     tests/test_core_layout_slots.py); the word has been a placeholder employer in the
+    #     CV fixtures since #31's coherent invented career.
+    #   - `Example Gamma`: newly reached (tests/test_core_layout_slots.py), the `Example`
+    #     form of the reviewed bare `Gamma`.
+    #   - `Example Data Co`: newly reached (tests/test_renderer_template.py), a document's
+    #     company, composed of reviewed `Example Data` and `Co`.
+    #   - `SYNTHETIC heading`, `SYNTHETIC group`: introduced (tests/test_prompt_neutrality.py)
+    #     -- deliberately not name-shaped, so a prompt that leaked one would be unmistakable.
+    "Example, Inc", "Inc", "Example  Beta", "Example Alpha 31", "Example Northgate 2020",
+    "Example Alpha — Example Northgate", "Example Cartography", "Example Gamma",
+    "Example Data Co", "SYNTHETIC heading", "SYNTHETIC group",
     # Escaping/injection fixtures — the backslashes are the point of the test.
     "Foo\\Bar Ltd", "Foo\\\\Bar Ltd", "Foo\\\\g<0>Bar", "Foo\\\\nBar",
 })
@@ -474,6 +501,17 @@ def _block_list_items(pattern, text) -> list:
     return items
 
 
+# --- #364/#365/#368: the structured CV's identity-bearing positions --------------------
+
+# A layout role's `heading`, in the dict-key spelling (`"heading": "X"`) and the YAML one
+# (`heading: X` at a line start or after a list dash, real or packed `\n`). Anchored, never a
+# bare `heading:` -- measured, that matched a docstring's prose and an error message
+# (`roles[0].heading: equals a CV section heading`). ONE capture group, as `_collect` needs.
+_LAYOUT_HEADING_RE = re.compile(
+    r'''(?:["']heading["']\s*:\s*["']|(?:^|\\n)[ \t]*(?:-[ \t]+)?heading:[ \t]*)'''
+    r'''([^\s"'`{\\][^"'`{\\\n]*?)(?=[ \t]*(?:["'\\]|$))''', re.M)
+
+
 _IDENTITY_COLLECTORS = (
     ("frontmatter company:", re.compile(r'company:\s*"([^"]*)"')),
     ("lead-note filename", re.compile(r'"([A-Za-z][^"\n]*? - [^"\n]*?\.md)"')),
@@ -551,6 +589,7 @@ _IDENTITY_COLLECTORS = (
     # None of the real fixtures need a leading space inside the value, and `Example Foundry`
     # / `Example Systems` still keep their INTERNAL space via the wider class that follows.
     ("evidence Company: (frontmatter or dict/kwarg)", _evidence_field_re("Company")),
+    ("layout heading: (dict key or YAML)", _LAYOUT_HEADING_RE),
 )
 
 # The YAML block-list spelling of `Company:` (#168 Task 11 review) -- a SEPARATE
@@ -906,7 +945,173 @@ def _all_fixture_identities():
     for _label, pattern in _IDENTITY_COLLECTORS:
         names |= _collect(pattern)
     names |= _collect_block_list(_COMPANY_BLOCK_LIST_COLLECTOR[1])
+    # #364/#365/#368: layout lists and the AST positions (headings, employers, any_role,
+    # omitted, a document's company), normalised like every other identity.
+    for text in _test_sources():
+        for raw in _layout_list_items(text) + sorted(_ast_cv_values(text).get("identity", ())):
+            name = _identity_of(raw)
+            if not _is_source_text(name):
+                names.add(name)
     return names
+
+
+_LAYOUT_LIST_KEYS = ("employers", "any_role", "omitted")
+_FLOW_ITEM_RE = re.compile(r'''"([^"\\\n]*)"|'([^'\\\n]*)'|([^,"'\s\\][^,"'\\]*?)\s*(?=,|$)''')
+
+
+def _layout_flow_list_re(key):
+    """`key: [a, b]` -- a YAML flow list -- and `"key": ["a", "b"]`, the same text shape.
+    Captures the bracket's contents, which `_layout_list_items` splits quote-aware: a comma
+    inside a quoted item (`"Example, Inc"`) is part of the name."""
+    return re.compile(rf'''["']?{key}["']?\s*:[ \t]*\[([^\]\n]*)\]''')
+
+
+def _layout_list_items(text):
+    """Every employer-shaped item of a layout list (employers, any_role, omitted) in one
+    module's text: YAML flow, YAML block and dict-key spellings."""
+    items = []
+    for key in _LAYOUT_LIST_KEYS:
+        for run in _layout_flow_list_re(key).findall(text):
+            for m in _FLOW_ITEM_RE.finditer(run):
+                item = next((g for g in m.groups() if g), "").strip()
+                if item:
+                    items.append(item)
+        items += _block_list_items(_evidence_block_list_re(key), text)
+    return items
+
+
+def _whole_strings(node, consts=None) -> set:
+    """`_skill_strings` WITHOUT its comma split: an employer (`Example, Inc`) or an
+    education line (`Example University, BSc`) is one value, never a list."""
+    nodes = node.elts if isinstance(node, (ast.List, ast.Tuple, ast.Set)) else [node]
+    out = set()
+    for n in nodes:
+        if isinstance(n, ast.Constant) and isinstance(n.value, str):
+            out.add(n.value)
+        elif consts is not None and isinstance(n, ast.Name) and n.id in consts:
+            out |= consts[n.id]
+    return {v for v in out if v}
+
+
+# LayoutRole / Role parameters by POSITION, so a positional construction is read too.
+_CV_CALLS = {"LayoutRole": ("heading", "start", "end", "location", "title", "employers",
+                            "bullets_max"),
+             "Role": ("company", "dates", "location", "title", "bullets")}
+_CV_CALL_CATEGORY = {"heading": "identity", "company": "identity", "employers": "identity",
+                     "location": "location", "title": "title"}
+# Keywords read wherever they appear: CvLayout, CvDocument, layout_yaml(**top), helpers.
+_CV_ANY_KWARG = {"heading": "identity", "employers": "identity", "any_role": "identity",
+                 "omitted": "identity", "certificates": "credential",
+                 "education": "credential"}
+
+
+def _skills_only_fields():
+    """The frontmatter keys only a Skills Inventory note carries -- DERIVED from the kinds,
+    so a field added to that kind is recognised with no edit here, and a key another kind
+    shares can never make a non-skill entry read as one."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    others = set().union(*(k.fields for n, k in EVIDENCE_KINDS.items() if n != "skills"))
+    return frozenset(EVIDENCE_KINDS["skills"].fields) - others
+
+
+def _ast_cv_values(text):
+    """{category: values} for the structured-CV positions an AST can reach in one module.
+
+    Reached: LayoutRole and Role calls (positional and keyword); the heading, employers,
+    any_role, omitted, certificates and education keywords wherever they appear; a dict
+    shaped like a layout role (a "heading" key) or a layout (a "roles" key); a dict shaped
+    like a reply (a "skills" key beside "profile" or "roles"); and a Skills Inventory entry
+    (its "fields" carry a key only that kind declares), whose "title" and "Label" are skill
+    names. NOT reached, stated so nobody reads coverage into it: a value passed through a
+    helper's own parameter (`_role(heading)`), and any computed value."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return {}
+    consts = _string_const_bindings(tree)
+    skill_fields = _skills_only_fields()
+    out = {}
+
+    def add(category, node):
+        out.setdefault(category, set()).update(_whole_strings(node, consts))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            params = _CV_CALLS.get(name, ())
+            for i, arg in enumerate(node.args):
+                if i < len(params) and params[i] in _CV_CALL_CATEGORY:
+                    add(_CV_CALL_CATEGORY[params[i]], arg)
+            for kw in node.keywords:
+                if params and kw.arg in _CV_CALL_CATEGORY:
+                    add(_CV_CALL_CATEGORY[kw.arg], kw.value)
+                elif kw.arg in _CV_ANY_KWARG:
+                    add(_CV_ANY_KWARG[kw.arg], kw.value)
+        elif isinstance(node, ast.Dict):
+            keys = {k.value: v for k, v in zip(node.keys, node.values)
+                    if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+            if "heading" in keys:
+                for key in ("heading", "employers", "location", "title"):
+                    if key in keys:
+                        add(_CV_CALL_CATEGORY[key], keys[key])
+            if "roles" in keys or "heading" in keys:
+                for key in ("any_role", "omitted", "certificates", "education"):
+                    if key in keys:
+                        add(_CV_ANY_KWARG[key], keys[key])
+            if "company" in keys and "bullets" in keys:      # a document role as a dict
+                add("identity", keys["company"])
+            if "skills" in keys and ("profile" in keys or "roles" in keys):
+                add("skill", keys["skills"])
+            inner = keys.get("fields")
+            if isinstance(inner, ast.Dict):
+                fkeys = {k.value: v for k, v in zip(inner.keys, inner.values)
+                         if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+                if set(fkeys) & skill_fields:
+                    if "title" in keys:
+                        add("skill", keys["title"])
+                    if "Label" in fkeys:
+                        add("skill", fkeys["Label"])
+    return out
+
+
+_CV_MODULE_KWARGS = {"location": "location", "title": "title"}
+
+
+def _cv_module_kwarg_values(text):
+    """`location=` and `title=` on ANY call, read only in the CV test modules: there a helper
+    such as tests/test_core_layout.py's `_role(location=...)` is how a layout is built, and a
+    helper's keyword is invisible to `_ast_cv_values`. Outside them the same keywords name
+    lead and ingest fixtures, which keep their own conventions."""
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return {}
+    consts = _string_const_bindings(tree)
+    out = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg in _CV_MODULE_KWARGS:
+                    out.setdefault(_CV_MODULE_KWARGS[kw.arg], set()).update(
+                        _whole_strings(kw.value, consts))
+    return out
+
+
+def _cv_position_values():
+    """{category: values} across every test module, plus the helper keywords of the CV
+    test modules (`_cv_module_kwarg_values`)."""
+    merged = {}
+    for path in sorted(_TESTS_DIR.rglob("*.py")):
+        if path.name == _SELF:
+            continue
+        text = path.read_text(encoding="utf-8")
+        parts = [_ast_cv_values(text)]
+        if path.name in _CV_TEST_MODULES:
+            parts.append(_cv_module_kwarg_values(text))
+        for part in parts:
+            for category, values in part.items():
+                merged.setdefault(category, set()).update(values)
+    return merged
 
 
 def test_the_evidence_company_collector_sees_every_shape_it_claims_to():
@@ -1025,7 +1230,8 @@ def test_every_collector_actually_finds_fixtures(label, pattern):
     repo happens to have.
 
     Where each collector's result GOES differs, and the split is what the counts below
-    describe. The five `_IDENTITY_COLLECTORS` feed `_all_fixture_identities()` and the
+    describe. The six `_IDENTITY_COLLECTORS` (the layout heading, #364/#365/#368, being the
+    sixth) feed `_all_fixture_identities()` and the
     `_REVIEWED_FIXTURE_IDENTITIES` roster checks. The other two feed their own dedicated
     checks instead: "equal-opportunities values" feeds a token-SHAPE check
     (`test_every_equal_opportunities_fixture_value_is_an_obvious_synthetic_token`) and
@@ -1058,13 +1264,13 @@ def test_the_collector_split_this_file_documents_is_the_split_it_has():
     versus their own dedicated checks -- is the part the docstring actually explains, and a
     total alone would stay green if a collector moved from one group to the other.
     """
-    assert len(_COLLECTORS) == 7, (
+    assert len(_COLLECTORS) == 8, (
         f"{len(_COLLECTORS)} collectors, but the docstring of "
-        "test_every_collector_actually_finds_fixtures describes seven -- update the prose "
+        "test_every_collector_actually_finds_fixtures describes eight -- update the prose "
         "and this number together")
-    assert len(_IDENTITY_COLLECTORS) == 5, (
+    assert len(_IDENTITY_COLLECTORS) == 6, (
         f"{len(_IDENTITY_COLLECTORS)} collectors feed the employer roster, but that same "
-        "docstring says five -- a collector moved between the two groups, so the prose "
+        "docstring says six -- a collector moved between the two groups, so the prose "
         "explaining the split is now wrong")
 
 
@@ -2338,6 +2544,14 @@ _CV_MODULES_NOT_MATCHING_THE_CONVENTION = (
     "test_slop_phrase_retirement.py",     # #181
     "test_renderer_template.py",          # CV-body employer/education identities
     "test_onboard_questions.py",          # an employer fixture probing the gate
+    # #364/#365/#368: the structured CV's modules, none named `test_cv_*`.
+    "test_core_layout.py",
+    "test_core_layout_slots.py",
+    "test_core_layout_store.py",
+    "test_core_tokens.py",
+    "structured_cv.py",
+    "test_doctor_cv_layout.py",
+    "test_skills_pool_wording.py",
 )
 
 # Derived, not enumerated (#174). Twice a CV module was added and nobody remembered to
@@ -2374,9 +2588,16 @@ _CV_IDENTITY_RE = re.compile(r"\bExample [A-Z][A-Za-z]+")
 # Defined HERE, above `_CV_IDENTITY_EXEMPT`, so that set can be DERIVED from this one
 # rather than hand-listing the same values a second time -- see it immediately below.
 _REVIEWED_SKILL_VALUES = frozenset({
+    # Reviewed when #364/#365/#368 routed reply `skills` lists and Skills Inventory names onto
+    # this roster (#364 spec §12.2). All four are existing fixtures newly reached, none introduced
+    # by the redesign: `Example Cloud Skill` and `Example Data Skill` (tests/test_cv_bundle.py,
+    # tests/test_cv_engine.py) are `Example`-prefixed inventory titles; `alpha`
+    # (tests/test_mcpserver.py) and `s` (tests/test_evidence_store.py) are one-token
+    # placeholder titles, a Greek letter and a single letter.
+    "Example Cloud Skill", "Example Data Skill", "alpha", "s",
     # Invented for #194 (tests/test_cv_mention_vocab.py): single-token, Example-prefixed
     # names, because that file asserts on the case-folded single token a one-word term
-    # becomes in `mention_vocab`.
+    # becomes in `term_vocabulary`.
     "Examplebus",
     "Examplelang",
     "Examplemesh",
@@ -2384,10 +2605,6 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # `Example <Word>` convention this file's own failure message prescribes.
     "Example Framework",
     "Example Query",
-    # Invented for #168's SKILL_TOKEN_RE guard (tests/test_cv_bundle.py): the digit is
-    # deliberately INSIDE a letter-led token, the one shape that rule must accept rather
-    # than refuse.
-    "Example Widget3",
     # Invented for #168 Task 4 (tests/test_cv_engine.py's STYLE-tier scoping test): must
     # match slop._PHRASES' "synergy" stem AND, once row 2 (containment) reaches the
     # SKILLS region, be a genuinely SOURCED skill -- one value doing both jobs, neither
@@ -2410,45 +2627,7 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # a leak of THIS value specifically proves the report is not merely omitting one
     # already-rostered name by coincidence.
     "Example Zephyr",
-    # NOT a name -- an all-punctuation `Skills:` value invented for #168 Task 10's
-    # `evidence_slug`-cannot-reduce fixtures (tests/test_doctor.py). Synthetic noise,
-    # reviewed the same as every other captured value: nothing here could ever be
-    # mistaken for a real product name.
-    "###",
-    # ---- Reviewed 2026-08-28, when the AST collector below first reached them --------
-    #
-    # Every value under this heading was ALREADY in `tests/` and swept clean, in a shape
-    # no colon-keyed regex could see (a `dict(Skills=...)` kwarg, a `parametrize` list, a
-    # CV fixture's own emitted SKILLS section). None is a new fixture; what is new is that
-    # the ratchet can now see them, which is the whole point of extending it.
-    #
-    # Placeholder and invented values first.
-    #
-    # `Examplestore3` -- invented for the trailing-period tokeniser regression: a
-    # digit-bearing product-shaped name that ends a sentence in a bullet. `Example` family.
-    "Examplestore3",
-    # Self-describing invented label, used as the fabricated skill a grouped SKILLS
-    # section smuggles past row 2. It names nothing and is not meant to.
-    "Totally Invented Skill",
-    # Single generic English words, used for what their SHAPE proves rather than for what
-    # they name: `Widget` pins row 1's case sensitivity (`widget` must not fire) and, on
-    # its own, that a dotted name is a NAME and not a prefix (`Widget` alone must be
-    # UNSOURCED where `Widget.Node` is sourced). `Framework Widget` / `Widget Framework`
-    # are the same two words in both orders, which is exactly what makes them a
-    # subsequence-vs-set fixture.
-    "Widget",
-    "Framework Widget",
-    "Widget Framework",
-    # NOT names -- the malformed-value parametrize rows for `SKILL_TOKEN_RE`
-    # (tests/test_cv_bundle.py). Every one is a number or a number-led token, which is the
-    # single property under test.
-    "92",
-    "92x",
-    "120ms",
-    "Result 92",
-    "Example 92",
-    #
-    # ---- Token SHAPES for the `SKILL_TOKEN_RE` rule, all synthetic --------------------
+    # ---- Token SHAPES for the per-token `Tools:` rule, all synthetic --------------------
     #
     # This group used to hold real public technology and standard names (`.NET`,
     # `Node.js`, `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S`, `802.11ac`,
@@ -2459,12 +2638,6 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # credentials the over-refusal costs them -- so the information stays exactly where
     # it is load-bearing and leaves the corpus where it was only decoration.
     #
-    # Accepted by the rule -- a leading dot before a letter, alone and with a second word:
-    ".Example",
-    ".Example Widget",
-    # ...and an internal dot, whose leading token is deliberately one that appears nowhere
-    # else in that fixture's bundle, so `Widget` alone can prove the prefix half.
-    "Widget.Node",
     # Refused by the rule, every one because a token leads with a DIGIT: a standard's
     # number after a word, a dotted version after a word, a digit-led token opening a
     # phrase, a digit-led token alone, and a digit-led token carrying internal dots.
@@ -2473,46 +2646,12 @@ _REVIEWED_SKILL_VALUES = frozenset({
     "9E modelling",
     "5X",
     "123.45ab",
-    # An emitted skill in a row-2 containment fixture, present in the CV and absent from
-    # the bundle, so the gate must call it UNSOURCED. Self-describing and invented.
-    "Example Unbacked",
-    #
     # ---- Added by the re-review round's own fixtures (2026-08-28) --------------------
     #
-    # The ratchet caught these three on its first run after the AST collector went in --
-    # written in this round, unrostered, red. Recorded here as the human call they force.
-    #
-    # `Example Query` with its two words REVERSED: the fixture for row 2 matching a token
-    # SUBSEQUENCE across a sentence seam. It names nothing; the word order IS the test.
-    "Query Example",
-    # NOT names -- the token-less `Skills:` values that must be REFUSED rather than
-    # silently switching row 1's abstain off. `#` is here because `_WORD_RE` admits it (so
-    # `C#` survives), which sends it down the letter-leading arm instead.
+    # NOT a name -- the token-less value that must be REFUSED rather than silently
+    # switching the attribution check on for every entry.
     "...",
-    "#",
     #
-    # ---- Added by #257's line-shape fixtures (2026-09-04) ---------------------------
-    #
-    # A CATEGORY LABEL prefixed onto an already-rostered value, for the row 2 fixture
-    # proving a labelled line is refused even when it names a single REAL skill (which is
-    # what establishes that the defect is the label rather than the grouping). Answering
-    # this roster's question needs no outside knowledge for once: both halves are already
-    # here as invented, and the label follows the `Example <Word>` convention this roster
-    # itself asks for, so it names no product by construction.
-    #
-    # It replaced a bare `Tools:`, and the distinction is about WHERE a string sits, not
-    # about the word: a FIXTURE VALUE arrives here as a declared skill, where the question
-    # is whether it names a real product someone works with, so an ordinary noun still
-    # costs a ruling. The same commit ships `Tools:` in `cv/compose.py`'s shape rule, as an
-    # example of a FORBIDDEN line shape rather than a claimed skill, so THIS roster does not
-    # rule on it (tests/test_prompt_neutrality.py is the ratchet that reaches shipped prompt
-    # text, and it does). Do not read this entry as a finding that `Tools` is unsafe.
-    "Example Category: Example Query",
-    # Two already-rostered values joined by a SLASH, for the row 2 fixture proving the
-    # slash-joined shape the rule names has a refused instance too. The join character is
-    # the whole point of the value; both halves are already here as invented, so this
-    # ratchet's question needs no outside knowledge for this one either.
-    "Example Framework / Example Query",
     # Invented for #364/#365 (tests/test_cv_selection.py): spelling variants of reviewed
     # values -- a plural, a trailing full stop, lower case -- that the skill-pick matcher
     # must keep or drop by its own rule. Each is a variant of a value already above.
@@ -2520,6 +2659,28 @@ _REVIEWED_SKILL_VALUES = frozenset({
     "Example Query.",
     "example query",
     "examplelang",
+    # Reviewed when #364/#365/#368 made `Tools:` a swept key (spec §12.2): synthetic tool
+    # names the structured-CV tests write into `Tools` positions -- each an `Example`/
+    # `Examplelang` invention or a variant of one shaped to exercise one token rule (a
+    # leading dot, an interior dot, a trailing dot, a `#` suffix, a leading or trailing
+    # digit, a standard number either side, a script suffix, lower case). Written for
+    # tests/test_core_tokens.py, tests/test_cv_checks.py, tests/test_cv_selection.py,
+    # tests/test_cv_structured_bundle.py, tests/test_cv_prerequisites.py,
+    # tests/test_doctor_cv_layout.py and tests/test_cv_attribution_vaults.py; none names a
+    # product.
+    ".Examplenet",
+    "9001 Examplestandard",
+    "9Examplelang",
+    "Example.lang",
+    "Exampleban",
+    "Exampleco",
+    "Examplelang#",
+    "Examplelang.",
+    "Examplelang3",
+    "Examplelang9",
+    "Examplelangscript",
+    "Examplestandard 9001",
+    "examplecoach",
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
@@ -2562,15 +2723,16 @@ def test_the_cv_module_set_is_derived_and_not_hand_listed():
     success case, so the count is the only thing that can catch a broken sweep.
 
     Pinned as TWO floors, not one. A single floor over the TOTAL (glob matches plus the
-    three hand-listed exceptions) is satisfied even if the glob silently lost three
-    modules, as long as the total still happened to clear 13 -- which it does today by
-    coincidence (13 glob matches + 3 exceptions = 16, and a glob narrowed to exactly 10
-    would still pass a bare `>= 13` total check). Pinning the glob's OWN count separately
-    closes that: a narrowed glob now reds on its own floor before the total is even
-    checked, independent of how many hand-listed exceptions happen to make up the rest.
+    hand-listed exceptions) is satisfied even if the glob silently lost modules, because the
+    exceptions make up the difference. Pinning the glob's OWN count separately closes that: a
+    narrowed glob reds on its own floor before the total is even checked, independent of how
+    many hand-listed exceptions there are. The floor is the glob's size: raise it when a
+    `test_cv_*.py` module is added, and lower it only in the commit that deliberately removes
+    one, saying where its tests went (tests/test_cv_validate.py's one row moved to
+    tests/test_cv_terms.py with the pattern it pinned).
     """
     glob_matched = {p.name for p in _TESTS_DIR.glob("test_cv_*.py")}
-    assert len(glob_matched) >= 13, sorted(glob_matched)
+    assert len(glob_matched) >= 25, sorted(glob_matched)
     assert len(_CV_TEST_MODULES) >= len(glob_matched) + len(_CV_MODULES_NOT_MATCHING_THE_CONVENTION)
     assert "test_cv_bundle.py" in _CV_TEST_MODULES
     for extra in _CV_MODULES_NOT_MATCHING_THE_CONVENTION:
@@ -2619,6 +2781,14 @@ _SKILL_COLLECTOR = ("evidence Skills: (frontmatter or dict literal)",
 _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
                                _evidence_block_list_re("Skills"))
 
+# #364/#365/#368: `Tools:` is the experience entries' attribution field now (spec §4.2) and
+# holds what `Skills:` held -- a tool's NAME -- so it is swept in every spelling `Skills:` is,
+# onto the same reviewed roster. `Skills:` stays swept too: upgrade fixtures still write it.
+_TOOLS_COLLECTOR = ("evidence Tools: (frontmatter or dict literal)",
+                    _evidence_field_re("Tools"))
+_TOOLS_BLOCK_LIST_COLLECTOR = ("evidence Tools: (YAML block list)",
+                               _evidence_block_list_re("Tools"))
+
 
 # --- The AST collector: the four shapes no REGEX here can reach ----------------------
 #
@@ -2647,19 +2817,21 @@ _SKILL_KEY_PREFIX_RE = re.compile(r"""^\s*["']?Skills["']?\s*:\s*""", re.I)
 
 
 def _is_skill_kwarg(name: str) -> bool:
-    """Is `name` an argument that carries a `Skills:` VALUE?
+    """Is `name` an argument that carries a `Skills:` or `Tools:` VALUE?
 
     `Skills` itself (the `dict(Skills=...)` spelling this suite adopted precisely to dodge
     the colon-keyed collectors -- see `tests/test_cv_bundle.py`'s own docstring), plus the
     `_skills`-suffixed parameters the containment fixtures thread it through
-    (`al_skills=`, `be_skills=`, `skills=`).
+    (`al_skills=`, `be_skills=`, `skills=`) -- and, since #364/#365/#368, the same for
+    `Tools` (`dict(Tools=...)`, `tools=`, `_tools`-suffixed), which holds what `Skills:`
+    held: a tool's name.
 
     Suffix-anchored, NOT substring: `skills_requested=` and `skills_unreadable=` are
     booleans about a FEATURE, not skill values, and a `"skills" in name` rule would sweep
     them in and then demand they be rostered.
     """
     n = name.lower()
-    return n == "skills" or n.endswith("_skills")
+    return n in ("skills", "tools") or n.endswith(("_skills", "_tools"))
 
 
 def _skill_strings(node, consts=None) -> set:
@@ -2732,36 +2904,33 @@ def _string_const_bindings(tree) -> dict:
 def _skills_run(lines) -> set:
     """The bullet values of every emitted `SKILLS` section in `lines`.
 
-    Mirrors `cv/validate.py`'s `section_spans` rather than inventing a second rule: the
-    run starts at a bare `SKILLS` line in ANY case and continues across blanks AND across
-    any heading the format contract does not define -- a group heading (`Languages`) and
-    an off-contract section header (`PUBLICATIONS`) alike, in either case -- ending only
-    at `WORK EXPERIENCE`/`CERTIFICATES`/`EDUCATION`. Stopping at the first non-bullet instead
-    would miss exactly the value that motivated this collector -- `_GROUPED_TAIL_CV`'s
-    second bullet sits UNDER a `Languages` heading, and a collector that stopped there
-    would sweep clean over it while the gate checks it.
+    Reads a CV the way `cv/document.py::to_text` writes one: every heading in
+    `core/protocols.py::SECTION_HEADINGS` is a section of its own, and a skills section is
+    the bullets under a bare `SKILLS` line. The run starts at that line in ANY case and
+    continues across blanks AND across any heading `to_text` does not write -- a group
+    heading (`Languages`) and an off-contract section header (`PUBLICATIONS`) alike, in
+    either case -- ending only at `WORK EXPERIENCE`/`CERTIFICATES`/`EDUCATION`/`PROFILE`.
+    Stopping at the first non-bullet instead would miss exactly the value that motivated
+    this collector: a bullet sitting UNDER a `Languages` heading, which a collector that
+    stopped there would sweep clean over. The leniency is deliberate and it can only
+    OVER-collect, the safe direction for a ratchet whose failure mode is a value it never
+    sees at all.
 
-    `in_work` plays no part beyond ending the run: that arm of `section_spans` is about
-    which CHECK claims a line, and this is a roster asking a different question -- would a
-    reader see this under SKILLS.
+    `in_work` plays no part beyond ending the run: while WORK EXPERIENCE is live the run
+    ends at a non-bullet line, because a role's own bullets would otherwise be rostered as
+    skills (measured: `- An uncited claim` was collected before that arm existed).
 
     The terminator set is DERIVED from `tests/template_content.py`'s
-    `composer_headings()`, the same closed set `section_spans` is pinned against, rather
-    than hand-listed here -- a pair typed by hand went stale the moment the gate's rule
-    stopped keying on ALL-CAPS, and the collector then swept WORK bullets into the skill
-    roster (measured: four of them). One deliberate divergence: `PROFILE` clears `in_work`
-    here and does not in `section_spans`, which can only keep a LATER run alive longer, so
-    it over-collects rather than under-collects -- the safe direction for a ratchet whose
-    failure mode is a value it never sees at all.
+    `composer_headings()`, which reads `SECTION_HEADINGS`, rather than hand-listed here --
+    a pair typed by hand went stale once and the collector then swept WORK bullets into the
+    skill roster (measured: four of them).
 
-    EVERY heading compare here is case-INSENSITIVE, opener included, exactly as
-    `section_spans` compares `line.strip().upper()`. That matters at the opener above all:
-    a case-SENSITIVE opener meant a fixture spelling its header `Skills` opened a run in
-    the GATE and not in this sweep, so an unreviewed value could reach the tree with the
-    ratchet green -- the same class of blind spot as the four WORK bullets above, one step
-    earlier. What stops the folded opener from firing on unrelated text is not a narrower
-    compare but a narrower INPUT: see `_ast_skill_values`' two call sites, which hand this
-    function only blocks that are actually newline-joined DOCUMENTS.
+    EVERY heading compare here is case-INSENSITIVE, opener included. That matters at the
+    opener above all: a case-SENSITIVE opener meant a fixture spelling its header `Skills`
+    was never opened by this sweep, so an unreviewed value could reach the tree with the
+    ratchet green. What stops the folded opener from firing on unrelated text is not a
+    narrower compare but a narrower INPUT: see `_ast_skill_values`' two call sites, which
+    hand this function only blocks that are actually newline-joined DOCUMENTS.
     """
     from tests.template_content import composer_headings
 
@@ -2769,14 +2938,12 @@ def _skills_run(lines) -> set:
     out, in_skills, in_work = set(), False, False
     for line in lines:
         stripped = line.strip()
-        # Uppercased, as `section_spans` compares (`line.strip().upper()`), for the
-        # opener and both terminator arms alike -- the two engines have to agree on what
-        # a heading IS or each divergence is a hole. Measured, one in each direction: a
+        # Uppercased for the opener and both terminator arms alike, so one spelling of a
+        # heading means one thing on all three. Measured, one in each direction: a
         # case-sensitive TERMINATOR read `  Education  ` as ordinary content and kept a
-        # run alive the gate had already ended, sweeping four WORK bullets out of
-        # `tests/test_cv_validate.py`'s random-document alphabet into the skill roster;
-        # a case-sensitive OPENER missed a `Skills`-cased header the gate opens on, so an
-        # unreviewed value could ship with this sweep green.
+        # run alive past the section it belonged to, sweeping four WORK bullets of a
+        # random-document alphabet into the skill roster; a case-sensitive OPENER missed a
+        # `Skills`-cased header, so an unreviewed value could ship with this sweep green.
         #
         # Folding the opener is only safe because `_ast_skill_values` hands this function
         # DOCUMENTS and not arbitrary string lists -- see its two call sites. Against every
@@ -2812,10 +2979,9 @@ def _newline_joined_blocks(tree) -> set:
 
     This is what makes `_skills_run`'s case-insensitive opener safe, and it is a
     different kind of narrowing from the one it replaced. A narrower COMPARE (an exact
-    `SKILLS`) gave the sweep a blind spot the gate does not have: real CV text spelled
-    `Skills` reached `validate()` and not the roster. A narrower INPUT excludes text that
-    is not a CV at all -- an argv list never reaches `validate()` by any path, so nothing
-    the gate checks can hide behind this.
+    `SKILLS`) gave the sweep a blind spot: real CV text spelled `Skills` reached the tree
+    and not the roster. A narrower INPUT excludes text that is not a CV at all -- an argv
+    list is never a document a reader sees, so nothing a CV carries can hide behind this.
 
     Measured over `tests/` rather than argued: with the opener folded and no input rule,
     the list branch collected from 20 `main(["skills", "add", "--name", ...])` argv lists,
@@ -2955,7 +3121,7 @@ def _ast_skill_values(text) -> set:
                         values |= params.get(kw.value.id, set())
             elif isinstance(node, ast.Dict):
                 for k, val in zip(node.keys, node.values):
-                    if (isinstance(k, ast.Constant) and k.value == "Skills"
+                    if (isinstance(k, ast.Constant) and k.value in ("Skills", "Tools")
                             and isinstance(val, ast.Name)):
                         values |= params.get(val.id, set())
     builders = _skills_section_builders(tree)
@@ -2990,7 +3156,7 @@ def _ast_skill_values(text) -> set:
             # matched loosely by contrast (`_is_skill_kwarg`), because there the name is a
             # Python parameter -- `al_skills=`, `be_skills=` -- and not a frontmatter key.
             for k, val in zip(node.keys, node.values):
-                if (isinstance(k, ast.Constant) and k.value == "Skills"):
+                if (isinstance(k, ast.Constant) and k.value in ("Skills", "Tools")):
                     values |= _skill_strings(val, consts)
         elif isinstance(node, (ast.List, ast.Tuple)):
             # A CV written as one string per LINE -- `"\n".join([...])`, the shape
@@ -3024,7 +3190,11 @@ def _ast_skill_values(text) -> set:
 
 
 def _all_fixture_skill_values():
-    """Every individual skill value any fixture declares, across BOTH spellings.
+    """Every individual skill value any fixture declares, across BOTH spellings and BOTH keys.
+
+    `Tools:` joins `Skills:` (#364/#365/#368): it is the experience entries' attribution
+    field now and holds the same thing, a tool's NAME, so a value that moved from one key
+    to the other must stay on the reviewed roster rather than drop off it unseen.
 
     SPLIT ON COMMAS: `Skills:` holds a comma-separated list, so one match is `Example Query,
     Example Framework` -- two identities, not one. Rostering the joined string would let a
@@ -3037,15 +3207,22 @@ def _all_fixture_skill_values():
     invisible to this whole roster.
     """
     values = set()
-    for raw in _collect(_SKILL_COLLECTOR[1]):
-        values |= {part.strip() for part in raw.split(",") if part.strip()}
+    for collector in (_SKILL_COLLECTOR, _TOOLS_COLLECTOR):
+        for raw in _collect(collector[1]):
+            values |= {part.strip() for part in raw.split(",") if part.strip()}
     for text in _test_sources():
-        values |= set(_block_list_items(_SKILL_BLOCK_LIST_COLLECTOR[1], text))
+        for collector in (_SKILL_BLOCK_LIST_COLLECTOR, _TOOLS_BLOCK_LIST_COLLECTOR):
+            values |= set(_block_list_items(collector[1], text))
         # The THIRD collector, and the one that is not a regex at all: the kwarg,
         # parametrize and emitted-SKILLS shapes, which are about Python structure rather
         # than about text beside a colon. See `_ast_skill_values` for why all three were
         # invisible to the two above, and to what that cost.
         values |= _ast_skill_values(text)
+        # Reply picks and Skills Inventory names are skill values too (#364/#365/#368): ONE
+        # union, so the roster gate and its staleness row read the same set. Stripped and
+        # blank-free like the comma-split values above -- a blank `Label:` fixture tests the
+        # title fallback, not a skill.
+        values |= {v.strip() for v in _ast_cv_values(text).get("skill", ()) if v.strip()}
     return values
 
 
@@ -3222,35 +3399,32 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     assert _ast_skill_values('CV = "\\n".join(["SKILLS", "- Example Kappa"])') == {
         "Example Kappa"}
 
-    # A GROUP HEADING does not end the run, matching `section_spans` -- the bullet under
-    # `Languages` is checked by the gate, so the roster must see it too. This is the exact
-    # value that motivated the whole collector.
+    # A GROUP HEADING does not end the run -- the bullet under `Languages` is a skill value
+    # a reader sees, so the roster must see it too. This is the exact value that motivated
+    # the whole collector.
     assert _ast_skill_values(
         'CV = "\\n".join(["SKILLS", "- Example Lambda", "Languages", "- Example Mu"])'
     ) == {"Example Lambda", "Example Mu"}
 
-    # Nor does an OFF-CONTRACT section header, however loudly it is spelled: since the
-    # terminator became the contract's own heading set, `section_spans` reads past
-    # `PUBLICATIONS` and containment-checks the bullet under it, so the roster must see
-    # that value too. Keying this collector on ALL-CAPS instead would sweep clean over a
-    # skill fixture the gate does check.
+    # Nor does an OFF-CONTRACT section header, however loudly it is spelled: the terminator
+    # is the contract's own heading set, so the run reads past `PUBLICATIONS` and the
+    # roster sees the bullet under it. Keying this collector on ALL-CAPS instead would
+    # sweep clean over a skill fixture a reader sees.
     assert _ast_skill_values(
         'CV = "\\n".join(["SKILLS", "- Example Nu", "PUBLICATIONS", "- Example Rho"])'
     ) == {"Example Nu", "Example Rho"}
 
     # A CONTRACT heading DOES end it, so a following section's bullets are not rostered
-    # as skills. Spelled in MIXED case on purpose: `section_spans` compares
-    # `line.strip().upper()`, so `Education` ends the gate's run, and a collector that
-    # only recognised the shouted spelling would keep collecting past it.
+    # as skills. Spelled in MIXED case on purpose: a collector that only recognised the
+    # shouted spelling would keep collecting past `Education`.
     assert _ast_skill_values(
         'CV = "\\n".join(["SKILLS", "- Example Sigma", "Education", "- a degree"])'
     ) == {"Example Sigma"}
 
     # THE OPENER IS CASE-INSENSITIVE TOO, in both fixture spellings. This is the row that
-    # reds if it is ever narrowed back to an exact `SKILLS`: the gate opens its run on
-    # `Skills` (it compares `line.strip().upper()`), so a fixture header spelled that way
-    # is checked by `validate()` and must be seen here, or an unreviewed value ships with
-    # this sweep green.
+    # reds if it is ever narrowed back to an exact `SKILLS`: a fixture header spelled
+    # `Skills` is still a skills section a reader sees and must be seen here, or an
+    # unreviewed value ships with this sweep green.
     assert _ast_skill_values(
         'CV = "\\n".join(["Skills", "- Example Tau"])') == {"Example Tau"}
     assert _ast_skill_values('CV = """Skills\n- Example Upsilon\n"""') == {
@@ -3269,9 +3443,9 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     assert _ast_skill_values(
         'CV = "\\n".join(["skills", "- Example Phi"])') == {"Example Phi"}
 
-    # While WORK EXPERIENCE is live the run ends at a non-bullet line, exactly as
-    # `section_spans` does -- without this, a role's own bullets would be rostered as
-    # skills. Measured: `- An uncited claim` was collected before this arm existed.
+    # While WORK EXPERIENCE is live the run ends at a non-bullet line -- without this, a
+    # role's own bullets would be rostered as skills. Measured: `- An uncited claim` was
+    # collected before this arm existed.
     assert _ast_skill_values(
         'CV = "\\n".join(["WORK EXPERIENCE", "SKILLS", "- Example Xi", "Example Beta",'
         ' "- An uncited claim"])') == {"Example Xi"}
@@ -3283,7 +3457,8 @@ def test_the_ast_skill_collector_sees_every_shape_it_claims_to():
     assert _ast_skill_values(builder + 'x = _cv_with_skills(["Example Omicron"])') == {
         "Example Omicron"}
     # A helper that never emits the header is NOT a builder, however its name reads --
-    # this is the live `classify_negatives_vs_skills(<negatives>, <inventory>)` shape,
+    # this is the `classify_negatives_vs_skills(<negatives>, <inventory>)` shape (that
+    # function is removed since #364/#365/#368; the shape stays a fair probe),
     # whose first argument is the OPPOSITE of a skill and was measured onto the roster by
     # an earlier name-keyed rule.
     assert _ast_skill_values(
@@ -3583,3 +3758,152 @@ def test_the_fence_scanner_matches_commonmark():
     # scanner that always strips, or never reports an unclosed fence.
     assert len({s for _, _, s, _ in _FENCE_SHAPES}) == 2, "the stripped column tests one outcome"
     assert len({u for _, _, _, u in _FENCE_SHAPES}) == 2, "the unclosed column tests one outcome"
+
+
+def test_the_evidence_tools_collectors_see_every_shape_they_claim_to():
+    """The four spellings, on synthetic strings: frontmatter, a dict literal, a YAML block
+    list and a keyword argument -- `Tools:` reuses machinery measured on `Skills:`, and this
+    is what says it reaches the new key at all."""
+    assert [_identity_of(v) for v in _TOOLS_COLLECTOR[1].findall(
+        "Tools: Examplelang\\nverified: x")] == ["Examplelang"]
+    assert [_identity_of(v) for v in _TOOLS_COLLECTOR[1].findall(
+        'fields={"Tools": "Example Query"}')] == ["Example Query"]
+    assert _block_list_items(_TOOLS_BLOCK_LIST_COLLECTOR[1],
+                             "Tools:\\n  - Example Widget\\n  - Examplelang\\nverified: x") == [
+        "Example Widget", "Examplelang"]
+    assert _ast_skill_values('f(tools=["Example Framework"])\n') == {"Example Framework"}
+
+
+def test_the_residual_skills_fixtures_are_still_swept():
+    """Upgrade fixtures still write the retired `Skills:` field, so its collector must keep
+    finding them: a floor of its own, so a broken `Skills:` pattern cannot hide behind the
+    `Tools:` values in the union."""
+    assert _collect(_SKILL_COLLECTOR[1]), "the Skills: collector matched no fixture"
+
+
+def test_the_layout_heading_collector_sees_every_shape_it_claims_to():
+    seen = {
+        "dict key": ('{"heading": "Example Alpha", "from": "01/2020"}', "Example Alpha"),
+        "yaml, list dash": ("roles:\\n  - heading: Example Beta\\n    from: x", "Example Beta"),
+        "yaml, indented": ("  heading: Example Meridian\\n", "Example Meridian"),
+    }
+    for shape, (text, expected) in seen.items():
+        assert [_identity_of(v) for v in _LAYOUT_HEADING_RE.findall(text)] == [expected], shape
+    for prose in ("roles[0].heading: equals a CV section heading", 'f"heading: {h}"'):
+        assert _LAYOUT_HEADING_RE.findall(prose) == [], prose
+
+
+def test_the_layout_list_collector_sees_every_shape_it_claims_to():
+    assert _layout_list_items('"employers": ["Example, Inc", "Example Beta"]') == [
+        "Example, Inc", "Example Beta"]
+    assert _layout_list_items("employers: [Example, Inc]") == ["Example", "Inc"]
+    assert _layout_list_items("omitted:\\n  - Example Tidal\\nfrom: x") == ["Example Tidal"]
+
+
+def test_the_cv_ast_collector_sees_every_shape_it_claims_to():
+    source = (
+        'LayoutRole("Example Pos", "01/2020", "present", "Example Location A",\n'
+        '           "SYNTHETIC-T1", ("Example Emp",))\n'
+        'LayoutRole(heading="Example Kw", start="x", end="y", location="Example Location B",\n'
+        '           title="SYNTHETIC-T2", employers=("Example Emp2",))\n'
+        'Role("Example Co2", "d", "Example Location C", "SYNTHETIC-T3", [])\n'
+        'CvLayout(roles=(), certificates=("Example Cert2",), any_role=("Example Any",))\n'
+        'x = {"heading": "Example Dict", "employers": ["Example Emp3"], "title": "SYNTHETIC-T4"}\n'
+        'y = {"profile": "p", "roles": {}, "skills": ["Example Pick"]}\n'
+        'z = {"title": "Example Note", "fields": {"Domain": "d", "Label": "Example Label"}}\n'
+        'layout_yaml([{"heading": "Example Yaml"}], omitted=["Example Omit"],\n'
+        '            education=["Example University, BSc Example"])\n')
+    found = _ast_cv_values(source)
+    assert found["identity"] == {"Example Pos", "Example Emp", "Example Kw", "Example Emp2",
+                                 "Example Co2", "Example Any", "Example Dict", "Example Emp3",
+                                 "Example Yaml", "Example Omit"}
+    assert found["location"] == {"Example Location A", "Example Location B",
+                                 "Example Location C"}
+    assert found["title"] == {"SYNTHETIC-T1", "SYNTHETIC-T2", "SYNTHETIC-T3", "SYNTHETIC-T4"}
+    assert found["credential"] == {"Example Cert2", "Example University, BSc Example"}
+    assert found["skill"] == {"Example Pick", "Example Note", "Example Label"}
+
+
+@pytest.mark.parametrize("category", ["identity", "location", "title", "credential", "skill"])
+def test_the_cv_ast_collector_finds_fixtures_in_every_category(category):
+    # A floor per category: for a negative guard finding nothing is the success case, so the
+    # sweep must prove it looked.
+    assert _cv_position_values().get(category), category
+
+
+def test_the_cv_module_keyword_sweep_reads_a_helpers_location_and_title():
+    assert _cv_module_kwarg_values(
+        '_role(location="Example Location Q", title="SYNTHETIC-TQ")\n') == {
+        "location": {"Example Location Q"}, "title": {"SYNTHETIC-TQ"}}
+
+
+def test_the_cv_ast_collector_reads_a_document_roles_company_as_a_dict():
+    assert _ast_cv_values('{"company": "Example Dictco", "dates": "x", "bullets": []}\n')[
+        "identity"] == {"Example Dictco"}
+
+
+def _location_follows_the_convention(value):
+    """A CV position's location: one of conftest's LOCATIONS, `Example Location` with at
+    most one letter-or-digit suffix (fullmatch, so a real place cannot ride after the
+    prefix), or a `<...>` placeholder. ONE predicate for the tests tree and scripts/."""
+    from tests.conftest import LOCATIONS
+    return (value in LOCATIONS or re.fullmatch(r"Example Location( [A-Z0-9]+)?", value)
+            or value.startswith("<"))
+
+
+_LOCATION_ADVICE = "use LOCATIONS or `Example Location <X>`"
+
+
+def test_layout_and_document_locations_follow_the_location_convention():
+    bad = sorted(v for v in _cv_position_values().get("location", ())
+                 if not _location_follows_the_convention(v))
+    assert not bad, f"location value(s) {bad}: {_LOCATION_ADVICE}"
+
+
+def test_layout_and_document_titles_are_synthetic_or_from_the_seeded_pool():
+    from tests.conftest import _title_pool
+    pool = set(_title_pool())
+    bad = sorted(v for v in _cv_position_values().get("title", ())
+                 if v and not (v in pool or v.startswith(("SYNTHETIC", "<"))))
+    assert not bad, (f"title value(s) {bad}: use a SYNTHETIC-... token or a title from the "
+                     "seeded faker pool (tests/conftest.py::titles), never a hardcoded job title")
+
+
+def test_certificates_and_education_are_synthetic():
+    # A PREFIX, never a substring: "<a real institution>, BSc Example" contains the word and
+    # names a real place. What a prefix cannot catch -- a real name after "Example " -- is
+    # the same residual every `Example ...` convention in this file carries.
+    bad = sorted(v for v in _cv_position_values().get("credential", ())
+                 if not v.startswith(("Example", "SYNTHETIC", "<")))
+    assert not bad, f"certificate/education value(s) {bad}: start the value with `Example ...`"
+
+
+def _script_sources():
+    root = _TESTS_DIR.parent / "scripts"
+    return [(p.name, p.read_text(encoding="utf-8")) for p in sorted(root.glob("*.py"))]
+
+
+def test_scripts_carry_no_unreviewed_cv_identity_and_follow_the_conventions():
+    """scripts/ ships to no user but is public, and scripts/smoke_installed.py carries a CV
+    document literal (#364 spec §12.2): the same rosters and conventions hold there."""
+    found = {}
+    for _name, text in _script_sources():
+        for category, values in _ast_cv_values(text).items():
+            found.setdefault(category, set()).update(values)
+    assert found.get("identity"), (
+        "the scripts sweep found no CV document at all -- scripts/smoke_installed.py's probe "
+        "is the scope this row exists for, so a collector that stopped reading it passes "
+        "vacuously")
+    names = {n for v in found["identity"] for n in _CV_IDENTITY_RE.findall(v)}
+    unreviewed = _unreviewed_identities(
+        names, _REVIEWED_FIXTURE_IDENTITIES | _CV_IDENTITY_EXEMPT, ())
+    assert unreviewed == [], (
+        f"scripts/ introduce unreviewed identity value(s) {unreviewed}: take a name from "
+        "_SPARE_FIXTURE_IDENTITIES and move it into _REVIEWED_FIXTURE_IDENTITIES")
+    bad = sorted(v for v in found["identity"] if not v.startswith(("Example", "SYNTHETIC")))
+    assert not bad, f"identity value(s) {bad}: start the value with `Example ...`"
+    bad = sorted(v for v in found.get("location", ())
+                 if not _location_follows_the_convention(v))
+    assert not bad, f"location value(s) {bad}: {_LOCATION_ADVICE}"
+    bad = sorted(v for v in found.get("title", ()) if v and not v.startswith("SYNTHETIC"))
+    assert not bad, f"title value(s) {bad}: use a SYNTHETIC-... token, never a real job title"

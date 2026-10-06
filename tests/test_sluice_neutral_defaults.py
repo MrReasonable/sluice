@@ -31,7 +31,6 @@ def test_cv_defaults_carry_no_pii():
     # about identity; see test_a_declared_candidate_profile_restores_
     # neutralized_defaults below for the vault note's own round-trip proof.
     c = CvConfig()
-    assert c.employers == []
     assert c.fabrication_decoys == []
     assert c.negatives == []
     assert c.prefix_map == {}
@@ -120,13 +119,8 @@ def test_ingest_defaults_carry_no_preference(monkeypatch):
     # of the address rule, not this list. Do not read the sweep as licence to loosen
     # the guard.
     assert c.dossier_allow_hosts == []
-    # baseline_rel moved here from CvConfig (only the store can honour it, and
-    # Sluice.store() only ever sees the root Config). The assertion had to move WITH it:
-    # the refactor deleted it from the CvConfig test and nothing replaced it, so a
-    # regression to an absolute personal path would have shipped green. Caught by review.
-    assert c.baseline_rel == "My CV/CV.md"
-    assert not c.baseline_rel.startswith("/"), \
-        "baseline_rel must be RELATIVE to the store: an absolute path is someone's machine"
+    # The retired `baseline_rel` relativity assertion is replaced by the DERIVED sweep
+    # test_no_str_default_on_a_swept_config_is_an_absolute_or_home_path below.
     # The adapter selectors name shipped implementations, never a person's setup.
     assert c.store == "vault"
     assert c.fetcher == "camofox"
@@ -216,11 +210,11 @@ def test_dedupe_title_noise_words_round_trips_through_load_config(tmp_path):
 # --- #26: the unguarded-preference SWEEP -------------------------------------
 # The four tests above are an ENUMERATION: they assert named fields, so they ship
 # green on any preference key nobody named. That has escaped TWICE (see the
-# comments at `locations` and `baseline_rel` above). The sweep below closes the
+# comments at `locations` above and the str-default sweep below). The sweep below closes the
 # class: EVERY list-defaulting field on EVERY config dataclass must default empty,
 # so the next list-typed preference cannot ship a stranger's taste baked into
 # source. It is strictly ADDITIVE -- it removes none of the assertions above. A
-# loop-only rewrite that dropped the str-typed checks (baseline_rel not absolute,
+# loop-only rewrite that dropped the str-typed checks (str defaults not absolute,
 # store/fetcher) or the loader half would be the very `:51-54` escape #26 cites,
 # recurring inside its own fix, so those stay hand-written and untouched.
 
@@ -610,7 +604,7 @@ def test_dossier_settle_ms_rejects_negatives_and_non_ints(tmp_path, monkeypatch,
 # BY DESIGN (it is list-only, and deliberately so -- see the #9 note). They carry two
 # distinct guarantees at once, either of which failing is silent:
 #   * NEUTRALITY -- a non-empty shipped default is a directory on whoever wrote it,
-#     the `baseline_rel` shape asserted 200 lines up;
+#     the shape test_no_str_default_on_a_swept_config_is_an_absolute_or_home_path sweeps;
 #   * MECHANISM -- paths.resolve is `env or config or XDG`, so a config term that is
 #     ALWAYS truthy short-circuits before XDG is ever reached, and the whole
 #     per-system sweep goes inert with every test still green.
@@ -893,7 +887,7 @@ def _example_setting_values():
 
     And it sweeps every key, not just `*_dir:` ones. Keyed on the SHAPE of the value
     rather than on a list of key names, because the names are the part nobody remembers
-    to update: `baseline_rel` is a path too, and a `*_dir`-only scan read as though it
+    to update: a relative-path key is a path too, and a `*_dir`-only scan read as though it
     covered the file while leaving that one open.
 
     KNOWN LIMITS, measured rather than assumed, so nobody reads this as total coverage:
@@ -936,7 +930,7 @@ def test_example_config_documents_every_root_path_key():
 def test_example_config_ships_no_absolute_or_home_path():
     # sluice.yaml.example is COPIED VERBATIM by the documented quickstart, so a shipped
     # `/Users/someone/vault` is both a copied-in wrong answer and a person's machine
-    # name in a public repo. Same rule the baseline_rel assertion applies one file over.
+    # name in a public repo. Same rule test_no_str_default_on_a_swept_config_is_an_absolute_or_home_path applies to defaults.
     values = _example_setting_values()
     # The paired "it discovered something" assertion. Without it the whole row is
     # satisfied by a broken extractor: witnessed by three reviewers independently --
@@ -1044,7 +1038,7 @@ _MUST_FLAG = [
 _MUST_NOT_FLAG = [
     ("relative", "vault_dir: ./vault"),
     ("bare word", "store: vault"),
-    ("store-relative path", "baseline_rel: My CV/CV.md"),
+    ("store-relative path", "usage_jsonl: state/usage.jsonl"),
     ("https url", "homepage: https://example.invalid/a/b"),
     ("http url with port", "homepage: http://h:1/p"),
     ("slash in prose", "note: a CIDR / bare IP"),
@@ -1069,3 +1063,49 @@ def test_the_example_predicate_spares_every_legitimate_shape(label, line):
     # The other direction matters as much: a guard that flags `https://` or `My CV/CV.md`
     # gets switched off, and then it guards nothing at all.
     assert not _flags(line), f"{label}: false positive on a legitimate value"
+
+
+def test_the_cv_layouts_optional_fields_abstain():
+    """#364 spec §12.2: every optional layout field defaults to the abstain shape -- no cap, no
+    location or title, empty lists -- and a role without `employers:` scopes by its heading."""
+    from sluice.core.layout import parse_layout, place
+    layout = parse_layout({"roles": [{"heading": "Example Alpha", "from": "01/2020",
+                                      "to": "present"}]})
+    [role] = layout.roles
+    # employers is DERIVED as the heading (Task 4), which is what scopes the role.
+    assert (role.location, role.title, role.employers, role.bullets_max) == (
+        "", "", ("Example Alpha",), None)
+    assert (layout.skills_max, layout.certificates, layout.education, layout.any_role,
+            layout.omitted) == (None, (), (), (), ())
+    assert place(layout, "Example Alpha").roles == frozenset({0})
+
+
+def test_an_absent_layout_reads_as_none_with_no_built_in_fallback(tmp_path):
+    from sluice.core.vault import Vault
+    assert Vault(str(tmp_path / "vault")).read_cv_layout() is None
+
+
+_SYSTEM_PATH_DEFAULTS = frozenset({"/usr/bin/python3"})
+
+
+def test_no_str_default_on_a_swept_config_is_an_absolute_or_home_path():
+    """Replaces the deleted `baseline_rel` relativity assertion (#364 spec §12.2): a path default
+    that is absolute or `~`-rooted is someone's machine. DERIVED over every swept config's
+    str fields, with the scope pinned, and tied to the sandbox guard: every `./` default
+    found here is one tests/conftest.py's guard derives and watches."""
+    from tests.conftest import _CONTAINER_PATHS, _relative_path_defaults
+
+    checked = [(cls.__name__, f.name, f.default) for cls in _SWEPT_CONFIGS
+               for f in dataclasses.fields(cls) if isinstance(f.default, str)]
+    assert len(checked) >= 10, checked
+    # `/usr/bin/python3` is a system interpreter every POSIX host ships, not someone's
+    # machine; allowed as a WHOLE VALUE (never a path-component prefix, which would let
+    # anything under /usr through).
+    bad = [c for c in checked
+           if c[2].startswith(("/", "~")) and c[2] not in _SYSTEM_PATH_DEFAULTS]
+    assert not bad, f"a config ships a machine's path as its default: {bad}"
+    relative = {d for _c, _f, d in checked if d.startswith("./")}
+    assert relative, "no ./ default found: the link to the sandbox guard would hold vacuously"
+    # `apply.camofox_cv_dir` is a path INSIDE the browser container, which the guard excludes
+    # by name (`_CONTAINER_PATHS`) because nothing on this host is ever written there.
+    assert relative - _CONTAINER_PATHS <= _relative_path_defaults()

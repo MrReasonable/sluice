@@ -2,7 +2,6 @@
 wiring (with an injected probe so it stays offline), and the cmd_doctor exit
 codes. Everything here is hermetic -- no network, no browser, no real LLM."""
 import os
-import string
 from dataclasses import dataclass
 
 import pytest
@@ -11,14 +10,9 @@ from sluice.core.doctor import (
     ALL_CAPABILITIES, DEAD, DEGRADED, NOTICE, OK, SETUP, BackendCheck, BackendTarget,
     ComponentCheck,
     DoctorReport, RoleUse, classify, classify_dossier_cache, classify_gate,
-    classify_negatives_vs_skills, classify_renderer, classify_skills_reconciliation,
-    classify_skills_request, classify_store, classify_track_google, enumerate_targets,
+    classify_renderer, classify_store, classify_track_google, enumerate_targets,
     format_roles, list_typed_fields,
 )
-# Private, and deliberately: both new tests below sweep a ROSTER rather than a
-# hand-list, so a word added to the vocabulary or a change to the floor is covered
-# without anyone remembering to edit a literal here.
-from sluice.core.doctor import _CLAUSE_BREAK_RE, _MIN_TERM_LEN, _NEGATION_WORDS
 
 
 @pytest.fixture(autouse=True)
@@ -67,15 +61,20 @@ def _harmless_components(monkeypatch):
     from sluice.cv.config import CvConfig
 
     # A bare object() no longer suffices: `compose_cv` checks two MUST-support Store members
-    # (`read_baseline`, `read_evidence`) before any spend (#242). They are required by the
-    # Store contract, so the double supplies them rather than the production code treating a
-    # required member as optional -- core/protocols.py rules on exactly that shape.
+    # (`read_cv_layout`, `read_evidence`) before any spend (#242, #364/#365/#368), and
+    # `Sluice.doctor` reads both for its CV rows. They are required by the Store contract, so
+    # the double supplies them rather than the production code treating a required member as
+    # optional -- core/protocols.py rules on exactly that shape. The entry's `company` is the
+    # layout's one role, so every CV row the double draws is healthy.
     class _MinStore:
-        def read_baseline(self):
-            return "# CV\n"
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
 
         def read_evidence(self, kind, verified_only=True):
-            return [{"title": "alpha", "verified": "2026-09-03"}] if kind == "experience" else []
+            return ([{"title": "alpha", "company": "Example Foundry", "fields": {},
+                      "legacy": {}, "verified": "2026-09-03"}]
+                    if kind == "experience" else [])
 
     monkeypatch.setattr(Sluice, "store", lambda self: _MinStore())
     monkeypatch.setattr(Sluice, "renderer", lambda self, cvcfg: object())
@@ -667,15 +666,16 @@ def test_cli_doctor_strict_fails_on_degraded(monkeypatch):
     fallback whose loss was the degrade) -- and the run is otherwise healthy, so the
     strict exit code turns on that row alone."""
     class _StoreMissingCriteria:
-        def read_baseline(self):
-            return "# CV\n"
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
 
         def read_evidence(self, kind, verified_only=True):
             return []
 
         def preflight(self):
-            return {"vault_exists": True, "baseline_exists": True,
-                    "criteria_present": False, "baseline_rel_is_default": True,
+            return {"vault_exists": True,
+                    "criteria_present": False,
                     "experience_total": 1, "experience_verified": 1,
                     "skills_total": 0, "skills_verified": 0,
                     "stories_total": 0, "stories_verified": 0,
@@ -874,7 +874,7 @@ def test_classify_renderer_splits_an_uninstalled_extra_from_a_broken_one():
 def test_classify_store_missing_vault_short_circuits_to_one_row():
     # Four DEAD rows for one cause (a vault that does not exist) would bury the
     # actual problem -- classify_store must short-circuit rather than also
-    # report baseline/criteria/experience as independently broken.
+    # report criteria/experience/candidate as independently broken.
     checks = classify_store({"vault_exists": False})
     assert len(checks) == 1
     assert checks[0].blocks == ALL_CAPABILITIES
@@ -894,12 +894,9 @@ def test_classify_store_missing_vault_short_circuits_to_one_row():
         assert classify_store(facts)[0].state == expected, facts
 
 
-def test_classify_store_missing_baseline_needs_setup_missing_profile_is_degraded():
+def test_classify_store_missing_profile_is_degraded_and_an_empty_corpus_needs_setup():
     checks = classify_store({
-        "vault_exists": True, "baseline_exists": False, "criteria_present": False,
-        # #243: absent, this fact takes the louder DEAD reading, so a fixture asserting
-        # the unsupplied arm has to say which case it is modelling.
-        "baseline_rel_is_default": True,
+        "vault_exists": True, "criteria_present": False,
         "experience_total": 0, "experience_verified": 0,
         # The two non-citable kinds need their keys PRESENT, or the absent-fact guard routes
         # them past the `cited_by_gate` conjunct and the NOTICE assertions below stop proving
@@ -910,7 +907,6 @@ def test_classify_store_missing_baseline_needs_setup_missing_profile_is_degraded
         "stories_total": 0, "stories_verified": 0,
     })
     by_subject = {c.subject: c for c in checks}
-    assert by_subject["baseline_rel"].state == SETUP
     assert by_subject["Judging Profile"].state == DEGRADED
     # Blocking since #242: `cv run` refuses a vault with nothing verified, before any spend, so
     # a NOTICE here would call the install fine about the exact thing that makes the next
@@ -931,12 +927,11 @@ def test_classify_store_healthy_facts_are_ok():
     # name calls healthy, which is precisely the drift this file's fix-round
     # review caught.
     checks = classify_store({
-        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "vault_exists": True, "criteria_present": True,
         "experience_total": 10, "experience_verified": 8,
         "candidate_name_present": True, "candidate_contact_present": True,
     })
     by_subject = {c.subject: c for c in checks}
-    assert by_subject["baseline_rel"].state == OK
     assert by_subject["Judging Profile"].state == OK
     assert "8" in by_subject["Experience Library"].detail
     assert "10" in by_subject["Experience Library"].detail
@@ -951,7 +946,7 @@ def test_classify_store_none_facts_reports_nothing():
 
 # ── classify_store: the Candidate Profile row (#133/#107) ────────────────────
 _HEALTHY_STORE_FACTS = {
-    "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+    "vault_exists": True, "criteria_present": True,
     "experience_verified": 3,
 }
 
@@ -970,7 +965,7 @@ def test_a_blank_candidate_profile_is_setup_and_blocks_cv():
 def test_a_declared_name_with_blank_contact_still_blocks_cv():
     # The half-declared shape cv/engine.py's skipped-config gate itself refuses on
     # (#107's real report: a name alone reached compose, paying a dossier fetch and
-    # an LLM call, before failing the header STRUCTURAL guard on every attempt).
+    # an LLM call, before failing the then header guard on every attempt).
     checks = classify_store({**_HEALTHY_STORE_FACTS, "candidate_name_present": True,
                              "candidate_contact_present": False})
     assert _one(checks, "Candidate Profile").state == SETUP
@@ -1379,8 +1374,8 @@ def test_doctor_reports_a_broken_cv_config_rather_than_tracebacking(monkeypatch)
     guarded constructions below it (self.renderer(), self.store()) -- unlike
     those two, its own call was unguarded before this fix. `load_cv_config`
     already raises ValueError today for several config mistakes unrelated to
-    #133/#107 -- cv.baseline_rel, cv.render_script without cv.renderer, a
-    non-positive cv.compose_timeout, a retired cv.dossier_dir -- so this is
+    #133/#107 -- a retired key (cv.baseline_rel), cv.render_script without
+    cv.renderer, a non-positive cv.compose_timeout -- so this is
     witnessed against a REAL raise, not only the cv.name/cv.contact one
     (#133/#107) that originally motivated adding the guard.
 
@@ -1439,8 +1434,6 @@ def test_a_broken_cv_config_does_not_swallow_unrelated_checks(monkeypatch, tmp_p
     row -- behind the unrelated cv: error."""
     from sluice.core.vault import Vault
 
-    (tmp_path / "My CV").mkdir()
-    (tmp_path / "My CV" / "CV.md").write_text("# Baseline\n", encoding="utf-8")
     (tmp_path / "Job Applications").mkdir()
     (tmp_path / "Job Applications" / "Judging Profile.md").write_text(
         "criteria\n", encoding="utf-8")
@@ -1454,7 +1447,6 @@ def test_a_broken_cv_config_does_not_swallow_unrelated_checks(monkeypatch, tmp_p
 
     rep = Sluice().doctor(offline=True)          # must not raise
     store_checks = {c.subject: c for c in rep.components if c.component == "store"}
-    assert store_checks["baseline_rel"].state == OK
     assert store_checks["Judging Profile"].state == OK
     assert store_checks["Candidate Profile"].state == OK
 
@@ -1595,13 +1587,11 @@ def test_sluice_doctor_wires_a_real_vaults_preflight_into_store_components(monke
     # Closes a real gap: Vault.preflight()'s dict keys are never checked
     # against what classify_store actually reads, and no test builds a REAL
     # Vault with real artefacts on disk and checks the resulting components.
-    # Witnessed: renaming baseline_exists -> baseline_exist in
-    # Vault.preflight left the whole suite green (classify_store's .get()
+    # Witnessed (on the since-retired baseline fact): renaming a preflight key
+    # in Vault.preflight left the whole suite green (classify_store's .get()
     # silently reads the typo'd key as absent).
     from sluice.core.vault import Vault
 
-    (tmp_path / "My CV").mkdir()
-    (tmp_path / "My CV" / "CV.md").write_text("# Baseline\n", encoding="utf-8")
     (tmp_path / "Job Applications").mkdir()
     (tmp_path / "Job Applications" / "Judging Profile.md").write_text(
         "criteria\n", encoding="utf-8")
@@ -1610,7 +1600,6 @@ def test_sluice_doctor_wires_a_real_vaults_preflight_into_store_components(monke
 
     rep = Sluice().doctor(offline=True)
     by_subject = {c.subject: c for c in rep.components if c.component == "store"}
-    assert by_subject["baseline_rel"].state == OK
     assert by_subject["Judging Profile"].state == OK
 
 
@@ -1723,15 +1712,22 @@ def test_doctor_store_preflight_writes_nothing(monkeypatch, tmp_path):
 
 
 def test_a_store_without_preflight_reports_nothing_rather_than_raising(monkeypatch):
-    # The getattr seam, same shape as cv/engine.py's optional Renderer.precheck:
-    # a store that does not implement preflight() is not a store that is
-    # broken, so it must contribute zero component rows, not a crash.
+    # The getattr seam: a store that does not implement the OPTIONAL preflight() is not a
+    # store that is broken, so it must contribute no preflight rows, not a crash. It still
+    # implements the REQUIRED members doctor's CV rows read (#364/#365/#368), so the only
+    # store row left is the CV Layout's own, and it is healthy.
     class _StoreWithoutPreflight:
-        pass
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
+
+        def read_evidence(self, kind, verified_only=True):
+            return []
 
     monkeypatch.setattr(Sluice, "store", lambda self: _StoreWithoutPreflight())
     rep = Sluice().doctor(offline=True)   # must not raise
-    assert not [c for c in rep.components if c.component == "store"]
+    store_rows = [c for c in rep.components if c.component == "store"]
+    assert [(c.subject, c.state) for c in store_rows] == [("cv_layout", OK)]
 
 
 def test_a_store_whose_preflight_raises_is_reported_dead_not_crashed(monkeypatch):
@@ -2011,11 +2007,10 @@ def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tm
     because a message that claimed citability for NOTHING would satisfy the negative half
     on its own.
 
-    Three branches since #165, not two: `skills` is now READ by the composer as framing
-    while remaining uncitable, so both "citable" and "nothing reads this corpus" are false
-    for it. That middle state is the whole point of splitting the flag -- collapsing it
-    back into either neighbour re-creates the #164 M2 over-claim in one direction or a
-    plain falsehood in the other.
+    Three branches since #165, not two: `skills` is READ by the composer as framing while
+    remaining uncitable, so both "citable" and "nothing reads this corpus" are false for it.
+    Since D12 (#364/#365/#368) its verified names also reach a CV's skills list, which its
+    row must say too (tests/test_skills_pool_wording.py pins the wording per flag).
     """
     from sluice.core.protocols import EVIDENCE_KINDS
     from sluice.core.vault import Vault
@@ -2032,6 +2027,10 @@ def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tm
         detail = rows[spec.relpath.rsplit("/", 1)[-1]]
         if spec.cited_by_gate:
             assert "are citable by the CV fabrication gate" in detail, kind
+        elif spec.names_in_skills_pool:
+            assert "framing for the CV composer" in detail, kind
+            assert "can appear in a CV's skills list" in detail, kind
+            assert "are citable by the CV fabrication gate" not in detail, kind
         elif spec.read_by_composer:
             assert "shown to the CV composer as framing" in detail, kind
             assert "are citable by the CV fabrication gate" not in detail, kind
@@ -2108,7 +2107,7 @@ def test_one_unreadable_evidence_kind_does_not_erase_every_other_store_fact(tmp_
     assert facts["skills_pending"] == 1, "a readable kind lost its count to its neighbour"
     # The facts a `cv run` refusal is diagnosed from are still there at all.
     assert facts["vault_exists"] is True
-    assert "candidate_name_present" in facts and "baseline_exists" in facts
+    assert "candidate_name_present" in facts and "criteria_present" in facts
 
 
 def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_standing(
@@ -2136,7 +2135,7 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
     assert "cannot be read" in broken.detail and "is a symlink" in broken.detail
     assert broken.blocks == (), "nothing reads stories, so it blocks no sub-app"
     # Every other store row survives -- the whole point of the isolation.
-    for subject in ("baseline_rel", "Judging Profile", "Candidate Profile",
+    for subject in ("Judging Profile", "Candidate Profile",
                     EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1],
                     EVIDENCE_KINDS["skills"].relpath.rsplit("/", 1)[-1]):
         assert subject in by_subject, f"{subject} was erased by an unrelated corpus"
@@ -2190,7 +2189,7 @@ def test_doctor_reports_an_unreadable_corpus_through_the_real_wiring(tmp_path, m
         "the whole-method catch-all fired; per-kind isolation did not"
     subjects = {r.subject for r in store_rows}
     assert {spec.relpath.rsplit("/", 1)[-1] for spec in EVIDENCE_KINDS.values()} <= subjects
-    assert "Candidate Profile" in subjects and "baseline_rel" in subjects
+    assert "Candidate Profile" in subjects and "Judging Profile" in subjects
 
 
 def _mis_encode_an_evidence_entry(tmp_path, kind):
@@ -2249,7 +2248,7 @@ def test_a_mis_encoded_evidence_entry_is_isolated_per_kind_like_an_unreadable_di
         assert f"{kind}_error" not in facts
     assert facts["skills_pending"] == 1, "a readable kind lost its count to its neighbour"
     assert facts["vault_exists"] is True
-    assert "candidate_name_present" in facts and "baseline_exists" in facts
+    assert "candidate_name_present" in facts and "criteria_present" in facts
 
 
 def test_a_mis_encoded_evidence_entry_takes_its_own_dead_row(tmp_path):
@@ -2267,7 +2266,7 @@ def test_a_mis_encoded_evidence_entry_takes_its_own_dead_row(tmp_path):
     assert "cannot be read" in row.detail and "decode" in row.detail
     # Every other store row survives -- the isolation is per kind, not "give up quietly".
     subjects = {r.subject for r in rows}
-    assert {"Candidate Profile", "baseline_rel", "Judging Profile"} <= subjects
+    assert {"Candidate Profile", "Judging Profile"} <= subjects
 
 
 def test_the_missing_token_row_names_where_the_token_must_go():
@@ -2405,991 +2404,6 @@ def test_doctor_reports_a_legacy_token_through_the_real_wiring(monkeypatch, tmp_
     assert _LEGACY["google_token.json"] in google[0].detail, google[0].detail
 
 
-# ── #165: a configured negative that contradicts the verified Skills Inventory ──
-def test_a_negative_naming_a_held_skill_is_reported():
-    rows = classify_negatives_vs_skills(["never claim documenting experience"],
-                                        [{"best_for": "documentation"}])
-    assert len(rows) == 1 and rows[0].state == NOTICE
-
-
-def test_the_report_names_no_configured_value():
-    """A DoctorReport is returned whole to MCP clients (sluice/mcpserver.py), and
-    `classify_gate` reports this SAME config key as a COUNT for that reason. Echoing the
-    user's own preference prose into a diagnostic makes it a disclosure surface, so the
-    row must LOCATE the line, never quote it."""
-    neg = "never claim documenting experience"
-    rows = classify_negatives_vs_skills([neg], [{"best_for": "documentation"}])
-    assert neg not in rows[0].detail
-    assert "documenting" not in rows[0].detail
-    # The STEMS too, not just the words as the user typed them: the leak this guards
-    # against is `{sorted(overlap)}` in place of `{len(overlap)}`, which would print
-    # ['document'] -- a form neither the raw line nor the raw word check can see.
-    assert "document" not in rows[0].detail
-    assert "[" not in rows[0].detail, "the row renders a term list rather than a count"
-    assert rows[0].subject == "cv.negatives[0]"
-
-
-def test_an_empty_inventory_abstains():
-    """Empty-config-abstains: an install with no Skills Inventory has nothing to
-    contradict, and must not have every negative reported."""
-    assert classify_negatives_vs_skills(["never claim anything"], []) == []
-
-
-def test_an_empty_negatives_list_abstains():
-    assert classify_negatives_vs_skills([], [{"best_for": "documentation"}]) == []
-
-
-def test_an_inventory_with_no_domains_abstains():
-    """A skill whose Domain is blank contributes no terms, so there is nothing to
-    contradict. This is genuinely an equivalent mutant of the `not skills` guard above --
-    deleting either one leaves this green -- and it is kept because the two states are
-    different for a READER: "you have no inventory" and "your inventory declares no
-    domains" are different things to be told, and a later change that makes the second
-    report something would land here."""
-    assert classify_negatives_vs_skills(["never claim anything"], [{"best_for": ""}]) == []
-
-
-def test_a_stopword_in_a_domain_does_not_manufacture_a_contradiction():
-    """Measured before the length floor existed: a Domain reading "Data and analytics for
-    the platform" contributes the stem `the`, so EVERY negative containing the word "the"
-    reported a contradiction. NOTICE-tier, so it cost no lead -- but a row that fires on
-    everything is one a user learns to ignore, which is the whole value of the check."""
-    assert classify_negatives_vs_skills(
-        ["no mention of the finance sector"],
-        [{"best_for": "Data and analytics for the platform"}]) == []
-    # ...while a real overlap in the same inventory still reports.
-    assert classify_negatives_vs_skills(
-        ["never claim analytics work"],
-        [{"best_for": "Data and analytics for the platform"}])
-
-
-def test_a_negative_about_something_not_in_the_inventory_is_not_reported():
-    assert classify_negatives_vs_skills(["never claim a security clearance"],
-                                        [{"best_for": "documentation"}]) == []
-
-
-def test_the_match_survives_a_word_form_difference():
-    """Why this shares the stemmer: a negative saying 'documenting' and a skill whose
-    Domain says 'documentation' are the same disagreement."""
-    assert classify_negatives_vs_skills(["no documenting"], [{"best_for": "documentation"}])
-
-
-def test_the_entry_title_is_not_a_matchable_term():
-    """The title is a NAME the user chose, so matching its stems makes any negative
-    containing an ordinary word like 'skills' fire a NOTICE about nothing. A false
-    contradiction report is worse than a missed one here: the whole value of the row is
-    that it means something."""
-    assert classify_negatives_vs_skills(
-        ["never claim these skills"],
-        [{"best_for": "platform", "title": "Example Cloud Skill"}]) == []
-
-
-# ── #260: only a term the line actually NEGATES counts as a contradiction ──
-def test_a_line_that_merely_mentions_a_held_skill_is_not_a_contradiction():
-    """#260's shape, reproduced: a pure FORMATTING rule shares one 4-char stem with a
-    skill's `best_for` prose and is reported as a contradiction whose advice is "remove the
-    line, or remove the skill". Following that on a false positive deletes a working rule.
-
-    The strings are constructed to that shape, not taken from the install #260 observed --
-    the issue quotes none of its four flagged lines. Run against the code this replaced,
-    these two do report.
-
-    A shared word is not a contradiction, and this shape is close to inevitable: a rule
-    about how the SKILLS section is laid out is written in the same professional
-    vocabulary the inventory uses."""
-    assert classify_negatives_vs_skills(
-        ["Keep the platform section last"],
-        [{"best_for": "building data platforms"}]) == []
-    # ...while the genuine contradiction in the SAME vocabulary still reports, so the
-    # narrowing is a narrowing and not a switch-off.
-    assert classify_negatives_vs_skills(
-        ["Never claim data platform work"],
-        [{"best_for": "building data platforms"}])
-
-
-def test_a_negation_does_not_scope_across_a_clause_boundary():
-    """A negation negates its own clause, not the whole config line. Run against the code
-    this replaced, the constructed line below reported a contradiction: it CONTAINS `never`
-    and CONTAINS `platform` and nothing related the two. That is the shape #260 says is close
-    to inevitable -- the false positives observed were long lines -- and it is why
-    presence-anywhere would have been nearly as blunt as the bare intersection it
-    replaces."""
-    assert classify_negatives_vs_skills(
-        ["Never use more than six bullets per role; keep the platform section last"],
-        [{"best_for": "building data platforms"}]) == []
-    # The identical words with no clause boundary between them ARE in scope, which is
-    # what stops this test passing against a mutant that simply reports nothing.
-    assert classify_negatives_vs_skills(
-        ["Never use more than six bullets per role or the platform section"],
-        [{"best_for": "building data platforms"}])
-
-
-def test_a_period_inside_a_token_does_not_split_a_clause():
-    """A clause break is a period a human typed to end a sentence, so it is required to be
-    followed by whitespace or the end of the line. Measured before that requirement: a
-    dotted technology name -- the exact thing `cv.negatives` is written about -- split the
-    clause and dropped everything after the dot out of the negation's scope, so a genuine
-    contradiction went unreported. A decimal in a length rule does the same."""
-    assert classify_negatives_vs_skills(
-        ["Never claim experience with example.js or containers"],
-        [{"best_for": "container orchestration"}])
-    assert classify_negatives_vs_skills(
-        ["Never claim 2.5 years of container work"],
-        [{"best_for": "container orchestration"}])
-
-
-def test_a_colon_introduces_a_list_rather_than_ending_a_clause():
-    """A colon continues the sentence it is in -- "never claim: X, Y" negates X and Y --
-    so it is deliberately NOT a clause terminator. Measured while it was one: that line
-    put the whole list outside the negation's scope and reported nothing.
-
-    The forward scope is what makes the colon safe to leave in, and the second assertion
-    is that claim: with the negation AFTER the colon, the term before it is still
-    something the line asserts rather than forbids."""
-    assert classify_negatives_vs_skills(
-        ["Never claim: containers, dashboards"],
-        [{"best_for": "container orchestration"}])
-    assert classify_negatives_vs_skills(
-        ["Keep the container section last: no tables"],
-        [{"best_for": "container orchestration"}]) == []
-
-
-def test_the_clause_terminators_are_exactly_the_specified_set():
-    """One equality against a SPECIFICATION, then the behaviour each half implies.
-
-    A roster derived from `_CLAUSE_BREAK_RE` itself could not fail: shrink the pattern and
-    the derivation simply re-partitions, both halves still agreeing with it -- the
-    resolve-its-own-roster shape that makes a guard look like coverage. So the two lists
-    here are the claim, written down, and the equality is what reddens when the pattern
-    stops meeting it. Measured before this existed: reducing the pattern to `[;]` left the
-    whole module green.
-
-    The SWEEP is derived and only the specification is hand-written: quantifying the
-    equality over the two lists themselves would leave a terminator in NEITHER list
-    invisible to it, so the marks probed are every printable character plus the two dashes
-    and the double hyphen, and the equality target is the claim.
-
-    A construct added to `_CLAUSE_BREAK_RE` belongs in one of these two lists."""
-    must_break = (".", ";", "!", "?", "\n", "--", "\u2013", "\u2014")
-    must_not_break = (":", ",", "-", "/")
-    alphabet = sorted(set(string.printable) | set(must_break) | set(must_not_break))
-    assert {m for m in alphabet
-            if len(_CLAUSE_BREAK_RE.split(f"a{m} b")) > 1} == set(must_break)
-
-    skill = [{"best_for": "container orchestration"}]
-    for mark in must_break:
-        # The negation is in the first clause; the shared term is in the second.
-        assert classify_negatives_vs_skills(
-            [f"Never use tables{mark} keep the container section last"], skill) == [], mark
-    for mark in must_not_break:
-        # ...the same words, still one clause, so the term is inside the scope.
-        assert classify_negatives_vs_skills(
-            [f"Never use tables{mark} keep the container section last"], skill), mark
-
-
-def test_a_negation_in_a_later_clause_is_still_in_scope():
-    """Every clause is scanned, not just the first. The rows beside this one all put the
-    negation in clause ONE, so together they pin that a negation does not LEAK forward and
-    never that a later clause's own negation is HONOURED -- measured, restricting the loop
-    to `[:1]` or `[-1:]` left the whole suite green while dropping a whole class of line.
-
-    A `cv.negatives` entry carrying two rules is ordinary, and the middle-clause case is
-    what separates "scan every clause" from either end-of-list shortcut. The third
-    assertion keeps this row from being satisfied by a check that reports everything."""
-    skill = [{"best_for": "container orchestration"}]
-    assert classify_negatives_vs_skills(
-        ["Keep bullets short; never claim container work"], skill)
-    assert classify_negatives_vs_skills(
-        ["Keep bullets short; never claim container work; keep the summary short"], skill)
-    assert classify_negatives_vs_skills(
-        ["Keep the container section last; never use tables"], skill) == []
-
-
-def test_a_blank_negatives_entry_is_tolerated():
-    """A blank YAML list item is a real config, not a hypothetical: under
-
-        cv:
-          negatives:
-            -
-            - never claim container work
-
-    `load_cv_config` yields `[None, "never claim container work"]` -- `refuse_wrong_container`
-    validates the CONTAINER, not its elements -- so without the `neg or ""` guard
-    `job-sluice doctor` raises on a file whose only fault is a trailing dash. The code this
-    replaced tolerated it through `tokens()`' own `text or ""`, so losing the guard is a
-    regression rather than a new gap.
-
-    The subject assertion is the second half: a blank entry must not shift the INDEX the
-    row reports, or the operator is sent to the wrong line."""
-    skill = [{"best_for": "container orchestration"}]
-    rows = classify_negatives_vs_skills([None, "never claim container work"], skill)
-    assert [r.subject for r in rows] == ["cv.negatives[1]"]
-    assert classify_negatives_vs_skills([None], skill) == []
-    assert classify_negatives_vs_skills(["", "   "], skill) == []
-
-
-def test_a_negation_scopes_forward_not_backward():
-    """English negation scopes over what FOLLOWS it. A term before the negation is
-    something the line asserts, not something it forbids -- so the same two words in the
-    other order are a rule about tables, not about platforms."""
-    assert classify_negatives_vs_skills(
-        ["Keep the platform section last and never use tables"],
-        [{"best_for": "building data platforms"}]) == []
-    assert classify_negatives_vs_skills(
-        ["Never use tables and keep the platform section last"],
-        [{"best_for": "building data platforms"}])
-
-
-def test_an_inflected_negation_word_still_opens_a_scope():
-    """Same reason the TERMS are stemmed: `avoiding` and `avoid` are the same word, so the
-    vocabulary is compared against each token's STEM.
-
-    The sweep below reddens on a raw-token comparison too, but only by accident: `exclude`
-    is the one shipped word spelled differently from its own stem. Hand-stem that entry to
-    `exclud` and the sweep goes green while every inflected negation stops working --
-    measured, and this is then the only row that reddens.
-
-    The second assertion is what makes the first one about the VOCABULARY: without it, a
-    check that reports every line satisfies the first assertion too."""
-    assert classify_negatives_vs_skills(["avoiding documenting work"],
-                                        [{"best_for": "documentation"}])
-    assert classify_negatives_vs_skills(["requiring documenting work"],
-                                        [{"best_for": "documentation"}]) == []
-
-
-def test_a_negation_word_is_never_itself_a_matchable_term():
-    """`never` and `without` clear `_MIN_TERM_LEN`, so a vocabulary word left in the
-    returned set is a term like any other -- and an inventory whose own prose contains one
-    then matches on it. The negative below forbids nothing the skill holds; the only shared
-    word is the negation itself.
-
-    This is the `elif` in `_negated_stems`, and it is the one arm no other row here
-    reaches: with a second `if` in its place everything above stays green."""
-    assert classify_negatives_vs_skills(
-        ["never claim work without evidence"],
-        [{"best_for": "Deployments without downtime"}]) == []
-
-
-def test_the_negation_vocabulary_is_exactly_the_specified_set():
-    """The sweep below cannot see a DELETION: it derives its roster from `_NEGATION_WORDS`,
-    so removing a word simply sweeps fewer and stays green while operators stop being told
-    about every negative phrased with it. That is the same shape as a discovery sweep whose
-    matcher finds nothing -- passing by looking at less.
-
-    So the vocabulary is written down here as a specification, and adding or removing a
-    word has to be a decision someone makes rather than a narrowing that ships quietly.
-    Update this list deliberately."""
-    assert set(_NEGATION_WORDS) == {
-        "no", "not", "never", "none", "nor", "neither",
-        "avoid", "exclude", "omit", "without", "cannot"}
-
-
-def test_every_shipped_negation_word_opens_a_scope():
-    """Enumerated from the vocabulary itself, so a word added to it that does not survive
-    stemming (a contraction, say) reddens here rather than shipping inert.
-
-    The control is what makes this falsifiable: an ordinary verb in the identical sentence
-    must NOT report, so a mutant that scopes every line passes nothing here."""
-    assert _NEGATION_WORDS, "the negation vocabulary is empty, so this sweep asserts nothing"
-    assert len(set(_NEGATION_WORDS)) == len(_NEGATION_WORDS), "duplicate entry"
-    for word in _NEGATION_WORDS:
-        assert classify_negatives_vs_skills([f"{word} claim documentation"],
-                                            [{"best_for": "documentation"}]), word
-    assert classify_negatives_vs_skills(["always claim documentation"],
-                                        [{"best_for": "documentation"}]) == []
-
-
-def test_a_negation_word_below_the_term_floor_still_opens_a_scope():
-    """`_MIN_TERM_LEN` floors the TERMS -- a length rule about what is too short to carry
-    a topic. It must not reach the negation vocabulary, whose shortest members (`no`,
-    `not`) are function words whose whole job is grammatical. Applying one floor to both
-    would leave the check firing only on the longer words, silently."""
-    short = [w for w in _NEGATION_WORDS if len(w) < _MIN_TERM_LEN]
-    assert short, "no shipped negation word is below the floor, so this asserts nothing"
-    for word in short:
-        assert classify_negatives_vs_skills([f"{word} documenting"],
-                                            [{"best_for": "documentation"}]), word
-
-
-def test_the_row_never_affects_the_exit_code():
-    """NOTICE, never DEGRADED. `--strict` in a cron job failing because a negative
-    overlaps an inventory is the 672ad2a class aimed at the tool's own exit status."""
-    rows = classify_negatives_vs_skills(["no documenting"], [{"best_for": "documentation"}])
-    assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
-
-
-def test_the_negatives_cross_check_runs_through_the_real_wiring(tmp_path, monkeypatch):
-    """Every other test of this check calls the pure classifier directly, so the smallest
-    DELETION in production code -- removing the call site in `Sluice.doctor` -- leaves them
-    all green. This is the one that reddens.
-
-    Follows `test_doctor_reports_an_unreadable_corpus_through_the_real_wiring`'s idiom,
-    including restoring the REAL store: this file's autouse `_harmless_components` fixture
-    hands `Sluice.doctor` a sentinel with no evidence reads at all.
-    """
-    import os
-
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    sk = vault / "Job Applications" / "Skills Inventory"
-    os.makedirs(sk, exist_ok=True)
-    (sk / "Example Cloud Skill.md").write_text(
-        "---\nProficiency: 8 years\nDomain: documentation\nEvidence: e\n"
-        "Signal Value: depth\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-    monkeypatch.setattr(
-        "sluice.cv.config.load_cv_config",
-        lambda *a, **k: __import__("sluice.cv.config", fromlist=["CvConfig"]).CvConfig(
-            negatives=["never claim documenting experience"]))
-
-    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    rows = [c for c in report.components if c.subject.startswith("cv.negatives[")]
-    assert rows, ("Sluice.doctor did not run the negatives cross-check -- the pure "
-                  "classifier's own tests cannot see this")
-    assert rows[0].state == NOTICE
-    # Exit-code neutrality is asserted on the rows themselves in
-    # test_the_row_never_affects_the_exit_code. Asserting it on THIS report would conflate
-    # the NOTICE with the genuinely DEAD rows a bare tmp vault produces (no baseline CV, no
-    # Candidate Profile), which is a different claim and one that would fail for the right
-    # reasons.
-
-
-# ── #259: the precondition a composed SKILLS section actually has ─────────────
-#
-# Entries are literal nested dicts with the `Skills` key written out at each call site,
-# for the reason the #168 Task 10 section below states in full: a helper taking the value
-# as a PARAMETER hides it from both neutrality collectors in
-# tests/test_fixture_name_neutrality.py.
-
-
-def test_a_corpus_with_no_skills_annotation_anywhere_reports_the_precondition():
-    """The row #259 exists to add. Its absence was the whole defect: on this vault shape
-    doctor's only word on the subject was the Skills Inventory's own verified/total ratio,
-    which gates nothing, so an operator acted on the inventory and nothing changed."""
-    rows = classify_skills_request(
-        [{"fields": {"Skills": ""}}, {"fields": {"Skills": ""}}])
-    assert len(rows) == 1
-    row = rows[0]
-    # `store`, not `gates`: this row exists to be READ beside classify_store's own
-    # Skills Inventory row, which is what an operator otherwise acts on, and the printer
-    # emits components in list order rather than grouping them.
-    assert row.component == "store"
-    assert row.subject == "Experience Library (Skills)"
-    assert row.state == NOTICE, "a vault carrying no such annotation is fully supported"
-    assert row.blocks == (), "cv run composes a CV without a SKILLS section"
-    assert "0 of 2 verified entries" in row.detail
-    # Names BOTH corpora: the misdirection being corrected is specifically that the field
-    # looks like it belongs on a Skills Inventory entry.
-    assert "Experience Library entry note" in row.detail
-    assert "not on a Skills Inventory entry" in row.detail
-
-
-def test_one_annotated_entry_suppresses_the_row():
-    """The positive control: the row CAN stop firing, so the assertions above are not
-    satisfied by a function that returns a row unconditionally. One entry is enough --
-    `skills_requested` is `any(...)` over the whole verified set, which `cv/bundle.py`'s
-    `rank` orders and never excludes, so one annotation turns the section on for EVERY
-    lead."""
-    assert classify_skills_request(
-        [{"fields": {"Skills": ""}},
-         {"fields": {"Skills": "Example Widget"}}]) == []
-
-
-def test_an_empty_experience_corpus_abstains_rather_than_reporting_zero_of_zero():
-    """`classify_store` already emits a SETUP row that BLOCKS cv on this vault (#242:
-    `cv run` refuses a corpus with nothing verified). The operator's next step is to
-    verify an entry, not to annotate one that does not exist, so a second row naming the
-    later step would compete with the row naming the blocking one."""
-    assert classify_skills_request([]) == []
-
-
-@pytest.mark.parametrize("entry", [
-    {"fields": {"Skills": ""}},
-    {"fields": {"Skills": " "}},
-    {"fields": {"Skills": ","}},
-    {"fields": {"Skills": " , , "}},
-])
-def test_the_values_this_row_fires_on_are_exactly_the_ones_the_gate_reads_as_absent(entry):
-    """THE load-bearing claim, executed rather than argued.
-
-    `core/doctor.py` may not import a sub-app (CLAUDE.md's layering rule), so it splits
-    `Skills:` itself rather than through `cv/bundle.py:_skill_items` -- two readings of
-    one field. The row's claim ("no CV gets a SKILLS section") is only exact while the two
-    agree about what counts as NO annotation, so that agreement is asserted here against
-    the REAL gate function on every blank spelling, in both directions at once: doctor
-    fires the row, and `_skill_items` yields nothing for the same value.
-
-    A test asserting only doctor's own half would certify a divergence rather than catch
-    it -- the shape CLAUDE.md calls "a pattern consumed by two engines must be asserted
-    through the engine that RUNS it"."""
-    from sluice.cv.bundle import _skill_items
-
-    assert _skill_items(entry) == [], "the gate read this value as an annotation"
-    rows = classify_skills_request([entry])
-    assert len(rows) == 1, "doctor did not read this value as absent"
-    assert "0 of 1 verified entries" in rows[0].detail
-
-
-def test_a_nameless_skills_value_suppresses_the_row_because_the_gate_refuses_it():
-    """The one documented divergence, pinned so it cannot be "fixed" into a false row.
-
-    `_skill_items` REFUSES a non-blank item carrying no name (`...`, `-`), raising out of
-    `build_bundle` before any compose and failing every lead in the batch. So on this
-    corpus `cv run` does not merely skip the SKILLS section, it produces no CV at all --
-    and a row announcing "no CV gets a SKILLS section until one carries the field" would
-    be reassuring about a corpus that is broken outright, while pointing at a remedy
-    (annotate an entry) that is already done.
-
-    Suppressing at ANY non-blank value is what keeps doctor's only claim to the case where
-    the two readings provably agree. Tightening doctor's split to skip punctuation would
-    redden this and should: it would buy a wrong row, not a better one."""
-    from sluice.cv.bundle import _skill_items
-
-    entry = {"fields": {"Skills": "..."}}
-    with pytest.raises(ValueError):
-        _skill_items(entry)
-    assert classify_skills_request([entry]) == []
-
-
-def test_a_value_the_gate_cannot_read_suppresses_the_row_and_claims_no_name():
-    """A Store returning a `None`, a list or an int for this field -- none of which
-    core/protocols.py's Store contract forbids -- must SUPPRESS the row, for the same
-    reason a nameless `...` does: `_skill_items` cannot split it either, so it raises out
-    of `build_bundle` and fails every lead. A row there would say no CV gets a SKILLS
-    section about a corpus that composes no CV at all.
-
-    This is the arm the earlier cut got wrong, and it is why `_declared_skills` returns
-    None rather than an empty set: collapsing "no annotation" and "unreadable" made the row
-    fire on the second. Executed against the real gate below rather than asserted from the
-    docstring.
-
-    The reconciliation maps the SAME None to no claimed NAME -- one reader, two mappings --
-    so it still abstains rather than reporting a phantom name derived from a list's repr.
-
-    Built by subscript assignment, this file's stated exception to its own literal-dict
-    rule (see the two non-string reconciliation tests below): none of these values is a
-    candidate skill NAME, so there is nothing for a human to confirm invented-vs-real and
-    nothing being hidden from the neutrality sweep by writing it this way."""
-    from sluice.cv.bundle import _skill_items
-
-    weird = []
-    for bad in (None, ["a", "b"], 7):
-        e = {"fields": {}}
-        e["fields"]["Skills"] = bad
-        weird.append(e)
-        # The half that makes the suppression correct rather than merely chosen: the gate
-        # REFUSES this value, so "no SKILLS section is requested" is not what happens.
-        with pytest.raises((AttributeError, TypeError)):
-            _skill_items(e)
-
-    assert classify_skills_request(weird) == []
-    # One unreadable entry is enough to suppress, even beside genuinely blank ones -- the
-    # gate raises on the whole corpus, not on the entries after it.
-    assert classify_skills_request([{"fields": {"Skills": ""}}] + weird) == []
-    # A MISSING key is not an unreadable value: `_skill_items` defaults it to "" and reads
-    # no items, so these two shapes must still fire the row rather than ride the arm above.
-    assert len(classify_skills_request([{"fields": {}}, {}])) == 1
-    # And the reconciliation still abstains rather than reporting three unmatched names,
-    # which is what coercing a list to its repr and comma-splitting it would have produced.
-    assert classify_skills_reconciliation(weird, [_skill("example-widget")]) == []
-
-
-def test_both_evidence_cross_checks_see_one_inventory_snapshot(tmp_path, monkeypatch):
-    """The Skills Inventory is read ONCE per report and the same list reaches both
-    cross-checks (CodeRabbit, PR #283). It used to be read twice -- once for the negatives
-    check, once for the reconciliation -- so the two rows could describe two different
-    revisions of one corpus inside a single report.
-
-    Asserted on OBJECT IDENTITY rather than on a call count: a count would have to name how
-    many times `Vault.preflight` reads the corpus for its own tally too, which is a
-    different consumer through a different seam and would make this test fail on an
-    unrelated refactor there. Identity says the thing that actually matters -- these two
-    classifiers were handed the same snapshot."""
-    import os
-
-    from sluice.core import doctor as _doctor
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    exp = vault / "Job Applications" / "Experience Library"
-    sk = vault / "Job Applications" / "Skills Inventory"
-    os.makedirs(exp, exist_ok=True)
-    os.makedirs(sk, exist_ok=True)
-    (exp / "alpha.md").write_text(
-        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: Example Ghost\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
-    (sk / "example-orphan.md").write_text(
-        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
-        "Signal Value: depth\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
-
-    seen = {}
-    monkeypatch.setattr(_doctor, "classify_negatives_vs_skills",
-                        lambda negatives, skills: seen.setdefault("negatives", id(skills)) and [])
-    monkeypatch.setattr(_doctor, "classify_skills_reconciliation",
-                        lambda experience, skills: seen.setdefault("reconcile", id(skills)) and [])
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    assert set(seen) == {"negatives", "reconcile"}, (
-        "one of the two cross-checks did not run, so this test cannot compare their inputs")
-    assert seen["negatives"] == seen["reconcile"], (
-        "the two cross-checks were handed different Skills Inventory reads, so one report "
-        "can describe two revisions of the same corpus")
-
-
-def test_an_unreadable_experience_corpus_does_not_silence_the_negatives_row(tmp_path, monkeypatch):
-    """The coupling the single-snapshot fix must NOT introduce, pinned because the review
-    that asked for that fix proposed exactly it: reading the inventory only after the
-    Experience Library read succeeds.
-
-    `classify_negatives_vs_skills` compares a `cv.negatives` line against the Skills
-    Inventory. The Experience Library is not in that comparison, so an unreadable one must
-    leave the row alone -- the same independence the #259 read was split into its own try
-    to preserve, here in the other direction.
-
-    The experience read is made to fail while the inventory reads fine, which is the only
-    arrangement that can tell the two structures apart."""
-    import os
-
-    from sluice.core import doctor as _doctor
-    from sluice.core.config import Config
-    from sluice.core.vault import Vault
-
-    vault = tmp_path / "vault"
-    sk = vault / "Job Applications" / "Skills Inventory"
-    os.makedirs(sk, exist_ok=True)
-    (sk / "example-orphan.md").write_text(
-        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
-        "Signal Value: depth\nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
-
-    real_read = Vault.read_evidence
-
-    def _read(self, kind, verified_only=True):
-        if kind == "experience":
-            raise OSError("experience corpus is unreadable")
-        return real_read(self, kind, verified_only)
-
-    monkeypatch.setattr(Vault, "read_evidence", _read)
-    called = []
-    monkeypatch.setattr(_doctor, "classify_negatives_vs_skills",
-                        lambda negatives, skills: called.append(len(skills)) or [])
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    assert called == [1], (
-        "an unreadable Experience Library silenced the negatives cross-check, which does "
-        "not read that corpus at all")
-
-
-def test_the_row_counts_the_verified_corpus_the_gate_itself_reads(tmp_path, monkeypatch):
-    """The surviving mutant every other test in this section is blind to: flipping the
-    `verified_only=True` on `Sluice.doctor`'s experience read to `False` left the whole
-    suite green while silently reintroducing #259's defect.
-
-    `cv/engine.py` computes `skills_requested` over
-    `read_evidence("experience", verified_only=True)`, so doctor must count that same
-    corpus. Reading a WIDER one lets an UNVERIFIED note's `Skills:` value suppress the
-    row -- doctor then reports nothing while the gate still requests no SKILLS section,
-    which is the precondition going unreported again, in the reassuring direction.
-
-    Every other test here either calls the pure classifier (which never sees this read) or
-    seats only verified notes, so none can distinguish the two corpora. This one seats a
-    VERIFIED note with a blank `Skills:` beside an UNVERIFIED one that annotates it: the
-    two reads disagree about this vault, which is what makes the row's presence and its
-    count evidence about which one was taken."""
-    import os
-
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    exp = vault / "Job Applications" / "Experience Library"
-    os.makedirs(exp, exist_ok=True)
-    (exp / "alpha.md").write_text(
-        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: \nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
-    # Seated in place rather than under `_inbox/` (which `read_evidence` cannot see at
-    # either setting, so it could not tell the two reads apart): an unverified note is one
-    # carrying no `verified:` key, and that is the only difference from the note above.
-    (exp / "beta.md").write_text(
-        "---\nCompany: Example Beta\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: Example Widget\n---\nBody.\n", encoding="utf-8")
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    rows = [c for c in report.components
-            if (c.component, c.subject) == ("store", "Experience Library (Skills)")]
-    assert len(rows) == 1, (
-        "the row went silent, so the read counted the unverified entry's annotation -- "
-        "a corpus cv/engine.py's skills_requested never sees")
-    # The COUNT is the second half of the same claim: one verified entry, not two.
-    assert "0 of 1 verified entries" in rows[0].detail
-
-
-def test_the_skills_request_row_runs_through_the_real_wiring(tmp_path, monkeypatch):
-    """Every test above calls the pure classifier directly, so the smallest DELETION in
-    production code -- removing the call site in `Sluice.doctor` -- leaves them all green.
-    This is the one that reddens. Follows
-    test_the_skills_reconciliation_runs_through_the_real_wiring's idiom exactly, including
-    restoring the REAL store this file's autouse `_harmless_components` fixture replaces
-    with a bare sentinel.
-
-    Filtered on the (component, subject) PAIR: `classify_store` emits its own
-    `store`-component rows for this same corpus, and the suffix is the only thing telling
-    them apart."""
-    import os
-
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    exp = vault / "Job Applications" / "Experience Library"
-    os.makedirs(exp, exist_ok=True)
-    (exp / "alpha.md").write_text(
-        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: \nverified: 2026-09-06\n---\nBody.\n", encoding="utf-8")
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    rows = [c for c in report.components
-            if (c.component, c.subject) == ("store", "Experience Library (Skills)")]
-    assert len(rows) == 1, "the #259 row did not reach the report through Sluice.doctor"
-    assert "0 of 1 verified entries" in rows[0].detail
-
-
-# ── #168 Task 10: an experience entry's `Skills:` claims vs the Skills Inventory ──
-#
-# Entries below are built as literal nested dicts -- `fields` holding a `Skills` entry
-# written out in full at each call site -- matching tests/test_cv_bundle.py's and
-# tests/test_cv_engine.py's own precedent for this exact shape, rather than through a
-# value-taking helper function. A helper taking the skill
-# string as a PARAMETER (an earlier version of this file had one, `_exp(skills)`, built
-# via `entry["fields"]["Skills"] = skills`) puts the actual value only at the CALL SITE,
-# with no "Skills:" text anywhere near it in the source -- invisible to BOTH neutrality
-# collectors in tests/test_fixture_name_neutrality.py: the `Skills:`-keyed one (which
-# needs the literal key text immediately before the value) and the `Example <Word>`
-# identity sweep (which would otherwise catch it independent of any key at all, the way
-# #167 needed it to for body prose). Measured directly: with the helper shape,
-# `_all_fixture_skill_values()` and `_cv_fixture_identities()` both missed
-# "ExampleZephyrOnly" entirely -- a collector matching SYNTAX, not semantics, exactly
-# the "pattern consumed by two engines" class CLAUDE.md names. A literal dict avoids the
-# indirection instead of teaching either sweep a new shape to look for.
-def _skill(title: str) -> dict:
-    """A minimal Skills Inventory entry dict -- only `title` matters."""
-    return {"title": title}
-
-
-def test_a_claimed_skill_matching_the_inventory_by_slug_reports_nothing():
-    """The POSITIVE control every negative test below leans on: a real matching pair,
-    proving the row CAN fire before any test asserts it does not. `title` is the
-    STORED FILENAME (`evidence_slug(name)`, lowercase-dashed), never the raw typed
-    text -- "Example Widget" reduces to "example-widget"."""
-    assert classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Widget"}}], [_skill("example-widget")]) == []
-
-
-def test_an_inventory_skill_named_by_no_entry_is_reported():
-    """BOTH corpora carry content, deliberately: with an empty experience side this
-    check abstains outright (see `test_no_skills_claim_anywhere_abstains...` below), so
-    the drift has to be a PARTIAL one -- one inventory entry claimed, one not."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Widget"}}],
-        [_skill("example-widget"), _skill("example-orphan")])
-    assert len(rows) == 1
-    assert rows[0].state == NOTICE
-    assert rows[0].subject == "Skills Inventory (unclaimed)"
-    assert "1 inventory skill" in rows[0].detail
-    assert "job-sluice experience list" in rows[0].detail
-
-
-def test_an_entry_skill_absent_from_the_inventory_is_reported():
-    """Mirror of the row above, and partial for the same reason: an empty INVENTORY
-    abstains, so the entry must claim one name the inventory has and one it has not."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Widget, Example Ghost"}}],
-        [_skill("example-widget")])
-    assert len(rows) == 1
-    assert rows[0].state == NOTICE
-    assert rows[0].subject == "Experience Library (unmatched)"
-    assert "1 entry Skills:" in rows[0].detail
-    assert "job-sluice skills list" in rows[0].detail
-
-
-def test_an_empty_inventory_abstains_rather_than_reporting_every_claim_unmatched():
-    """One side empty is not drift, it is an install shape. `Skills:` licenses a
-    bullet's numbers RELATIONALLY with no requirement that an inventory entry exist, so
-    a vault that annotates entries and curates no inventory is fully supported -- and
-    reported EVERY declared name as unmatched, permanently, before this abstain. The
-    mirror row was already silent in that state (no titles, so nothing to be unclaimed),
-    which is what made it an asymmetry rather than a consistent posture."""
-    assert classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Ghost, Example Widget"}}], []) == []
-
-
-def test_no_skills_claim_anywhere_abstains_rather_than_reporting_every_entry_unclaimed():
-    """The same rule on the other side, and the shape EVERY pre-#168 vault has: entries
-    exist, none carries a `Skills:` value, an inventory exists (#165 shipped it first).
-    Guarded on the DERIVED vocabulary, not on `experience_entries` being empty -- an
-    entry whose `Skills:` is blank is the identical "nothing to reconcile" state, and a
-    raw-argument guard would miss it and report every inventory entry unclaimed."""
-    assert classify_skills_reconciliation(
-        [{"fields": {"Skills": ""}}, {"fields": {}}],
-        [_skill("example-widget"), _skill("example-orphan")]) == []
-
-
-def test_both_rows_can_fire_together_on_a_wholly_disjoint_pair():
-    """Distinct MUTANT-killing shape from the two single-row tests above: a defect that
-    always returns at most one row (e.g. an early `return` after the first check) is
-    invisible to either of them alone but caught here."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Ghost"}}], [_skill("example-orphan")])
-    assert len(rows) == 2
-    subjects = {r.subject for r in rows}
-    assert subjects == {"Skills Inventory (unclaimed)", "Experience Library (unmatched)"}
-
-
-def test_no_experience_and_no_inventory_abstains():
-    assert classify_skills_reconciliation([], []) == []
-
-
-def test_a_blank_skills_value_never_counts_as_a_claim():
-    """SC5 (cv/bundle.py:_skill_items): blank is absent. A blank `Skills:` value must
-    contribute NOTHING to `claimed` -- proven two ways in one test, both alongside a
-    REAL claim, since a corpus of blanks alone now abstains before either count is
-    computed and would satisfy any assertion here vacuously.
-
-    First: a phantom "" name would be reported as an unmatched claim, so the otherwise
-    fully-reconciled pair below would fire a row. Second: a phantom "" claim would also
-    SATISFY the orphan check by coincidence for a title that happens to be falsy, so the
-    inventory gains a blank-titled entry that must still read as unclaimed."""
-    entries = [{"fields": {"Skills": ""}}, {"fields": {"Skills": "Example Widget"}}]
-    assert classify_skills_reconciliation(entries, [_skill("example-widget")]) == []
-    rows = classify_skills_reconciliation(
-        entries, [_skill("example-widget"), _skill("")])
-    assert len(rows) == 1
-    assert rows[0].subject == "Skills Inventory (unclaimed)"
-
-
-def test_a_missing_skills_key_never_counts_as_a_claim():
-    """`.get("Skills", "")` defaults an ABSENT key the same way a blank one reads --
-    the shape every pre-#168 Experience Library note actually has (no `Skills:` line at
-    all, per tests/test_evidence_kinds.py's own `gamma` fixture), as opposed to the
-    test above's explicitly-blank shape.
-
-    Paired with a REAL claim and a matching inventory, never against an empty one: this
-    check abstains outright on an empty corpus, so `== []` against an empty inventory
-    would hold whether or not the absent key contributed a phantom name."""
-    assert classify_skills_reconciliation(
-        [{"fields": {}}, {"fields": {"Skills": "Example Widget"}}],
-        [_skill("example-widget")]) == []
-
-
-def test_a_missing_fields_key_never_counts_as_a_claim():
-    """`(e.get("fields") or {})` -- an entry with no `fields` key at all must abstain
-    the same way, not raise. Not a shape `Vault._evidence_entries` ever produces (every
-    real entry dict carries `fields`), but the Store contract does not require it and
-    doctor never refuses on an unusual-but-harmless shape. Paired with a real claim for
-    the reason the test above states."""
-    assert classify_skills_reconciliation(
-        [{}, {"fields": {"Skills": "Example Widget"}}],
-        [_skill("example-widget")]) == []
-
-
-def test_a_none_skills_value_does_not_raise():
-    """`fields.get("Skills", "")` only supplies the DEFAULT when the key is ABSENT --
-    an explicit None VALUE (a Store returning a Skills key set to Python's null rather
-    than omitting the key) passes straight through to `.split`, which raises
-    `AttributeError` on None. Not reachable via the real `Vault` today
-    (`_parse_fm_spaced`/`_fm_dict` always yield `str`), but `core/protocols.py`'s Store
-    contract does not forbid it, and "doctor never refuses" -- this module's own house
-    rule -- means a malformed but plausible Store return must not crash the whole
-    report over one bad field.
-
-    Built via subscript assignment, unlike every other entry in this file -- None is
-    not a candidate skill NAME (there is nothing here for a human to confirm invented
-    vs. real), so this one line is the sole deliberate exception to this file's own
-    "always a literal dict" rule stated above: a subscript assignment keeps the bare
-    word None off the `Skills:`-collector's literal-adjacency match, which is exactly
-    right here since there is no name being hidden from review."""
-    entry = {"fields": {}}
-    entry["fields"]["Skills"] = None
-    # Alongside a real, matching claim: the raise this pins would happen while `claimed`
-    # is being built, which is BEFORE the empty-corpus abstain, so an empty inventory
-    # would still exercise it -- but `== []` would then hold vacuously, and the second
-    # half of the claim (None contributes no phantom name) would go unchecked.
-    assert classify_skills_reconciliation(
-        [entry, {"fields": {"Skills": "Example Widget"}}],
-        [_skill("example-widget")]) == []
-
-
-def test_a_non_string_truthy_skills_value_does_not_raise():
-    """The gap `or ""` alone left open: `or ""` only ever fires on a FALSY value
-    (None, "", missing), so a present-but-TRUTHY non-string (an int, a list) still
-    reached `.split` and raised -- reachable by exactly the argument that justified
-    closing the None case, since `core/protocols.py`'s Store contract does not
-    require `fields["Skills"]` to be a `str` either. Both shapes covered in one test:
-    an `int` (`5`) and a `list` (two items) -- an `int` alone would not prove the list
-    shape is handled, since a naive `isinstance(raw, (int, ...))`-shaped fix could
-    special-case just one type and still crash on the other.
-
-    Built via subscript assignment, matching the None test immediately above and for
-    the identical reason: `5` and `["a", "b"]` are not candidate skill NAMES, so there
-    is nothing here for a human to confirm invented-vs-real, and no value is being
-    hidden from the neutrality sweep by using this shape."""
-    entry_int = {"fields": {}}
-    entry_int["fields"]["Skills"] = 5
-    entry_list = {"fields": {}}
-    entry_list["fields"]["Skills"] = ["a", "b"]
-    # Each paired with a real, matching claim -- see the None test above for why an
-    # empty inventory would make the `== []` half of this vacuous.
-    real = {"fields": {"Skills": "Example Widget"}}
-    inventory = [_skill("example-widget")]
-    assert classify_skills_reconciliation([entry_int, real], inventory) == []
-    assert classify_skills_reconciliation([entry_list, real], inventory) == []
-
-
-def test_duplicate_claims_across_entries_count_once():
-    """`claimed` is built as a SET across every experience entry -- two entries both
-    naming "Example Ghost" (absent from the inventory) must report ONE unmatched name,
-    not two. A defect that counts occurrences instead of distinct names would report a
-    count of 2 in that row's detail text, which this test's exact assertion catches."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Ghost"}},
-         {"fields": {"Skills": "Example Ghost, Example Widget"}}],
-        [_skill("example-widget")])
-    assert len(rows) == 1
-    assert "1 entry Skills:" in rows[0].detail
-
-
-def test_a_name_that_cannot_reduce_falls_back_to_verbatim_and_can_still_match():
-    """An all-punctuation `Skills:` value makes `evidence_slug` raise -- `_keys` must
-    fall back to the verbatim string alone rather than propagating the exception
-    (doctor never refuses), and a hand-placed inventory entry whose own title was
-    never reduced (evidence_slug is CREATE-time only, per its own docstring) can still
-    match it verbatim."""
-    assert classify_skills_reconciliation(
-        [{"fields": {"Skills": "###"}}], [_skill("###")]) == []
-
-
-def test_a_name_that_cannot_reduce_and_does_not_match_verbatim_is_still_reported():
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "###"}}], [_skill("something-else")])
-    subjects = {r.subject for r in rows}
-    assert "Experience Library (unmatched)" in subjects
-    assert "Skills Inventory (unclaimed)" in subjects
-
-
-def test_the_report_names_no_skill_string():
-    """Same discipline as test_the_report_names_no_configured_value above: a
-    DoctorReport reaches MCP clients whole, and this module's own "no doctor row
-    carries user-authored text" rule means neither the raw typed name nor its reduced
-    slug form may appear in either row's detail or subject."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Zephyr"}}], [_skill("example-orphan-only")])
-    assert len(rows) == 2
-    for r in rows:
-        assert "Example Zephyr" not in r.detail
-        assert "example-zephyr" not in r.detail.lower()
-        assert "example-orphan-only" not in r.detail
-        assert "example-zephyr" not in r.subject.lower()
-        assert "example-orphan-only" not in r.subject.lower()
-
-
-def test_the_rows_never_affect_the_exit_code():
-    """NOTICE, never DEGRADED -- same posture classify_negatives_vs_skills's identical
-    test pins. Both corpora carry content, and `rows` is asserted non-empty first: with
-    an empty inventory this check abstains, and `exit_code(strict=True) == 0` over an
-    EMPTY row list holds under any posture at all."""
-    rows = classify_skills_reconciliation(
-        [{"fields": {"Skills": "Example Ghost"}}], [_skill("example-orphan")])
-    assert rows, "no row fired, so the exit-code assertion below proves nothing"
-    assert DoctorReport(checks=[], components=rows).exit_code(strict=True) == 0
-
-
-def test_the_skills_reconciliation_runs_through_the_real_wiring(tmp_path, monkeypatch):
-    """Every other test of this check calls the pure classifier directly, so the
-    smallest DELETION in production code -- removing the call site in `Sluice.doctor`
-    -- leaves them all green. This is the one that reddens. Follows
-    test_the_negatives_cross_check_runs_through_the_real_wiring's idiom exactly,
-    including restoring the REAL store the file's autouse `_harmless_components`
-    fixture replaces with a bare sentinel.
-    """
-    import os
-
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    exp = vault / "Job Applications" / "Experience Library"
-    sk = vault / "Job Applications" / "Skills Inventory"
-    os.makedirs(exp, exist_ok=True)
-    os.makedirs(sk, exist_ok=True)
-    (exp / "alpha.md").write_text(
-        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: Example Ghost\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
-    (sk / "Example Orphan.md").write_text(
-        "---\nProficiency: 8 years\nDomain: platform\nEvidence: e\n"
-        "Signal Value: depth\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    # Filtered on the `gates` component too, not subject alone: `classify_store`
-    # ABOVE this call in `Sluice.doctor` already emits its own "store"-component
-    # rows at the bare "Skills Inventory"/"Experience Library" subjects (the
-    # per-kind total/verified/pending counts), so a subject-only filter is
-    # satisfied by THOSE rows regardless of whether this reconciliation ran at
-    # all -- measured: deleting the call site under test left this assertion green
-    # until this component filter was added.
-    gate_subjects = {c.subject for c in report.components if c.component == "gates"}
-    expected = {"Skills Inventory (unclaimed)", "Experience Library (unmatched)"}
-    assert expected <= gate_subjects, (
-        "Sluice.doctor did not run the skills reconciliation -- the pure classifier's "
-        f"own tests cannot see this (gates subjects: {sorted(gate_subjects)})")
-
-
-def test_an_empty_inventory_reports_nothing_through_the_real_wiring(tmp_path,
-                                                                   monkeypatch):
-    """The empty-corpus abstain, asserted through `Sluice.doctor` rather than only
-    through the pure classifier -- the call site passes `read_evidence("skills")`
-    straight in, so a guard placed at the CALL SITE instead of in the classifier would
-    also satisfy the unit tests, and a later refactor moving one without the other would
-    not be seen by them. Same vault shape as the wiring test above with the Skills
-    Inventory left empty: an install that annotates `Skills:` and curates no inventory
-    must produce NEITHER reconciliation row."""
-    import os
-
-    from sluice.core.config import Config
-
-    vault = tmp_path / "vault"
-    exp = vault / "Job Applications" / "Experience Library"
-    sk = vault / "Job Applications" / "Skills Inventory"
-    os.makedirs(exp, exist_ok=True)
-    os.makedirs(sk, exist_ok=True)
-    (exp / "alpha.md").write_text(
-        "---\nCompany: Example Alpha\nCategory: \nBest For: \nMetrics: \n"
-        "Skills: Example Ghost\nverified: 2026-08-25\n---\nBody.\n", encoding="utf-8")
-    monkeypatch.setenv("VAULT_DIR", str(vault))
-    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
-
-    report = Sluice(Config(vault_dir=str(vault))).doctor(offline=True)
-    gate_subjects = {c.subject for c in report.components if c.component == "gates"}
-    # SCOPE: the same report must still carry the `store`-component row for the corpus,
-    # so this is not passing because the whole evidence read failed or the vault was
-    # never seen -- which would make the assertion below hold for the wrong reason.
-    assert any(c.component == "store" and c.subject == "Experience Library"
-               for c in report.components), (
-        "the Experience Library was not read at all, so the absence of a "
-        "reconciliation row proves nothing")
-    assert not {"Skills Inventory (unclaimed)",
-                "Experience Library (unmatched)"} & gate_subjects, (
-        "an empty Skills Inventory must abstain, not report every declared Skills: "
-        f"name unmatched (gates subjects: {sorted(gate_subjects)})")
-
-
 def test_a_citable_corpus_with_entries_but_none_verified_still_blocks_cv():
     """`not verified`, not `not total`. The distinction is a REACHABLE state: two hand-placed
     notes with no `verified:` key give total=2, verified=0, and `cv run` refuses that vault --
@@ -3398,7 +2412,7 @@ def test_a_citable_corpus_with_entries_but_none_verified_still_blocks_cv():
     #243 renamed the state SETUP (nothing verified yet is unsupplied, not broken). What this
     row pins is `blocks`, which is unchanged and is what the verdict reads."""
     checks = classify_store({
-        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "vault_exists": True, "criteria_present": True,
         "experience_total": 2, "experience_verified": 0,
         "skills_total": 0, "skills_verified": 0,
         "stories_total": 0, "stories_verified": 0,
@@ -3417,7 +2431,7 @@ def test_an_absent_evidence_fact_is_not_graded_as_zero():
     now drives DEAD and the exit code, defaulting an absent key to 0 would manufacture it one
     layer up. Not reachable through Vault; a second store need only omit the key."""
     checks = classify_store({
-        "vault_exists": True, "baseline_exists": True, "criteria_present": True,
+        "vault_exists": True, "criteria_present": True,
         "candidate_name_present": True, "candidate_contact_present": True,
     })          # no <kind>_verified keys at all
     rows = {c.subject: c for c in checks}
@@ -3565,7 +2579,7 @@ def test_an_unreadable_candidate_profile_keeps_every_other_store_fact(tmp_path):
     assert "Is a directory" in facts["candidate_error"]
     assert str(tmp_path) not in facts["candidate_error"], "the reason leaked a path"
     assert "candidate_name_present" not in facts and "candidate_contact_present" not in facts
-    assert facts["vault_exists"] is True and "baseline_exists" in facts
+    assert facts["vault_exists"] is True and "criteria_present" in facts
     for kind in EVIDENCE_KINDS:
         assert f"{kind}_total" in facts
 
@@ -3578,7 +2592,7 @@ def test_an_unreadable_candidate_profile_is_a_dead_row_blocking_cv(tmp_path):
     row = _one(rows, "Candidate Profile")
     assert row.state == DEAD and row.blocks == ("cv",)
     assert "cannot be read" in row.detail
-    assert {"baseline_rel", "Judging Profile"} <= {r.subject for r in rows}
+    assert {"Judging Profile", "Experience Library"} <= {r.subject for r in rows}
 
 
 def test_doctor_exits_1_for_an_unreadable_candidate_profile(tmp_path, monkeypatch):

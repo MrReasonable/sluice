@@ -835,8 +835,8 @@ def test_a_vault_written_into_the_checkout_is_refused():
 #
 # The check reused below is that same "no content" property, applied to every `.j2`
 # file docs/ actually ships rather than one named path: the heading vocabulary is
-# DERIVED from cv/compose.py's own `_RULES` (never hand-listed, so it cannot drift from
-# what the composer emits), and anything left over after stripping Jinja syntax and HTML
+# DERIVED from core/protocols.py::SECTION_HEADINGS (never hand-listed, so it cannot drift
+# from what cv/document.py::to_text writes; tests/template_content.py::composer_headings reads it), and anything left over after stripping Jinja syntax and HTML
 # tags -- with CSS `content:` literals HARVESTED rather than discarded, since those are
 # rendered as visible text -- must be one of those headings.
 #
@@ -848,7 +848,7 @@ def test_a_vault_written_into_the_checkout_is_refused():
 def test_docs_template_examples_contribute_no_static_content():
     """Extends the neutrality sweep to docs/**/*.j2, asserting on SCOPE first.
 
-    Two separate ways this guard could pass having checked nothing: `_RULES` yielding no
+    Two separate ways this guard could pass having checked nothing: `SECTION_HEADINGS` yielding no
     headings (the sibling guard's own failure mode, so the same assertion is repeated
     here rather than assumed), and the docs/ glob finding no `.j2` file at all -- which
     would happen if the file were ever renamed, moved out of docs/, or given a different

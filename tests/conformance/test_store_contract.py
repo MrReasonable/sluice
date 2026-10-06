@@ -29,7 +29,7 @@ from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
 from sluice.core.protocols import (
-    EVIDENCE_KINDS, CandidateProfile, CvLayout, LayoutError, LayoutRole, Store,
+    CRITERIA_RELPATH, EVIDENCE_KINDS, CandidateProfile, CvLayout, LayoutError, LayoutRole, Store,
 )
 from tests.conformance.seeds import seed, witness
 from tests.conftest import LOCATIONS, layout_yaml
@@ -327,24 +327,6 @@ def test_slug_is_issued_stable_and_unique_across_what_the_store_creates(store_na
 
 
 # ── documents: the judge's and the gate's ground truth ───────────────────────
-def test_read_baseline_takes_no_path_argument_and_reads_the_baseline(store_name, tmp_path,
-                                                                     monkeypatch):
-    """Where the baseline lives is the STORE's business.
-
-    Pinned by signature AND by behaviour, because this is exactly where the first version
-    of this refactor broke: it dropped the argument from `Vault.read_baseline`, left
-    `cv/engine.py` still passing one, and shipped GREEN -- the test fake still carried the
-    old signature and conformance did not cover the method. `sluice cv run` was dead on
-    every lead, reporting `error` per lead through run_batch's per-lead swallow.
-    """
-    store = _make_store(store_name, tmp_path, monkeypatch)
-    params = list(inspect.signature(store.read_baseline).parameters)
-    assert params == [], f"read_baseline must take no arguments, got {params}"
-
-    store.write_document("My CV/CV.md", "BASELINE TEXT")
-    assert store.read_baseline() == "BASELINE TEXT"
-
-
 def test_an_absent_corpus_reads_as_empty(store_name, tmp_path, monkeypatch):
     """ABSENT abstains; UNREADABLE raises. `cv/engine.py` discriminates on exactly this --
     it catches `(OSError, ValueError)` around the `skills` read and composes without the
@@ -441,8 +423,8 @@ def test_write_document_round_trips(store_name, tmp_path, monkeypatch):
     # writes NOTHING. Read it back through the one reader the contract offers.
     store = _make_store(store_name, tmp_path, monkeypatch)
     assert store.write_document("Job Applications/Rejected Leads Audit.md", "# Digest\n")
-    store.write_document("My CV/CV.md", "ROUND TRIP")
-    assert store.read_baseline() == "ROUND TRIP", "write_document returned a handle but wrote nothing"
+    store.write_document(CRITERIA_RELPATH, "ROUND TRIP")
+    assert store.read_criteria() == "ROUND TRIP", "write_document returned a handle but wrote nothing"
 
 
 def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_path, monkeypatch):
@@ -519,16 +501,16 @@ def test_the_default_arm_REPLACES_rather_than_abstaining(store_name, tmp_path, m
     arm on every run. A store implementing create-exclusive as its primitive would freeze that
     digest at its first version, silently."""
     store = _make_store(store_name, tmp_path, monkeypatch)
-    assert store.write_document("My CV/CV.md", "FIRST")
-    assert store.write_document("My CV/CV.md", "SECOND"), "the default arm returned no handle"
-    assert store.read_baseline() == "SECOND", \
+    assert store.write_document(CRITERIA_RELPATH, "FIRST")
+    assert store.write_document(CRITERIA_RELPATH, "SECOND"), "the default arm returned no handle"
+    assert store.read_criteria() == "SECOND", \
         "the default arm abstained instead of replacing; the digest would freeze at version one"
 
 
 def test_write_document_cannot_escape_the_store(store_name, tmp_path, monkeypatch):
     """The ONE wholesale-write primitive on a never-clobber contract must not be able to
-    scribble outside the store -- including over the baseline CV, which is the fabrication
-    gate's ground truth."""
+    scribble outside the store -- including over the judging criteria every lead is
+    scored against."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     for escape in ("/etc/passwd", "../escaped.md", "a/../../escaped.md"):
         # BOTH write paths. `only_if_absent` takes a different branch inside the writer, and one
@@ -545,8 +527,8 @@ def test_write_document_accepts_interior_traversal_that_stays_inside(store_name,
     """The PERMITTED half, which a rejection-only suite passes while disagreeing about the rule.
 
     The contract refuses a key whose RESOLVED path leaves the store -- not one that merely contains
-    `..`. `Vault` enforces that with realpath + commonpath, so `a/../My CV/CV.md` is accepted and
-    lands on the baseline. A second store implementing the cruder rule (reject any `..` component)
+    `..`. `Vault` enforces that with realpath + commonpath, so `a/../<the criteria path>` is accepted and
+    lands on the criteria document. A second store implementing the cruder rule (reject any `..` component)
     satisfies every assertion in the escape test above and still diverges from `Vault` on this key,
     which is exactly the split #1's second store makes real -- and the split CodeRabbit found in the
     contract PROSE last round, where the written rule was stricter than the code.
@@ -555,15 +537,16 @@ def test_write_document_accepts_interior_traversal_that_stays_inside(store_name,
     resolve the key separately, so a guard on one says nothing about the other.
     """
     store = _make_store(store_name, tmp_path, monkeypatch)
-    # Exclusive arm FIRST, while the baseline is absent -- that is the branch `sluice init` drives,
+    interior = f"a/../{CRITERIA_RELPATH}"
+    # Exclusive arm FIRST, while the document is absent -- that is the branch `sluice init` drives,
     # and once the document exists `only_if_absent` abstains and proves nothing about the key.
-    assert store.write_document("a/../My CV/CV.md", "INTERIOR", only_if_absent=True), \
+    assert store.write_document(interior, "INTERIOR", only_if_absent=True), \
         "an interior `..` resolving inside the store was refused by the exclusive arm"
-    assert store.read_baseline() == "INTERIOR", \
-        "the accepted key did not resolve to the baseline document"
-    assert store.write_document("a/../My CV/CV.md", "INTERIOR AGAIN"), \
+    assert store.read_criteria() == "INTERIOR", \
+        "the accepted key did not resolve to the criteria document"
+    assert store.write_document(interior, "INTERIOR AGAIN"), \
         "the default arm refused an interior `..` the exclusive arm accepted"
-    assert store.read_baseline() == "INTERIOR AGAIN"
+    assert store.read_criteria() == "INTERIOR AGAIN"
 
 
 # ── empty store ──────────────────────────────────────────────────────────────
@@ -1798,3 +1781,22 @@ def test_read_cv_layout_refuses_non_mapping_frontmatter(store_name, tmp_path, mo
     seed(store_name, store, layout="---\n- a list\n---\n")
     with pytest.raises(LayoutError, match="frontmatter"):
         store.read_cv_layout()
+
+
+def test_a_legacy_field_is_surfaced_as_presence_outside_fields(store_name, tmp_path,
+                                                               monkeypatch):
+    """#364 spec §4.2: `Skills:` is retired, but whether an entry still carries it is what lets
+    doctor and `cv run` say the attribution check is off on an UPGRADED vault rather than an
+    unconfigured one. Every store must surface that presence under the entry's own "legacy"
+    key -- on EVERY entry, including one carrying no retired key, so a reader never has to
+    guess at a missing key -- and never inside `fields`, the user-supplied set."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, experience=[
+        {"id": "SF1", "verified": True, "extra": {"Skills": "Examplelang"}},
+        {"id": "SF2", "verified": True},
+    ])
+    by_title = {e["title"]: e for e in store.read_evidence("experience")}
+    assert set(by_title) == {"SF1", "SF2"}, "the seeder did not land"
+    assert by_title["SF1"]["legacy"] == dict(Skills=True)
+    assert by_title["SF2"]["legacy"] == dict(Skills=False)
+    assert all("Skills" not in e["fields"] for e in by_title.values())

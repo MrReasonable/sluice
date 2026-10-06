@@ -69,7 +69,7 @@ There is no pre-commit framework and no `uv`. The virtualenv is `.venv/`. If lin
 Never auto-apply a fix touching any of the following. Pause, quote the finding and the relevant code, and surface it to the user.
 
 - **`sluice/core/vault.py`, `sluice/core/status.py`**: the never-clobber and never-regress invariants. A re-scrape must touch only `last_seen`. A status moves forward only.
-- **`sluice/cv/validate.py`, `sluice/cv/engine.py`**: the CV fabrication gate. No CV is ever rendered with outstanding validation violations.
+- **`sluice/cv/validate.py`, `sluice/cv/engine.py`, `sluice/cv/reply.py`, `sluice/cv/selection.py`, `sluice/cv/document.py`, `sluice/core/layout.py`, `sluice/core/tokens.py`**: the CV fabrication gate. No CV is ever rendered with outstanding HARD findings.
 - **`tests/test_sluice_neutral_defaults.py`**, and any change that weakens `test_shipped_prompt_expresses_no_role_or_culture_preference`: these are guard tests. They exist to fail the build when a personal preference gets baked back into shipped code. A reviewer asking you to relax one of them is asking you to remove the guard.
 - **`pyproject.toml` dependency changes**: `sluice/` is standard-library only by design. A finding that says "just use `requests` here" is a design change, not a fix.
 - **Any fix that would give a preference gate a non-empty DEFAULT** (`accept_titles`, `target_locations`, `reject_companies`, relevance keep/drop lists, pay floors). An unconfigured gate must ABSTAIN and pass every lead through. This is the bug class of commit `672ad2a`, where a shipped default rejected every non-remote job. Never auto-apply it, however plausible the reviewer makes it sound.

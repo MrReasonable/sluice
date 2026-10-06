@@ -35,7 +35,8 @@ import pytest
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
-from sluice.core.vault import Vault, _fold_group_report, _fold_note_name
+from sluice.core.names import fold_note_name
+from sluice.core.vault import Vault, _fold_group_report
 from tests.conftest import (LOCATIONS, UNREADABLE_DIR, require_case_sensitive_fs,
                             require_normalization_sensitive_fs)
 
@@ -377,7 +378,7 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
         code = _code_only(fn)
         tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
 
-        # The POSITIVE half, matched on the AST as a CALL. A token-level `"_fold_note_name"
+        # The POSITIVE half, matched on the AST as a CALL. A token-level `"fold_note_name"
         # in code` was satisfied by a DOCSTRING mention, and `_code_only` strips comments but
         # keeps strings -- so for the two consumers #298 added, both of which name the helper
         # in their own prose, this assertion was inert. Measured: delegating
@@ -386,11 +387,11 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
         # per-function so it never saw the delegation, and this check saw the prose.
         #
         # Requiring a CALL closes it for a member that folds ONCE: it no longer calls
-        # `_fold_note_name` itself, so this fires. It does NOT close it for a member that folds
+        # `fold_note_name` itself, so this fires. It does NOT close it for a member that folds
         # more than once -- three of the six do -- because one remaining call satisfies this
         # check while a delegated helper does the other fold. Measured: delegating one of
         # `_locate`'s two folds reddened NOTHING. That gap is closed by the module-wide ban in
-        # `test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_three`, not here.
+        # `test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_sites`, not here.
         # `getattr`, `.translate` and `.upper()` remain unreachable by either and are not worth
         # chasing, because none is a plausible way to write this code. ACCEPTED RESIDUAL, and
         # the concession list is not exhaustive: a fold delegated to another module -- and
@@ -398,13 +399,13 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
         # both guards even when it has DIVERGED. Closing that means an expected list spanning
         # all of `sluice/`, which nobody reads and which would fail on unrelated work.
         assert any(isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                   and node.func.id == "_fold_note_name" for node in ast.walk(tree)), (
-            f"{fn.__qualname__} does not CALL _fold_note_name -- naming it in a docstring is "
+                   and node.func.id == "fold_note_name" for node in ast.walk(tree)), (
+            f"{fn.__qualname__} does not CALL fold_note_name -- naming it in a docstring is "
             "not folding through it, and a fold delegated to a helper is the second copy this "
             "roster exists to prevent")
         assert "IGNORECASE" not in code, (
             f"{fn.__qualname__} uses re.IGNORECASE, which is a NARROWER equivalence than "
-            "_fold_note_name wherever a fold changes length -- and it shipped past the "
+            "fold_note_name wherever a fold changes length -- and it shipped past the "
             "checks around it, because none of them can see a regex flag")
 
         # INLINE FOLDS are matched on the AST, never as a substring, and that is a
@@ -414,7 +415,7 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
         # its whole life, and so was a `.lower()` ban added beside it. Measured -- three live
         # mutants (`_locate` folding with `e.name.casefold()`, the same with `.lower()`, and
         # `reconcile_names` comparing `target.casefold() == n.slug.casefold()`) each kept a
-        # `_fold_note_name` call elsewhere in the function, satisfied the check above, and
+        # `fold_note_name` call elsewhere in the function, satisfied the check above, and
         # left this row AND the full suite green.
         #
         # The AST also covers spellings a substring never could: `str.lower(x)` and
@@ -429,10 +430,10 @@ def test_every_name_resolving_path_shares_one_fold(tmp_path):
             "normalization entirely, so both halves of #298's pre-filter stop agreeing")
 
 
-def test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_three():
+def test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_sites():
     """The per-function ban above cannot see a DELEGATED fold, and that is not hypothetical.
 
-    Measured: replacing ONE of `_locate`'s two `_fold_note_name` calls with a module-level
+    Measured: replacing ONE of `_locate`'s two `fold_note_name` calls with a module-level
     helper that casefolds reddens NOTHING. The positive half is satisfied because the other
     call remains, and the per-function inline ban never looks inside the helper. Round 3 tested
     that mutation on `_folded_archive_names`, which calls the fold exactly once, so requiring a
@@ -443,7 +444,7 @@ def test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_three():
     a search for offenders: a sweep that derives its own roster cannot see an addition, and
     "no inline folds except in functions I listed" would let a new helper in simply by being
     new. Any inline `.casefold()`/`.lower()` anywhere in `core/vault.py` must be added here
-    with a reason, and none of the three below folds a LEAD note name.
+    with a reason, and none of the sites listed below folds a LEAD note name.
     """
     import ast
     import collections
@@ -466,18 +467,39 @@ def test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_three():
                                 if isinstance(n, ast.Attribute) and n.attr in {"casefold", "lower"})
 
     expected = collections.Counter({
-        ("_fold_note_name", "casefold"): 1,   # THE fold. Every LEAD-name comparison routes here.
+        # THE fold is not here: it lives in core/names.py (pinned below), and every LEAD-name
+        # comparison in this module routes through the imported binding.
         ("evidence_slug", "lower"): 1,        # slugifies an EVIDENCE name, not a lead note name.
         ("<module scope>", "casefold"): 1,    # _SANITIZED_NON_ANSWERS: placeholder COMPANY
                                               # answers, a different vocabulary entirely.
     })
     assert found == expected, (
-        "the inline folds in core/vault.py no longer match the three sites that legitimately "
+        "the inline folds in core/vault.py no longer match the listed sites that legitimately "
         f"have one -- this fires on an addition, a removal and a rename alike. Found {found}. "
-        "If a new one folds a LEAD note name it must call _fold_note_name "
+        "If a new one folds a LEAD note name it must call fold_note_name "
         "instead -- a delegated helper is the second copy the one-fold rule exists to prevent, "
         "and the per-function guard above cannot see it. If it folds something else, add it "
         "here with the reason.")
+
+    # The fold's ONE home: core/vault.py binds `fold_note_name` by importing it from
+    # core/names.py -- derived from the module's own ImportFrom nodes, so a local redefinition
+    # or an import from elsewhere fails here -- and core/names.py folds exactly once, inside it.
+    import sluice.core.names as names_module
+    sources = [node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+               and any((a.asname or a.name) == "fold_note_name" for a in node.names)]
+    assert sources == ["sluice.core.names"], sources
+    assert not [n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "fold_note_name"]
+    names_tree = ast.parse(inspect.getsource(names_module))
+    names_scope = {}
+    for node in ast.walk(names_tree):
+        if isinstance(node, ast.FunctionDef):
+            for child in ast.walk(node):
+                names_scope.setdefault(id(child), node.name)
+    assert collections.Counter(
+        (names_scope.get(id(n), "<module scope>"), n.attr) for n in ast.walk(names_tree)
+        if isinstance(n, ast.Attribute) and n.attr in {"casefold", "lower"}) == (
+        collections.Counter({("fold_note_name", "casefold"): 1}))
 
 
 @pytest.mark.parametrize("scraped,expected", [
@@ -512,7 +534,7 @@ def test_the_archive_pre_filter_folds_as_widely_as_the_decision_it_gates(tmp_pat
     entry is dropped before its recorded name is ever read, and the lead is re-created.
 
     `re.IGNORECASE` looks like it delivers that and does not. It is a simple per-character
-    case mapping while `_fold_note_name` is a full `casefold`, and the two disagree wherever
+    case mapping while `fold_note_name` is a full `casefold`, and the two disagree wherever
     a fold changes LENGTH: measured, candidate `... Widget SS Analyst` against entry
     `... Widget ss-ligature Analyst.md` does not match under IGNORECASE and does match under
     casefold. So the flag left the pre-filter NARROWER than the decision on that population,
@@ -797,7 +819,7 @@ def test_only_the_ambiguous_members_are_escaped_not_the_whole_group(tmp_path, ca
     nfc = "Example Caf\u00e9 Ltd - Engineering Manager"
     nfd = "Example Cafe\u0301 Ltd - Engineering Manager"
     cased = "EXAMPLE CAF\u00c9 LTD - ENGINEERING MANAGER"
-    assert len({_fold_note_name(n) for n in (nfc, nfd, cased)}) == 1, "must be ONE group"
+    assert len({fold_note_name(n) for n in (nfc, nfd, cased)}) == 1, "must be ONE group"
     for folder, name, status in (("Active", nfc, "shortlist"), ("Archive", nfd, "dismiss"),
                                  ("Other", cased, "new")):
         _seat_at(os.path.join(v.leads_dir, folder), name,
@@ -838,7 +860,7 @@ def test_the_ambiguous_refusal_distinguishes_the_notes_it_names(tmp_path, caplog
     v = Vault(str(tmp_path / "vault"))
     nfc = "Example Caf\u00e9 Ltd - Engineering Manager"
     nfd = "Example Cafe\u0301 Ltd - Engineering Manager"
-    assert nfc != nfd and _fold_note_name(nfc) == _fold_note_name(nfd)
+    assert nfc != nfd and fold_note_name(nfc) == fold_note_name(nfd)
     _seat_at(v.leads_dir, nfc, company="Example Co", status="new", score=1)
     _seat_at(v.leads_dir, nfd, company="Example Co", status="new", score=2)
 
@@ -914,7 +936,7 @@ def test_the_capitalisation_report_survives_a_status_filtered_read(tmp_path, cap
 
 
 def test_the_fold_is_a_full_casefold_not_a_per_character_lowering(tmp_path):
-    """`_fold_note_name`'s equivalence CLASS, pinned directly rather than only through the
+    """`fold_note_name`'s equivalence CLASS, pinned directly rather than only through the
     paths that consume it.
 
     Every other row here would stay green with `casefold()` swapped for `lower()`, because
@@ -926,11 +948,11 @@ def test_the_fold_is_a_full_casefold_not_a_per_character_lowering(tmp_path):
     The sharp s is the reachable witness: `casefold` maps it to a double s and `lower` leaves
     it alone, so a company written one way and the same company written the other are one
     identity under the fold this store promises and two under the weaker one."""
-    assert _fold_note_name("Widget \u00df Analyst") == _fold_note_name("Widget SS Analyst")
+    assert fold_note_name("Widget \u00df Analyst") == fold_note_name("Widget SS Analyst")
     assert "Widget \u00df Analyst".lower() != "Widget SS Analyst".lower(), (
         "the fixture no longer discriminates: pick a pair where casefold and lower disagree")
     # And it must NOT reach past case: two genuinely different names stay different.
-    assert _fold_note_name("Example Co - A") != _fold_note_name("Example Co - B")
+    assert fold_note_name("Example Co - A") != fold_note_name("Example Co - B")
 
 
 def test_no_code_in_the_vault_module_case_folds_with_a_regex_flag(tmp_path):
@@ -941,7 +963,7 @@ def test_no_code_in_the_vault_module_case_folds_with_a_regex_flag(tmp_path):
     module a question with one right answer.
 
     `re.IGNORECASE` is a per-character case mapping, so it is a SECOND and NARROWER
-    equivalence than `_fold_note_name` wherever a fold changes length. There is no
+    equivalence than `fold_note_name` wherever a fold changes length. There is no
     legitimate use of it in this module -- every case comparison here is about whether two
     names are one identity -- so a new one anywhere is the drift, wherever it appears.
 
@@ -959,9 +981,9 @@ def test_no_code_in_the_vault_module_case_folds_with_a_regex_flag(tmp_path):
                      if t.type != tokenize.COMMENT)
     assert "IGNORECASE" not in code, (
         "core/vault.py case-folds with a regex flag somewhere; that is a second, narrower "
-        "equivalence than _fold_note_name and shipped once already as a resurrection")
+        "equivalence than fold_note_name and shipped once already as a resurrection")
     # SCOPE: the sweep must actually have read the module, or it passes over nothing.
-    assert "_fold_note_name" in code and len(code) > 10_000, "the sweep read nothing"
+    assert "fold_note_name" in code and len(code) > 10_000, "the sweep read nothing"
 
 
 # ── #299: the SECOND axis of the same fold -- Unicode normalization ───────────
@@ -997,7 +1019,7 @@ def test_the_two_composition_forms_this_file_uses_really_do_differ():
 def test_two_normalizations_of_one_name_are_one_identity():
     """The defect, at the fold itself. Runs everywhere: this is a pure string comparison,
     so unlike #298 it needs nothing of the filesystem to be falsifiable."""
-    assert _fold_note_name(NFC_CO) == _fold_note_name(NFD_CO), (
+    assert fold_note_name(NFC_CO) == fold_note_name(NFD_CO), (
         "two composition forms of one employer name fold apart, so each seats its own note "
         "with its own status")
 
@@ -1009,9 +1031,9 @@ def test_the_fold_stays_CANONICAL_and_does_not_reach_for_compatibility():
     merge two real employers. COMPATIBILITY equivalence is a different claim: it would make
     `Widget 2` and a superscript spelling one identity, and every step past canonical says
     two differently-spelled names are one job -- unrecoverable in the direction that matters,
-    which is the reasoning `_fold_note_name`'s own docstring gives for staying narrow."""
-    superscript = _fold_note_name("Widget \u00b2 Ltd - Analyst")
-    ordinary = _fold_note_name("Widget 2 Ltd - Analyst")
+    which is the reasoning `fold_note_name`'s own docstring gives for staying narrow."""
+    superscript = fold_note_name("Widget \u00b2 Ltd - Analyst")
+    ordinary = fold_note_name("Widget 2 Ltd - Analyst")
     assert superscript != ordinary, (
         "the fold applied compatibility NORMALIZATION: a superscript and its digit are two\n"
         "identities. NFD/NFC only, never NFKD/NFKC. Note this is a ceiling on the\n"
@@ -1081,7 +1103,7 @@ def test_two_composition_forms_do_not_seat_two_notes(tmp_path):
 
 def test_the_fold_is_the_DEFINED_caseless_match_not_the_naive_composition():
     """One pair, pinning BOTH halves of #299: the widening itself, and the shape chosen for
-    it. `_fold_note_name` must call these two names one identity, and the two folds it was
+    it. `fold_note_name` must call these two names one identity, and the two folds it was
     chosen over must each call them two -- so this row reddens if the pre-#299 `casefold()`
     is restored OR if the shape is "simplified" to `NFC(casefold(x))`.
 
@@ -1108,7 +1130,7 @@ def test_the_fold_is_the_DEFINED_caseless_match_not_the_naive_composition():
     naive = unicodedata.normalize("NFC", precomposed).casefold()
     assert naive != unicodedata.normalize("NFC", decomposed).casefold(), (
         "NFC(casefold(x)) already merges this pair, so the row no longer pins the D145 shape")
-    assert _fold_note_name(precomposed) == _fold_note_name(decomposed), (
+    assert fold_note_name(precomposed) == fold_note_name(decomposed), (
         "the fold classifies a canonical-caseless pair as two identities; it must be "
         "NFD(casefold(NFD(x))), UAX #15 D145")
 

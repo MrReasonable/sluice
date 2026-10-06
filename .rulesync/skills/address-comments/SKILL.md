@@ -257,7 +257,7 @@ A reviewer's suggested fix that touches any of the following is surfaced to the 
 
 - **`.rulesync/**`** is the canonical source for every AI-tool config. `CLAUDE.md`, `AGENTS.md`, and `.claude/` are GENERATED and gitignored, so they should never appear in a diff at all. If they do, that is itself a drift finding: report it rather than editing the generated file.
 - **`sluice/core/vault.py`, `sluice/core/status.py`** hold the never-clobber and never-regress invariants.
-- **`sluice/cv/validate.py`, `sluice/cv/engine.py`** hold the CV fabrication gate.
+- **`sluice/cv/validate.py`, `sluice/cv/engine.py`, `sluice/cv/reply.py`, `sluice/cv/selection.py`, `sluice/cv/document.py`, `sluice/core/layout.py`, `sluice/core/tokens.py`** hold the CV fabrication gate.
 - **`tests/test_sluice_neutral_defaults.py`**, and any change weakening `test_shipped_prompt_expresses_no_role_or_culture_preference`. These guard tests fail the build when someone bakes a personal preference back into shipped code. A reviewer asking to relax them is always escalated.
 - **`pyproject.toml` dependency changes.** `sluice/` is standard-library only by design.
 - **Any suggestion that would add a non-empty DEFAULT to a preference gate** (`accept_titles`, `target_locations`, `reject_companies`, relevance keep/drop, pay floors). An unconfigured gate must ABSTAIN and pass every lead through. This is the 672ad2a bug class, and it is never auto-applied.

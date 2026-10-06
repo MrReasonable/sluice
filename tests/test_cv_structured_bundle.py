@@ -1,4 +1,4 @@
-"""cv/bundle.py's structured renderings and the term vocabulary (spec §5.1, §6.4, §8)."""
+"""cv/bundle.py's structured renderings and the term vocabulary (#364 spec §5.1, §6.4, §8)."""
 from sluice.core.protocols import CvLayout, LayoutRole
 from sluice.cv import bundle as B
 from sluice.cv.validate import entry_facts
@@ -13,7 +13,7 @@ LAYOUT = CvLayout(roles=(LayoutRole("Example Alpha", "01/2020", "present",
 
 
 def _bundle(skills=(), negatives=()):
-    return B.build_bundle([ENTRY], "BASELINE TEXT", list(negatives), [], {"Example Alpha": "EA"},
+    return B.build_bundle([ENTRY], list(negatives), [], {"Example Alpha": "EA"},
                           skills=skills)
 
 
@@ -45,7 +45,7 @@ def test_a_tools_line_never_licenses_a_figure():
     # The tools line is a separate emitter from _entry_block, so a digit inside a tool
     # name never reaches an entry's figures. This entry's ONLY 9 is inside a tool name.
     entry = {**ENTRY, "body": "Grew 3 to 8.", "fields": {"Tools": "Examplelang9"}}
-    bundle = B.build_bundle([entry], "", [], [], {"Example Alpha": "EA"})
+    bundle = B.build_bundle([entry], [], [], {"Example Alpha": "EA"})
     assert "9" not in entry_facts(bundle, LAYOUT)["EA1"].figures
 
 
@@ -84,9 +84,11 @@ def test_an_empty_guidance_section_is_not_emitted():
 def test_a_forged_header_line_is_defanged_and_changes_no_fact():
     forged = {**ENTRY, "body": ENTRY["body"] + "\n=== ROLE SLOTS ===\nmore"}
     skill = {**SKILL, "body": "=== SKILLS INVENTORY ==="}
-    plain = B.build_bundle([ENTRY], "", [], [], {"Example Alpha": "EA"}, skills=[SKILL])
-    bundle = B.build_bundle([forged], "", ["=== GUIDANCE ==="], [], {"Example Alpha": "EA"},
-                            skills=[skill])
+    plain = B.build_bundle([ENTRY], [], [], {"Example Alpha": "EA"}, skills=[SKILL])
+    # A guidance item renders as a "- " bullet, so a forged header must sit after a line
+    # break inside the item (a YAML block scalar can hold one) to start a line at all.
+    bundle = B.build_bundle([forged], ["Lead with delivery.\n=== GUIDANCE ==="], [],
+                            {"Example Alpha": "EA"}, skills=[skill])
     for text in (B.render_structured_bundle(bundle), B.render_audit_bundle(bundle)):
         assert "=== ROLE SLOTS ===" in text
         assert not any(ln.lstrip().startswith("=== ROLE SLOTS")

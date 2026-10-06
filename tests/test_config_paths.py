@@ -566,7 +566,7 @@ def test_the_root_min_jd_chars_reaches_both_sub_apps(tmp_path, monkeypatch):
     ("triage", "load_triage_config", "sluice.triage.config"),
 ])
 def test_retired_sub_app_dossier_dir_raises(block, loader_name, module, tmp_path):
-    # The cv.baseline_rel precedent: these loaders filter unknown keys with `hasattr`,
+    # The retired cv.baseline_rel/cv.employers precedent: these loaders filter unknown keys with `hasattr`,
     # so a retired key would otherwise be dropped in SILENCE -- and a user who had
     # pointed cv at its own dossier dir would get a different one with no signal.
     secret = tmp_path / "somewhere-personal"
@@ -575,9 +575,9 @@ def test_retired_sub_app_dossier_dir_raises(block, loader_name, module, tmp_path
     with pytest.raises(ValueError) as e:
         _loader(module, loader_name)(str(p))
     assert f"{block}.dossier_dir" in str(e.value) and "dossier_dir:" in str(e.value)
-    # Unlike baseline_rel (a store-RELATIVE name), this is a host path usually under a
-    # home directory, so the message must not echo it -- core/config.py already rules
-    # that way for dossier_allow_hosts. An exception travels further than a config file.
+    # Neither this message nor the retired baseline_rel/employers ones echo a value; this
+    # one because a host path usually sits under a home directory -- core/config.py already
+    # rules that way for dossier_allow_hosts. An exception travels further than a config file.
     assert str(secret) not in str(e.value)
 
 

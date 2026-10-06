@@ -7,11 +7,11 @@ accepts is exactly the text that renders -- nothing downstream strips or rewrite
 import json
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sluice.core.protocols import SECTION_HEADINGS
 from sluice.core.safeout import is_control
-from sluice.core.tokens import group_reading
+from sluice.core.tokens import digit_value, group_reading
 
 # The placeholders the prompt's JSON shape uses (cv/compose.py). `_prefix` can produce
 # none of them, so a reply still carrying one is a backend echoing the example back.
@@ -32,6 +32,13 @@ class Reply:
     roles: dict           # slot id (the prompt's spelling) -> tuple[Bullet, ...]
     skills: tuple
     skills_malformed: bool = False
+    # (slot id, 1-based bullet number) -> tuple of REPLY findings, for each bullet whose TEXT
+    # failed _text_findings. The bullet itself stays in `roles`: whether its findings count
+    # depends on whether cv/selection.py::select keeps it, and a bullet trimmed to budget
+    # never renders, so it must never cost a retry (#364 spec §2, §4.3). select reports only the
+    # findings of bullets it kept; a kept one can never be retained, because its findings
+    # make the attempt hard-dirty.
+    bullet_findings: dict = field(default_factory=dict)
 
 
 class _DuplicateKey(ValueError):
@@ -187,26 +194,47 @@ _EXTRA_INVISIBLE = ((0x034F, 0x034F), (0x115F, 0x1160), (0x17B4, 0x17B5), (0x180
 
 
 def _is_invisible(c):
-    return unicodedata.category(c) in ("Cf", "Cn") or any(lo <= ord(c) <= hi
-                                                  for lo, hi in _EXTRA_INVISIBLE)
+    return (unicodedata.category(c) in ("Cf", "Cn")
+            or any(lo <= ord(c) <= hi for lo, hi in _EXTRA_INVISIBLE))
 
 
 # The micro sign and Greek mu, allowed as the first letter of a word only (see _lookalike).
 _UNIT_MU = frozenset("\u00b5\u03bc")
+# The unit letters allowed straight AFTER a digit by the digit rule in _lookalike: the micro
+# sign and Greek mu (a prefix, "200\u00b5s"), and the ohm -- Greek capital omega and the OHM
+# SIGN, which NFKC folds to it ("10\u03a9"). Each is a faithful copy of a unit as evidence
+# writes it, and none reads as a digit.
+_UNIT_AFTER_DIGIT = _UNIT_MU | frozenset("\u03a9\u2126")
 
 
 def _lookalike(text):
     """The first character that lets a word dodge a whole-term match, or None.
 
     A LETTER whose NFKC form is ASCII letters (full-width Latin, mathematical alphanumerics,
-    the fi ligature), or a letter of any non-Latin script inside a word that also holds
-    Latin. Not
-    every NFKC change: the micro sign, NBSP, an ellipsis, a trademark sign, m2 and a
-    decomposed accent are faithful copies of evidence and never hide a name."""
+    the fi ligature), a letter of any non-Latin script inside a word that also holds
+    Latin, or a non-Latin letter touching a digit. Not
+    every NFKC change: the micro sign, the ohm sign, NBSP, an ellipsis, a trademark sign, m2
+    and a decomposed accent are faithful copies of evidence and never hide a name."""
     for c in text:
         if unicodedata.category(c).startswith("L"):
             folded = unicodedata.normalize("NFKC", c)
             if folded != c and folded.isascii() and folded.isalpha():
+                return c
+    # A non-Latin letter against a digit: "8\u041e%" (Cyrillic capital O) shows the page 80%
+    # while figures() reads only the 8. The word scan below cannot see it, because its
+    # pattern excludes digits, so the O is a one-letter word with no Latin beside it.
+    # "Against" looks through what renders as no gap: combining marks, whitespace other
+    # than an ASCII space (a thin or hair space is barely visible), and one separator a
+    # figure carries ("8.\u041e" reads 8.0, "8-\u041e" a range). The unit letters in
+    # _UNIT_AFTER_DIGIT -- micro, mu and ohm -- are allowed straight AFTER a digit, as the
+    # word scan allows a unit prefix ("200\u00b5s", "10\u03a9"). Accepted residuals: an ASCII O, o, l or I against a digit ("8O%",
+    # "2l0") is Latin and passes, since "5G", "O2" and "10l" are real text; so do the Latin
+    # small capitals, as in the word scan below.
+    for i, c in enumerate(text):
+        if (unicodedata.category(c).startswith("L")
+                and not unicodedata.name(c, "").startswith("LATIN ")):
+            after = _digit_beside(text, i, -1)
+            if (after or _digit_beside(text, i, 1)) and not (c in _UNIT_AFTER_DIGIT and after):
                 return c
     for word in re.findall(r"[^\W\d_]+", text):
         # The micro sign and Greek mu are allowed only as a word's FIRST letter (a unit
@@ -233,7 +261,32 @@ _DIGIT_SEPARATORS = frozenset(".,-/:\u2013")
 
 
 def _is_digit(text, i):
-    return 0 <= i < len(text) and unicodedata.digit(text[i], None) is not None
+    # core/tokens.py's own predicate, the one figures() reads runs with.
+    return digit_value(text, i) is not None
+
+
+def _no_gap(c):
+    # Renders as no visible gap between a digit and a letter: a combining mark, or any
+    # whitespace but the ASCII space.
+    return unicodedata.category(c).startswith("M") or (c.isspace() and c != " ")
+
+
+def _digit_beside(text, i, step):
+    """Whether a digit sits beside text[i] in direction `step` (-1 before, 1 after), looking
+    through no-gap characters and at most one figure separator (_DIGIT_SEPARATORS)."""
+    j, separators = i + step, 0
+    while 0 <= j < len(text):
+        c = text[j]
+        if _is_digit(text, j):
+            return True
+        if _no_gap(c):
+            pass
+        elif c in _DIGIT_SEPARATORS and separators == 0:
+            separators = 1
+        else:
+            return False
+        j += step
+    return False
 
 
 def _bad_comma(text):
@@ -305,10 +358,14 @@ def _text_findings(where, text):
     if any(_is_invisible(c) for c in text):
         return [f"REPLY: {where} contains an invisible formatting character -- write plain "
                 "text"]
-    # A number written without 0-9 (a circled or Roman numeral, a CJK numeral, a vulgar
-    # fraction) has no digit value, so core/tokens.py::figures cannot see it.
-    # Only Nl/No: a CJK ideograph (Lo) is a letter, so an employer name holding one passes.
-    if any(unicodedata.category(c) in ("Nl", "No") and unicodedata.digit(c, None) is None
+    # A character that MEANS a number which core/tokens.py::figures cannot read -- it reads
+    # exactly what unicodedata.digit gives a value -- shows the page a figure the gate never
+    # checks: a Roman numeral, a circled number past 9, a vulgar fraction, a CJK numeral.
+    # One rule over every category, so a CJK numeral (category Lo, a letter to Unicode) is
+    # refused like the rest; a CJK character with no numeric value passes. A circled digit
+    # or a superscript has a digit value, so figures() already reads it and it passes too.
+    # Model text only: vault text the user wrote is never refused (#364 spec §2).
+    if any(unicodedata.numeric(c, None) is not None and unicodedata.digit(c, None) is None
            for c in text):
         return [f"REPLY: {where} writes a number without digits -- write numbers with the "
                 "digits 0-9"]
@@ -342,14 +399,37 @@ def _placeholder_findings(obj):
             "with real content" for p in sorted(found)]
 
 
-def parse_reply(obj, slot_ids):
+def _fold_heading(text):
+    """A role heading folded for comparison: case-insensitive, whitespace collapsed. A
+    non-text heading folds to blank (never to its spelling, "None"), and blank matches nothing."""
+    return " ".join(text.split()).casefold() if isinstance(text, str) else ""
+
+
+def parse_reply(obj, slot_ids, headings=None):
     """A typed Reply, or REPLY findings naming each problem's field.
 
     `skills` alone is never refused: a malformed list is flagged and dropped, because the
-    SKILLS section is framing-grade and framing never costs a lead (spec §5.2)."""
+    SKILLS section is framing-grade and framing never costs a lead (#364 spec §5.2).
+
+    A bullet whose TEXT fails a check is not refused here: it is kept, its findings filed
+    under `Reply.bullet_findings`, and cv/selection.py::select reports them only if it
+    keeps the bullet. Any OTHER finding (the profile's text, the reply's shape) refuses the
+    reply, and the list returned then carries every finding in reply order, bullet text
+    included: with no selection there is nothing to say which bullet would have been
+    trimmed, and a reply refused anyway loses nothing by the model hearing all of it.
+
+    `headings` maps each slot id to its vault-owned role heading. A `roles` key that is no
+    slot id but equals exactly ONE slot's heading (same fold as the ids, whitespace
+    collapsed) reads as that slot: a composer shown "R1: Example Alpha | ..." sometimes keys
+    by the heading, and mapping it adds nothing the model wrote to the CV. A heading two
+    slots share is never mapped, since ambiguity must not pick a slot; an id match always
+    wins; and an id plus its own heading is the ordinary given-twice finding."""
     if not isinstance(obj, dict):
         return ["REPLY: the reply must be one JSON object"]
     findings = _placeholder_findings(obj)
+    # How many entries of `findings` are bullet-text findings: when it is all of them the
+    # reply is returned, carrying them in bullet_findings instead.
+    text_only, bullet_findings = 0, {}
     profile = obj.get("profile")
     if not isinstance(profile, str) or not profile.strip():
         findings.append("REPLY: profile missing or empty -- give a 2 to 3 sentence profile")
@@ -358,6 +438,11 @@ def parse_reply(obj, slot_ids):
         findings += _text_findings("profile", profile)
     # Matched case-insensitively: a model writing "r1" for R1 has made no real mistake.
     by_fold = {s.casefold(): s for s in slot_ids}
+    by_heading = {}
+    for sid, heading in (headings or {}).items():
+        if _fold_heading(heading):      # a blank heading names nothing a key could match
+            by_heading.setdefault(_fold_heading(heading), []).append(sid)
+    ids_shown = ", ".join(slot_ids)
     roles, seen = {}, {}
     raw_roles = obj.get("roles")
     if not isinstance(raw_roles, dict):
@@ -367,7 +452,11 @@ def parse_reply(obj, slot_ids):
         for key, bullets in raw_roles.items():
             slot = by_fold.get(str(key).strip().casefold())
             if slot is None:
-                findings.append(f"REPLY: unknown slot {key!r} -- use only the slot ids given")
+                owners = by_heading.get(_fold_heading(str(key)), [])
+                slot = owners[0] if len(owners) == 1 else None
+            if slot is None:
+                findings.append(f"REPLY: unknown slot {key!r} -- use only the slot ids given "
+                                f"({ids_shown})")
                 continue
             if slot in seen:
                 findings.append(f"REPLY: slot {slot} given twice (as {seen[slot]!r} and "
@@ -393,7 +482,11 @@ def parse_reply(obj, slot_ids):
                 bad = _text_findings(where, text)
                 if bad:
                     findings += bad
-                    continue
+                    text_only += len(bad)
+                    # Keyed by its position in `kept`, which is the numbering select and
+                    # every later stage use. While no structural finding refuses the reply,
+                    # no bullet before it was skipped, so that position is also `n`.
+                    bullet_findings[(slot, len(kept) + 1)] = tuple(bad)
                 kept.append(Bullet(text.strip(), tuple(c.strip() for c in cites)))
             roles[slot] = tuple(kept)
     raw_skills = obj.get("skills")
@@ -403,6 +496,6 @@ def parse_reply(obj, slot_ids):
             skills = tuple(s.strip() for s in raw_skills if s.strip())
         else:
             malformed = True
-    if findings:
+    if len(findings) > text_only:
         return findings
-    return Reply(profile.strip(), roles, skills, malformed)
+    return Reply(profile.strip(), roles, skills, malformed, bullet_findings)

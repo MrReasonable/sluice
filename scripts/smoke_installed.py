@@ -265,31 +265,28 @@ def check_offline_commands(report, trust_env=False):
     report("offline commands", "--help and list-sources --health both exit 0")
 
 
-# A synthetic CV in the grammar `cv/parse.py` accepts. No location field: the two-field meta line
-# is the accepted spelling of "no location", and it keeps a place name out of a shipped script.
-_RENDER_PROBE_CV = """\
-Email: someone@example.invalid
+# Built lazily so this script's own import stays sluice-free: it runs against an INSTALLED
+# package in a sandbox, and the importing of `sluice` is itself one of the things it checks.
+def _render_probe_document():
+    """The document `check_real_render` renders: every section the size floor relies on is
+    populated (tests/test_smoke_installed.py pins that offline)."""
+    from sluice.core.protocols import CvDocument, Role
+    return CvDocument(
+        name="EXAMPLE PERSON", contact="Email: someone@example.invalid",
+        profile="Engineer with nine years building data pipelines.",
+        work=[Role(company="Example Data", dates="03/2021–present",
+                   location="Example Location A", title="SYNTHETIC-TITLE-1",
+                   bullets=["Cut p99 latency to under 200ms"])],
+        skills=[], certificates=[], education=["Example University, BSc Example"])
 
-EXAMPLE PERSON
 
-PROFILE
-Engineer with nine years building data pipelines.
-
-WORK EXPERIENCE
-
-Example Data Co
-03/2021-present | Staff Engineer
-- Cut p99 latency to under 200ms [ED1]
-
-EDUCATION
-- Example University, 2010-2013 | BSc Computer Science
-"""
-
-# Measured on WeasyPrint 70.0: the test suite's fake writes 13 bytes, an empty page ~0.7KB and a
-# one-word page ~2.3KB, while the probe renders at ~12KB in the container image (~49KB on macOS,
-# whose fonts embed larger). The floor sits between the one-word page and the probe. It catches a
-# stub or a near-empty page; it does NOT prove every section rendered -- a heading and a paragraph
-# (~5.5KB) would clear it.
+# This CvDocument probe rendered 12,180 bytes in the container image (the docker job's
+# `template renderer wrote a N-byte PDF` line, 2026-10-06), about three times the floor below.
+# For scale, measured on WeasyPrint 70.0 with the 3.x text probe it replaced: the test suite's
+# fake writes 13 bytes, an empty page ~0.7KB and a one-word page ~2.3KB, and macOS embeds
+# larger fonts (~49KB for that probe). The floor catches a stub or a near-empty page; it does
+# NOT prove every section rendered -- a heading and a paragraph (~5.5KB on the 3.x
+# measurement) would clear it.
 _RENDER_MIN_BYTES = 4096
 
 
@@ -317,7 +314,7 @@ def check_real_render(report):
 
     renderer = Sluice(Config()).renderer(CvConfig())
     with tempfile.TemporaryDirectory() as out_dir:
-        path = renderer.render(_RENDER_PROBE_CV, out_dir)
+        path = renderer.render(_render_probe_document(), out_dir)
         with open(path, "rb") as fh:
             data = fh.read()
     if not data.startswith(b"%PDF-"):

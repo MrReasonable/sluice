@@ -1,11 +1,13 @@
 # tests/test_cv_engine.py
+import dataclasses
+import json
 import os
 
 import pytest
 
-from sluice.cv.bundle import build_bundle, bundle_sources
+from sluice.cv.bundle import build_bundle
 from sluice.cv.engine import run_one, run_batch
-from sluice.cv.validate import validate
+from sluice.cv.validate import check_selection, entry_facts
 from sluice.core.backends import (
     BackendError, Completion, OpenAiCompatibleBackend, RetryingBackend,
 )
@@ -14,19 +16,16 @@ from sluice.core import status as _status
 from sluice.core.protocols import CandidateProfile, Store
 from tests.conftest import SYNTHETIC_LAYOUT
 
-# #107: the identity every test in this file gets unless it asks for something
-# else. full_name() -> "Jane Roe" -- the literal name CLEAN_CV's header line
-# already used before this task moved identity out of CvConfig, so no fixture
-# text below needed to change to keep matching it. ONE contact field (mobile)
-# is enough to clear the new "blank contact refuses" gate (see
-# test_a_declared_name_with_blank_contact_also_refuses_before_spend) without
-# picking a shape that collides with the two isolation fixtures
-# (REVERSED_HEADER_CV, PREAMBLE_REPLACING_CONTACT_CV) that configure their own,
-# different one-line contact below. CLEAN_CV's header carries this exact line
-# first -- see its own comment -- which is what keeps the #99/#100 STRUCTURAL
-# guard's header-vs-derived-identity comparison clean for every test that
-# does not override it.
+# #107: the identity every test in this file gets unless it asks for something else.
+# sluice assembles the CV's name and contact block from it (#364/#365/#368, spec §7.1), so
+# no reply carries either. ONE contact field (mobile) is enough to clear the "blank contact
+# refuses" gate (see test_a_declared_name_with_blank_contact_also_refuses_before_spend).
 DEFAULT_CANDIDATE = CandidateProfile(forenames="Jane", surname="Roe", mobile="+1 555 0100")
+
+# The first line of every compose prompt (cv/compose.py::build_structured_prompt). The
+# fakes below route on it: the structured prompt carries no `SOURCE BUNDLE` header, and the
+# audit prompt opens "You are auditing", so neither can be mistaken for the other.
+_COMPOSE = "Compose a tailored CV for"
 
 
 class Note:
@@ -47,18 +46,16 @@ class FakeVault:
     # #107: cv/engine.py's identity gate is MUST-support (Store.read_candidate_profile),
     # not reached through getattr -- so every test that expects run_one to proceed past
     # it needs this to answer, not raise. `candidate` is a constructor param (not a
-    # hardcoded DEFAULT_CANDIDATE return) so the two #99/#100 isolation tests
-    # (REVERSED_HEADER_CV, PREAMBLE_REPLACING_CONTACT_CV) can seed a DIFFERENT declared
-    # identity without a second fake class.
+    # hardcoded DEFAULT_CANDIDATE return) so a test can seed a different declared identity
+    # without a second fake class.
     def read_candidate_profile(self): return self._candidate
     # Tracks the SUBSET of protocols.Store that cv actually exercises, and each
     # method it does carry must match that method's real signature exactly -- this
-    # fake carrying the old read_baseline(rel=...) is what let a real TypeError ship
-    # green. Deliberately NOT the whole contract, but every member it does carry has
+    # fake carrying a stale signature for the baseline-CV reader (a Store method since
+    # retired by #364/#365/#368) is what let a real TypeError ship green. Deliberately NOT the whole contract, but every member it does carry has
     # the real parameter list: a guard the fake accepted and ignored is the shape that
     # made a real guard look tested, so it honours what it cheaply can and RAISES on the
     # rest. The conformance suite in tests/conformance/ holds real stores to the contract.
-    def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
     def _fresh(self, ref): return next((n for n in self._notes if n.ref == ref), None)
     def set_tailored_cv(self, ref, value, *, only_if_absent=False):
@@ -138,37 +135,29 @@ class FakeCache:
     def jd_arrived(self, dossier): return True
 
 class FakeRenderer:
-    """The Renderer seam, injected. Records what it was asked to render so a test can
-    assert a CV was NEVER rendered -- which is the fabrication gate's whole point.
-
-    Implements `render` ONLY. That is the shape of the shipped `script` renderer, which
-    shells out to arbitrary user code and imposes no grammar of its own, and it is the
-    shape every test in this file wants by default: an engine that gated CVs on some
-    renderer's private grammar would be gating THIS one too. `precheck` is the optional
-    half of the seam (core/protocols.py) -- see PrecheckingRenderer below.
-    """
+    """The Renderer seam, injected. Records the DOCUMENT it was asked to render so a test
+    can assert a CV was NEVER rendered -- which is the fabrication gate's whole point --
+    and which attempt's text it was handed."""
     def __init__(self): self.rendered = []
-    def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
-        self.rendered.append(cv_text)
+    def render(self, document, out_dir, *, neutral_name="CV.pdf"):
+        self.rendered.append(document)
         return f"/tmp/x/{neutral_name}"
 
 
-class PrecheckingRenderer(FakeRenderer):
-    """A renderer that DOES implement the seam's optional `precheck`, in exactly the
-    shape `sluice/renderers/template.py` does: parse, and report a SHAPE failure as a
-    `FORMAT:` string for the engine to fold in with the gate's own violations.
+def _bullets(rend):
+    """The one role's bullets of every document `rend` was handed."""
+    return [d.work[0].bullets for d in rend.rendered]
 
-    Kept as a distinct class rather than added to FakeRenderer, because the distinction
-    between the two is the thing under test -- see
-    test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar.
-    """
-    def precheck(self, cv_text):
-        from sluice.cv.parse import CvParseError, parse_cv
-        try:
-            parse_cv(cv_text)
-        except CvParseError as e:
-            return [f"FORMAT: {e}"]
-        return []
+
+def _profiles(rend):
+    """The profile of every document `rend` was handed: which ATTEMPT rendered."""
+    return [d.profile for d in rend.rendered]
+
+
+def _profile(reply_text):
+    """The profile a scripted reply carries, to compare against `_profiles`."""
+    return json.loads(reply_text)["profile"]
+
 
 class FakeBackend:
     def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
@@ -176,12 +165,12 @@ class FakeBackend:
         self.last_backend = "primary"; self.calls = 0
     def complete(self, prompt):
         self.calls += 1
-        # first call = compose, later audit; return CV then audit
-        return Completion(self.cv_out if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else self.audit_out)
+        # A compose prompt gets the scripted reply; everything else is the audit.
+        return Completion(self.cv_out if prompt.startswith(_COMPOSE) else self.audit_out)
 
-# `CI` in the body is load-bearing (#194): CLEAN_CV's `- CI [EF1]` bullet names it, and the
+# `CI` in the body is load-bearing (#194): CLEAN_REPLY's `CI` bullet names it, and the
 # unbundled-term check reports a capitalised term the bundle never carries. Without it every
-# test composing CLEAN_CV would get a retry it does not credit, which in review MASKED the
+# test composing CLEAN_REPLY would get a retry it does not credit, which in review MASKED the
 # slop-driven retry other tests exist to witness. No digit added, so no allowlist moves.
 ENTRIES = [{"title": "Grew team", "company": "Example Foundry", "best_for": "delivery",
             "category": "people", "metrics": "3 8", "body": "Grew 3 to 8 with CI."}]
@@ -198,516 +187,140 @@ def _cfg():
     # test_cv_run_artefacts.py::test_the_shared_engine_config_writes_inside_the_test_sandbox
     # pins it.
     c.output_dir = os.path.join(os.environ["HOME"], "cvout")
-    # prefix_map now defaults to {}; CLEAN_CV's citations are hardcoded to [EF1],
-    # so the single ENTRIES company must still code to "EF1" (the 2-letter
-    # fallback for "Example Foundry" would yield "EX1").
+    # prefix_map defaults to {}; the replies cite EF1, so the single ENTRIES company must
+    # code to "EF1" (the 2-letter fallback for "Example Foundry" would yield "EX1").
     c.prefix_map = {"Example Foundry": "EF"}
-    # #107: cv/engine.py no longer reads cvcfg.name/cvcfg.contact -- identity comes
-    # from the vault's Candidate Profile note (FakeVault's `candidate`, DEFAULT_CANDIDATE
-    # unless a test overrides it). No override of c.name/c.contact belongs here any
-    # more; CvConfig no longer HAS either field (#133/#107, Task 9), so there is
-    # nothing left on this dataclass for such an override to even set.
     return c
 
-# Synthetic throughout; only the descending start years are load-bearing.
-# "+1 555 0100" is the ONE header line DEFAULT_CANDIDATE's mobile field produces
-# (#107): the #99/#100 STRUCTURAL guard now compares this header block against
-# the vault-derived identity, not cvcfg.name/cvcfg.contact, so this fixture's
-# contact line must match DEFAULT_CANDIDATE exactly or every "rendered" test
-# below would fail that guard instead of testing what it claims to.
-CLEAN_CV = "\n".join([
-    "+1 555 0100", "JANE ROE", "", "PROFILE", "I build reliable systems.", "", "WORK EXPERIENCE", "",
-    "Example Systems", "02/2023–present | Example Location A | Staff Engineer", "- Shipped [EF1]", "",
-    "Example Analytics", "06/2020–01/2023 | Example Location B | Senior Engineer",
-    "- Grew team from 3 to 8 [EF1]", "",
-    "Example Robotics", "09/2017–05/2020 | Example Location C | Engineer", "- Coached [EF1]", "",
-    "Example Cartography", "07/2015–08/2017 | Example Location A | Junior Engineer", "- CI [EF1]", "",
-    "CERTIFICATES", "- Example Scrum Master", "EDUCATION", "- Uni",
-])
+
+# ── the replies (#364/#365/#368, spec §5.2) ─────────────────────────────────────────
+CLEAN_BULLETS = ("Shipped", "Grew team from 3 to 8", "Coached", "CI")
 
 
-# An UNPARSEABLE meta line that still PASSES the fabrication gate -- the whole point of
-# this wiring. validate() reads only `\d{2}/(\d{4})\s*[–-]` after WORK EXPERIENCE, so
-# dropping the pipes leaves the years (and every citation) intact and the gate clean.
-UNPARSEABLE_CV = CLEAN_CV.replace("02/2023–present | Example Location A | Staff Engineer",
-                                  "02/2023–present Example Location A Staff Engineer")
+def _reply(profile="I build reliable systems.", bullets=CLEAN_BULLETS, skills=()):
+    """A reply for SYNTHETIC_LAYOUT's one role (R1, Example Foundry), every bullet citing
+    EF1. `CI` is in ENTRIES' body, so naming it draws no unbundled-term finding."""
+    return json.dumps({"profile": profile,
+                       "roles": {"R1": [{"text": b, "cites": ["EF1"]} for b in bullets]},
+                       "skills": list(skills)})
 
 
-def test_the_unparseable_fixture_still_passes_the_gate():
-    """A PREMISE of both tests below: they claim the engine catches a formatting failure
-    the GATE does not. If this fixture ever stops clearing the gate they would pass for
-    the wrong reason -- the same trap test_clean_cv_is_actually_clean exists to close."""
-    assert "Example Location A Staff Engineer" in UNPARSEABLE_CV, "the replace no-opped"
-    sources = bundle_sources(build_bundle(
-        entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(UNPARSEABLE_CV, sources) == []
+CLEAN_REPLY = _reply()
+# HARD-dirty and nothing else: an em dash in a bullet the model wrote, slop.HARD's blocking
+# tier. The bullet keeps its citation and gains no number, so check_selection reports
+# nothing -- the ONLY thing wrong with this reply is the HARD slop rule, which is what makes
+# it a clean discriminator between the two tiers.
+HARD_DIRTY_REPLY = _reply(bullets=("Shipped", "Grew team from 3 to 8",
+                                   "Coached \u2014 and mentored", "CI"))
+# HARD-clean, STYLE-dirty: "leverage" is a slop._PHRASES stem, in the profile the model
+# wrote. No digit, so the profile figure check stays clean.
+STYLE_DIRTY_REPLY = _reply(profile="I leverage the same delivery patterns across teams.")
+# Two STYLE findings where STYLE_DIRTY_REPLY has one (#194 retention): `leverage` and
+# `seamless` are both slop._PHRASES stems.
+STYLE_DIRTIER_REPLY = _reply(profile="I leverage seamless delivery patterns across teams.")
+# ONE finding, like STYLE_DIRTY_REPLY, but different text -- so a tie between the two is
+# observable in what renders.
+STYLE_DIRTY_B_REPLY = _reply(profile="I foster the same delivery patterns across teams.")
+# A hard-clean reply whose profile names a term no source carries (#194).
+UNBUNDLED_TERM_REPLY = _reply(profile="I build reliable systems on Examplequery.")
+# STYLE_DIRTY_REPLY's ONE slop finding plus ONE unbundled term (#194): a reply whose
+# findings are split across BOTH deterministic members of the retained tuple, so the
+# retention comparison can only rank it correctly by counting the term member too.
+STYLE_DIRTY_WITH_TERM_REPLY = _reply(
+    profile="I leverage the same delivery patterns across teams on Examplequery.")
+# A slop stem in an EMPLOYER heading is vault text and draws nothing; the same stem family in
+# the profile is the model's and is found. Run against EMPLOYER_PHRASE_LAYOUT. The heading
+# keeps this file's synthetic "Example <Word>" convention.
+EMPLOYER_PHRASE_REPLY = _reply(profile="I streamline delivery for platform teams.")
+EMPLOYER_PHRASE_LAYOUT = dataclasses.replace(SYNTHETIC_LAYOUT, roles=(dataclasses.replace(
+    SYNTHETIC_LAYOUT.roles[0], heading="Example Leverage",
+    employers=("Example Foundry",)),))
+# A bullet with no citation: the fabrication gate's UNCITED BULLET row.
+UNCITED_REPLY = json.dumps({
+    "profile": "I build reliable systems.",
+    "roles": {"R1": [{"text": "Shipped", "cites": ["EF1"]},
+                     {"text": "Grew team from 3 to 8", "cites": []}]},
+    "skills": []})
+
+_DRAFTS = {
+    "clean": CLEAN_REPLY,
+    "unbundled-term": UNBUNDLED_TERM_REPLY,
+    "style-dirty-with-term": STYLE_DIRTY_WITH_TERM_REPLY,
+    "hard-clean-style-dirty": STYLE_DIRTY_REPLY,
+    "hard-clean-style-dirtier": STYLE_DIRTIER_REPLY,
+    "hard-clean-style-dirty-b": STYLE_DIRTY_B_REPLY,
+    "hard-dirty": HARD_DIRTY_REPLY,
+    "employer-phrase": EMPLOYER_PHRASE_REPLY,
+}
 
 
-def test_a_parse_failure_feeds_the_retry_not_the_bin(monkeypatch):
-    """A CV whose role line wobbles must be RE-COMPOSED, not thrown away.
+def _selected(reply_text, *, entries=ENTRIES, layout=SYNTHETIC_LAYOUT):
+    """`reply_text` run through the same pure functions run_one runs, in the same order:
+    the bundle, the slots, the reply read, the selection. So a fixture's premise is
+    computed the way the engine computes it rather than restated by hand."""
+    from sluice.core.layout import build_slots
+    from sluice.cv.reply import Reply, extract_json, parse_reply
+    from sluice.cv.selection import build_pool, select
 
-    The engine already composes up to twice, appending violations to the second prompt.
-    Making a parse failure fatal would kill the lead AFTER the LLM spend with no
-    recovery -- worse than the status quo, and it re-opens the exact problem this design
-    exists to close. The model is being asked to fix its own formatting, which is the
-    thing an LLM is reliably good at.
-
-    _served(monkeypatch) is unrelated to the parse-retry wiring under test: without it
-    the real `_render.serve` opens the FakeRenderer's made-up pdf path and raises
-    FileNotFoundError, exactly as it would for any OTHER test in this file that reaches
-    "rendered" with a non-empty served_dir -- see test_happy_path_renders_and_records and
-    every #60 test below, all of which mock the same seam for the same reason.
-    """
-    _served(monkeypatch)
-
-    class TwoShotBackend:
-        """First compose returns the unparseable CV; the second returns a clean one."""
-        def __init__(self):
-            self.last_backend = "primary"; self.prompts = []
-        def complete(self, prompt):
-            # Mirrors FakeBackend's routing: compose prompts carry "SOURCE BUNDLE"
-            # and not "auditing"; audit prompts carry both.
-            if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
-                return Completion("supported\tx\tSF1")
-            self.prompts.append(prompt)
-            return Completion(UNPARSEABLE_CV if len(self.prompts) == 1 else CLEAN_CV)
-
-    be = TwoShotBackend()
-    v = FakeVault(ENTRIES)
-    rend = PrecheckingRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
-    assert r.status == "rendered", "a parse failure binned the lead instead of retrying it"
-    assert len(be.prompts) == 2, "the parse failure did not reach the existing retry"
-    assert "FORMAT" in be.prompts[1], "the parse error never reached the retry prompt"
-    assert rend.rendered == [CLEAN_CV], "the renderer got the unparseable CV"
+    bundle = build_bundle(entries, [], [], {"Example Foundry": "EF"})
+    slots = build_slots(layout, bundle["entries"])
+    reply = parse_reply(extract_json(reply_text), [s.id for s in slots])
+    assert isinstance(reply, Reply), reply
+    selection = select(reply, slots, build_pool([], entries), layout.skills_max)
+    return bundle, slots, selection
 
 
-def test_a_parse_failure_that_survives_the_retry_skips_the_lead():
-    """Same outcome as a lead that cannot clear the gate, and the renderer is never
-    reached -- a half-parsed CV must never become a PDF sent under the user's name."""
-    v = FakeVault(ENTRIES)
-    rend = PrecheckingRenderer()
-    be = FakeBackend(UNPARSEABLE_CV)
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("FORMAT" in x for x in r.violations)
-    assert rend.rendered == [], "an unparseable CV reached the renderer"
-    assert v.written == {}
-
-
-# The review's own measured case: a section `template`'s grammar does not model, in a CV
-# that is otherwise entirely gate-clean. The bullet carries a citation and NO number --
-# both are load-bearing, and both were got wrong while writing this: an uncited bullet
-# reads as UNCITED (in_work is still true before CERTIFICATES), and a bare year reads as
-# an INVENTED METRIC. Either makes the fixture gate-DIRTY, and the test then passes for
-# the wrong reason -- which is what test_the_publications_fixture_passes_the_gate exists
-# to stop.
-PUBLICATIONS_CV = CLEAN_CV.replace(
-    "CERTIFICATES", "PUBLICATIONS\n- A paper on delivery [EF1]\n\nCERTIFICATES")
-
-
-# ── #99: a composer preamble desyncs cv/parse.py's header-line assignment ──────
-# `parse_cv` (cv/parse.py) takes whatever non-blank lines precede PROFILE, calls
-# the LAST one the name (its `header_lines[-1]` assignment) and everything before
-# it the contact block -- zero shape check on either. All three fixtures
-# below insert extra text ahead of "JANE ROE" (the one line CLEAN_CV already has
-# there), reproducing the two variants captured on the real production path (#99):
-# a composer routinely opens with a one-sentence acknowledgement before the CV
-# proper.
-#
-# PREAMBLE_BEFORE_NAME_CV keeps the name line intact and correct -- only an EXTRA
-# line appears before PROFILE. Isolates the count guard: the anchor guard would
-# NOT fire here on its own (the last line before PROFILE still IS "JANE ROE"),
-# which is what makes this fixture prove the count guard is independently
-# load-bearing rather than redundant with the anchor check.
-PREAMBLE_BEFORE_NAME_CV = CLEAN_CV.replace(
-    "JANE ROE",
-    "I'll compose a tailored CV for Jane Roe applying for Analyst at Example "
-    "Foundry, drawing only from the verified source bundle.\n\nJANE ROE",
-    1)
-
-# PREAMBLE_WITH_CONTACT_BLOCK_CV is the fuller, realistic Variant B captured live:
-# preamble, THEN the name, THEN a multi-line contact block the model volunteered
-# from the bundle even though the derived contact block it was given is the bare
-# single mobile line DEFAULT_CANDIDATE produces ("+1 555 0100", no label, no
-# email/LinkedIn -- see contact_block()'s docstring). The real name ends up
-# buried mid-block and the LAST line before PROFILE -- what parse.py takes as the
-# name -- is a contact line. Both the count guard (5 lines where 1 was expected)
-# and the anchor guard (the last line isn't the name) fire on this fixture; it is
-# not meant to isolate either in isolation, only to prove the fix catches the
-# realistic end-to-end shape, "two defects stacked" as it was actually observed.
-PREAMBLE_WITH_CONTACT_BLOCK_CV = CLEAN_CV.replace(
-    "JANE ROE",
-    "I'll tailor Jane Roe's CV for the Analyst role at Example Foundry, "
-    "emphasizing relevant delivery experience.\n\nJANE ROE\n\n"
-    "Phone number: +1 555 0100\n"
-    "Email address: jane.roe@example.invalid\n"
-    "Web: https://www.example.invalid/in/example",
-    1)
-
-# REVERSED_HEADER_CV isolates the anchor guard from the count guard: the LINE COUNT
-# is exactly what a configured one-line contact would produce, but the model emitted
-# name-then-contact instead of the contact-then-name order compose.py's _RULES specify
-# (`{contact}\n\n{name_heading}`) -- the accepted trade-off the comment beside
-# `parse_cv`'s `header_lines[-1]` assignment (cv/parse.py) names, now closed once
-# the derived identity carries ground truth to compare against. The count guard
-# must NOT fire on this fixture (that is what proves the anchor guard is
-# independently load-bearing, not merely a second copy of the count check).
-#
-# Strips CLEAN_CV's own default "+1 555 0100" line first (#107): this fixture and
-# PREAMBLE_REPLACING_CONTACT_CV below each need a candidate profile whose contact is
-# EXACTLY the one line they isolate ("Phone: +1 555 0100", the value the two tests
-# below now seed onto FakeVault instead of the old cfg.contact), not
-# DEFAULT_CANDIDATE's -- carrying both would make the header three lines against an
-# expected two, tripping the COUNT guard these two fixtures exist to isolate FROM.
-REVERSED_HEADER_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
-    "JANE ROE", "JANE ROE\n\nPhone: +1 555 0100", 1)
-
-# PREAMBLE_REPLACING_CONTACT_CV isolates the CONTENT guard (added on CodeRabbit review
-# of #100's fix) from both the count guard and the anchor guard: with a one-line
-# contact configured, a preamble sentence occupies the contact slot exactly -- the
-# header is the expected two lines and the last one still IS the configured name, so
-# neither the count check nor the anchor check fires. Only comparing header[:-1]
-# against the derived contact's own lines catches that the "contact" line is prose,
-# not the real contact information, which is gone. Unlike the two fixtures above,
-# this one does NOT corrupt the parsed NAME -- parse_cv's last-line rule still lands
-# on "JANE ROE" -- which is exactly why the anchor check alone cannot see anything
-# wrong with it. Strips the default contact line first, for the same reason as
-# REVERSED_HEADER_CV above.
-PREAMBLE_REPLACING_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
-    "JANE ROE",
-    "Here is the tailored CV for the Analyst role, prepared from the verified "
-    "source bundle only.\n\nJANE ROE",
-    1)
-
-
-# The REWORDED-CONTACT fixtures isolate the CONTENT guard's rendering arm (CodeRabbit,
-# PR #161, twice -- case first, internal spacing on the following round). Each header is
-# the expected two lines and the last one still IS the configured name, so neither the
-# count check nor the anchor check fires -- exactly like PREAMBLE_REPLACING_CONTACT_CV
-# above -- but the contact line is the DECLARED one, re-rendered.
-#
-# All three must still REFUSE (the contact block is emitted verbatim into the rendered
-# CV, so accepting a re-rendered one prints text the candidate did not write), and all
-# three must refuse with a message naming the rendering rather than a preamble: the
-# retry gets one attempt, and "drop the preamble" is not something it can act on when
-# there is no preamble.
-#
-# The declared contact these are compared against is "Phone: +1 555  0100" -- note the
-# DOUBLE space, which the spacing fixture collapses. `contact_block` does not collapse
-# whitespace runs (`full_name` does), so a declared double space is a real shape a user
-# can have and a composer can normalise away.
-_DECLARED_CONTACT = "Phone: +1 555  0100"
-RECASED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
-    "JANE ROE", "phone: +1 555  0100\n\nJANE ROE", 1)
-RESPACED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
-    "JANE ROE", "Phone: +1 555 0100\n\nJANE ROE", 1)
-REWORDED_CONTACT_CV = CLEAN_CV.replace("+1 555 0100\n", "", 1).replace(
-    "JANE ROE", "phone: +1 555 0100\n\nJANE ROE", 1)
-
-
-def test_the_preamble_fixtures_are_gate_clean_and_misparse():
-    """A PREMISE of every #99 test below: they claim the ENGINE catches something
-    validate() and parse_cv() both silently accept. If any fixture ever stops being
-    gate-clean, or parse_cv ever starts raising on it, those tests would pass for a
-    reason that has nothing to do with the new guards -- the same trap
-    test_the_unparseable_fixture_still_passes_the_gate closes for its own fixture.
-
-    Also pins the actual misassignment computationally (not merely "does not raise"),
-    since that misassignment -- not a parse failure -- is the entire defect #99 is
-    about. Mirrors the redacted evidence posted to the real issue: the LinkedIn line
-    becomes the parsed name; the preamble becomes part of the parsed contact.
-    """
-    from sluice.cv.parse import parse_cv
-    from sluice.cv.slop import check_text
-
-    sources = bundle_sources(build_bundle(
-        entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-
-    # The marker is a substring UNIQUE to what each `.replace()` actually inserted --
-    # "JANE ROE" alone would not do (CLEAN_CV already contains it before any replace
-    # runs, so that check would stay green even if a fixture silently reverted to
-    # CLEAN_CV verbatim, which is exactly the no-op trap this assertion exists to
-    # catch: PREAMBLE_BEFORE_NAME_CV == CLEAN_CV passed every OTHER assertion here).
-    for fixture, marker, why in [
-        (PREAMBLE_BEFORE_NAME_CV, "I'll compose a tailored CV",
-         "an extra line before an otherwise-correct name"),
-        (PREAMBLE_WITH_CONTACT_BLOCK_CV, "example.invalid/in/example",
-         "a preamble ahead of a full contact block"),
-        (REVERSED_HEADER_CV, "Phone: +1 555 0100",
-         "name-then-contact instead of contact-then-name"),
-        (PREAMBLE_REPLACING_CONTACT_CV, "Here is the tailored CV",
-         "a preamble occupying the contact slot with the name still anchored"),
-        # The three rewording fixtures need this premise as much as the four above:
-        # their tests assert `skipped-gate` plus a message, both of which a fixture that
-        # had stopped being gate-clean would still produce -- so they would stay green
-        # while no longer isolating the STRUCTURAL guard from the fabrication gate,
-        # which is the whole thing this sweep exists to catch (CodeRabbit, PR #161).
-        (RECASED_CONTACT_CV, "phone: +1 555  0100",
-         "a contact line differing from the declared one only in case"),
-        (RESPACED_CONTACT_CV, "Phone: +1 555 0100",
-         "a contact line differing from the declared one only in internal spacing"),
-        (REWORDED_CONTACT_CV, "phone: +1 555 0100",
-         "a contact line differing from the declared one in both case and spacing"),
-    ]:
-        assert marker in fixture, f"the replace no-opped ({why})"
-        assert validate(fixture, sources) == [], (
-            f"fixture no longer gate-clean ({why}) -- the #99 tests below would "
-            f"pass for the wrong reason")
-        assert check_text(fixture)[0] == [], f"fixture no longer slop-clean ({why})"
-
-    assert parse_cv(PREAMBLE_BEFORE_NAME_CV).name == "JANE ROE", (
-        "premise changed: the anchor line is no longer intact in this fixture")
-    assert parse_cv(PREAMBLE_WITH_CONTACT_BLOCK_CV).name == (
-        "Web: https://www.example.invalid/in/example"), (
-        "premise changed: the real corruption this fixture reproduces no longer "
-        "misparses the same way")
-    assert parse_cv(REVERSED_HEADER_CV).name == "Phone: +1 555 0100", (
-        "premise changed: the reversed order no longer misparses the same way")
-    # The opposite failure mode from the two fixtures above: name comes out RIGHT
-    # (parse_cv's last-line rule still lands on "JANE ROE"), and it is the CONTACT
-    # that silently becomes the preamble sentence -- which is exactly why the anchor
-    # check alone cannot see anything wrong with this fixture.
-    parsed = parse_cv(PREAMBLE_REPLACING_CONTACT_CV)
-    assert parsed.name == "JANE ROE", (
-        "premise changed: the name anchor is no longer intact in this fixture")
-    assert parsed.contact == (
-        "Here is the tailored CV for the Analyst role, prepared from the verified "
-        "source bundle only."), (
-        "premise changed: this fixture no longer misassigns contact the same way")
-
-
-def test_the_publications_fixture_passes_the_gate():
-    """A PREMISE of the test below, and the same trap
-    test_the_unparseable_fixture_still_passes_the_gate closes for its own fixture: if
-    this stops being gate-clean, the test below reports skipped-gate for a reason that
-    has nothing to do with the seam and passes for the wrong reason."""
-    assert "PUBLICATIONS" in PUBLICATIONS_CV, "the replace no-opped"
-    sources = bundle_sources(build_bundle(
-        entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(PUBLICATIONS_CV, sources) == []
-
-
-@pytest.mark.parametrize("cv_text,why", [
-    ("UNPARSEABLE_CV", "a meta line the template grammar cannot split"),
-    ("PUBLICATIONS_CV", "a section the template grammar does not model -- the exact CV "
-                        "the review measured as skipped-gate under cv.renderer: script"),
-])
-def test_a_renderer_without_precheck_is_not_gated_by_another_renderers_grammar(
-        monkeypatch, cv_text, why):
-    """The seam inversion, and the reason `precheck` is a per-renderer hook.
-
-    The engine used to call `parse_cv` unconditionally, which is the `template`
-    renderer's grammar -- so an operator on `cv.renderer: script`, whose own script
-    imposes whatever grammar it likes, was gated by a requirement their renderer does not
-    have. Measured 2026-08-06 on a genuinely gate-clean CV carrying a PUBLICATIONS
-    section: `cv.renderer=script` reported skipped-gate with rendered=0, although the
-    script would have laid that section out fine. The branch's own spec calls `script`
-    the full-control escape hatch whose behaviour is out of scope, and an escape hatch
-    that enforces the thing it exists to escape is not one.
-
-    Both fixtures are pinned gate-CLEAN by their own premise tests above, so the only
-    thing that could stop either rendering here is a grammar this renderer never
-    declared. Asserts on `rend.rendered`, not merely on the status -- "rendered" with an
-    empty renderer would mean the engine reported success having rendered nothing. The
-    second half asserts the template-shaped renderer STILL refuses the same CV: a fix
-    that simply stopped prechecking anything would satisfy the first half alone.
-    """
-    _served(monkeypatch)
-    cv = globals()[cv_text]
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()          # render() only -- the `script` renderer's shape
-    assert not hasattr(rend, "precheck"), "this fixture must NOT declare the optional hook"
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(cv), FakeCache(), renderer=rend)
-    assert r.status == "rendered", (
-        f"a renderer that declares no grammar was gated by another one's ({why}): "
-        f"{r.violations}")
-    assert rend.rendered == [cv]
-
-    gated = PrecheckingRenderer()
-    r2 = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                 FakeVault(ENTRIES), _cfg(), FakeBackend(cv), FakeCache(), renderer=gated)
-    assert r2.status == "skipped-gate" and gated.rendered == [], (
-        "the renderer that DOES declare this grammar stopped enforcing it, so the test "
-        "above proves nothing about where the requirement lives")
-
-
-def test_the_engine_folds_a_precheck_complaint_in_with_the_gates_own():
-    """`precheck` returns STRINGS the engine treats exactly like a gate violation --
-    that is the whole contract, and it is what puts a renderer's complaint in front of
-    the model's one retry instead of after the LLM spend.
-
-    Uses a renderer whose precheck is unrelated to parsing, so this pins the SEAM rather
-    than re-testing parse_cv: any renderer's complaint must reach `violations` and stop
-    the render, whatever its grammar happens to be.
-    """
-    class FussyRenderer(FakeRenderer):
-        def precheck(self, cv_text):
-            return ["FORMAT: this renderer wants something else entirely"]
-
-    v = FakeVault(ENTRIES)
-    rend = FussyRenderer()
-    be = FakeBackend(CLEAN_CV)     # gate-clean: only the precheck can stop this
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("something else entirely" in x for x in r.violations), r.violations
-    assert rend.rendered == [], "a renderer that refused the CV was still asked to render it"
-
-
-def test_a_precheck_returning_a_bare_string_is_refused_by_name():
-    """`precheck` is deliberately NOT a Protocol member (core/protocols.py explains why),
-    so NOTHING types its return value -- and the failure that leaves open is silent.
-
-    `list("FORMAT: bad meta line")` is 21 single-character strings, and the engine used
-    to splice exactly that into `violations`: the model's one retry would then be handed
-    twenty-one one-letter "gate violations" with the real complaint spelled out down the
-    left margin of them, and the lead binned after a second LLM call. The refusal has to
-    name the RENDERER, because the defect is in a plugin the engine did not write.
-
-    Asserts the message, not merely the type: a bare `pytest.raises(TypeError)` is also
-    satisfied by any unrelated TypeError raised anywhere in the compose path.
-    """
-    class SloppyRenderer(FakeRenderer):
-        def precheck(self, cv_text):
-            return "FORMAT: a string, not a list of them"
-
-    rend = SloppyRenderer()
-    with pytest.raises(TypeError, match=r"SloppyRenderer\.precheck returned str"):
-        run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
-    assert rend.rendered == [], "a renderer that broke the contract was still asked to render"
-
-
-def test_a_precheck_returning_a_non_string_element_is_refused_by_name():
-    """The CONTAINER check alone (`isinstance(reported, (list, tuple))`) let a non-str
-    ELEMENT through: `[None]` passes it and then extends straight into `violations`,
-    so a broken renderer that returns `[None]` fed `None` into the retry prompt build
-    instead of being refused here, where the cause is still traceable to the renderer.
-    Same shape as the bare-string case above, one level down.
-    """
-    class SloppyRenderer(FakeRenderer):
-        def precheck(self, cv_text):
-            return [None]
-
-    rend = SloppyRenderer()
-    with pytest.raises(TypeError, match=r"SloppyRenderer\.precheck returned list"):
-        run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
-    assert rend.rendered == [], "a renderer that broke the contract was still asked to render"
-
-
-@pytest.mark.parametrize("reported,expected", [
-    ([], "rendered"),
-    ((), "rendered"),
-    (["FORMAT: nope"], "skipped-gate"),
-    (("FORMAT: nope",), "skipped-gate"),
-])
-def test_the_precheck_contract_still_accepts_both_intended_shapes(
-        monkeypatch, reported, expected):
-    """The counter-controls for the refusal above: the check must reject `str`, not
-    everything. A guard that rejected the legitimate shapes too would be caught by
-    nothing else here -- every other precheck test in this file returns a list."""
-    _served(monkeypatch)
-
-    class Renderer(FakeRenderer):
-        def precheck(self, cv_text):
-            return reported
-
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
-                renderer=Renderer())
-    assert r.status == expected
-
-
-def test_the_real_template_renderer_prechecks_through_run_one():
-    """The REAL `TemplateRenderer`, not a stand-in, driven through the engine.
-
-    Every other precheck test in this file uses a fake that re-implements the hook, so
-    renaming `TemplateRenderer.precheck` -- or letting the engine stop calling it --
-    reddens only tests in the renderer's own file. That is the seam INVERSION bug this
-    branch was written to fix, one level down: the wiring between the shipped renderer
-    and the engine had no test of its own.
-
-    `html_module` is a fake, so no WeasyPrint and no native libraries are needed; the
-    render is never reached anyway, which is the point of the assertion. `None` for the
-    template path takes the PACKAGED default, so this also proves the shipped template
-    loads.
-
-    NO `pytest.importorskip("jinja2")`, and its absence is deliberate. jinja2 is in the
-    `test` extra precisely so this runs for real in CI, and this is the ONLY test proving
-    `precheck` reaches the engine through the real renderer -- so a skip guard here would
-    make the single test that matters most evaporate silently on the one machine where
-    the dependency is missing, reading green. That trap is recorded in
-    tests/test_renderers.py (weasyprint) and is now swept for across all of tests/ by
-    test_renderer_template.py::test_no_test_module_uses_importorskip.
-    """
-    from sluice.renderers.template import TemplateRenderer
-
-    class _Html:
-        def __init__(self, **kw): pass
-        def write_pdf(self, path): raise AssertionError("render must not be reached")
-
-    rend = TemplateRenderer(None, html_module=_Html)
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                FakeVault(ENTRIES), _cfg(), FakeBackend(UNPARSEABLE_CV), FakeCache(),
-                renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("FORMAT" in v for v in r.violations), r.violations
-    # ...and the fixture is still the parser/gate disagreement it claims to be, not an
-    # ordinary gate failure that would report skipped-gate whatever the renderer did.
-    assert not any("FORMAT" not in v for v in r.violations), (
-        f"the fixture stopped being gate-clean, so this says nothing about the "
-        f"renderer's precheck: {r.violations}")
-
-
-def test_the_engine_no_longer_imports_the_template_grammar():
-    """The coupling this inversion removes, asserted STRUCTURALLY.
-
-    Re-adding `from sluice.cv.parse import ...` to cv/engine.py would restore the
-    inversion while every behavioural test above still passed -- the unconditional call
-    is what they catch, not the import that enables it. `cv/parse.py` is the `template`
-    renderer's grammar; the orchestrator has no business knowing it exists.
-    """
-    import ast
-    import pathlib
-    src = pathlib.Path(__file__).resolve().parent.parent / "sluice" / "cv" / "engine.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
-    offenders = [n.lineno for n in ast.walk(tree)
-                 if isinstance(n, ast.ImportFrom) and (n.module or "").endswith("cv.parse")]
-    offenders += [n.lineno for n in ast.walk(tree)
-                  if isinstance(n, ast.Import)
-                  and any(a.name.endswith("cv.parse") for a in n.names)]
-    assert not offenders, (
-        f"cv/engine.py imports the `template` renderer's grammar at line(s) {offenders}; "
-        "reach it through the renderer's optional precheck hook instead")
-
-
-def test_clean_cv_is_actually_clean():
-    # CLEAN_CV's validity is a PREMISE of every skipped-gate test below: those
-    # assert the engine skips when the gate fails, and they keep passing if
-    # CLEAN_CV silently stops being clean -- vacuously, for the wrong reason.
-    # Measured: breaking its first start year fails 5 tests loudly but leaves 3
-    # of these passing on a false premise. State the premise instead of implying
-    # it, because a fixture regeneration is exactly when it would quietly break.
-    sources = bundle_sources(build_bundle(
-        entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    assert validate(CLEAN_CV, sources) == []
-    # #194: the premise extends to the unbundled-term check. CLEAN_CV composing clean
-    # under it is what keeps every test below crediting the retry it means to.
-    from sluice.cv.bundle import mention_vocab
+def _tiers(reply_text, *, layout=SYNTHETIC_LAYOUT):
+    """(gate violations, HARD slop findings, STYLE phrase findings, unbundled terms) for
+    one reply -- each tier the engine reads, over the model's own text only."""
+    from sluice.cv.bundle import term_vocabulary
+    from sluice.cv.document import model_lines
+    from sluice.cv.selection import zero_bullet_findings
+    from sluice.cv.slop import check_hard, check_phrases
     from sluice.cv.terms import unbundled_terms
-    from sluice.cv.validate import section_spans
-    profile, work, _skills = section_spans(CLEAN_CV)
-    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
-    assert unbundled_terms(sorted(dict(profile + work).items()), vocab) == []
+    from sluice.cv.validate import check_selection, entry_facts
+
+    bundle, slots, selection = _selected(reply_text, layout=layout)
+    violations = (zero_bullet_findings(selection, slots)
+                  + check_selection(selection, slots, entry_facts(bundle, layout)))
+    lines = model_lines(selection, slots)
+    hard = [label for _n, text in lines for _ln, label, _snip in check_hard(text)]
+    style = check_phrases(lines)
+    terms = [t for _ln, t, _s in unbundled_terms(lines, term_vocabulary(bundle, layout))]
+    return violations, hard, style, terms
+
+
+def _audited(reply_text):
+    """What the advisory audit is shown for `reply_text` (cv/document.py::audit_text)."""
+    from sluice.cv.document import audit_text
+    _bundle, slots, selection = _selected(reply_text)
+    return audit_text(selection, slots)
+
+
+def _excerpt(reply_text, *, layout=SYNTHETIC_LAYOUT):
+    """The model's own lines for `reply_text`, joined: what the voice judge is shown."""
+    from sluice.cv.document import model_lines
+    _bundle, slots, selection = _selected(reply_text, layout=layout)
+    return "\n".join(text for _ln, text in model_lines(selection, slots))
+
+
+def test_clean_cv_is_actually_clean(monkeypatch):
+    # CLEAN_REPLY's cleanliness is a PREMISE of every skipped-gate test below: those
+    # assert the engine skips when the gate fails, and they keep passing if CLEAN_REPLY
+    # silently stops being clean -- vacuously, for the wrong reason. State the premise
+    # instead of implying it, through the same pure functions the engine runs...
+    assert _tiers(CLEAN_REPLY) == ([], [], [], [])
+    # ...and through the engine itself: rendered on the FIRST attempt with no finding of
+    # any kind, the bullets exactly as replied.
+    _served(monkeypatch)
+    be, rend = FakeBackend(CLEAN_REPLY), FakeRenderer()
+    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
+                FakeVault(ENTRIES), _cfg(), be, FakeCache(), renderer=rend)
+    assert r.status == "rendered"
+    assert (r.violations, r.slop, r.terms, r.voice_flags, r.skills_dropped,
+            r.bullets_trimmed) == ([], [], [], [], [], [])
+    assert be.calls == 2, "one compose and one audit: a finding would have cost a retry"
+    assert _bullets(rend) == [list(CLEAN_BULLETS)]
 
 
 def test_application_owned_lead_is_refused():
@@ -722,17 +335,16 @@ def test_gate_failure_skips_and_never_renders():
     # renderer=FakeRenderer() inline and throw the reference away, which made the
     # "never rendered" claim in the test name unassertable -- an unconditional
     # renderer.render() before the gate check passed the entire suite.
-    # compose returns an uncited CV -> validate fails both attempts -> skip
-    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]", "- Grew team from 3 to 8")
+    # compose returns an uncited bullet -> the gate fails both attempts -> skip
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(bad), FakeCache(), renderer=rend)
+                v, _cfg(), FakeBackend(UNCITED_REPLY), FakeCache(), renderer=rend)
     assert r.status == "skipped-gate"
     assert any("UNCITED" in x for x in r.violations)
     assert v.written == {}   # nothing recorded
     # THE assertion. `v.written == {}` says nothing about rendering: the gate path returns
-    # before set_tailored_cv either way. Only this proves no PDF with an invented metric
+    # before set_tailored_cv either way. Only this proves no PDF with an uncited claim
     # was written to the output dir under the neutral filename -- the exact file a user
     # picks up and attaches to an application.
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
@@ -740,14 +352,14 @@ def test_gate_failure_skips_and_never_renders():
 def test_dry_run_reports_but_writes_nothing():
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(), dry_run=True)
+                v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer(), dry_run=True)
     assert r.status == "dry-run"
     assert v.written == {}
 
 def test_batch_skips_leads_that_already_have_a_cv():
     notes = [Note({"status": "shortlist", "company": "A", "role": "Analyst", "tailored_cv": "x.pdf"})]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(), dry_run=True)
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer(), dry_run=True)
     assert results[0].status == "skipped-has-cv"
 
 def test_non_shortlist_lead_is_refused():
@@ -756,244 +368,6 @@ def test_non_shortlist_lead_is_refused():
                 FakeBackend("x"), FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-selection"
     assert v.written == {}
-
-def test_drifted_work_header_fails_closed():
-    # Proves the fail-open hole is closed: validate()'s per-bullet citation checks
-    # only run inside the section keyed on the exact "WORK EXPERIENCE" header, so a
-    # fully-cited CV whose header drifted would sail through plain validate() with
-    # zero violations (see engine.py's STRUCTURAL guard). The engine must catch this
-    # itself and HARD-fail the gate rather than rendering an unchecked draft.
-    drifted = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(drifted), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    # Exact message, not merely "STRUCTURAL" -- #99 added three more STRUCTURAL
-    # producers to this same engine, so a loose substring match would stay green if
-    # this guard broke and one of the newer ones happened to also fire.
-    assert ("STRUCTURAL: composed CV lacks the exact 'WORK EXPERIENCE' header, so "
-            "the citation gate did not run") in r.violations
-    assert v.written == {}
-    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
-
-def test_missing_profile_header_is_structural():
-    # A composed CV with no PROFILE header: the profile sweep never runs (fail-open),
-    # so the engine must HARD-fail the gate and render nothing. Mirror of
-    # test_drifted_work_header_fails_closed.
-    no_profile = CLEAN_CV.replace("PROFILE\nI build reliable systems.\n\n", "")
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(no_profile), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert ("STRUCTURAL: composed CV lacks the exact 'PROFILE' header, so the "
-            "profile fabrication check did not run") in r.violations
-    assert rend.rendered == [], "a CV with no PROFILE header was RENDERED"
-
-def test_a_preamble_before_the_name_fails_closed():
-    # Uses a plain FakeRenderer (no precheck) deliberately: this is the whole reason
-    # the #99 guard lives in the ENGINE and not in cv/parse.py -- it must bind a
-    # renderer that declares no grammar of its own (the `script` renderer's shape),
-    # not only the `template` renderer whose precheck already reaches parse_cv.
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    assert not hasattr(rend, "precheck"), "this fixture must NOT declare the optional hook"
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(PREAMBLE_BEFORE_NAME_CV), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
-    assert v.written == {}
-    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
-
-
-def test_a_preamble_with_a_real_contact_block_fails_closed():
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(PREAMBLE_WITH_CONTACT_BLOCK_CV), FakeCache(),
-                renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
-    assert v.written == {}
-    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
-
-
-def test_a_reversed_header_block_fails_closed():
-    # Isolates the ANCHOR guard from the count guard: the candidate profile's contact
-    # (mobile="Phone: +1 555 0100", #107 -- seeded on FakeVault, not cfg.contact, since
-    # the engine no longer reads that field) is exactly the one line REVERSED_HEADER_CV
-    # supplies, so the line COUNT is correct and only the ORDER is wrong. If the count
-    # guard alone were doing the work, this fixture -- which the count guard cannot see
-    # anything wrong with -- would sail through.
-    v = FakeVault(ENTRIES, candidate=CandidateProfile(
-        forenames="Jane", surname="Roe", mobile="Phone: +1 555 0100"))
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(REVERSED_HEADER_CV), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x and "not the name heading" in x for x in r.violations), (
-        r.violations)
-    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
-
-
-def test_a_preamble_replacing_the_contact_line_fails_closed():
-    # Isolates the CONTENT guard from both the count guard and the anchor guard: with
-    # the candidate profile's contact (#107) declared as one line, PREAMBLE_REPLACING_
-    # CONTACT_CV's header is exactly the expected two lines and the last one still IS
-    # the configured name -- neither the count check nor the anchor check sees anything
-    # wrong with it. Only comparing the actual line against the derived contact catches
-    # that a preamble sentence, not the real contact information, occupies that slot.
-    # (CodeRabbit, PR #100 review: the original #99 guards checked the header's line
-    # COUNT and its final line but never the CONTENT of the lines in between.)
-    v = FakeVault(ENTRIES, candidate=CandidateProfile(
-        forenames="Jane", surname="Roe", mobile="Phone: +1 555 0100"))
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(PREAMBLE_REPLACING_CONTACT_CV), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x and "do not match" in x for x in r.violations), r.violations
-    assert v.written == {}
-    assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
-
-
-@pytest.mark.parametrize("fixture,axis", [
-    (RECASED_CONTACT_CV, "CASE"),
-    (RESPACED_CONTACT_CV, "SPACING"),
-    (REWORDED_CONTACT_CV, "CASE and SPACING"),
-], ids=["case-only", "spacing-only", "both"])
-def test_a_reworded_contact_block_refuses_but_says_so_accurately(fixture, axis):
-    """The CONTENT guard's rendering arm, asserted in both directions per axis.
-
-    Parametrised over all three because the axes were found ONE REVIEW ROUND APART
-    (case, then internal spacing) -- which is the signal that enumerating shapes was the
-    wrong shape of fix. The engine keys on a normalisation instead, and this table is
-    what stops a later axis being added to `_CONTACT_REWORDINGS` without a row proving
-    the message names it. The `both` row is the one a hand-written branch would most
-    likely get wrong.
-
-    Internal spacing needs its own row rather than being assumed equivalent to case:
-    `header` and `expected_contact` are already per-line stripped, so only an INTERNAL
-    run survives to reach the comparison, and `contact_block` deliberately does not
-    collapse runs the way `full_name` does.
-
-    Each fixture must still REFUSE. `cv/parse.py` takes the contact from the composed
-    TEXT (`header_lines[:-1]`) and the engine never substitutes `cv_contact` back in, so
-    whatever clears this check is what renders -- normalising the comparison, the fix
-    originally suggested, would print a re-rendered LinkedIn URL or postcode on a PDF
-    sent under the candidate's identity. That is why this guard does not normalise while
-    the name anchor above it case-folds: a CV name heading is conventionally uppercase,
-    so case drift there is what `compose.py`'s prompt asked for; the contact block is
-    required verbatim.
-
-    And each must say WHY accurately. The retry gets exactly one attempt off this
-    message, and "a preamble or other text has replaced a real contact line" is a wrong
-    diagnosis here -- acting on it, by dropping a preamble that is not there, cannot fix
-    anything, so a gate-clean CV gets binned on a misdescription.
-    """
-    v = FakeVault(ENTRIES, candidate=CandidateProfile(
-        forenames="Jane", surname="Roe", mobile=_DECLARED_CONTACT))
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(fixture), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert rend.rendered == [], "a re-rendered contact block must not reach the renderer"
-    assert any("STRUCTURAL" in x and f"{axis} was changed" in x for x in r.violations), (
-        f"expected the message to name {axis!r}: {r.violations}")
-    assert not any("preamble or other text" in x for x in r.violations), (
-        "a rendering-only difference must not be diagnosed as a preamble -- the retry "
-        f"cannot act on that: {r.violations}")
-
-
-def test_a_preamble_reaches_the_retry_not_the_bin(monkeypatch):
-    # Same posture as test_a_parse_failure_feeds_the_retry_not_the_bin: a composer
-    # mistake must be fed back to the model for ONE retry, never binned outright.
-    _served(monkeypatch)
-
-    class TwoShotBackend:
-        def __init__(self):
-            self.last_backend = "primary"; self.prompts = []
-        def complete(self, prompt):
-            if not ("SOURCE BUNDLE" in prompt and "auditing" not in prompt):
-                return Completion("supported\tx\tSF1")
-            self.prompts.append(prompt)
-            return Completion(PREAMBLE_BEFORE_NAME_CV if len(self.prompts) == 1 else CLEAN_CV)
-
-    be = TwoShotBackend()
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
-    assert r.status == "rendered", "a preamble binned the lead instead of retrying it"
-    assert len(be.prompts) == 2, "the STRUCTURAL violation did not reach the existing retry"
-    assert "STRUCTURAL" in be.prompts[1], "the violation never reached the retry prompt"
-    assert rend.rendered == [CLEAN_CV], "the renderer got the preamble-corrupted CV"
-
-
-class ComposeCountingBackend:
-    """Like FakeBackend, but counts COMPOSE calls specifically rather than every
-    complete() call -- both compose attempts route through the compose branch,
-    while a successful run's one audit call does not, so compose_calls == 1 is
-    the assertion that actually discriminates "recovered on the first attempt"
-    from "exhausted both attempts": both paths total 2 complete() calls overall
-    (2 compose + 0 audit on failure, 1 compose + 1 audit on success), which is
-    what made an earlier be.calls == 2 assertion here pass for the wrong reason
-    (sluice-test-engineer, local /review-pr on this branch)."""
-    def __init__(self, cv_out, audit_out="supported\tx\tSF1"):
-        self.cv_out = cv_out; self.audit_out = audit_out
-        self.last_backend = "primary"; self.compose_calls = 0
-    def complete(self, prompt):
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
-            self.compose_calls += 1
-            return Completion(self.cv_out)
-        return Completion(self.audit_out)
-
-
-# ── #28 (sixth branch): a conversational envelope around an otherwise-clean CV ──
-def test_a_trailing_conversational_envelope_is_recovered_on_the_first_attempt(monkeypatch):
-    # Captured on the real production path (#28): the composer wraps an
-    # otherwise gate-clean CV in a closing remark behind a single markdown-style
-    # '---' fence, with NO leading preamble -- the model complying with "no
-    # preamble" but still appending a closing summary. This is the shape the
-    # original #28 fix candidate's two-fence-only unwrap did not cover, and
-    # which the #99/#100 header guards above cannot see at all (they only
-    # inspect lines BEFORE PROFILE). Recovery happens in compose.py itself, so
-    # this must render on the FIRST attempt -- compose_calls == 1 proves no
-    # retry was needed, not merely that one eventually worked.
-    _served(monkeypatch)
-    enveloped = (CLEAN_CV + "\n\n---\n\n"
-                 "CV tailored for Example Foundry's Analyst role. "
-                 "All bullets cited from source bundle.")
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    be = ComposeCountingBackend(enveloped)
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), be, FakeCache(), renderer=rend)
-    assert r.status == "rendered", r.violations
-    assert be.compose_calls == 1, "the envelope reached a second compose attempt, not compose.py's own recovery"
-    assert rend.rendered == [CLEAN_CV]
-
-
-def test_a_header_stripped_between_name_and_profile_still_fails_closed():
-    # The end-to-end proof for the accepted gap documented on
-    # test_unwrap_envelope_may_strip_a_real_header_when_a_fence_splits_it_from_profile
-    # (test_cv_compose.py): compose.py's envelope recovery can misread a fence
-    # sitting between the name and PROFILE as a leading aside and strip the real
-    # name with it -- an unobserved shape, but worth pinning that it degrades
-    # safely. The resulting CV has no header line before PROFILE, which is
-    # exactly what the pre-existing #99 STRUCTURAL count guard rejects, so this
-    # must still report skipped-gate and render nothing, not a CV missing its
-    # own name.
-    lines = CLEAN_CV.splitlines()
-    name_idx = lines.index("JANE ROE")
-    corrupted = "\n".join(lines[:name_idx + 1] + ["---"] + lines[name_idx + 1:])
-    v = FakeVault(ENTRIES)
-    rend = FakeRenderer()
-    r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, _cfg(), FakeBackend(corrupted), FakeCache(), renderer=rend)
-    assert r.status == "skipped-gate"
-    assert any("STRUCTURAL" in x and "before PROFILE" in x for x in r.violations), r.violations
-    assert rend.rendered == [], "a CV missing its own name was RENDERED"
 
 
 def test_a_blank_candidate_profile_is_refused_before_any_spend():
@@ -1009,7 +383,7 @@ def test_a_blank_candidate_profile_is_refused_before_any_spend():
     # this file's fake -- the two are deliberately redundant across the Store boundary.
     v = FakeVault(ENTRIES, candidate=CandidateProfile())
     rend = FakeRenderer()
-    be = FakeBackend(CLEAN_CV)
+    be = FakeBackend(CLEAN_REPLY)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), be, FakeCache(), renderer=rend)
     assert r.status == "skipped-config"
@@ -1031,11 +405,10 @@ def _note():
 class _CountingBackend:
     """Wraps FakeBackend, counting every complete() call. The load-bearing witness for
     #107: the refusal must fire BEFORE any backend spend, and asserting the RESULT
-    alone is satisfied even by a composer that ran first and only failed the gate
-    afterward (e.g. on the STRUCTURAL header guard, since a blank identity's header
-    line is blank too) -- only a zero-call count proves nothing was spent.
+    alone is satisfied even by a composer that ran first and only failed afterward --
+    only a zero-call count proves nothing was spent.
     """
-    def __init__(self, cv_out=CLEAN_CV):
+    def __init__(self, cv_out=CLEAN_REPLY):
         self._inner = FakeBackend(cv_out)
         self.last_backend = self._inner.last_backend
         self.calls = 0
@@ -1052,18 +425,20 @@ def _vault_with_candidate(tmp_path, overrides):
     note at all, exercising read_candidate_profile's OWN missing-note abstain path
     (see tests/test_vault_candidate_profile.py) rather than an empty-but-present one.
 
-    Also seeds a baseline CV: unlike read_candidate_profile/read_criteria,
-    Vault.read_baseline has no missing-file abstain -- it raises FileNotFoundError --
-    so without this, run_one's `vault.read_baseline()` call would raise before ever
-    reaching compose, which would break test_a_fully_declared_identity_reaches_the_
-    backend (the one case here that DOES need to reach it). No Experience Library
-    entry is written: read_evidence abstains to [] on a missing library
+    Also seeds the CV Layout note (#364/#365/#368): `run_one` refuses a vault with no
+    layout (`skipped-config`) before any spend -- the refusal that replaced the retired
+    baseline CV's missing-file raise -- so the rows here that must REACH the backend (test_a_fully_
+    declared_identity_reaches_the_backend, the both-declared case of test_run_ones_
+    skipped_config_status_and_doctors_candidate_profile_row_agree, and
+    tests/test_onboard_questions.py's candidate-note probe, which borrows this helper)
+    need one. No Experience Library entry is written: read_evidence abstains to [] on a missing library
     (the ordinary "no entries yet" case, tests/harness/config.py's own comment on
     _seed_vault makes the same choice), and this helper only needs the backend to be
     CALLED, never a CV that clears the fabrication gate.
     """
-    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH
     from sluice.core.vault import Vault
+    from tests.conftest import layout_yaml
 
     if overrides:
         dest = os.path.join(str(tmp_path), CANDIDATE_PROFILE_RELPATH)
@@ -1071,10 +446,10 @@ def _vault_with_candidate(tmp_path, overrides):
         fm = "\n".join(f"{k}: {v}" for k, v in overrides.items())
         with open(dest, "w", encoding="utf-8") as fh:
             fh.write(f"---\n{fm}\n---\n")
-    baseline_dir = os.path.join(str(tmp_path), "My CV")
-    os.makedirs(baseline_dir, exist_ok=True)
-    with open(os.path.join(baseline_dir, "CV.md"), "w", encoding="utf-8") as fh:
-        fh.write("Synthetic baseline CV for the test.\n")
+    layout = os.path.join(str(tmp_path), CV_LAYOUT_RELPATH)
+    os.makedirs(os.path.dirname(layout), exist_ok=True)
+    with open(layout, "w", encoding="utf-8") as fh:
+        fh.write(layout_yaml())
     return Vault(str(tmp_path))
 
 
@@ -1120,8 +495,8 @@ def test_a_name_with_blank_contact_declared_the_other_way_also_refuses(tmp_path)
     # covers the mirror shape, a user who fills `mobile` and leaves forenames/
     # surname empty. Reachable in practice (a real vault note filled in top to
     # bottom, contact fields first) and exactly the #107 harm if missed: the CV
-    # composes with a blank headline, burns the spend, and fails the STRUCTURAL
-    # guard on every attempt. Without this test, deleting the `not cv_name.strip()`
+    # would compose with a blank headline and burn the spend (it once also failed
+    # the since-removed header guard on every attempt). Without this test, deleting the `not cv_name.strip()`
     # term outright is a pure delete-mutation that survives the whole suite, since
     # the two tests above still refuse through the surviving `not cv_contact.strip()`
     # operand alone.
@@ -1134,11 +509,21 @@ def test_a_name_with_blank_contact_declared_the_other_way_also_refuses(tmp_path)
     assert cache.calls == 0
 
 
+def _cfg_unserved():
+    """_cfg() with serving off (the --no-serve idiom). The real-Vault rows here seed no
+    experience entry, so the CV Layout's one slot can cite nothing: every bullet is
+    trimmed, the selection is hard-clean, and the run reaches render -- where FakeRenderer's
+    made-up path would otherwise reach the real `serve`."""
+    cfg = _cfg()
+    cfg.served_dir = ""
+    return cfg
+
+
 def test_a_fully_declared_identity_reaches_the_backend(tmp_path):
     vault = _vault_with_candidate(tmp_path, {"forenames": "Ada", "surname": "Example",
                                              "email": "ada@example.invalid"})
     backend = _CountingBackend()
-    run_one(_note(), vault, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
+    run_one(_note(), vault, _cfg_unserved(), backend, FakeCache(), renderer=FakeRenderer())
     assert backend.calls >= 1
 
 
@@ -1176,7 +561,8 @@ def test_run_ones_skipped_config_status_and_doctors_candidate_profile_row_agree(
     ]
     for label, overrides in shapes:
         vault = _vault_with_candidate(str(tmp_path / label), overrides)
-        engine_refused = run_one(_note(), vault, _cfg(), _CountingBackend(), FakeCache(),
+        engine_refused = run_one(_note(), vault, _cfg_unserved(), _CountingBackend(),
+                                 FakeCache(),
                                  renderer=FakeRenderer()).status == "skipped-config"
         rows = [c for c in classify_store(vault.preflight()) if c.subject == "Candidate Profile"]
         assert len(rows) == 1, f"{label}: expected exactly one Candidate Profile row"
@@ -1209,15 +595,17 @@ def test_run_ones_skipped_config_status_and_doctors_candidate_profile_row_agree(
 
 
 def test_the_compose_prompt_carries_the_derived_identity_not_cvcfg(tmp_path):
-    """#107: compose() must be called with the VAULT-derived cv_name/cv_contact, read
-    fresh from `vault.read_candidate_profile()`, not any identity value diverted
-    from that read. Every FakeBackend in this file returns a fixed canned CV
-    regardless of what the prompt asked for, which is exactly why every OTHER
-    "rendered" test here would stay green even if compose() were fed the wrong
-    identity: the STRUCTURAL guard only re-derives cv_name/cv_contact and compares
-    them against the (unconditionally correct) FIXED response, never against what
-    was actually SENT. Only inspecting the recorded prompt itself proves the
-    argument at the call site, not merely the guard reading it back.
+    """#107: the composer must be named the VAULT-derived candidate, read fresh from
+    `vault.read_candidate_profile()`, not any identity value diverted from that read.
+    Every FakeBackend in this file returns a fixed canned reply regardless of what the
+    prompt asked for, which is exactly why every OTHER "rendered" test here would stay
+    green even if the composer were told the wrong name. Only inspecting the recorded
+    prompt itself proves the argument at the call site.
+
+    The CONTACT block no longer reaches the composer at all (#364/#365/#368, spec §7.1):
+    sluice assembles it from the Candidate Profile itself, so the model never writes it
+    and has no reason to see it. Its absence is asserted, since a prompt carrying it would
+    be handing personal data to a backend for nothing.
 
     Originally witnessed a mutation of `name=cv_name, contact=cv_contact` to
     `name=cvcfg.name, contact=cvcfg.contact` at that call site surviving the
@@ -1235,51 +623,50 @@ def test_the_compose_prompt_carries_the_derived_identity_not_cvcfg(tmp_path):
             self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             self.prompts.append(prompt)
-            return Completion(CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+            return Completion(CLEAN_REPLY if prompt.startswith(_COMPOSE) \
                 else "supported\tx\tSF1")
 
     vault = _vault_with_candidate(
         tmp_path, {"forenames": "Distinctive", "surname": "Candidate",
                    "email": "distinctive@example.invalid"})
     be = RecordingBackend()
-    run_one(_note(), vault, _cfg(), be, FakeCache(), renderer=FakeRenderer())
-    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    run_one(_note(), vault, _cfg_unserved(), be, FakeCache(), renderer=FakeRenderer())
+    compose_prompts = [p for p in be.prompts if p.startswith(_COMPOSE)]
     assert compose_prompts, "compose was never reached"
     assert "Distinctive Candidate" in compose_prompts[0], (
         "the compose prompt did not carry the vault-derived name -- compose() may "
         "be reading a diverted identity instead of the derived cv_name")
-    assert "distinctive@example.invalid" in compose_prompts[0], (
-        "the compose prompt did not carry the vault-derived contact -- compose() "
-        "may be reading a diverted identity instead of the derived cv_contact")
+    assert "distinctive@example.invalid" not in compose_prompts[0], (
+        "the compose prompt carried the candidate's contact block, which sluice now "
+        "assembles itself -- the model has no use for it")
 
 
 def test_slop_allow_reaches_the_shipped_compose_prompt():
     """#167 (Task 17, item 1): cv.slop_allow must reach the ACTUAL compose() call
-    engine.py makes, not merely be plumbed through compose.py's own build_prompt in
-    isolation. A unit test of build_prompt alone (see
-    tests/test_cv_compose.py::test_an_allowed_phrase_is_not_instructed_against_either)
-    would stay green even if run_one's `_compose.compose(...)` call site never forwarded
+    engine.py makes, not merely be plumbed through compose.py's own build_structured_prompt in
+    isolation. A unit test of that function alone (see
+    tests/test_cv_structured_prompt.py::test_an_allowed_phrase_is_not_instructed_against_either)
+    would stay green even if run_one's `_compose.compose_structured(...)` call site never forwarded
     `cvcfg.slop_allow` -- the parameter would exist and be dead. Mirrors
     test_the_compose_prompt_carries_the_derived_identity_not_cvcfg immediately above:
     only inspecting the recorded prompt itself proves the argument at the real call
     site, not merely a guard reading it back.
 
     "leverage" is chosen because it appears NOWHERE in this file's fixtures (ENTRIES,
-    CLEAN_CV, the identity block) outside the ban-list sentence itself, so its absence
+    CLEAN_REPLY, the identity block) outside the ban-list sentence itself, so its absence
     from the shipped prompt can only mean slop_allow suppressed it there.
 
     `dry_run=True`: this test's only interest is the PROMPT compose() was sent, not the
-    render/serve tail end of run_one -- CLEAN_CV matches DEFAULT_CANDIDATE (FakeVault's
-    default), so the hard gate clears on attempt 1 and the real (unmocked)
-    `sluice.cv.render.serve` would otherwise run against a path FakeRenderer never
-    actually writes.
+    render/serve tail end of run_one -- CLEAN_REPLY clears the hard gate on attempt 1, and
+    the real (unmocked) `sluice.cv.render.serve` would otherwise run against a path
+    FakeRenderer never actually writes.
     """
     class RecordingBackend:
         def __init__(self):
             self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             self.prompts.append(prompt)
-            return Completion(CLEAN_CV if "SOURCE BUNDLE" in prompt and "auditing" not in prompt \
+            return Completion(CLEAN_REPLY if prompt.startswith(_COMPOSE) \
                 else "supported\tx\tSF1")
 
     v = FakeVault(ENTRIES)
@@ -1288,11 +675,11 @@ def test_slop_allow_reaches_the_shipped_compose_prompt():
     cfg.slop_allow = ["leverage"]
     be = RecordingBackend()
     run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer(), dry_run=True)
-    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    compose_prompts = [p for p in be.prompts if p.startswith(_COMPOSE)]
     assert compose_prompts, "compose was never reached"
     assert "leverage" not in compose_prompts[0], (
         "cvcfg.slop_allow did not reach the shipped compose prompt -- engine.py's "
-        "_compose.compose(...) call site may not be forwarding slop_allow")
+        "_compose.compose_structured(...) call site may not be forwarding slop_allow")
 
 
 def test_happy_path_renders_and_records(monkeypatch):
@@ -1303,7 +690,7 @@ def test_happy_path_renders_and_records(monkeypatch):
                         lambda *a, **k: "Jane_Roe_CV_deadbeef.pdf")
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
-    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.served == "Jane_Roe_CV_deadbeef.pdf"
     assert "Jane_Roe_CV_deadbeef.pdf" in v.written[note.ref]
@@ -1325,27 +712,27 @@ def test_no_serve_renders_but_does_not_mark_lead():
     v = FakeVault(ENTRIES)
     rend = FakeRenderer()
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
-                v, cfg, FakeBackend(CLEAN_CV), FakeCache(), renderer=rend)
+                v, cfg, FakeBackend(CLEAN_REPLY), FakeCache(), renderer=rend)
     assert r.status == "rendered"
-    assert rend.rendered == [CLEAN_CV]   # the render still happened; only serving was skipped
+    # The render still happened; only serving was skipped.
+    assert _bullets(rend) == [list(CLEAN_BULLETS)]
     assert r.served is None
     assert v.written == {}   # no tailored_cv marker when nothing was published
 
 def test_slop_only_failure_fails_gate_and_feeds_retry():
-    # A CV that is correctly cited (validate() passes clean) but whose first WORK
-    # bullet contains an em dash -- a slop HARD error. Proves (a) a slop-only
-    # failure still fails the gate, and (b) the SLOP message reaches the retry
-    # prompt via prior_violations.
-    slop_cv = CLEAN_CV.replace("- Shipped [EF1]", "- Shipped, launched \u2014 and iterated [EF1]")
+    # A reply that is correctly cited (the selection check passes clean) but whose first
+    # bullet contains an em dash -- a slop HARD error in the model's own text. Proves (a) a
+    # slop-only failure still fails the gate, and (b) the SLOP message reaches the retry
+    # prompt via prior_findings.
+    slop_cv = _reply(bullets=("Shipped, launched \u2014 and iterated", "Grew team from 3 to 8"))
 
     class RecordingBackend:
         def __init__(self, cv):
             self.cv = cv; self.last_backend = "primary"; self.prompts = []
         def complete(self, prompt):
             self.prompts.append(prompt)
-            # compose prompts contain "SOURCE BUNDLE" and not "auditing"; audit
-            # prompts contain both, so this mirrors FakeBackend's routing.
-            return Completion(self.cv if "SOURCE BUNDLE" in prompt and "auditing" not in prompt else "supported\tx\tSF1")
+            # Mirrors FakeBackend's routing: a compose prompt opens with _COMPOSE.
+            return Completion(self.cv if prompt.startswith(_COMPOSE) else "supported\tx\tSF1")
 
     be = RecordingBackend(slop_cv)
     v = FakeVault(ENTRIES)
@@ -1356,17 +743,16 @@ def test_slop_only_failure_fails_gate_and_feeds_retry():
     assert r.slop                      # slop error surfaced
     assert v.written == {}             # nothing rendered/recorded
     # the SECOND compose prompt must carry the slop feedback
-    compose_prompts = [p for p in be.prompts if "SOURCE BUNDLE" in p and "auditing" not in p]
+    compose_prompts = [p for p in be.prompts if p.startswith(_COMPOSE)]
     assert len(compose_prompts) == 2
     assert "SLOP" in compose_prompts[1]
     assert rend.rendered == [], "a CV was RENDERED despite an open fabrication gate"
 
 def test_retry_happens_exactly_once():
-    # A persistently gate-failing CV must be composed exactly twice: the initial
+    # A persistently gate-failing reply must be composed exactly twice: the initial
     # attempt plus the single retry, then skip -- never a third attempt.
-    bad = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]", "- Grew team from 3 to 8")
     v = FakeVault(ENTRIES)
-    backend = FakeBackend(bad)
+    backend = FakeBackend(UNCITED_REPLY)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"}),
                 v, _cfg(), backend, FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-gate"
@@ -1387,24 +773,24 @@ def test_advisory_audit_failure_does_not_block_render_but_holds_the_cv(monkeypat
         def __init__(self, cv):
             self.cv = cv; self.last_backend = "primary"; self.audited = False
         def complete(self, prompt):
-            # compose call succeeds with a clean, fully-cited CV; the audit call
-            # (same routing rule as FakeBackend: contains "SOURCE BUNDLE" AND
-            # "auditing") raises, simulating a backend timeout/error.
-            if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+            # compose call succeeds with a clean, fully-cited reply; the audit call
+            # (same routing rule as FakeBackend: anything not opening with _COMPOSE)
+            # raises, simulating a backend timeout/error.
+            if prompt.startswith(_COMPOSE):
                 return Completion(self.cv)
             self.audited = True
             raise RuntimeError("backend timeout during advisory audit")
 
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
-    be = AuditRaisingBackend(CLEAN_CV)
+    be = AuditRaisingBackend(CLEAN_REPLY)
     # _cfg() carries require_signoff's default (True). Before #333 this pinned the #60
     # FAIL-OPEN -- no flags, so the pointer was set and the CV served unreviewed. An audit
     # that could not run has checked nothing, so it now HOLDS the CV like an `unsupported`
     # flag: rendered and served, but withheld from send-ready until a human signs off.
     rend = FakeRenderer()
     r = run_one(note, v, _cfg(), be, FakeCache(), renderer=rend)
-    assert rend.rendered == [CLEAN_CV], "an audit failure must not stop the render"
+    assert _bullets(rend) == [list(CLEAN_BULLETS)], "an audit failure must not stop the render"
     assert r.status == "needs-signoff"
     assert r.audit_flags == []
     assert be.audited, "the audit was never invoked; the hold assertion would be vacuous"
@@ -1428,7 +814,7 @@ def test_unsupported_flag_withholds_pointer_and_marks_needs_signoff(monkeypatch)
     _served(monkeypatch)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     v = FakeVault(ENTRIES, notes=[note])
-    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    be = FakeBackend(CLEAN_REPLY, audit_out="unsupported\tMotivated by placeholder\tNONE")
     r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "needs-signoff"
     assert r.served == "Jane_Roe_CV_deadbeef.pdf"            # rendered + served
@@ -1444,7 +830,7 @@ def test_paraphrase_only_still_renders_and_sets_pointer(monkeypatch):
     _served(monkeypatch)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     v = FakeVault(ENTRIES, notes=[note])
-    be = FakeBackend(CLEAN_CV, audit_out="paraphrase\tgrew it\tEF1\nsupported\tled\tEF1")
+    be = FakeBackend(CLEAN_REPLY, audit_out="paraphrase\tgrew it\tEF1\nsupported\tled\tEF1")
     r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert note.ref in v.written                              # pointer SET
@@ -1458,7 +844,7 @@ def test_require_signoff_false_serves_despite_unsupported(monkeypatch):
     cfg = _cfg(); cfg.require_signoff = False
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
     v = FakeVault(ENTRIES, notes=[note])
-    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    be = FakeBackend(CLEAN_REPLY, audit_out="unsupported\tMotivated by placeholder\tNONE")
     r = run_one(note, v, cfg, be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert note.ref in v.written and "pending_cv" not in note.fm
@@ -1474,7 +860,7 @@ def test_pending_lead_is_sticky_and_not_recomposed(monkeypatch):
           "needs_signoff": '["unsupported\\tMotivated by placeholder\\tNONE"]'}
     note = Note(dict(fm))
     v = FakeVault(ENTRIES, notes=[note])
-    be = FakeBackend(CLEAN_CV, audit_out="supported\tx\tEF1")
+    be = FakeBackend(CLEAN_REPLY, audit_out="supported\tx\tEF1")
     r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-needs-signoff"
     assert be.calls == 0, "a held (pending) lead was recomposed -- the audit could re-roll clean"
@@ -1482,7 +868,7 @@ def test_pending_lead_is_sticky_and_not_recomposed(monkeypatch):
     # ...and the batch path (which routes through run_one) skips it identically.
     note2 = Note(dict(fm))
     vb = FakeVault(ENTRIES, notes=[note2])
-    beb = FakeBackend(CLEAN_CV, audit_out="supported\tx\tEF1")
+    beb = FakeBackend(CLEAN_REPLY, audit_out="supported\tx\tEF1")
     batch = run_batch(vb, _cfg(), beb, FakeCache(), renderer=FakeRenderer())
     assert [b.status for b in batch] == ["skipped-needs-signoff"]
     assert beb.calls == 0
@@ -1500,7 +886,7 @@ def test_batch_limit_counts_needs_signoff(monkeypatch):
              path="Job Applications/Job Leads/Example Analytics - Engineer.md"),
     ]
     v = FakeVault(ENTRIES, notes=notes)
-    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    be = FakeBackend(CLEAN_REPLY, audit_out="unsupported\tMotivated by placeholder\tNONE")
     results = run_batch(v, _cfg(), be, FakeCache(), renderer=FakeRenderer(), limit=1)
     assert [r.status for r in results] == ["needs-signoff"]   # stopped after one held lead
 
@@ -1514,7 +900,7 @@ def test_flagged_recompose_does_not_latch_a_lead_that_already_has_a_cv(monkeypat
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
                  "tailored_cv": "CV_real.pdf (2026-07-24)"})
     v = FakeVault(ENTRIES, notes=[note])
-    be = FakeBackend(CLEAN_CV, audit_out="unsupported\tMotivated by placeholder\tNONE")
+    be = FakeBackend(CLEAN_REPLY, audit_out="unsupported\tMotivated by placeholder\tNONE")
     r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
     assert r.status == "skipped-has-cv"
     assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm   # no redundant hold
@@ -1531,7 +917,7 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
     import sluice.cv.render as _render_mod
 
     class FlakyRenderer:
-        def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+        def render(self, document, out_dir, *, neutral_name="CV.pdf"):
             if "acme" in out_dir:
                 raise RuntimeError("weasyprint boom")
             return f"/tmp/x/{neutral_name}"
@@ -1546,7 +932,7 @@ def test_batch_survives_a_single_lead_exception(monkeypatch):
              path="Job Applications/Job Leads/Example Analytics - Analyst.md"),
     ]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FlakyRenderer())
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FlakyRenderer())
     assert len(results) == 2   # the batch did not abort after the first failure
     assert results[0].status == "error"
     assert results[1].status == "rendered"
@@ -1584,12 +970,12 @@ def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
         """A downstream failure UNRELATED to the dossier (e.g. WeasyPrint), so this
         test proves the flag survives a SECOND, independent exception -- not just
         the dossier's own."""
-        def render(self, cv_text, out_dir, *, neutral_name="CV.pdf"):
+        def render(self, document, out_dir, *, neutral_name="CV.pdf"):
             raise RuntimeError("weasyprint boom")
 
     notes = [Note({"status": "shortlist", "company": "Acme", "role": "Analyst"})]
     v = FakeVault(ENTRIES, notes=notes)
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), _BlockedCache(),
+    results = run_batch(v, _cfg(), FakeBackend(CLEAN_REPLY), _BlockedCache(),
                         renderer=_BoomRenderer())
     assert len(results) == 1
     assert results[0].status == "error"
@@ -1621,7 +1007,7 @@ class _VariableJdCache:
 
 
 def _run_one(tmp_path, *, jd_markdown):
-    """A single shortlist lead composed against CLEAN_CV, with the fetched JD content
+    """A single shortlist lead composed against CLEAN_REPLY, with the fetched JD content
     controlled by the caller via _VariableJdCache. served_dir="" is the file's existing
     no-serve idiom (see test_no_serve_renders_but_does_not_mark_lead) -- this helper is
     about dossier_failed, not the served pointer, so skipping serve keeps the test off
@@ -1634,7 +1020,7 @@ def _run_one(tmp_path, *, jd_markdown):
     cfg.served_dir = ""
     v = FakeVault(ENTRIES)
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
-    return run_one(note, v, cfg, FakeBackend(CLEAN_CV), _VariableJdCache(jd_markdown),
+    return run_one(note, v, cfg, FakeBackend(CLEAN_REPLY), _VariableJdCache(jd_markdown),
                    renderer=FakeRenderer())
 
 
@@ -1693,12 +1079,12 @@ def test_run_one_batch_guard_skips_when_cv_appeared_during_render(monkeypatch):
                  "tailored_cv": "PREEXISTING.pdf (2026-07-10)"}, path=note.ref)
     v = FakeVault(ENTRIES, notes=[fresh])
     rend = FakeRenderer()
-    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=rend,
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=rend,
                 guard_existing_cv=True)
     assert r.status == "skipped-has-cv"
     # The render itself still happened -- the CV passed the gate and was rendered/served
     # before the write race was discovered; only the note pointer write was withheld.
-    assert rend.rendered == [CLEAN_CV]
+    assert _bullets(rend) == [list(CLEAN_BULLETS)]
     assert note.ref not in v.written
     assert v.read_leads()[0].fm.get("tailored_cv") == "PREEXISTING.pdf (2026-07-10)"
 
@@ -1716,7 +1102,7 @@ def test_run_one_direct_path_overwrites(monkeypatch):
     fresh = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
                  "tailored_cv": "PREEXISTING.pdf (2026-07-10)"}, path=note.ref)
     v = FakeVault(ENTRIES, notes=[fresh])
-    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    r = run_one(note, v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert v.read_leads()[0].fm.get("tailored_cv") != "PREEXISTING.pdf (2026-07-10)"
     assert "Jane_Roe_CV_deadbeef.pdf" in v.read_leads()[0].fm.get("tailored_cv")
@@ -1725,8 +1111,8 @@ def test_run_one_direct_path_overwrites(monkeypatch):
 def test_the_fake_vault_conforms_to_the_real_store_signature():
     """The join between "conformance tests real stores" and "engine tests use a fake" was
     MANUAL, and that is exactly how a total breakage of `cv run` shipped green: the fake's
-    read_baseline still took the `rel` argument the real Vault had dropped, so the engine's
-    stale call site was invisible.
+    baseline-CV reader (since retired, #364/#365/#368) still took an argument the real Vault
+    had dropped, so the engine's stale call site was invisible.
 
     Any method this fake implements must match the real Vault's signature. It need not
     implement all of them -- it is a fake for the CV path -- but where it does, it may not
@@ -1777,7 +1163,7 @@ _POLICY = StalenessPolicy(ttl_days=90, today="2026-07-27")
 
 
 def test_stale_lead_is_skipped_before_any_dossier_fetch():
-    v, cache, rend, be = FakeVault(ENTRIES), RecordingCache(), FakeRenderer(), FakeBackend(CLEAN_CV)
+    v, cache, rend, be = FakeVault(ENTRIES), RecordingCache(), FakeRenderer(), FakeBackend(CLEAN_REPLY)
     r = run_one(Note(dict(_STALE_FM)), v, _cfg(), be, cache, renderer=rend,
                 policy=_POLICY)
     assert r.status == "skipped-stale"
@@ -1798,7 +1184,7 @@ def _ran(note_fm, policy=None):
     cfg.served_dir = ""          # the existing no-serve idiom; keeps this off the disk
     cache = RecordingCache()
     kw = {"policy": policy} if policy is not None else {}
-    run_one(Note(note_fm), FakeVault(ENTRIES), cfg, FakeBackend(CLEAN_CV), cache,
+    run_one(Note(note_fm), FakeVault(ENTRIES), cfg, FakeBackend(CLEAN_REPLY), cache,
             renderer=FakeRenderer(), **kw)
     return cache.calls
 
@@ -1822,7 +1208,7 @@ def test_a_lead_both_HELD_and_stale_still_reports_needs_signoff():
     # leads that would otherwise have gone on to compose. #60's observable behaviour must
     # not move.
     held = dict(_STALE_FM, pending_cv="CV.pdf")
-    r = run_one(Note(held), FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_CV),
+    r = run_one(Note(held), FakeVault(ENTRIES), _cfg(), FakeBackend(CLEAN_REPLY),
                 FakeCache(), renderer=FakeRenderer(), policy=_POLICY)
     assert r.status == "skipped-needs-signoff"
 
@@ -1830,7 +1216,7 @@ def test_a_lead_both_HELD_and_stale_still_reports_needs_signoff():
 def test_run_batch_skips_a_stale_lead():
     v = FakeVault(ENTRIES, notes=[Note(dict(_STALE_FM))])
     cache = RecordingCache()
-    out = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), cache, renderer=FakeRenderer(),
+    out = run_batch(v, _cfg(), FakeBackend(CLEAN_REPLY), cache, renderer=FakeRenderer(),
                     policy=_POLICY)
     assert [r.status for r in out] == ["skipped-stale"]
     assert cache.calls == 0
@@ -1857,7 +1243,7 @@ def test_run_batch_composes_for_neither_of_two_notes_claiming_one_slug():
     the guard is moved below the compose, which is the placement that would make it useless.
     """
     v = FakeVault(ENTRIES, notes=_twins())
-    be, cache = FakeBackend(CLEAN_CV), RecordingCache()
+    be, cache = FakeBackend(CLEAN_REPLY), RecordingCache()
     out = run_batch(v, _cfg(), be, cache, renderer=FakeRenderer())
     assert [r.status for r in out] == ["skipped-ambiguous", "skipped-ambiguous"]
     assert be.calls == 0 and cache.calls == 0      # no LLM call, no dossier fetch
@@ -1868,7 +1254,7 @@ def test_run_batch_names_the_colliding_refs(caplog):
     """The refs, never the slug alone: these notes collide BY slug, so repeating it names
     nothing a human can act on while the paths name the two files to rename or merge."""
     with caplog.at_level("WARNING"):
-        run_batch(FakeVault(ENTRIES, notes=_twins()), _cfg(), FakeBackend(CLEAN_CV),
+        run_batch(FakeVault(ENTRIES, notes=_twins()), _cfg(), FakeBackend(CLEAN_REPLY),
                   RecordingCache(), renderer=FakeRenderer())
     said = " ".join(r.getMessage() for r in caplog.records)
     assert f"{_TWIN_DIR}/Active/Example Foundry - Analyst.md" in said
@@ -1884,7 +1270,7 @@ def test_run_batch_still_composes_an_unambiguous_lead_beside_a_twin_pair(monkeyp
     ordinary = Note({"status": "shortlist", "company": "Example Systems", "role": "Clerk"},
                     path=f"{_TWIN_DIR}/Example Systems - Clerk.md")
     v = FakeVault(ENTRIES, notes=[*_twins(), ordinary])
-    out = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+    out = run_batch(v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
     by_ref = {r.lead: r.status for r in out}
     assert by_ref[ordinary.ref] == "rendered"
     assert set(v.written) == {ordinary.ref}
@@ -1896,165 +1282,40 @@ def test_run_batch_still_composes_an_unambiguous_lead_beside_a_twin_pair(monkeyp
 # "Attempt 1 clears the HARD gate but carries a STYLE finding" is a sequence NO fixture
 # in this file could produce before #167: the loop broke the moment the HARD gate was
 # clean, so attempt 2 never ran and nothing here ever exercised a retained draft
-# outliving a dirtier retry. Every fixture below exists to build one of those sequences.
-
-# HARD-clean, STYLE-dirty. "leverage" is a slop._PHRASES stem, placed in PROFILE prose --
-# one of the two regions cv/engine.py scopes the style tier to via section_spans. The
-# replacement introduces no digit, so validate()'s profile-metric sweep stays clean and
-# this draft clears the HARD gate exactly as CLEAN_CV does.
-STYLE_DIRTY_CV = CLEAN_CV.replace(
-    "I build reliable systems.",
-    "I leverage the same delivery patterns across teams.")
-
-# Two STYLE findings where STYLE_DIRTY_CV has one (#194 retention, spec §2.3): `leverage`
-# and `seamless` are both slop._PHRASES stems, on the same PROFILE line. Hard-clean like
-# its sibling -- only the prose changes.
-STYLE_DIRTIER_CV = CLEAN_CV.replace(
-    "I build reliable systems.",
-    "I leverage seamless delivery patterns across teams.")
-
-# ONE finding, like STYLE_DIRTY_CV, but different text -- so a tie between the two is
-# observable in what renders.
-STYLE_DIRTY_B_CV = CLEAN_CV.replace(
-    "I build reliable systems.",
-    "I foster the same delivery patterns across teams.")
-
-# HARD-dirty and nothing else: an em dash, slop.HARD's blocking tier. The bullet keeps
-# its citation and gains no number, so validate() still reports nothing -- the ONLY thing
-# wrong with this draft is the HARD slop rule, which is what makes it a clean
-# discriminator between the two tiers rather than a draft failing for several reasons at
-# once.
-HARD_DIRTY_CV = CLEAN_CV.replace("- Coached [EF1]", "- Coached — and mentored [EF1]")
-
-# A phrase stem in an EMPLOYER line AND one in PROFILE prose. Both halves are
-# load-bearing: the profile phrase is what forces a retry to exist at all, and without a
-# retry prompt "no retry message names the employer" would be vacuously true. The
-# employer keeps this file's synthetic "Example <Word>" convention -- nothing local can
-# tell a real firm from an invented one, so the fixture must not put the question.
-EMPLOYER_PHRASE_CV = CLEAN_CV.replace(
-    "Example Systems", "Example Leverage", 1).replace(
-    "I build reliable systems.", "I streamline delivery for platform teams.", 1)
-
-# A CV that repeats the PROFILE header AFTER `WORK EXPERIENCE`. `section_spans` sets
-# in_profile on that second header WITHOUT clearing in_work (its own docstring says so),
-# so a BULLET underneath lands in BOTH of the lists it returns -- the only shape that
-# can. Gate-clean and HARD-clean: the bullet carries a real bundle citation and no
-# number, so the ONE thing this fixture exercises is the overlap.
-DOUBLED_PROFILE_CV = CLEAN_CV.replace(
-    "CERTIFICATES", "PROFILE\n- I foster delivery [EF1]\n\nCERTIFICATES", 1)
-
-# A draft with NO candidate prose in scope at all: the PROFILE region holds only blank
-# lines and the WORK section holds no bullets, so `section_spans` yields nothing but
-# whitespace. Still gate-clean and HARD-clean -- neither tier requires a CV to say
-# anything -- which is what makes it reachable at the voice check's call site. The
-# PROFILE and WORK EXPERIENCE headers themselves stay: both are STRUCTURAL requirements
-# the engine hard-fails without (see its own guards), so a fixture missing either would
-# never reach that branch and would prove nothing.
-NO_SCOPED_PROSE_CV = (CLEAN_CV
-                      .replace("I build reliable systems.", "", 1)
-                      .replace("- Shipped [EF1]", "", 1)
-                      .replace("- Grew team from 3 to 8 [EF1]", "", 1)
-                      .replace("- Coached [EF1]", "", 1)
-                      .replace("- CI [EF1]", "", 1))
-
-# STYLE_DIRTY_CV plus a SKILLS section carrying its OWN phrase-dirty entry (#168, Task
-# 3): "Example Synergy" matches slop._PHRASES' "synergy" stem exactly like the PROFILE
-# line above it matches "leverage". The PROFILE phrase is what forces a retry to exist
-# at all -- same load-bearing shape as EMPLOYER_PHRASE_CV above -- so "the skill line
-# never reaches the retry" is non-vacuous rather than true only because no retry ran at
-# all. Gate-clean and HARD-clean: no digit, no em dash, no double hyphen is introduced.
-_CV_WITH_SLOPPY_SKILL = STYLE_DIRTY_CV.replace(
-    "CERTIFICATES", "SKILLS\n- Example Synergy\n\nCERTIFICATES", 1)
-
-# A hard-clean draft whose PROFILE names a term no source carries (#194). Only the prose
-# changes, so the HARD gate is untouched; `Examplequery` is mid-sentence, so arm (iii)
-# admits it.
-UNBUNDLED_TERM_CV = CLEAN_CV.replace(
-    "I build reliable systems.", "I build reliable systems on Examplequery.")
-
-# STYLE_DIRTY_CV's ONE slop finding plus ONE unbundled term (#194): a draft whose
-# findings are split across BOTH deterministic members of the retained tuple, so the
-# retention comparison can only rank it correctly by counting the term member too.
-STYLE_DIRTY_WITH_TERM_CV = CLEAN_CV.replace(
-    "I build reliable systems.",
-    "I leverage the same delivery patterns across teams on Examplequery.")
-
-_DRAFTS = {
-    "clean": CLEAN_CV,
-    "unbundled-term": UNBUNDLED_TERM_CV,
-    "style-dirty-with-term": STYLE_DIRTY_WITH_TERM_CV,
-    "hard-clean-style-dirty": STYLE_DIRTY_CV,
-    "hard-clean-style-dirtier": STYLE_DIRTIER_CV,
-    "hard-clean-style-dirty-b": STYLE_DIRTY_B_CV,
-    "hard-dirty": HARD_DIRTY_CV,
-    "employer-phrase": EMPLOYER_PHRASE_CV,
-    "doubled-profile": DOUBLED_PROFILE_CV,
-    "no-scoped-prose": NO_SCOPED_PROSE_CV,
-    "skills-style-dirty": _CV_WITH_SLOPPY_SKILL,
-}
+# outliving a dirtier retry. The replies in `_DRAFTS` (defined with CLEAN_REPLY above)
+# exist to build those sequences.
 
 
 def test_the_sequence_fixtures_are_the_tiers_they_claim():
     """PREMISE of every test below, per fixture and per TIER.
 
     Each test below asserts a SEQUENCE outcome, and every one of them stays green if a
-    fixture silently drifts into a different tier: a "hard-clean-style-dirty" draft that
+    fixture silently drifts into a different tier: a "hard-clean-style-dirty" reply that
     had become HARD-dirty would still produce skipped-gate, for a reason that has nothing
-    to do with the retention this task adds. The same trap
-    test_clean_cv_is_actually_clean closes for CLEAN_CV.
-
-    This also subsumes the usual no-op check on the `.replace()` calls above: a
-    replacement that silently matched nothing leaves the fixture equal to CLEAN_CV, which
-    is (hard=False, style=False), so it fails its own row here.
+    to do with retention. The same trap test_clean_cv_is_actually_clean closes for
+    CLEAN_REPLY. Computed through `_tiers`, the engine's own pure functions in its order.
     """
-    from sluice.cv.slop import check_hard, check_phrases
-    from sluice.cv.validate import section_spans
+    from sluice.cv.slop import check_phrases
 
-    sources = bundle_sources(build_bundle(
-        entries=ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-
-    def _style(text):
-        # The engine's own scoping, reproduced: PROFILE prose + WORK bullets, nothing
-        # else -- SKILLS included (#168, Task 3) -- since a fixture that is
-        # "style-dirty" only OUTSIDE that scope is not style-dirty as far as this loop
-        # is concerned.
-        profile, work, _skills = section_spans(text)
-        return check_phrases(profile + work)
-
-    for name, text, hard, style in [
-        ("clean", CLEAN_CV, False, False),
-        ("hard-clean-style-dirty", STYLE_DIRTY_CV, False, True),
-        ("hard-clean-style-dirtier", STYLE_DIRTIER_CV, False, True),
-        ("hard-clean-style-dirty-b", STYLE_DIRTY_B_CV, False, True),
-        ("hard-dirty", HARD_DIRTY_CV, True, False),
-        ("employer-phrase", EMPLOYER_PHRASE_CV, False, True),
-        ("doubled-profile", DOUBLED_PROFILE_CV, False, True),
-        ("no-scoped-prose", NO_SCOPED_PROSE_CV, False, False),
-        ("unbundled-term", UNBUNDLED_TERM_CV, False, False),
-        ("style-dirty-with-term", STYLE_DIRTY_WITH_TERM_CV, False, True),
+    for name, layout, hard, style in [
+        ("clean", SYNTHETIC_LAYOUT, False, False),
+        ("hard-clean-style-dirty", SYNTHETIC_LAYOUT, False, True),
+        ("hard-clean-style-dirtier", SYNTHETIC_LAYOUT, False, True),
+        ("hard-clean-style-dirty-b", SYNTHETIC_LAYOUT, False, True),
+        ("hard-dirty", SYNTHETIC_LAYOUT, True, False),
+        ("employer-phrase", EMPLOYER_PHRASE_LAYOUT, False, True),
+        ("unbundled-term", SYNTHETIC_LAYOUT, False, False),
+        ("style-dirty-with-term", SYNTHETIC_LAYOUT, False, True),
     ]:
-        assert validate(text, sources) == [], f"{name} is no longer gate-clean"
-        assert bool(check_hard(text)) is hard, f"{name}'s HARD tier drifted"
-        assert bool(_style(text)) is style, f"{name}'s STYLE tier drifted"
+        violations, hard_slop, phrases, _terms = _tiers(_DRAFTS[name], layout=layout)
+        assert violations == [], f"{name} is no longer gate-clean: {violations}"
+        assert bool(hard_slop) is hard, f"{name}'s HARD tier drifted"
+        assert bool(phrases) is style, f"{name}'s STYLE tier drifted"
 
-    # NO_SCOPED_PROSE_CV's own premise, which its row above cannot express: "style-clean"
-    # is what a fixture with no scoped lines AND one with clean scoped lines both look
-    # like. What this fixture is for is the scoped region being EMPTY -- and empty of
-    # anything but WHITESPACE specifically, because the engine's guard is
-    # `scoped_text.strip()` and a bare truthiness check would already be satisfied by the
-    # newline join of the two blank PROFILE lines this fixture has.
-    _p, _w, _s = section_spans(NO_SCOPED_PROSE_CV)
-    assert not _w, "the bullet replaces no-opped; the WORK region is not empty"
-    assert _p and not any(t.strip() for _ln, t in _p), (
-        "the fixture no longer has a whitespace-ONLY profile region, so the engine's "
-        "`.strip()` would no longer be what keeps the voice call from being spent")
-
-    # The employer line's OWN phrase must exist, or the scoping test below asserts the
+    # The employer heading's OWN phrase must exist, or the scoping test below asserts the
     # absence of something that was never there in the first place.
-    assert "Example Leverage" in EMPLOYER_PHRASE_CV, "the employer replace no-opped"
-    assert check_phrases([(1, "Example Leverage")]), (
-        "'Example Leverage' no longer matches a slop._PHRASES stem, so the scoping "
+    assert check_phrases([(1, EMPLOYER_PHRASE_LAYOUT.roles[0].heading)]), (
+        "the employer heading no longer matches a slop._PHRASES stem, so the scoping "
         "test below would pass without the engine scoping anything")
 
 
@@ -2062,39 +1323,20 @@ def test_the_retention_fixtures_carry_the_finding_counts_they_claim():
     """PREMISE of the two retention tests below: a 'fewer findings' comparison means
     nothing unless the fixtures really differ in count, and a stem leaving
     slop._PHRASES would silently collapse them to a tie."""
-    from sluice.cv.slop import check_phrases
-    from sluice.cv.validate import section_spans
-
-    def count(text):
-        profile, work, _skills = section_spans(text)
-        return len(check_phrases(profile + work))
-
-    assert count(STYLE_DIRTY_CV) == 1
-    assert count(STYLE_DIRTY_B_CV) == 1
-    assert count(STYLE_DIRTIER_CV) == 2
+    assert len(_tiers(STYLE_DIRTY_REPLY)[2]) == 1
+    assert len(_tiers(STYLE_DIRTY_B_REPLY)[2]) == 1
+    assert len(_tiers(STYLE_DIRTIER_REPLY)[2]) == 2
 
 
 def test_the_unbundled_term_fixture_carries_exactly_one_term():
-    from sluice.cv.bundle import mention_vocab
-    from sluice.cv.terms import unbundled_terms
-    from sluice.cv.validate import section_spans
-    profile, work, _skills = section_spans(UNBUNDLED_TERM_CV)
-    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
-    assert [t for _ln, t, _s in unbundled_terms(sorted(dict(profile + work).items()), vocab)] \
-        == ["Examplequery"]
+    assert _tiers(UNBUNDLED_TERM_REPLY)[3] == ["Examplequery"]
 
 
 def test_the_style_dirty_with_term_fixture_carries_one_slop_and_one_term():
     """PREMISE of the term-counting retention row below: one finding in EACH member."""
-    from sluice.cv.bundle import mention_vocab
-    from sluice.cv.slop import check_phrases
-    from sluice.cv.terms import unbundled_terms
-    from sluice.cv.validate import section_spans
-    profile, work, _skills = section_spans(STYLE_DIRTY_WITH_TERM_CV)
-    scoped = sorted(dict(profile + work).items())
-    vocab = mention_vocab(build_bundle(ENTRIES, "BASELINE", [], [], {"Example Foundry": "EF"}))
-    assert len(check_phrases(scoped)) == 1
-    assert [t for _ln, t, _s in unbundled_terms(scoped, vocab)] == ["Examplequery"]
+    _violations, _hard, phrases, terms = _tiers(STYLE_DIRTY_WITH_TERM_REPLY)
+    assert len(phrases) == 1
+    assert terms == ["Examplequery"]
 
 
 class _SequenceBackend:
@@ -2121,9 +1363,9 @@ class _SequenceBackend:
         self.audited = []
 
     def complete(self, prompt):
-        # Same routing rule as FakeBackend: a compose prompt carries "SOURCE BUNDLE"
-        # and not "auditing"; an audit prompt carries both.
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+        # Same routing rule as FakeBackend: a compose prompt opens with _COMPOSE, and
+        # anything else is the audit.
+        if prompt.startswith(_COMPOSE):
             self.compose_prompts.append(prompt)
             # Running past the end of the sequence means the engine composed more times
             # than the retry budget allows -- a regression to report, not a shortfall to
@@ -2144,7 +1386,7 @@ class _SequenceBackend:
         return Completion(self.audit_out)
 
 
-def _run_sequence(monkeypatch, drafts):
+def _run_sequence(monkeypatch, drafts, *, layout=SYNTHETIC_LAYOUT):
     """run_one over a scripted sequence of composed drafts.
 
     Returns (result, backend, renderer): the renderer records what SHIPPED and the
@@ -2154,7 +1396,7 @@ def _run_sequence(monkeypatch, drafts):
     """
     _served(monkeypatch)
     be, rend = _SequenceBackend(drafts), FakeRenderer()
-    v = FakeVault(ENTRIES)
+    v = FakeVault(ENTRIES, layout=layout)
     res = run_one(Note({"status": "shortlist", "company": "Example Foundry",
                         "role": "Analyst"}),
                   v, _cfg(), be, FakeCache(), renderer=rend)
@@ -2214,7 +1456,7 @@ def test_a_hard_clean_draft_is_rendered_even_when_the_retry_comes_back_dirty(mon
     res, be, rend = _run_sequence(monkeypatch, ["hard-clean-style-dirty", "hard-dirty"])
     assert res.status == "rendered"
     assert len(be.compose_prompts) == 2, "the STYLE finding never reached the retry"
-    assert rend.rendered == [STYLE_DIRTY_CV], (
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)], (
         "the retained HARD-clean draft is what must ship")
 
 
@@ -2227,9 +1469,9 @@ def test_a_retry_with_MORE_style_findings_does_not_replace_a_cleaner_draft(monke
         monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirtier"])
     assert res.status == "rendered"
     assert len(be.compose_prompts) == 2, "the style finding never reached the retry"
-    assert rend.rendered == [STYLE_DIRTY_CV], "the cleaner attempt-1 draft must ship"
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)], "the cleaner attempt-1 draft must ship"
     # The audit reads the same retained draft the renderer got (the engine's rebind).
-    assert be.audited == [STYLE_DIRTY_CV]
+    assert be.audited == [_audited(STYLE_DIRTY_REPLY)]
 
 
 def test_a_tie_in_style_findings_keeps_the_later_draft(monkeypatch):
@@ -2238,27 +1480,31 @@ def test_a_tie_in_style_findings_keeps_the_later_draft(monkeypatch):
     res, _be, rend = _run_sequence(
         monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirty-b"])
     assert res.status == "rendered"
-    assert rend.rendered == [STYLE_DIRTY_B_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_B_REPLY)]
 
 
 def test_the_audit_runs_over_the_RENDERED_draft_not_the_discarded_one(monkeypatch):
-    """`cv_text` is read post-loop TWICE -- by run_audit and by renderer.render -- and the
-    audit's flags drive unsupported_claims -> hold_for_signoff -> the withheld
-    tailored_cv. Auditing one draft while rendering another means a fabricated claim in
-    the SERVED CV goes un-held, is written send-ready, and the run reports
-    "rendered / audit flags: 0".
+    """The retained selection is read post-loop TWICE -- by run_audit and by
+    renderer.render -- and the audit's flags drive unsupported_claims -> hold_for_signoff
+    -> the withheld tailored_cv. Auditing one attempt while rendering another means a
+    fabricated claim in the SERVED CV goes un-held, is written send-ready, and the run
+    reports "rendered / audit flags: 0".
 
     Agreement alone is NOT the property, which is why the last assertion is here and is
     not a restatement of the first: dropping the rebind entirely leaves BOTH readers on
-    the discarded attempt-2 draft, so they still agree -- on a CV that never cleared the
-    HARD gate. They must agree ON THE RETAINED DRAFT.
+    the discarded attempt-2 reply, so they still agree -- on a CV that never cleared the
+    HARD gate. They must agree ON THE RETAINED ATTEMPT.
     """
     from sluice.cv.slop import check_hard
 
     res, be, rend = _run_sequence(monkeypatch, ["hard-clean-style-dirty", "hard-dirty"])
     assert res.status == "rendered"
     assert be.audited, "the audit never ran, so the comparisons below would be vacuous"
-    assert be.audited[-1] == rend.rendered[-1], (
+    # Both readers on the RETAINED attempt-1 reply: its profile and its (em-dash-free)
+    # bullets rendered, and its text is exactly what the audit was shown.
+    assert (_profiles(rend), _bullets(rend)) == ([_profile(STYLE_DIRTY_REPLY)],
+                                                 [list(CLEAN_BULLETS)])
+    assert be.audited[-1] == _audited(STYLE_DIRTY_REPLY), (
         "the audit ran over a draft the user never sees")
     assert not check_hard(be.audited[-1]), (
         "both readers moved together onto the DISCARDED, HARD-dirty draft")
@@ -2268,45 +1514,30 @@ def test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry(monkeypatch):
     """The scoping guarantee, pinned where the scoping actually HAPPENS.
 
     cv/slop.py's check_phrases has no opinion about which lines it is handed (it is
-    deliberately dependency-free, so the PROFILE/WORK split cannot live there); the
-    ENGINE is what must hand it only PROFILE prose and WORK bullets, via section_spans.
-    A retry message naming an employer line is answerable only by RENAMING THE EMPLOYER
-    -- a style rule turned into fabrication pressure, the shape CLAUDE.md records as the
-    worst case this codebase has shipped.
+    deliberately dependency-free); the ENGINE is what must hand it only the text the MODEL
+    wrote (cv/document.py::model_lines). A retry message naming an employer heading is
+    answerable only by RENAMING THE EMPLOYER -- a style rule turned into fabrication
+    pressure, the shape CLAUDE.md records as the worst case this codebase has shipped.
+
+    The heading itself legitimately appears in every compose prompt -- it names the slot
+    the bullets go under -- so the absence asserted is of a FINDING about it, in the
+    retry's own findings block.
     """
-    _res, be, _rend = _run_sequence(monkeypatch, ["employer-phrase", "employer-phrase"])
+    _res, be, _rend = _run_sequence(monkeypatch, ["employer-phrase", "employer-phrase"],
+                                    layout=EMPLOYER_PHRASE_LAYOUT)
     assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
-    retry = be.compose_prompts[1]
-    assert "SLOP streamline" in retry, (
+    findings = [ln for ln in be.compose_prompts[1].splitlines() if ln.startswith("- SLOP")]
+    assert any("SLOP streamline" in ln for ln in findings), (
         "the PROFILE phrase never reached the retry either, so the absence below would "
         "say nothing about SCOPING")
-    assert "Example Leverage" not in retry, retry
-
-
-def test_a_line_in_BOTH_scoped_regions_is_complained_about_once(monkeypatch):
-    """The style findings are handed to the composer VERBATIM, so the SHAPE of the list is
-    what the model reads -- which is why `validate` merges its own two regions into one
-    line-ordered pass rather than concatenating them (see its comment), and why the
-    engine's style tier has to do the same. Concatenating instead yields the identical
-    complaint once per region the line belongs to, and puts a late PROFILE line ahead of
-    an earlier WORK bullet.
-    """
-    from sluice.cv.validate import section_spans
-
-    profile, work, _skills = section_spans(DOUBLED_PROFILE_CV)
-    assert set(dict(profile)) & set(dict(work)), (
-        "the fixture no longer puts a line in BOTH regions, so this asserts nothing")
-
-    _res, be, _rend = _run_sequence(monkeypatch, ["doubled-profile", "doubled-profile"])
-    assert len(be.compose_prompts) == 2, "no retry happened, so there is no list to check"
-    assert be.compose_prompts[1].count("SLOP foster") == 1, be.compose_prompts[1]
+    assert not any("Leverage" in ln or "leverag" in ln for ln in findings), findings
 
 
 def test_a_retry_that_RAISES_still_ships_the_draft_attempt_1_earned(monkeypatch, caplog):
     """Retention has to cover a retry that never RETURNS, not just one that comes back
     worse.
 
-    `_compose.compose` catches nothing (cv/compose.py), so a BackendError -- a timeout,
+    `_compose.compose_structured` catches nothing (cv/compose.py), so a BackendError -- a timeout,
     every fallback leg down, a reply truncated at max_tokens -- propagates out of this
     loop, past the retained draft, to run_one's outer `except: raise` and then to
     run_batch, which records `error`. The CONTROL is the whole argument: that identical
@@ -2319,7 +1550,7 @@ def test_a_retry_that_RAISES_still_ships_the_draft_attempt_1_earned(monkeypatch,
                                       ["hard-clean-style-dirty", "backend-error"])
     assert res.status == "rendered"
     assert len(be.compose_prompts) == 2, "the retry never happened, so nothing raised"
-    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)]
     assert any("compose timeout" in r.getMessage() for r in caplog.records), (
         "a swallowed backend failure that logs nothing is invisible in production")
 
@@ -2347,7 +1578,7 @@ def test_a_FIRST_compose_that_raises_still_bins_the_lead(monkeypatch):
 #
 # A separate scripted backend rather than an extension of _SequenceBackend: the VOICE
 # prompt (cv/voice.py's "You are judging the VOICE...") shares no marker with either
-# the compose prompt ("SOURCE BUNDLE") or the audit one ("auditing"), and folding a
+# the compose prompt (`_COMPOSE`) or the audit one ("auditing"), and folding a
 # third prompt kind into _SequenceBackend's two-way dispatch risks a voice call being
 # silently misrouted into `audited` -- corrupting every OTHER test in this file that
 # reads `be.audited` -- rather than a clean failure local to these tests.
@@ -2363,14 +1594,10 @@ def _voice_judge(excerpt, marks):
     """The scripted model, as a REACTIVE rule rather than a fixed reply: flag every
     line of the text it was SHOWN that contains one of `marks`.
 
-    A fixed `voice_out` cannot witness the scoping tests below at all. The scoping
-    they pin is on the check's INPUT -- the engine hands cv/voice.py the PROFILE/WORK
-    subset, not the document -- so a backend that returns the same finding whatever it
-    is shown would produce that finding identically before and after the fix, and the
-    test would be asserting the engine's output filter, which there isn't one of. Made
-    a module-level function, not a method, so a test can run the SAME rule over the
-    whole document as a control and prove the rule genuinely fires on the line whose
-    absence it is about to assert.
+    A fixed `voice_out` cannot witness a retention row decided by WHICH attempt carried a
+    finding: the judge must react to the text it was shown. Made a module-level function,
+    not a method, so a premise row can run the SAME rule over a fixture's excerpt and
+    prove which lines it fires on.
     """
     return "".join(f"flag\t{line.strip()}\treads as machine-generated\n"
                    for line in excerpt.splitlines()
@@ -2426,7 +1653,7 @@ class _VoiceBackend:
                 # scan the preamble with it, passing silently.
                 return Completion(_voice_judge(prompt.split(_VOICE_MARKER, 1)[1], self.voice_marks), usage=self._usage(prompt))
             return Completion(self.voice_out, usage=self._usage(prompt))
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+        if prompt.startswith(_COMPOSE):
             self.calls.append("compose")
             self.compose_prompts.append(prompt)
             assert len(self.compose_prompts) <= len(self.drafts), (
@@ -2511,12 +1738,12 @@ def test_a_voice_finding_reaches_the_retry(monkeypatch):
 # decided by a voice count alone, and asserts the retained draft through the result's
 # own findings, which describe that draft and no other.
 
-# Hard-clean, slop-clean, and differing from CLEAN_CV on TWO in-scope lines -- a PROFILE
-# line and a WORK bullet -- so a reactive voice judge can flag two lines of THIS draft
-# and none of STYLE_DIRTY_CV's. No digit and no new citation: the HARD gate is untouched.
-_VOICE_TWO_LINE_CV = CLEAN_CV.replace(
-    "I build reliable systems.", "I build reliable systems for every team.", 1).replace(
-    "- Shipped [EF1]", "- Shipped the reporting layer [EF1]", 1)
+# Hard-clean, slop-clean, and differing from CLEAN_REPLY on TWO lines the model wrote -- the
+# profile and a bullet -- so a reactive voice judge can flag two lines of THIS reply and none
+# of STYLE_DIRTY_REPLY's. No digit and no new citation: the HARD gate is untouched.
+_VOICE_TWO_LINE_REPLY = _reply(profile="I build reliable systems for every team.",
+                               bullets=("Shipped the reporting layer", "Grew team from 3 to 8",
+                                        "Coached", "CI"))
 _VOICE_TWO_MARKS = ("for every team", "the reporting layer")
 
 
@@ -2534,17 +1761,13 @@ def _run_voice_rendered(monkeypatch, backend):
 
 
 def test_the_voice_retention_fixture_is_hard_and_slop_clean_and_marks_only_itself():
-    """PREMISE of the voice-retention rows: the two-line draft is slop-free, each mark
-    hits exactly one of its lines, and neither mark hits STYLE_DIRTY_CV -- otherwise the
-    voice counts below are not the ones the rows claim."""
-    from sluice.cv.slop import check_hard, check_phrases
-    from sluice.cv.validate import section_spans
-
-    profile, work, _skills = section_spans(_VOICE_TWO_LINE_CV)
-    assert not check_hard(_VOICE_TWO_LINE_CV)
-    assert not check_phrases(profile + work)
-    assert _voice_judge(_VOICE_TWO_LINE_CV, _VOICE_TWO_MARKS).count("flag\t") == 2
-    assert _voice_judge(STYLE_DIRTY_CV, _VOICE_TWO_MARKS) == ""
+    """PREMISE of the voice-retention rows: the two-line reply is hard- and slop-clean,
+    each mark hits exactly one of its lines, and neither mark hits STYLE_DIRTY_REPLY --
+    otherwise the voice counts below are not the ones the rows claim."""
+    violations, hard, phrases, _terms = _tiers(_VOICE_TWO_LINE_REPLY)
+    assert (violations, hard, phrases) == ([], [], [])
+    assert _voice_judge(_excerpt(_VOICE_TWO_LINE_REPLY), _VOICE_TWO_MARKS).count("flag\t") == 2
+    assert _voice_judge(_excerpt(STYLE_DIRTY_REPLY), _VOICE_TWO_MARKS) == ""
 
 
 def test_a_voice_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(monkeypatch):
@@ -2557,7 +1780,7 @@ def test_a_voice_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(mo
     res, rend = _run_voice_rendered(monkeypatch, be)
     assert res.status == "rendered"
     assert be.calls.count("voice") == 2, "both attempts must have been voice-judged"
-    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)]
     assert res.voice_flags == []
 
 
@@ -2567,11 +1790,11 @@ def test_a_retry_with_MORE_voice_findings_does_not_replace_a_cleaner_draft(monke
     attempt 1 ships."""
     be = _VoiceBackend(["hard-clean-style-dirty", "voice-two-line"],
                        voice_marks=_VOICE_TWO_MARKS)
-    monkeypatch.setitem(_DRAFTS, "voice-two-line", _VOICE_TWO_LINE_CV)
+    monkeypatch.setitem(_DRAFTS, "voice-two-line", _VOICE_TWO_LINE_REPLY)
     res, rend = _run_voice_rendered(monkeypatch, be)
     assert res.status == "rendered"
     assert be.calls.count("voice") == 2, "both attempts must have been voice-judged"
-    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)]
     assert res.voice_flags == []
 
 
@@ -2592,15 +1815,14 @@ def test_a_retry_whose_voice_check_FAILED_does_not_replace_a_measured_draft(monk
     findings -- so without a guard, a retry nobody voice-judged out-ranks an attempt 1 whose
     one voice finding was really measured. Attempt 2 here is also slop-clean, so its
     unmeasured zero is the only thing that could make it win."""
-    clean_b = CLEAN_CV.replace("I build reliable systems.", "I build dependable systems.", 1)
-    assert clean_b != CLEAN_CV, "the replace no-opped"
+    clean_b = _reply(profile="I build dependable systems.")
     monkeypatch.setitem(_DRAFTS, "clean-b", clean_b)
     be = _SecondVoiceCallRaises(["clean", "clean-b"],
                                 voice_marks=("I build reliable systems.",))
     res, rend = _run_voice_rendered(monkeypatch, be)
     assert res.status == "rendered"
     assert be.calls.count("voice") == 2, "attempt 2's voice check must have been attempted"
-    assert rend.rendered == [CLEAN_CV], "the voice-MEASURED attempt 1 must ship"
+    assert _profiles(rend) == [_profile(CLEAN_REPLY)], "the voice-MEASURED attempt 1 must ship"
     assert len(res.voice_flags) == 1, res.voice_flags
 
 
@@ -2627,7 +1849,7 @@ def test_a_measured_retry_with_no_more_findings_replaces_an_unmeasured_draft(mon
     res, rend = _run_voice_rendered(monkeypatch, be)
     assert be.calls.count("voice") == 2, "both attempts' voice checks must have run"
     assert res.status == "rendered"
-    assert rend.rendered == [CLEAN_CV], "a tie keeps the later, MEASURED draft"
+    assert _profiles(rend) == [_profile(CLEAN_REPLY)], "a tie keeps the later, MEASURED draft"
     assert len(res.voice_flags) == 1 and res.terms == [], (res.voice_flags, res.terms)
 
 
@@ -2638,7 +1860,7 @@ def test_a_measured_retry_with_MORE_findings_does_not_replace_an_unmeasured_draf
     res, rend = _run_voice_rendered(monkeypatch, be)
     assert be.calls.count("voice") == 2, "both attempts' voice checks must have run"
     assert res.status == "rendered"
-    assert rend.rendered == [UNBUNDLED_TERM_CV], (
+    assert _profiles(rend) == [_profile(UNBUNDLED_TERM_REPLY)], (
         "attempt 1 counts one finding, attempt 2 a slop plus a voice flag")
     assert res.voice_flags == [], res.voice_flags
 
@@ -2650,201 +1872,40 @@ def test_a_retry_whose_voice_check_failed_still_replaces_an_UNMEASURED_draft(mon
     res, rend = _run_voice_rendered(
         monkeypatch, _VoiceBackend(["hard-clean-style-dirty", "clean"], voice_raises=True))
     assert res.status == "rendered"
-    assert rend.rendered == [CLEAN_CV]
+    assert _profiles(rend) == [_profile(CLEAN_REPLY)]
 
 
-# ── #167: the STYLE tier's scoping covers BOTH its halves ────────────────────────────
+# ── #167: the STYLE tier's two halves judge one set of lines ─────────────────────────
 #
-# `check_phrases` has been handed `section_spans`'s PROFILE/WORK subset since Task 12,
-# and test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry pins that. `run_voice`
-# was handed the WHOLE document, so the model-judged half of the same tier could flag a
-# line the deterministic half is deliberately kept away from -- and cv/compose.py folds
-# every finding into "YOUR PREVIOUS DRAFT FAILED THE GATE. Fix these and re-emit the
-# FULL CV". An employer or certificate line is answerable only by renaming the employer
-# or the certificate: a style rule turned into fabrication pressure, which is the shape
-# CLAUDE.md records as the worst case this codebase has shipped. The prompt's own "do
-# not suggest new content" is not a guarantee, and the design's stated property has to
-# hold on the path, not in the wording.
-#
-# Both tests below drive a REACTIVE backend (`_voice_judge`): it flags whatever line it
-# is shown. That is what makes them non-vacuous in the direction that matters -- each
-# asserts, in the same run, that the voice call HAPPENED, that the rule genuinely fires
-# on the out-of-scope line when shown it, and that an IN-SCOPE finding from the very
-# same call did reach the retry. A test whose backend returned nothing would pass while
-# proving nothing at all.
-
-def test_a_voice_finding_on_an_EMPLOYER_line_never_reaches_the_retry(monkeypatch):
-    employer = "Example Leverage"          # EMPLOYER_PHRASE_CV's renamed employer line
-    in_scope = "I streamline delivery for platform teams."   # its PROFILE prose
-    marks = (employer, in_scope)
-
-    # CONTROL, before the run: shown the WHOLE document, this backend's rule does flag
-    # the employer line. Without this the assertion below could hold because the rule
-    # never fires on that line at all.
-    assert employer in _voice_judge(EMPLOYER_PHRASE_CV, marks)
-
-    res, be = _run_voice_sequence(
-        monkeypatch, ["employer-phrase", "employer-phrase"], voice_check=True,
-        voice_marks=marks)
-    assert res.status == "rendered"
-    assert be.voice_prompts, "the voice check never ran"
-    assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
-
-    # The guarantee at the INPUT, which is where the scoping lives. Over EVERY voice
-    # call, not just the first: both scripted attempts are hard-clean, so the check
-    # runs on each, and a scoping that held only on attempt 1 would still be the bug.
-    assert not any(employer in p for p in be.voice_prompts), be.voice_prompts
-    # ...and at the OUTPUT, which is what the composer is actually told to fix.
-    retry = be.compose_prompts[1]
-    assert f"VOICE: flag\t{in_scope}" in retry, (
-        "no VOICE finding reached the retry at all, so the absence below would say "
-        "nothing about SCOPING")
-    assert employer not in retry, retry
-
-
-def test_a_voice_finding_on_a_CERTIFICATE_line_never_reaches_the_retry(monkeypatch):
-    # CERTIFICATES/EDUCATION are section_spans' terminators: it clears both flags there,
-    # so their bullets are collected by neither list even though they LOOK like WORK
-    # bullets. A certificate is a named award, so a voice complaint about it is as
-    # unanswerable as one about an employer.
-    certificate = "Example Scrum Master"                       # CLEAN_CV's CERTIFICATES
-    in_scope = "I leverage the same delivery patterns across teams."  # STYLE_DIRTY_CV
-    marks = (certificate, in_scope)
-
-    assert certificate in _voice_judge(STYLE_DIRTY_CV, marks)
-
-    res, be = _run_voice_sequence(
-        monkeypatch, ["hard-clean-style-dirty", "hard-clean-style-dirty"],
-        voice_check=True, voice_marks=marks)
-    assert res.status == "rendered"
-    assert be.voice_prompts, "the voice check never ran"
-    assert len(be.compose_prompts) == 2, "no retry happened, so this asserts nothing"
-
-    assert not any(certificate in p for p in be.voice_prompts), be.voice_prompts
-    retry = be.compose_prompts[1]
-    assert f"VOICE: flag\t{in_scope}" in retry, (
-        "no VOICE finding reached the retry at all, so the absence below would say "
-        "nothing about SCOPING")
-    assert certificate not in retry, retry
-
-
-def test_no_voice_call_is_spent_on_a_draft_with_no_prose_in_scope(monkeypatch):
-    """The third gate on the call, alongside `voice_check` and `not hard_msgs`.
-
-    Scoping the input introduced a case the unscoped call did not have: the scoped text
-    can be EMPTY where the document never is. Judging the voice of nothing costs a
-    backend call and can only come back with a finding that names no line of the CV --
-    which would still spend the draft's single retry.
-    """
-    res, be = _run_voice_sequence(monkeypatch, ["no-scoped-prose"], voice_check=True)
-    assert res.status == "rendered", (
-        "the draft never cleared the HARD tier, so the voice branch was never reached "
-        "and this test would pass for the wrong reason")
-    assert "voice" not in be.calls, be.calls
-    # The audit still runs on the same draft: this guard is about the VOICE call alone,
-    # not about the engine quietly skipping everything downstream of it.
-    assert "audit" in be.calls, be.calls
-
+# The phrase list and the voice judge are both handed the text the MODEL wrote
+# (cv/document.py::model_lines) and nothing else: a complaint about an employer heading or
+# a certificate -- vault text -- is answerable only by renaming the thing it names, a style
+# rule turned into fabrication pressure. tests/test_cv_structured_engine.py::
+# test_the_voice_judge_is_shown_only_the_models_text pins the voice half against vault text;
+# this row pins that the two halves see the SAME lines.
 
 def test_the_voice_check_is_shown_exactly_the_lines_the_phrase_tier_is(monkeypatch):
     """The two halves of the STYLE tier judge ONE set of lines, not two.
 
-    Asserted against `section_spans` itself rather than against a transcribed list, so
-    a later change to the split moves both halves together or fails here. The engine
-    de-duplicates into a line-ordered union before either half runs (a CV repeating
-    `PROFILE` after `WORK EXPERIENCE` puts a line in both regions), which is why the
-    expected text is rebuilt the same way and not as `profile + work`.
-
-    `section_spans` returns a third region, `skills`, since #168's Task 3 -- discarded
-    here rather than folded into `expected`, because `scoped_lines` in the ENGINE is
-    built from `profile_lines + work_lines` only (see its own comment). STYLE_DIRTY_CV
-    carries no SKILLS section, so this row alone cannot tell a correct exclusion from a
-    bug that silently included it -- `test_the_style_tier_is_not_scoped_over_the_skills_
-    region` right below is the fixture built specifically to make that distinction, over
-    BOTH halves of the tier this test compares.
+    Asserted against `model_lines` itself rather than against a transcribed list, so a
+    later change to what counts as the model's text moves both halves together or fails
+    here.
     """
-    from sluice.cv.validate import section_spans
-
     _res, be = _run_voice_sequence(monkeypatch, ["hard-clean-style-dirty", "clean"],
                                    voice_check=True)
     assert be.voice_prompts, "the voice check never ran"
     shown = be.voice_prompts[0].split(_VOICE_MARKER, 1)[1].strip()
+    assert shown == _excerpt(STYLE_DIRTY_REPLY).strip()
 
-    profile, work, _skills = section_spans(STYLE_DIRTY_CV)
-    expected = "\n".join(t for _ln, t in sorted(dict(profile + work).items())).strip()
-    assert shown == expected
-
-    # Non-vacuity: the scoped text is a PROPER subset -- it really does drop lines the
-    # document has. Named individually because "shorter" alone would also be true of a
-    # truncation bug.
-    for dropped in ("JANE ROE", "+1 555 0100", "Example Systems", "CERTIFICATES",
-                    "Example Scrum Master", "Staff Engineer"):
+    # Non-vacuity: the shown text drops everything sluice assembles from the vault. Named
+    # individually because "shorter" alone would also be true of a truncation bug.
+    role = SYNTHETIC_LAYOUT.roles[0]
+    for dropped in ("Jane Roe", "+1 555 0100", role.heading, role.title, role.location,
+                    *SYNTHETIC_LAYOUT.certificates, *SYNTHETIC_LAYOUT.education):
         assert dropped not in shown, dropped
-    # ...while the prose the check exists to judge is all still there.
+    # ...while the text the check exists to judge is all still there.
     assert "I leverage the same delivery patterns across teams." in shown
-    assert "- Grew team from 3 to 8 [EF1]" in shown
-
-
-def test_the_style_tier_is_not_scoped_over_the_skills_region(monkeypatch):
-    """A slop complaint about a bare skill name is answerable only by RENAMING a skill
-    the user really holds -- the LOCATION shape CLAUDE.md names as this repo's governing
-    bug class, applied to the region `section_spans` learned to collect in #168's Task 3.
-
-    Both halves of the STYLE tier, in one test, over one fixture: `check_phrases`'
-    scoped set (the deterministic half) and the voice prompt (the model-judged half) --
-    mirroring `test_a_voice_finding_on_an_EMPLOYER_line_never_reaches_the_retry` and
-    `test_a_phrase_in_an_EMPLOYER_line_never_reaches_the_retry` above, applied to SKILLS
-    instead of an employer line.
-
-    Scope first: a fixture whose SKILLS region is empty, or whose skill line is not
-    actually style-dirty, would make the assertions below pass whatever the engine does.
-    """
-    from sluice.cv.slop import check_phrases
-    from sluice.cv.validate import section_spans
-
-    _p, _work, skills = section_spans(_CV_WITH_SLOPPY_SKILL)
-    assert skills, "fixture has no SKILLS region, so this guard proves nothing"
-    assert check_phrases(skills), (
-        "fixture's skill line is not style-dirty, so the exclusion below is untested")
-
-    # CONTROL: shown the WHOLE document, the reactive voice backend's rule DOES flag the
-    # skill line -- otherwise its absence from the retry below would say nothing about
-    # scoping (same control shape the EMPLOYER/CERTIFICATE tests above use).
-    assert "Example Synergy" in _voice_judge(_CV_WITH_SLOPPY_SKILL, ("Example Synergy",))
-
-    # #168's row 2 (containment) now checks the SKILLS region independently of the
-    # STYLE tier this test isolates, so "Example Synergy" must be a genuinely SOURCED
-    # skill or the run fails the HARD gate instead of reaching the STYLE check at all
-    # -- `_CV_WITH_SLOPPY_SKILL`'s own comment already claims "gate-clean". A local
-    # entry, not a change to the shared ENTRIES every other test in this file builds
-    # on unmodified.
-    entries = [{**ENTRIES[0], "fields": {"Skills": "Example Synergy"}}]
-    res, be = _run_voice_sequence(
-        monkeypatch, ["skills-style-dirty", "skills-style-dirty"], voice_check=True,
-        entries=entries, voice_marks=("Example Synergy",))
-    assert res.status == "rendered"
-    assert be.voice_prompts, "the voice check never ran"
-    assert len(be.compose_prompts) == 2, (
-        "no retry happened -- the in-scope PROFILE phrase that is supposed to force "
-        "one no longer matches, so the exclusion below would be tested against nothing")
-
-    # The INPUT side, for both halves: the skill line reaches neither the voice prompt...
-    assert not any("Example Synergy" in p for p in be.voice_prompts), be.voice_prompts
-    # ...nor, via check_phrases' deterministic scoped set, a STYLE finding about it in
-    # the retry the composer reads. NOT "Example Synergy not in retry" bare: #168's row
-    # 2 (containment, above this test in the file) now requires the skill to be a
-    # genuinely SOURCED one, and a sourced skill legitimately appears in the SOURCE
-    # BUNDLE section of every compose prompt, retry included -- that occurrence is
-    # correct and has nothing to do with the STYLE tier this test isolates. The
-    # `check_phrases` FINDING format ("SLOP <phrase>: <line>") is what actually
-    # distinguishes "the source bundle mentions this skill" from "the STYLE tier
-    # flagged this skill line", and only the second is what this test polices.
-    retry = be.compose_prompts[1]
-    assert "SLOP synergy" not in retry, retry
-    # ...while the IN-SCOPE profile phrase that forces the retry to exist at all DOES
-    # reach it -- without this, the absences above would be vacuously true of a retry
-    # that never happened for style reasons at all.
-    assert "SLOP leverage" in retry, retry
+    assert "Grew team from 3 to 8" in shown
 
 
 # ── #167 Task 16: CvResult.slop and CvResult.voice_flags gain readers ────────────────
@@ -2869,13 +1930,13 @@ def test_a_rendered_results_slop_and_voice_flags_describe_the_RETAINED_draft(
         voice_out="flag\tThis reads like a press release.\n")
     assert res.status == "rendered"
     assert be.calls.count("compose") == 2, "attempt 2 never ran, so this proves nothing"
-    # STYLE_DIRTY_CV's own phrase (see its fixture comment) -- pre-formatted "SLOP
+    # STYLE_DIRTY_REPLY's own phrase (see its fixture comment) -- pre-formatted "SLOP
     # <phrase>: <snippet>", the same shape `hard_msgs` already used for the retry.
     assert any(s.startswith("SLOP leverage:") for s in res.slop), res.slop
     # The scripted VOICE finding, verbatim -- run_voice keeps the whole "flag\t..."
     # line, not just the phrase (cv/voice.py's own parsing).
     assert res.voice_flags == ["flag\tThis reads like a press release."]
-    # attempt 2's own defect (an em dash, HARD_DIRTY_CV's fixture) must not appear:
+    # attempt 2's own defect (an em dash, HARD_DIRTY_REPLY's fixture) must not appear:
     # a reader seeing it would mean the fields drifted back onto the discarded draft.
     assert not any("EM-DASH" in s for s in res.slop), res.slop
 
@@ -2888,8 +1949,8 @@ def test_skipped_gate_slop_carries_both_tiers_SLOP_formatted():
     <snippet>" shape and folded together with the STYLE tier, so a caller printing
     `r.slop` sees every deterministic finding on the failing draft, not half of them.
     """
-    both_dirty = STYLE_DIRTY_CV.replace(
-        "- Coached [EF1]", "- Coached — and mentored [EF1]")
+    both_dirty = _reply(profile=_profile(STYLE_DIRTY_REPLY),
+                        bullets=("Shipped", "Coached \u2014 and mentored"))
     v = FakeVault(ENTRIES)
     r = run_one(Note({"status": "shortlist", "company": "Example Foundry",
                       "role": "Analyst"}),
@@ -2970,7 +2031,7 @@ def test_slop_allow_suppresses_the_style_finding_at_the_ENFORCEMENT_site(monkeyp
     # runs there: dropping `allow=` from engine.py's `_slop_phrases(...)` call reddened
     # nothing at all before this test.
     #
-    # STYLE_DIRTY_CV's only defect is "leverage" in PROFILE prose. Allowing that stem must
+    # STYLE_DIRTY_REPLY's only defect is "leverage" in its profile. Allowing that stem must
     # leave the first draft clean, so the retry never fires -- ONE compose call is the
     # discriminator, and it is what an un-suppressed finding would double. style_hold is
     # ON deliberately: it makes the consequence of getting this wrong visible on the note
@@ -3047,9 +2108,9 @@ def test_a_voice_finding_alone_can_trigger_the_style_hold(monkeypatch):
 
 
 # #174: an entry body whose first line is shaped like ANOTHER entry's [id] code used
-# to rebind that entry's permitted numbers, because validate() used to recover ids by
+# to rebind that entry's permitted numbers, because the gate used to recover ids by
 # re-parsing the rendered bundle TEXT rather than reading the bundle's own structure.
-# Shared by the two tests below: the first pins validate()'s own contract directly
+# Shared by the two tests below: the first pins the check's own contract directly
 # (cheap, no engine); the second drives the identical scenario through run_one, which
 # is where a user actually experiences the harm -- a review round on this task found
 # that only the first existed, under a docstring claiming the second's coverage.
@@ -3061,8 +2122,8 @@ POISONED_ENTRIES = [
 ]
 
 
-def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_at_validate():
-    """#174, validate()-level: the narrow unit pin.
+def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_at_check_selection():
+    """#174, check_selection-level: the narrow unit pin.
 
     Both directions of the original defect went wrong at once: the fabricated figure
     cleared the HARD gate with zero violations, and the poisoned entry's own genuine
@@ -3070,40 +2131,33 @@ def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_at_validate():
     test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_one
     immediately below for the end-to-end version of this same scenario.
     """
-    sources = bundle_sources(build_bundle(
-        entries=POISONED_ENTRIES, baseline="BASELINE", negatives=[],
-        jd_keywords=[], prefix_map={"Example Foundry": "EF"}))
-    cv = CLEAN_CV.replace("- Grew team from 3 to 8 [EF1]",
-                          "- Delivered 4200 units [EF1]")
-    assert "4200" in cv, "the replace no-opped"
-    assert any("INVENTED METRIC" in v for v in validate(cv, sources))
+    bundle, slots, selection = _selected(_reply(bullets=("Delivered 4200 units",)),
+                                         entries=POISONED_ENTRIES)
+    facts = entry_facts(bundle, SYNTHETIC_LAYOUT)
+    assert any("INVENTED METRIC" in v for v in check_selection(selection, slots, facts))
     # ...and the poisoned entry's real metric is still its own.
-    assert "12" in sources.nums["EF1"]
+    assert "12" in facts["EF1"].figures
 
 
 def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_one():
     """#174, pinned where the user experiences it -- through run_one's real gate call,
-    not only at validate() in isolation.
+    not only at check_selection in isolation.
 
     Drives the engine with a vault whose Experience Library holds the poisoned pair
-    above and a backend that composes a CV citing the fabricated figure against the
-    FIRST entry's id. That is the exact shape #174 exploited: before the fix, validate()
-    recovered citable ids by re-parsing the rendered bundle TEXT, so the second entry's
-    body -- a line shaped like "[EF1] ..." -- rebound EF1's permitted numbers to include
-    the fabricated one, and a CV citing [EF1] for a number only the poisoned body
-    supplied cleared the HARD gate with zero violations and got rendered.
+    above and a backend that replies with a bullet citing the fabricated figure against
+    the FIRST entry's id. That is the exact shape #174 exploited: before the fix, the
+    gate recovered citable ids by re-parsing the rendered bundle TEXT, so the
+    second entry's body -- a line shaped like "[EF1] ..." -- rebound EF1's permitted
+    numbers to include the fabricated one, and a CV citing [EF1] for a number only the
+    poisoned body supplied cleared the HARD gate with zero violations and got rendered.
+    The structured gate reads each entry's figures from the entry itself
+    (cv/validate.py::entry_facts), and this row pins that it still cannot be laundered.
 
     Asserts the lead is never rendered (status reflects a blocked gate, and the
-    renderer is never invoked), not merely that validate() reports a violation in
+    renderer is never invoked), not merely that check_selection reports a violation in
     isolation -- the failure mode #174 describes is a CV that reaches a user's disk.
     """
-    poisoned_cv = "\n".join([
-        "+1 555 0100", "JANE ROE", "", "PROFILE", "I build reliable systems.", "",
-        "WORK EXPERIENCE", "",
-        "Example Systems", "02/2023\u2013present | Example Location A | Staff Engineer",
-        "- Delivered 4200 units [EF1]", "",
-        "CERTIFICATES", "- Example Scrum Master", "EDUCATION", "- Uni",
-    ])
+    poisoned_cv = _reply(bullets=("Delivered 4200 units",))
     vault = FakeVault(POISONED_ENTRIES)
     rend = FakeRenderer()
     be = FakeBackend(poisoned_cv)
@@ -3118,14 +2172,14 @@ def test_a_poisoned_entry_body_cannot_launder_a_fabricated_figure_through_run_on
 
 # ── #165: the Skills Inventory reaches the composer ──────────────────────────
 class RecordingBackend:
-    """Records every prompt. Mirrors FakeBackend's routing: compose prompts carry
-    'SOURCE BUNDLE' and not 'auditing'; audit prompts carry both."""
+    """Records every prompt. Mirrors FakeBackend's routing: a compose prompt opens with
+    _COMPOSE, and anything else is the audit."""
     def __init__(self, cv_out=None):
         self.last_backend = "primary"; self.prompts = []; self.audit_prompts = []
-        self.cv_out = cv_out if cv_out is not None else CLEAN_CV
+        self.cv_out = cv_out if cv_out is not None else CLEAN_REPLY
 
     def complete(self, prompt):
-        if "SOURCE BUNDLE" in prompt and "auditing" not in prompt:
+        if prompt.startswith(_COMPOSE):
             self.prompts.append(prompt)
             return Completion(self.cv_out)
         self.audit_prompts.append(prompt)
@@ -3170,43 +2224,42 @@ def test_a_skill_reaches_the_composers_prompt(monkeypatch):
     assert "Example Cloud Skill" in be.prompts[0]
 
 
-# ── #168 Task 8: the prompt requests a SKILLS section only when an ENTRY declares one ──
-# Deliberately NOT `_SKILL_ENTRY`/`skills=[...]` above: that is the #165 FRAMING corpus,
-# a wholly separate feature (an evidence kind of its own, never citable). This is the
-# per-entry `Skills:` field SC5's request condition actually reads --
-# `sources.entries[id].skills`, derived by cv/bundle.py's `bundle_sources` from
-# `entries[i]["fields"]["Skills"]`. "Example Query" is already on
+# ── #168 Task 8, carried to #364/#365/#368: the prompt asks for skills only from a pool ──
+# The composer may list skills only from a closed pool -- the verified entries' `Tools:` and
+# the verified Skills Inventory names (#364 spec §4.4) -- so it is asked for skills iff that pool
+# is non-empty. Here an ENTRY's `Tools:` is what fills it; tests/test_cv_structured_engine.py
+# covers the skill-note route. "Example Query" is already on
 # tests/test_fixture_name_neutrality.py's `_REVIEWED_SKILL_VALUES` roster.
-_SKILL_DECLARING_ENTRY = {**ENTRIES[0], "fields": {"Skills": "Example Query"}}
+_SKILL_DECLARING_ENTRY = {**ENTRIES[0], "fields": {"Tools": "Example Query"}}
 
 
 def test_the_composer_is_asked_for_a_skills_section_when_an_entry_declares_one(monkeypatch):
-    """SC5's request condition, wired end to end through run_one. `sources` is bound
-    once in cv/engine.py, before the retry loop and before compose() is ever called, and
-    is what BOTH this prompt request and cv/validate.py's own gate read -- see
-    cv/engine.py's comment on why `skills_requested` must not be a second, independent
-    computation of the same value."""
+    """The request condition, wired end to end through run_one: the pool the prompt offers
+    is the one `select` later picks from (both read `cv/selection.py::build_pool`'s value),
+    so the request and the selection cannot disagree about what a skill is."""
+    from sluice.cv.compose import _SKILLS_POOL_PROMPT_HEADER
     _served(monkeypatch)
     be = RecordingBackend()
     run_one(_skills_note(), SkillsVault([_SKILL_DECLARING_ENTRY]), _cfg(), be,
             FakeCache(), renderer=FakeRenderer())
     assert be.prompts, "the compose call never happened; this test would pass vacuously"
-    from sluice.cv.compose import _SKILLS_PROMPT_BLOCK
-    assert _SKILLS_PROMPT_BLOCK in be.prompts[0]
+    assert _SKILLS_POOL_PROMPT_HEADER in be.prompts[0]
+    assert "- Example Query" in be.prompts[0]
 
 
 def test_the_composer_is_not_asked_for_a_skills_section_when_no_entry_declares_one(monkeypatch):
     """The mirror control, and without it the wiring above is unfalsifiable in the
-    direction that matters: a run_one that always passed skills_requested=True would
-    still pass that test. `ENTRIES` carries no `fields` at all (see its own definition),
-    so every entry's `Skills:` reads as blank -- SC5's abstain case."""
+    direction that matters: a run_one that always offered a pool would still pass that
+    test. `ENTRIES` carries no `fields` at all and SkillsVault holds no skill note, so the
+    pool is empty -- the abstain case, which tells the model to list no skills."""
+    from sluice.cv.compose import _NO_SKILLS_RULE_PROMPT, _SKILLS_POOL_PROMPT_HEADER
     _served(monkeypatch)
     be = RecordingBackend()
     run_one(_skills_note(), SkillsVault(ENTRIES), _cfg(), be, FakeCache(),
             renderer=FakeRenderer())
     assert be.prompts, "the compose call never happened; this test would pass vacuously"
-    from sluice.cv.compose import _SKILLS_PROMPT_BLOCK
-    assert _SKILLS_PROMPT_BLOCK not in be.prompts[0]
+    assert _SKILLS_POOL_PROMPT_HEADER not in be.prompts[0]
+    assert _NO_SKILLS_RULE_PROMPT in be.prompts[0]
 
 
 def test_the_advisory_audit_is_never_shown_the_framing_section(monkeypatch):
@@ -3242,7 +2295,7 @@ def test_an_unreadable_skills_corpus_composes_without_it_and_says_so(monkeypatch
     """A framing-only corpus may never cost a lead (#167's rule, one layer out)."""
     _served(monkeypatch)
     v = SkillsVault(ENTRIES, skills_error=err)
-    r = run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+    r = run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(),
                 renderer=FakeRenderer())
     assert r.status == "rendered", "a broken framing corpus binned the lead"
     assert r.skills_unreadable is True
@@ -3259,14 +2312,14 @@ def test_an_unreadable_experience_corpus_still_fails_loudly():
             return []
     with pytest.raises(OSError):
         run_one(_skills_note(), ExperienceError(ENTRIES), _cfg(),
-                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+                FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
 
 
 def test_skills_reach_the_bundle_verified_only(monkeypatch):
     """An `_inbox/` skill must never reach the composer: `verified:` is the trust root."""
     _served(monkeypatch)
     v = SkillsVault(ENTRIES, skills=[])
-    run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
+    run_one(_skills_note(), v, _cfg(), FakeBackend(CLEAN_REPLY), FakeCache(),
             renderer=FakeRenderer())
     assert ("skills", True) in v.reads
 
@@ -3279,7 +2332,7 @@ def test_a_readable_skills_corpus_leaves_the_flag_FALSE(monkeypatch):
     such a paired control (tests/test_dossier_guard.py)."""
     _served(monkeypatch)
     r = run_one(_skills_note(), SkillsVault(ENTRIES, skills=[_SKILL_ENTRY]), _cfg(),
-                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+                FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
     assert r.status == "rendered"
     assert r.skills_unreadable is False
 
@@ -3290,7 +2343,7 @@ def test_a_missing_skills_corpus_is_not_reported_as_unreadable(monkeypatch):
     on every lead that its corpus is unreadable."""
     _served(monkeypatch)
     r = run_one(_skills_note(), SkillsVault(ENTRIES, skills=[]), _cfg(),
-                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer())
+                FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer())
     assert r.skills_unreadable is False
 
 
@@ -3301,45 +2354,10 @@ def test_a_refused_lead_never_reads_any_evidence_corpus():
     refusal."""
     v = SkillsVault(ENTRIES, skills_error=OSError("would raise if reached"))
     r = run_one(_skills_note(last_seen="2000-01-01"), v, _cfg(),
-                FakeBackend(CLEAN_CV), FakeCache(), renderer=FakeRenderer(),
+                FakeBackend(CLEAN_REPLY), FakeCache(), renderer=FakeRenderer(),
                 policy=StalenessPolicy(ttl_days=1, today="2026-08-25"))
     assert r.status == "skipped-stale"
     assert v.reads == [], f"a refused lead touched the evidence corpora: {v.reads}"
-
-
-def test_one_malformed_skills_value_fails_every_lead_in_the_run():
-    """The BLAST RADIUS of a malformed `Skills:` value, pinned because both shipped docs
-    once claimed the wrong one ("fails only the lead currently being composed").
-
-    `build_bundle` runs INSIDE `run_one`, per lead, over the SHARED verified corpus, so a
-    single bad value raises for every lead in the run -- not for one. That matters to a
-    user reading the docs to gauge risk before annotating an Experience Library.
-
-    Both halves are asserted. The failure half alone would pass on a fake that broke for
-    an unrelated reason, so the CONTROL re-runs the identical three leads with a
-    well-formed value and requires all three to complete. Failing loudly is the right
-    behaviour here -- it is the CLAIM about scope that was wrong, not the code -- so this
-    test pins the scope, not a softer outcome.
-    """
-    def _leads():
-        return [Note({"status": "shortlist", "company": f"Example Co{i}",
-                      "role": "Analyst"},
-                     path=f"Job Applications/Job Leads/Example Co{i} - Analyst.md")
-                for i in range(3)]
-
-    entry = dict(ENTRIES[0], fields=dict(Skills="Result 92"))
-    v = FakeVault([entry], notes=_leads())
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
-                        renderer=FakeRenderer(), dry_run=True)
-    assert [r.status for r in results] == ["error", "error", "error"]
-
-    entry = dict(ENTRIES[0], fields=dict(Skills="Example Query"))
-    v = FakeVault([entry], notes=_leads())
-    results = run_batch(v, _cfg(), FakeBackend(CLEAN_CV), FakeCache(),
-                        renderer=FakeRenderer(), dry_run=True)
-    assert [r.status for r in results] == ["dry-run", "dry-run", "dry-run"], (
-        "the control run must succeed, or the failure above proves nothing about the "
-        "malformed value")
 
 
 def test_the_voice_check_call_is_metered_as_its_own_stage(monkeypatch, tmp_path):
@@ -3383,13 +2401,13 @@ def test_an_unbundled_term_drives_exactly_one_retry_with_the_finding(monkeypatch
     assert res.status == "rendered"
     assert len(be.compose_prompts) == 2
     assert "UNBUNDLED TERM 'Examplequery'" in be.compose_prompts[1]
-    assert rend.rendered == [CLEAN_CV], "the clean retry is the fewer-findings draft"
+    assert _profiles(rend) == [_profile(CLEAN_REPLY)], "the clean retry is the fewer-findings draft"
 
 
 def test_a_persisting_unbundled_term_still_renders_with_style_hold_off(monkeypatch):
     res, _be, rend = _run_sequence(monkeypatch, ["unbundled-term", "unbundled-term"])
     assert res.status == "rendered", "a STYLE finding must never bin a lead"
-    assert rend.rendered == [UNBUNDLED_TERM_CV]
+    assert _profiles(rend) == [_profile(UNBUNDLED_TERM_REPLY)]
     assert any(m.startswith("UNBUNDLED TERM 'Examplequery'") for m in res.terms)
 
 
@@ -3401,7 +2419,7 @@ def test_term_findings_ride_in_terms_and_never_in_slop(monkeypatch):
     res, _be, rend = _run_sequence(
         monkeypatch, ["style-dirty-with-term", "style-dirty-with-term"])
     assert res.status == "rendered"
-    assert rend.rendered == [STYLE_DIRTY_WITH_TERM_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_WITH_TERM_REPLY)]
     assert [m.split(":", 1)[0] for m in res.terms] == ["UNBUNDLED TERM 'Examplequery'"]
     assert [m.split(":", 1)[0] for m in res.slop] == ["SLOP leverage"]
 
@@ -3409,9 +2427,8 @@ def test_term_findings_ride_in_terms_and_never_in_slop(monkeypatch):
 def test_a_skipped_gate_result_splits_the_last_attempts_terms_from_its_slop(monkeypatch):
     """On `skipped-gate`, `slop` keeps the HARD slop entries plus the last attempt's phrase
     findings, and `terms` takes that attempt's term findings -- never folded into `slop`."""
-    hard_dirty_term = STYLE_DIRTY_WITH_TERM_CV.replace(
-        "- Coached [EF1]", "- Coached — and mentored [EF1]")
-    assert hard_dirty_term != STYLE_DIRTY_WITH_TERM_CV, "the replace no-opped"
+    hard_dirty_term = _reply(profile=_profile(STYLE_DIRTY_WITH_TERM_REPLY),
+                             bullets=("Shipped", "Coached \u2014 and mentored"))
     monkeypatch.setitem(_DRAFTS, "hard-dirty-term", hard_dirty_term)
     res, _be, _rend = _run_sequence(monkeypatch, ["hard-dirty-term", "hard-dirty-term"])
     assert res.status == "skipped-gate"
@@ -3500,28 +2517,6 @@ def test_a_skipped_has_cv_result_from_the_render_race_carries_the_term_finding(m
     _assert_term_split(res)
 
 
-def test_a_headerless_draft_puts_the_hard_violation_first(monkeypatch):
-    """Review Focus 1: without `WORK EXPERIENCE`, section_spans reads the whole body as
-    PROFILE, so headers and company words become term candidates. The HARD reason must
-    still lead the retry prompt -- the composer reads that list in order."""
-    headerless = CLEAN_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
-    _DRAFTS["headerless"] = headerless
-    try:
-        res, be, _rend = _run_sequence(monkeypatch, ["headerless", "clean"])
-    finally:
-        del _DRAFTS["headerless"]
-    retry = be.compose_prompts[1]
-    # The engine's own missing-header violation text, not the bare header name: the
-    # compose prompt's instructions name `WORK EXPERIENCE` too, so a bare find would
-    # locate the prompt's template rather than the violation.
-    hard_at = retry.find("lacks the exact 'WORK EXPERIENCE' header")
-    term_at = retry.find("UNBUNDLED TERM")
-    assert hard_at != -1, "the missing-header violation never reached the retry"
-    assert term_at != -1, (
-        "no UNBUNDLED TERM reached the retry, so the ordering check below is vacuous")
-    assert hard_at < term_at
-
-
 def test_a_term_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(monkeypatch):
     """#194 retention over the 4-tuple: attempt 1's ONE finding is a term, attempt 2's ONE
     is a slop phrase. A tie keeps the later draft -- which holds only if the comparison
@@ -3529,7 +2524,7 @@ def test_a_term_finding_ties_with_a_slop_finding_and_the_later_draft_is_kept(mon
     and wins."""
     res, _be, rend = _run_sequence(monkeypatch, ["unbundled-term", "hard-clean-style-dirty"])
     assert res.status == "rendered"
-    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)]
 
 
 def test_a_retry_adding_a_term_finding_does_not_replace_a_cleaner_draft(monkeypatch):
@@ -3539,7 +2534,7 @@ def test_a_retry_adding_a_term_finding_does_not_replace_a_cleaner_draft(monkeypa
     res, _be, rend = _run_sequence(monkeypatch,
                                    ["hard-clean-style-dirty", "style-dirty-with-term"])
     assert res.status == "rendered"
-    assert rend.rendered == [STYLE_DIRTY_CV]
+    assert _profiles(rend) == [_profile(STYLE_DIRTY_REPLY)]
     # The retained attempt carried no term; a rebind that left the LAST attempt's findings
     # in `term_msgs` would report one here.
     assert res.terms == []

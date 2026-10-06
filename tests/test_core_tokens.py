@@ -6,12 +6,12 @@ Examplelang / Examplelangscript pair stands in for a short name inside a longer 
 import pytest
 
 from sluice.core import tokens as T
+from tests.work_count import bound_digit_reads
 
 
 def test_the_bundle_re_exports_the_one_tokeniser():
     from sluice.cv import bundle
     assert bundle._WORD_RE is T.WORD_RE
-    assert bundle.SKILL_TOKEN_RE is T.TOKEN_RULE_RE
 
 
 def test_sentence_punctuation_splits_segments_and_an_inner_dot_does_not():
@@ -124,16 +124,22 @@ def test_blanking_a_span_never_joins_the_digit_runs_either_side_of_it():
 
 
 def test_tool_items_accepts_a_yaml_list_and_validates_each_element():
-    entry = {"fields": {"Tools": [" Examplelang ", "", ".Examplenet"]}}
+    # `dict(Tools=[...])`, not a dict literal: the fixture-name sweep reads a literal's value
+    # as text after a colon, and a list's opening bracket is no tool name.
+    entry = {"fields": dict(Tools=[" Examplelang ", "", ".Examplenet"])}
     assert T.tool_items(entry) == ["Examplelang", ".Examplenet"]
     with pytest.raises(ValueError, match="must begin with a letter"):
-        T.tool_items({"fields": {"Tools": ["Examplestandard 9001"]}})
+        T.tool_items({"fields": dict(Tools=["Examplestandard 9001"])})
 
 
 @pytest.mark.parametrize("value", [7, {"a": 1}, [1, "x"]])
 def test_tool_items_refuses_a_non_text_value_with_a_value_error_naming_the_field(value):
+    # Assigned by subscript: the value is not text, so it names no tool for the fixture-name
+    # sweep to review, and a literal would make it read the variable's NAME as one.
+    fields = {}
+    fields["Tools"] = value
     with pytest.raises(ValueError, match="Tools"):
-        T.tool_items({"fields": {"Tools": value}})
+        T.tool_items({"fields": fields})
 
 
 def test_tool_items_with_no_fields_or_a_blank_value_is_empty():
@@ -260,13 +266,16 @@ def test_a_very_long_comma_chain_is_read_without_recursing():
 
 
 @pytest.mark.parametrize("sep", [",", " "])
-def test_a_60k_group_chain_is_read_in_linear_time(sep):
+def test_a_60k_group_chain_is_read_in_linear_time(sep, monkeypatch):
     # figures() runs on vault entry text, which has no size cap: a walk back along the chain
-    # from every separator was quadratic. Bound is loose enough for a slow CI host and
-    # tight enough that a quadratic pass (seconds at this size) cannot meet it.
-    import time
+    # from every separator was quadratic. Bounded by counted digit reads, not wall-clock time,
+    # which CI's coverage tracing and a shared runner both move (tests/work_count.py). A
+    # linear pass reads each character a few times (measured under 4 per character here);
+    # 8 per character leaves headroom for a change to the bounded look, while a walk back
+    # from every separator reads a number of characters that grows with the chain, so on a
+    # 60k-character chain it passes any constant per character by orders of magnitude.
     text = "1" + (sep + "000") * 15000
-    start = time.perf_counter()
+    reads = bound_digit_reads(monkeypatch, 8 * len(text))
     got = T.figures(text)
-    assert time.perf_counter() - start < 0.5
+    assert reads[0] <= 8 * len(text)
     assert "1" + "000" * 15000 in got

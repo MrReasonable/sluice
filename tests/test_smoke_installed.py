@@ -652,10 +652,10 @@ class _WritingRenderer:
 
     def __init__(self, payload):
         self.payload = payload
-        self.cv_text = None
+        self.document = None
 
-    def render(self, cv_text, out_dir):
-        self.cv_text = cv_text
+    def render(self, document, out_dir):
+        self.document = document
         path = os.path.join(out_dir, "CV.pdf")
         with open(path, "wb") as fh:
             fh.write(self.payload)
@@ -685,21 +685,16 @@ def test_the_render_check_accepts_a_real_sized_pdf_and_reports_it(monkeypatch):
     rows = _Collector()
     smoke.check_real_render(rows)
     assert rows.labels == ["real render"], rows.rows
-    assert fake.cv_text == smoke._RENDER_PROBE_CV
+    assert fake.document == smoke._render_probe_document()
 
 
-def test_the_render_probe_is_a_cv_the_parser_accepts():
-    """A probe the parser refuses would fail the check on every channel for the SCRIPT's fault,
-    which reads as a broken image. Parsed here with the real grammar, offline."""
-    from sluice.cv.parse import parse_cv
-    doc = parse_cv(smoke._RENDER_PROBE_CV)
-    # Every section the probe exists to put on the page must survive the parse: a document the
-    # parser accepted but emptied would render the near-blank page the size floor refuses.
-    assert doc.name == "EXAMPLE PERSON"
-    assert doc.profile
-    assert [(r.company, r.title) for r in doc.work] == [("Example Data Co", "Staff Engineer")]
-    assert doc.work[0].bullets, "the work entry lost its bullet"
-    assert doc.education, "the education entry was dropped"
+def test_the_render_probe_populates_every_section_the_size_floor_relies_on():
+    """A probe with an empty section would render the near-blank page the size floor
+    refuses, failing every channel for the SCRIPT's fault (#364 spec §12.2)."""
+    doc = smoke._render_probe_document()
+    assert doc.name and doc.contact and doc.profile and doc.education
+    assert [(r.company, r.title) for r in doc.work] == [("Example Data", "SYNTHETIC-TITLE-1")]
+    assert doc.work[0].bullets, "the work entry has no bullet"
 
 
 def test_every_leg_that_installs_the_render_extra_renders_and_no_other_does():

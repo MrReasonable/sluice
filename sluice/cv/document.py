@@ -22,6 +22,7 @@ class AssembledCv:
 
 
 def format_dates(role):
+    """A role's date range as `start–end`, the one spelling the prompt and the document share."""
     return f"{role.start}–{role.end}"
 
 
@@ -79,7 +80,7 @@ def audit_text(selection, slots):
     """What the advisory audit reads: the text the MODEL wrote, each bullet under its role
     heading with its cites. Never a date, location, title, certificate, education line or
     skill: those are the user's own vault data, the auditor has no truth for them, and
-    auditing them would hold almost every CV (spec §6.4)."""
+    auditing them would hold almost every CV (#364 spec §6.4)."""
     lines = [SECTION_HEADINGS[0], selection.profile]
     for slot in slots:
         bullets = selection.roles.get(slot.id, ())

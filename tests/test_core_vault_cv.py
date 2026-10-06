@@ -15,15 +15,13 @@ def _lead_note(fm_lines, body="BODY TEXT\n"):
     note.write_text("---\n" + fm_lines + "\n---\n\n" + body)
     return Vault(root), str(note), note
 
-def _vault_with(entries, baseline="BASELINE"):
+def _vault_with(entries):
     root = tempfile.mkdtemp()
     exp = pathlib.Path(root, "Job Applications", "Experience Library")
     (exp / "_inbox").mkdir(parents=True)
     for name, fm, body in entries:
         (exp / f"{name}.md").write_text("---\n" + fm + "\n---\n\n" + body)
     (exp / "_inbox" / "draft.md").write_text("---\nCompany: X\nverified: 2026-01-01\n---\nbody")
-    mycv = pathlib.Path(root, "My CV"); mycv.mkdir(parents=True)
-    (mycv / "CV.md").write_text(baseline)
     return Vault(root), root
 
 def test_read_experience_verified_only_skips_unverified_and_inbox():
@@ -79,10 +77,6 @@ def test_read_experience_reads_a_vault_with_no_library_as_empty():
     root = tempfile.mkdtemp()
     assert Vault(root).read_evidence("experience") == []
 
-
-def test_read_baseline():
-    v, _ = _vault_with([], baseline="Phone number: +44\nJANE ROE")
-    assert "JANE ROE" in v.read_baseline()
 
 def test_set_tailored_cv_is_additive_and_preserves_body():
     root = tempfile.mkdtemp()

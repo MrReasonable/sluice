@@ -25,7 +25,7 @@ from sluice.core.backends import Completion
 # Stable first-line prefixes of the five call sites. cv-compose is a prefix
 # because its first line is fully interpolated (see module docstring).
 _TRIAGE = "You are the batched judgment stage"           # triage/prompt.py:_SCAFFOLD_INTRO
-_CV = "Compose a tailored CV for"                        # cv/compose.py:build_prompt
+_CV = "Compose a tailored CV for"                        # cv/compose.py::build_structured_prompt
 _AUDIT = "You are auditing a CV for fabrication."        # cv/audit.py:build_audit_prompt
 _TRACK = "You track a job seeker's live applications."   # track/classify.py:build_prompt
 _RESOLVE = "You are the company-name resolution step"    # triage/resolve.py:_RESOLVE_PROMPT_HEAD
@@ -49,9 +49,9 @@ class ScriptedBackend:
     def __init__(self, *, cv_by_company=None, triage_verdicts=None,
                  default_verdict="shortlist", track_response=None,
                  resolve_response=None):
-        # {company: cv_text} -- keyed by COMPANY (parsed from the compose first
+        # {company: reply text} -- keyed by COMPANY (parsed from the compose first
         # line), required for any company the CV hop composes for; a missing key
-        # RAISES (a silent default CV would mask a mis-wired call). Keying by
+        # RAISES (a silent default reply would mask a mis-wired call). Keying by
         # company, not lead, means two DIFFERENT CVs at one company is not
         # expressible today -- a limitation to lift if PR 2/PR 3 ever needs it.
         self.cv_by_company = dict(cv_by_company or {})

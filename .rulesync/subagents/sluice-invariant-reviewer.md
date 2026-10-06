@@ -65,20 +65,37 @@ backward on the ladder; anything advances *out of* a terminal (`rejected`/`accep
 apply transitions from anything other than `shortlist`; an unrecognized status gets silently
 normalized or overwritten instead of passed through untouched.
 
-### 3. The CV fabrication gate is hard — `cv/validate.py`, `cv/engine.py`
+### 3. The CV fabrication gate is hard — `cv/validate.py`, `cv/engine.py`, `cv/reply.py`, `cv/selection.py`, `cv/document.py`, `core/layout.py`, `core/tokens.py`
 
-`validate()` is pure and deterministic. Every WORK bullet cites a real bundle `[id]`; every
-number in a bullet appears in a cited entry. A non-empty violation list **blocks rendering**.
-The engine retries composition exactly once, feeding back the HARD violations plus any
+A CV is assembled, never parsed (#364/#365/#368). The model's reply is a JSON object that
+`cv/reply.py` reads and shape-checks; `cv/selection.py` drops off-pool or excess skill picks and
+trims bullets over a role's budget, reporting both and refusing neither; and `cv/document.py`
+builds the `CvDocument` from the vault's CV Layout (`core/layout.py`) and Candidate Profile, so
+the model writes only the profile, the bullets and its skill picks. `check_selection` is pure and
+deterministic over that model text alone: every kept bullet cites a real bundle entry eligible for
+its role slot; every figure in a bullet appears in a cited entry, and every profile figure in some
+entry (`core/tokens.py::figures`); a tool a bullet names must be licensed by a cited entry; a
+configured `fabrication_decoys` term is FABRICATED. Those findings, the `REPLY:` findings and the
+em-dash/`--` slop tier are the HARD tier, and a non-empty HARD list **blocks rendering**.
+The engine retries composition exactly once, feeding back the HARD findings plus any
 surviving STYLE/VOICE finding (#167) -- and skips the lead only when **no** attempt ever
-cleared the HARD tier; the retry loop retains the HARD-clean draft with the fewest STYLE/VOICE
-findings (a tie keeps the later draft, and an attempt whose voice check failed never displaces one
-whose voice was measured), so a hard-dirty second attempt renders that retained draft rather than skipping it.
+cleared the HARD tier; the retry loop retains the HARD-clean attempt with the fewest STYLE/VOICE
+findings (a tie keeps the later attempt, and an attempt whose voice check failed never displaces one
+whose voice was measured), so a hard-dirty second attempt renders that retained attempt rather than
+skipping it.
 
-**Critical if:** any path renders, serves, or stages a CV with violations; the gate is
+**Critical if:** any path renders, serves, or stages a CV with HARD findings; the gate is
 downgraded to a warning; the retry becomes unbounded; the gate is made non-deterministic or
-delegated to an LLM; `strip_citations` runs before validation rather than after. A CV with an
-invented metric goes to a real employer with the user's name on it. There is no undo.
+delegated to an LLM; anything but `cv/bundle.py::_entry_block` starts licensing an entry's
+figures, or a tool's digits join them; a `cv/reply.py` refusal that keeps a number readable to the
+gate (a numeric character `figures` cannot read, a comma decimal, a separator `figures` cannot
+join, an ASCII-space group) is relaxed; the look-alike-letter refusal, which keeps a tool or decoy
+name from dodging its whole-term match, is relaxed; a reply field gains a way to write a heading,
+date, name, contact, certificate or education line; or the tokeniser or the employer fold
+(`core/layout.py::fold_employer`, which calls `core/names.py::fold_note_name`) is copied rather
+than shared. A CV with an invented metric goes to a real employer with the user's name on it. There
+is no undo. The opposite failure is real too: a new check over vault text the user wrote makes them
+prove their own data. High.
 
 ### 4. Empty config means abstain, not match-nothing
 

@@ -1,85 +1,71 @@
-"""A CV citing a skill absent from the bundle never ships.
+"""A CV listing a skill absent from the bundle never ships.
 
-The fabrication gate's SKILLS arm (#168), end to end -- the sibling of
-`test_a_cv_citing_an_unbacked_figure_never_ships`'s numeric arm, and the scenario
-#213's review found untested anywhere below the unit level: every seam (prompt
-gating, the two containment rows, the doctor wiring, the CLI display) was
-independently unit-tested and confirmed load-bearing by mutation, but nothing drove
-a FAKE BACKEND emitting a genuinely fabricated SKILLS line through the real
-`Sluice.compose_cv` composition root the way this scenario does.
+The property is unchanged from #168's: an unbacked skill never reaches a CV. Only the
+mechanism moved (#364/#365/#368, spec §6.2): the composer now picks skills from a CLOSED
+list -- the verified entries' `Tools:` and verified Skills Inventory names -- and a pick
+off that list is DROPPED and reported, never rendered, rather than refusing the whole CV.
+So the lead renders, without the pick, on its first attempt.
 
-The vault is ANNOTATED: the one seeded Experience Library entry declares
-`Skills: "Example Query"`, so the composed CV's SKILLS section is GATED (row 2,
-`UNSOURCED SKILL` in cv/validate.py) rather than silently ungated -- an annotated
-vault whose containment check never ran would be indistinguishable, at every OTHER
-seam, from one where it fired correctly. The composed CV's one SKILLS line is
-"Example Ghost", a name the bundle never declares (already reviewed on
-tests/test_fixture_name_neutrality.py's `_REVIEWED_SKILL_VALUES`, invented for an
-unrelated #168 fixture and reused here). The engine retries once -- the retry
-re-keys the same canned CV, since compose appends violations past the prompt's
-first line -- then skips. Exactly one violation is load-bearing: any other failure
-would keep the CV skipped-gate under a row-2 mutation and the witness would go
-inert.
+Driven through the real `Sluice.compose_cv` composition root with a FAKE BACKEND emitting a
+genuinely unbacked pick, the scenario #213's review found untested anywhere below the unit
+level. The vault is ANNOTATED: the one seeded Experience Library entry declares
+`Tools: "Example Query"`, so the pool is non-empty and skills ARE requested -- an
+annotated vault whose pool never reached the prompt would be indistinguishable, at every
+other seam, from one where it did. The reply picks "Example Ghost", a name the pool never
+offers (already reviewed on tests/test_fixture_name_neutrality.py's
+`_REVIEWED_SKILL_VALUES`).
 """
-from sluice.cv.compose import _SKILLS_PROMPT_BLOCK
+import json
+
+from sluice.cv.compose import _SKILLS_POOL_PROMPT_HEADER
 from sluice.ingest import sources as _sources
 
-from tests.harness import PASSING_CV, ScriptedBackend, build_harness
+from tests.harness import ScriptedBackend, build_harness
 from tests.harness.config import DEFAULT_EXPERIENCE
 
 BOARD_URL = "https://remoteok.example/harness"
 ROWS = [{"title": "Staff Engineer", "company": "Example Foundry",
          "link": "https://remoteok.example/jobs/1", "salary": ""}]
 
-# DEFAULT_EXPERIENCE's one entry, ANNOTATED with a `Skills:` value -- the same entry
-# every other e2e/functional CV scenario seeds, widened by only the one field #168
-# added. "Example Query" is already on the reviewed roster.
-ANNOTATED_EXPERIENCE = [{**DEFAULT_EXPERIENCE[0], "skills": "Example Query"}]
+# DEFAULT_EXPERIENCE's one entry, ANNOTATED with a `Tools:` value -- the same entry every
+# other e2e/functional CV scenario seeds, widened by only the one field. "Example Query"
+# is already on the reviewed roster.
+ANNOTATED_EXPERIENCE = [{**DEFAULT_EXPERIENCE[0], "tools": "Example Query"}]
 
-# PASSING_CV plus a SKILLS section naming "Example Ghost" -- a value the bundle's
-# source text (the entry's own `Skills:` value, its body, and the baseline) never
-# contains, so row 2 must refuse it as UNSOURCED. Appended, not spliced into
-# PASSING_CV's own structure, so the CV is otherwise byte-identical to the passing
-# baseline and this is the ONLY violation.
-SKILLS_VIOLATION_CV = PASSING_CV + "\n\nSKILLS\n- Example Ghost\n"
+# PASSING_REPLY's one cited bullet, picking a skill the pool does not offer.
+UNBACKED_PICK_REPLY = json.dumps({
+    "profile": "I build reliable systems.",
+    "roles": {"R1": [{"text": "Grew the team from 3 to 8 engineers", "cites": ["EF1"]}]},
+    "skills": ["Example Ghost"]})
 
 
 def test_a_cv_citing_an_unbacked_skill_never_ships(tmp_path, monkeypatch):
     h = build_harness(tmp_path, monkeypatch, board_url=BOARD_URL, rows=ROWS,
                       experience=ANNOTATED_EXPERIENCE)
-    backend = ScriptedBackend(cv_by_company={"Example Foundry": SKILLS_VIOLATION_CV},
+    backend = ScriptedBackend(cv_by_company={"Example Foundry": UNBACKED_PICK_REPLY},
                               default_verdict="shortlist")
     app = h.sluice(backend)
     app.ingest([_sources.get("remoteok")])
     app.triage(statuses=("new",))
 
-    # Snapshot compose calls so the retry-once contract is PINNED, not assumed: a
-    # gate failure composes once, feeds the violations back, composes a SECOND time,
-    # then skips (cv/engine.py's `for _ in range(2)`). Without this the test would
-    # still pass if the retry were removed.
+    # Snapshot compose calls so the no-retry contract is PINNED, not assumed: a drop never
+    # causes a retry (#364 spec §6.2), so one compose is all a hard-clean reply costs.
     composes_before = sum(p.startswith("Compose a tailored CV for") for p in backend.prompts)
     results = app.compose_cv(all_shortlist=True)
     composes = sum(p.startswith("Compose a tailored CV for") for p in backend.prompts) - composes_before
 
-    # The ANNOTATED vault must have actually REQUESTED a SKILLS section -- the real
-    # `Vault` reading a real note's `Skills:` frontmatter through `EVIDENCE_KINDS`
-    # is a different path from the FAKE vault stubs `test_cv_engine.py`'s own
-    # request-wiring test hands a `fields` dict directly, and a break anywhere in
-    # that real chain (the field never declared, the frontmatter parsed wrong, the
-    # entry never reaching `bundle_sources`) would silently fall back to
-    # `skills_requested=False` with the outcome below UNCHANGED, since row 2 always
-    # runs regardless of what was requested -- this is the one assertion that can
-    # tell the two apart.
-    assert any(_SKILLS_PROMPT_BLOCK in p for p in backend.prompts)
+    # The ANNOTATED vault must have actually OFFERED its tool -- the real `Vault` reading a
+    # real note's `Tools:` frontmatter through `EVIDENCE_KINDS` is a different path from a
+    # fake vault's hand-built `fields` dict, and a break anywhere in that real chain would
+    # silently leave the pool empty with the outcome below UNCHANGED (an empty pool drops
+    # the pick too). This is the one assertion that can tell the two apart.
+    assert any(_SKILLS_POOL_PROMPT_HEADER in p and "- Example Query" in p
+               for p in backend.prompts)
 
     assert len(results) == 1
     r = results[0]
-    assert r.status == "skipped-gate"
-    assert composes == 2                       # composed once, retried exactly once, then skipped
-    # EXACTLY one violation, and it is the invented skill -- so the row-2 UNSOURCED
-    # SKILL check is the only thing that can make this lead render; no unrelated
-    # gate failure is masking it (a bare `any(...)` would tolerate a second
-    # violation).
-    assert len(r.violations) == 1
-    assert "UNSOURCED SKILL" in r.violations[0] and "Example Ghost" in r.violations[0]
-    assert h.recorder.rendered == []           # nothing was ever rendered
+    assert (r.status, composes) == ("rendered", 1)
+    # EXACTLY the one drop, naming the pick and why.
+    assert r.skills_dropped == ["'Example Ghost': not one of your skills"]
+    # The unbacked pick never reached the document the renderer was handed.
+    assert [d.skills for d in h.recorder.rendered] == [[]]

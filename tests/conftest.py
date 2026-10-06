@@ -383,25 +383,29 @@ def _forbid_dns():
 
 
 def make_composable(vault):
-    """Give a vault the two config-level preconditions `cv run` requires (#242).
+    """Give a vault the config-level preconditions `cv run` requires (#242; #364 spec §9.1): a CV
+    Layout note, and one verified experience entry whose company a role in it matches.
 
-    A baseline CV and one verified `experience` entry. Before #242 an empty vault reached the
-    composer and failed later, so a test that only wanted to exercise compose_cv's WIRING
-    (backend threading, dossier paths, MCP tool shapes) could use a bare tmp_path. That is now
-    refused before any spend, correctly -- so those tests need a vault that could actually
-    produce a CV, which is also the more honest fixture.
+    Before #242 an empty vault reached the composer and failed later, so a test that only
+    wanted to exercise compose_cv's WIRING (backend threading, dossier paths, MCP tool shapes)
+    could use a bare tmp_path. That is now refused before any spend, correctly -- so those
+    tests need a vault that could actually produce a CV, which is also the more honest
+    fixture.
 
-    Deliberately NOT keyed on `skills`/`stories`: the gate licenses nothing from them, so
-    `missing_prerequisites` does not require them and neither does this.
-    """
+    Deliberately NOT keyed on `skills`/`stories`: `missing_prerequisites` requires neither,
+    so neither does this."""
     import os
 
-    os.makedirs(os.path.join(vault.dir, os.path.dirname(vault.baseline_rel)), exist_ok=True)
-    with open(os.path.join(vault.dir, vault.baseline_rel), "w", encoding="utf-8") as fh:
-        fh.write("# CV\n\nPROFILE\n\nWORK EXPERIENCE\n")
+    from sluice.core.protocols import CV_LAYOUT_RELPATH
+
+    path = os.path.join(vault.dir, CV_LAYOUT_RELPATH)
+    if not os.path.exists(path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(layout_yaml())
     if vault.read_evidence("experience"):
         return vault                       # idempotent: a second call must not re-propose
-    vault.propose_evidence("experience", name="alpha", fields={})
+    vault.propose_evidence("experience", name="alpha", fields={"Company": "Example Foundry"})
     pending = {e["title"]: e for e in vault.read_pending_evidence("experience")}
     with open(pending["alpha"]["path"], encoding="utf-8") as fh:
         raw = fh.read()
@@ -514,7 +518,10 @@ def _sandbox_guard(request):
 @pytest.fixture(scope="session", autouse=True)
 def _sandbox_session_check():
     # The hook sees only this process. A subprocess that writes a watched path is caught
-    # here instead: anything absent at session start and present at the end.
+    # here instead: anything absent at session start and present at the end. Limit, stated:
+    # a watched path ALREADY present at session start (a developer checkout holding
+    # ./cv-output from a real run) is excluded by `before`, so a subprocess writing into it
+    # passes unseen. A fresh checkout, which CI always is, has none of them.
     before = {w for w in _WATCHED if os.path.exists(w)}
     yield
     appeared = [w for w in _WATCHED if w not in before and os.path.exists(w)]

@@ -3,14 +3,13 @@
 `build_harness` writes a `sluice.yaml` under `tmp_path`, points `SLUICE_CONFIG`
 at it, and pins every cwd-relative path INTO `tmp_path` so a run writes nothing
 into the repo (the run then asserts the repo root is untouched). It also seeds a
-synthetic vault -- a baseline CV, verified Experience Library entries, and (#107)
-a Candidate Profile note -- so the CV hop composes against real store reads.
+synthetic vault -- a CV Layout note, verified Experience Library entries, and
+(#107) a Candidate Profile note -- so the CV hop composes against real store reads.
 
 Neutrality: every identity-shaped value is synthetic and reuses conventions
-already vetted in this repo. Companies are the `Example ...` family (the set
-`test_cv_engine.py`'s CLEAN_CV already uses); the CV author is the `Jane Roe`
-placeholder CLEAN_CV also uses, with the same synthetic "+1 555 0100" contact
-line CLEAN_CV's own header carries; URLs and emails use the reserved
+already vetted in this repo. Companies are the `Example ...` family; the CV
+author is the `Jane Roe` placeholder, with the synthetic "+1 555 0100" contact
+line; URLs and emails use the reserved
 `example.invalid` / `*.example` domains. Locations use the neutral `Remote`
 work-arrangement token (as `test_triage_engine.py` does), and job titles are
 generic role names -- both
@@ -27,67 +26,43 @@ import os
 from dataclasses import dataclass, field
 
 from sluice.core.config import load_config
-from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH
 from sluice.core.vault import Vault
 
 from tests.harness.browser import ScriptedBrowserClient, install_scripted_fetcher
+from tests.conftest import layout_yaml
 from tests.harness.renderer import Recorder, install_recording_renderer
 
-# ── canned composed CVs ──────────────────────────────────────────────────────
-# A fully-cited, slop-free, reverse-chronological CV that PASSES cv/validate.py
-# against a bundle whose single verified entry (Example Foundry) codes to [EF1].
-# En-dash date ranges (U+2013) are fine; only em-dash / "--" are slop errors.
-# The PROFILE line is number-free (mirrors test_cv_engine.py's CLEAN_CV) so it
-# trips neither the numeric floor nor engine.py's PROFILE structural guard (#30)
-# -- without it, engine.py's guard STRUCTURAL-fails this canned CV and every e2e/
-# functional test built on it, including the numeric-violation witness in
-# test_a_cv_citing_an_unbacked_figure_never_ships, whose own precision depends on
-# exactly one violation.
-#
-# DEFAULT_CANDIDATE_MOBILE is the ONE header line `_seed_vault`'s Candidate Profile
-# note produces (#107, mirrors test_cv_engine.py's CLEAN_CV): cv/engine.py's
-# #99/#100 STRUCTURAL guard now compares this header block against the vault-
-# derived identity, not cv.name/cv.contact, so this line must match the seeded
-# profile's `mobile` field exactly or every e2e/functional test built on this
-# fixture would fail that guard (a SECOND violation) instead of testing what it
-# claims to -- test_a_cv_citing_an_unbacked_figure_never_ships's exact
-# `len(violations) == 1` assertion would be the first to catch a drift here. A
-# SINGLE constant, not two string literals kept in sync by comment (round-1
-# review, M2): the class of drift this comment used to merely document is now
-# structurally impossible.
+# ── canned composer replies ──────────────────────────────────────────────────
+# DEFAULT_CANDIDATE_MOBILE is the ONE contact line `_seed_vault`'s Candidate Profile note
+# produces (#107). sluice assembles the CV's name and contact block from that note itself
+# (#364/#365/#368, spec §7.1), so no reply carries it.
 DEFAULT_CANDIDATE_MOBILE = "+1 555 0100"
 
-PASSING_CV = "\n".join([
-    DEFAULT_CANDIDATE_MOBILE,
-    "JANE ROE",
-    "",
-    "PROFILE",
-    "I build reliable systems.",
-    "",
-    "WORK EXPERIENCE",
-    "",
-    "Example Systems",
-    "02/2023–present | Remote | Staff Engineer",
-    "- Shipped the billing service to production [EF1]",
-    "",
-    "Example Analytics",
-    "06/2020–01/2023 | Remote | Senior Engineer",
-    "- Grew the team from 3 to 8 engineers [EF1]",
-    "",
-    "CERTIFICATES",
-    "- Example Scrum Master",
-    "EDUCATION",
-    "- Example University, 2015 | BSc",
-])
-
-# The SAME CV under a drifted header. cv/engine.py's structural guard fires when
-# the exact "WORK EXPERIENCE" line is absent, so the citation gate "did not run"
-# and rendering is HARD-blocked -- the proven `test_drifted_work_header` failure
-# mode, reached here through the full composition root.
-GATE_FAILING_CV = PASSING_CV.replace("WORK EXPERIENCE", "PROFESSIONAL EXPERIENCE")
+# A reply, as the composer returns it (#364 spec §5.2): one cited bullet under the one role the
+# harness layout declares, its figures all in the seeded entry.
+PASSING_REPLY = json.dumps({
+    "profile": "I build reliable systems.",
+    "roles": {"R1": [{"text": "Grew the team from 3 to 8 engineers", "cites": ["EF1"]}]},
+    "skills": [],
+})
+# What a run of PASSING_REPLY hands the renderer, as the bullets of its one role.
+PASSING_BULLETS = ["Grew the team from 3 to 8 engineers"]
+# Fails exactly ONE named hard check -- a figure the cited entry does not carry -- so a row
+# can assert which (#364 spec §12.2).
+GATE_FAILING_REPLY = json.dumps({
+    "profile": "I build reliable systems.",
+    "roles": {"R1": [{"text": "Grew the team from 3 to 80 engineers", "cites": ["EF1"]}]},
+    "skills": [],
+})
+GATE_FAILING_FINDING = "INVENTED METRIC ['80'] not in ['EF1']"
+# The CV Layout every harness vault is seeded with: one role, at the employer the default
+# experience entry names, so its work is citable under R1.
+DEFAULT_LAYOUT_ROLES = [{"heading": "Example Foundry", "from": "02/2023", "to": "present",
+                         "location": "Example Location A", "title": "SYNTHETIC-TITLE-1"}]
 
 # One verified Experience Library entry. company -> [EF1] via the prefix_map
-# below; its metrics/body carry the 3 and 8 the passing CV's bullet cites.
+# below; its metrics/body carry the 3 and 8 the passing reply's bullet cites.
 DEFAULT_EXPERIENCE = [
     {"title": "Grew the delivery team", "company": "Example Foundry",
      "category": "people", "best_for": "delivery", "metrics": "3 8",
@@ -140,10 +115,12 @@ class Harness:
                       sleep=sleep if sleep is not None else (lambda *a, **k: None))
 
 
-def _seed_vault(vault_dir, *, baseline, experience, cv_name):
-    os.makedirs(os.path.join(vault_dir, "My CV"), exist_ok=True)
-    with open(os.path.join(vault_dir, "My CV", "CV.md"), "w", encoding="utf-8") as f:
-        f.write(baseline)
+def _seed_vault(vault_dir, *, experience, cv_name):
+    # The CV Layout (#364/#365/#368): `cv run` refuses a vault without one, before any spend.
+    layout_path = os.path.join(vault_dir, CV_LAYOUT_RELPATH)
+    os.makedirs(os.path.dirname(layout_path), exist_ok=True)
+    with open(layout_path, "w", encoding="utf-8") as f:
+        f.write(layout_yaml(DEFAULT_LAYOUT_ROLES))
     exp_dir = os.path.join(vault_dir, "Job Applications", "Experience Library")
     os.makedirs(exp_dir, exist_ok=True)
     for e in experience:
@@ -152,23 +129,20 @@ def _seed_vault(vault_dir, *, baseline, experience, cv_name):
             f'Category: "{e.get("category", "")}"',
             f'Best For: "{e.get("best_for", "")}"',
             f'Metrics: "{e.get("metrics", "")}"',
-            # `Skills` (#168): the fifth field `EVIDENCE_KINDS["experience"].fields`
-            # declares, and the one this factory did not write until #213's review
-            # found the whole feature untested end to end -- every e2e/functional CV
-            # scenario ran against a vault the containment gate could never see
-            # anything to check. Blank by default (every pre-#168 scenario stays
-            # exactly as unannotated as before); a caller passes `skills=` to opt one
-            # entry in, mirroring how `metrics`/`category`/`best_for` already work.
-            f'Skills: "{e.get("skills", "")}"',
+            # `Tools` (#364/#365/#368, in place of #168's `Skills`): the fifth field
+            # `EVIDENCE_KINDS["experience"].fields` declares. Written so every e2e/
+            # functional CV scenario runs against a vault the attribution check and the
+            # skills pool can see. Blank by default (every scenario stays unannotated);
+            # a caller passes `tools=` to opt one entry in, mirroring how
+            # `metrics`/`category`/`best_for` already work.
+            f'Tools: "{e.get("tools", "")}"',
             f'verified: {e.get("verified", "true")}',
         ])
         with open(os.path.join(exp_dir, f"{e['title']}.md"), "w", encoding="utf-8") as f:
             f.write(f"---\n{fm}\n---\n{e.get('body', '')}\n")
     # #107: cv/engine.py's identity gate reads the vault's Candidate Profile note, not
     # cv.name/cv.contact -- write one so every harness-driven CV composition reaches
-    # compose rather than refusing skipped-config before it. PASSING_CV's header
-    # carries this SAME DEFAULT_CANDIDATE_MOBILE contact line -- a shared constant
-    # (round-1 review, M2), not two literals kept in sync by comment.
+    # compose rather than refusing skipped-config before it.
     #
     # cv_name="" (test_cv_run_blank_candidate_profile_returns_1's shape) writes NO
     # note at all, exercising the same blank-profile refusal end to end through the
@@ -189,7 +163,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
                   accept_titles=(), reject_titles=(), target_locations=("remote",),
                   perm_floor_gbp=50000, contract_floor_gbp_day=400,
                   cv_name="Jane Roe", prefix_map=None,
-                  experience=None, baseline="Synthetic baseline CV for the harness."):
+                  experience=None):
     """Scaffold a hermetic e2e run and return a Harness. The caller supplies the
     scripted backend (with its per-company CVs / track response) and drives the
     pipeline through `harness.sluice(backend, today=...)`."""
@@ -273,7 +247,7 @@ def build_harness(tmp_path, monkeypatch, *, board_url, rows,
     monkeypatch.setenv("SLUICE_DISABLED", p["disabled"])
     monkeypatch.setenv("SLUICE_USAGE", p["usage"])
 
-    _seed_vault(p["vault"], baseline=baseline, experience=experience, cv_name=cv_name)
+    _seed_vault(p["vault"], experience=experience, cv_name=cv_name)
 
     browser = install_scripted_fetcher(
         ScriptedBrowserClient({board_url: rows}, jd_text=jd_text))

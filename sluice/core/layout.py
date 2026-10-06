@@ -8,6 +8,7 @@ import difflib
 import re
 from dataclasses import dataclass
 
+from sluice.core.names import fold_note_name
 from sluice.core.protocols import SECTION_HEADINGS, CvLayout, LayoutError, LayoutRole
 from sluice.core.safeout import is_control
 
@@ -30,13 +31,10 @@ def _echoable(key):
 
 
 def fold_employer(name):
-    """One employer name, folded for matching: the repo's one name fold, whitespace
-    collapsed (so a non-breaking space or a doubled space still matches).
-
-    Imported INSIDE the function: core/vault.py imports this module for read_cv_layout, so
-    a module-scope import back would be a cycle. The fold has ONE home -- never copy it."""
-    from sluice.core.vault import _fold_note_name
-    return " ".join(_fold_note_name(name).split())
+    """One employer name, folded for matching: the repo's one name fold
+    (core/names.py::fold_note_name), whitespace collapsed (so a non-breaking space or a
+    doubled space still matches). The fold has ONE home -- never copy it."""
+    return " ".join(fold_note_name(name).split())
 
 
 def parse_layout(mapping):
@@ -88,7 +86,7 @@ def _text(path, value, problems, *, required, meta=False):
         problems.append(f"{path}: must not be blank")
         return ""
     # A layout string is written into lines a `script` renderer re-reads, so it must not be
-    # able to forge a line any more than model text can (spec §4.1).
+    # able to forge a line any more than model text can (#364 spec §4.1).
     if any(is_control(c) for c in value):
         problems.append(f"{path}: contains a line break or control character")
         return ""
@@ -190,12 +188,20 @@ def _role(path, raw, problems):
 
 
 def _contradictions(roles, lists, problems):
-    """A company both omitted and placed is a layout that says two opposite things."""
+    """A company both omitted and placed is a layout that says two opposite things. One
+    under both `any_role:` and a role's `employers` says two things too, and since a role
+    match outranks `any_role:` (see `place`) the any_role listing would do nothing at all --
+    named rather than left silently inert."""
+    in_roles = set()
+    for role in roles:
+        in_roles |= {fold_employer(e) for e in role.employers}
+    for j, company in enumerate(lists["any_role"]):
+        if fold_employer(company) in in_roles:
+            problems.append(f"any_role[{j}]: also listed under a role's employers, which "
+                            "wins -- remove it from one of the two")
     if not lists["omitted"]:
         return
-    placed = {fold_employer(c) for c in lists["any_role"]}
-    for role in roles:
-        placed |= {fold_employer(e) for e in role.employers}
+    placed = in_roles | {fold_employer(c) for c in lists["any_role"]}
     for j, company in enumerate(lists["omitted"]):
         if fold_employer(company) in placed:
             problems.append(f"omitted[{j}]: also listed under any_role or a role's employers")
@@ -220,14 +226,17 @@ class Placement:
 
 
 def place(layout, company):
-    """Where one entry may be cited (spec D6). A blank or unmatched company is citable
+    """Where one entry may be cited (#364 D6). A blank or unmatched company is citable
     NOWHERE, so the model can never move work under an employer the user did not put it
-    under; `any_role:` is the explicit way to make an entry fit every role."""
+    under; `any_role:` is the explicit way to make an entry fit every role.
+
+    Precedence, when `Company:`'s parts match more than one list: a role match, then
+    `omitted:`, then `any_role:`. `any_role:` is the WIDEST grant, so it applies only when
+    no part says anything narrower: tested first, `Example Ghost / Freelance` with the first
+    part omitted and the second under `any_role:` would be citable under every role."""
     parts = employers_of(company)
     if not parts:
         return Placement("blank", frozenset())
-    if parts & {fold_employer(c) for c in layout.any_role}:
-        return Placement("any_role", frozenset(range(len(layout.roles))))
     # A role's own heading stands in when it lists no employers: parse_layout always fills
     # them, but a LayoutRole built directly must not silently match nothing.
     matched = frozenset(i for i, role in enumerate(layout.roles)
@@ -236,6 +245,8 @@ def place(layout, company):
         return Placement("role", matched)
     if parts & {fold_employer(c) for c in layout.omitted}:
         return Placement("omitted", frozenset())
+    if parts & {fold_employer(c) for c in layout.any_role}:
+        return Placement("any_role", frozenset(range(len(layout.roles))))
     return Placement("unmatched", frozenset())
 
 
@@ -260,26 +271,46 @@ def build_slots(layout, entries):
     return tuple(slots)
 
 
+def asks_for_bullets(roles):
+    """Whether any of these LayoutRoles asks for bullets: a `bullets_max` other than 0
+    (absent means no cap). False only for a headings-only CV (#364 spec §5.2, D10), which cites
+    nothing -- so it needs no citable entry, and no slot that can carry one. The ONE home
+    of that predicate: `cv run`'s prerequisite check and `doctor` both decide on it, and a
+    second spelling is how the two came to disagree."""
+    return any(role.bullets_max != 0 for role in roles)
+
+
 def no_citable_slot(slots):
     """True when no slot can carry a bullet although some role asks for bullets -- a
     misconfiguration (say, legal-suffix company names the headings do not match) that
     would otherwise spend a dossier fetch and two compose calls per lead before failing."""
     return (all(s.budget == 0 for s in slots)
-            and any(s.role.bullets_max != 0 for s in slots))
+            and asks_for_bullets(s.role for s in slots))
 
 
 def placement_counts(layout, entries):
+    """How many of these entries fall under each placement reason `place` can give.
+    Every reason is present in the result, with 0 when none matched."""
     counts = dict.fromkeys(("role", "any_role", "omitted", "blank", "unmatched"), 0)
     for e in entries:
         counts[place(layout, e.get("company", "")).reason] += 1
     return counts
 
 
-def layout_text(layout):
-    """Every string the layout shows the composer, one per line: what the term check must
-    recognise as the user's own words."""
+def layout_strings(layout):
+    """Every non-empty string the layout shows the composer, each its own item. A PHRASE
+    search must run over these one at a time, never over their join: core/tokens.py's
+    find_term does not break a phrase at a newline, so a two-word term would match the last
+    word of one heading and the first word of the next -- text the user never wrote."""
     parts = []
     for role in layout.roles:
         parts += [role.heading, role.location, role.title, *role.employers]
     parts += [*layout.certificates, *layout.education, *layout.any_role, *layout.omitted]
-    return "\n".join(p for p in parts if p)
+    return tuple(p for p in parts if p)
+
+
+def layout_text(layout):
+    """`layout_strings`, one per line: what the term check must recognise as the user's own
+    words. Safe for a WORD set (cv/bundle.py::term_vocabulary), which no join can change;
+    a phrase search takes `layout_strings` instead."""
+    return "\n".join(layout_strings(layout))

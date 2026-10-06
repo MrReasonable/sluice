@@ -2,7 +2,7 @@
 
 `job-sluice doctor` (offline, then live) is the first move for almost everything below — it
 preflights backends, the renderer, the store's artefacts (including the Candidate Profile
-note's own declared name/contact — #133/#107), and track's Google adapter, and names which
+note's own declared name/contact — #133/#107 — and the CV Layout note), and track's Google adapter, and names which
 commands each dead/degraded result blocks. This page is what to do once it has told you what's
 wrong.
 
@@ -61,7 +61,14 @@ system libraries — it shells out to a render script you supply. See `sluice.ya
 
 ## `cv run` refuses with `skipped-config`
 
-The candidate's identity — read from `Job Applications/Candidate Profile.md` in your vault,
+The printed line names which note refused.
+
+**The CV Layout note disappeared after the run began.** `cv run` checks for
+`Job Applications/CV Layout.md` once, before it starts (an absent note at that point stops the
+whole run with exit 2 instead), so this result means the note was moved or deleted while the
+run was going. Put it back and re-run.
+
+**The Candidate Profile has no name or no contact.** The candidate's identity — read from `Job Applications/Candidate Profile.md` in your vault,
 not `sluice.yaml` — has no declared name or no declared contact channel (mobile, email or
 LinkedIn). **This is a behaviour change from before #133/#107**: a config that left
 `cv.contact` blank on purpose (because your own `cv.template` hardcodes contact details)
@@ -166,25 +173,41 @@ log level):
 
 ```text
 cv: skipped-gate Job Applications/Job Leads/... served=None violations=2 audit_flags=0 ...
-  UNSOURCED SKILL 'Widget, Gadget': not in the bundle
-  STRUCTURAL: composed CV lacks the exact 'PROFILE' header, so the profile fabrication check did not run
+  REPLY: R2 bullet 1 contains a bracket -- put entry ids in "cites", never in the text
+  WRONG EMPLOYER: R1 bullet 2 cites EB1, which belongs to Example Beta - Cut build time by 40%
 ```
 
 Read the category that opens each line:
 
-- `UNSOURCED SKILL` — a **SKILLS** line whose text is not in the bundle's source blocks.
-  Often a *formatting* mismatch rather than an invented skill: the whole stripped line is
-  compared as one token sequence, so a category label or a reordering is refused even when
-  every term is real.
-- `MISATTRIBUTED SKILL` — a **WORK bullet** naming a skill that some entry in the corpus
-  does declare, but not one of the entries that bullet cites. Right skill, wrong role: the
-  fix is the citation, not the skill.
+- `REPLY` — the model's reply itself: not one JSON object, a field missing or the wrong
+  type, a slot the CV Layout does not have, a bracket or a line break inside a text, or no
+  bullets in any role that can carry them. The retry is told exactly which; nothing in your
+  vault needs to change.
+
+  Some `REPLY` lines are about how the model wrote a **number** or a **word**, because the
+  gate can only check text it reads the same way the PDF shows it. The profile or a bullet is
+  refused when it writes a number without the digits 0-9 (a Roman, circled or CJK numeral, a
+  vulgar fraction), puts an unusual character between two digits (`8·3`), writes a decimal
+  with a comma (`2,5x`), groups a number with a plain space (`3 100`, which could be one
+  number or two), or uses a look-alike letter: a full-width or mathematical letter, a ligature,
+  a word that mixes Latin with another script, or a non-Latin letter written against a digit
+  (a Cyrillic or Greek O in `8O%`). Each would let a figure or a name slip past
+  the checks below while the PDF showed it plainly. The fix is the model's to make on the
+  retry (`3,100` or `3.5`, plain letters); your vault text is never refused for it. One
+  residual: an ASCII letter against a digit (`8O%` with a Latin O, `2l0`) is not refused,
+  since `5G` and `O2` are real text, so only the digits of it are checked.
 - `INVENTED METRIC` / `UNCITED BULLET` / `BAD CITATION` — the citation gate on **WORK
   bullets**. The figure or bullet is not derivable from the entry that bullet cites, so
   the fix is the citation or the figure.
+
+  A figure is read whole, digits joined across thousands separators: `50,000` is the one
+  number 50000 (as are `50 000` written with a non-breaking or thin space), so an entry
+  saying `50,000` licenses `50,000` in a bullet but not `50`. A decimal must match exactly:
+  `3.50` in an entry does not license `3.5`. When your own entry groups a number with a plain
+  space, both readings count from it, since only you know which you meant.
 - `INVENTED PROFILE METRIC` — the same question asked of **PROFILE prose**, which carries
   no per-bullet citations at all. The figure has to appear somewhere in the whole source
-  set (the baseline plus every entry), not in a cited entry — so adding an `[id]` to
+  set (every verified entry), not in a cited entry — so adding an `[id]` to
   profile prose does not answer it, and is not meant to: the gate refuses to let prose
   launder a citation.
 - `WRONG EMPLOYER` — a **WORK bullet** citing an entry that does not belong to the role it
@@ -192,18 +215,15 @@ Read the category that opens each line:
   company at all. The fix is the citation, or the entry's `Company:` and the CV Layout.
 - `MISATTRIBUTED TOOL` — a **WORK bullet** naming a tool that some verified entry lists in
   `Tools:` but none of the entries it cites lists or mentions. Right tool, wrong role: the
-  fix is the citation.
-- `FABRICATED` / `MISSING EMPLOYER` / `NOT REVERSE-CHRONOLOGICAL` — whole-document checks.
-- `STRUCTURAL` — the composed CV's shape, not its content: a missing `PROFILE` /
-  `WORK EXPERIENCE` header, or a header block that does not match the Candidate Profile
-  note's declared name and contact block.
-- `FORMAT` — the `template` renderer's own grammar; see the next section. A `precheck`
-  refusal reports as `skipped-gate` like any other, even though the CV cleared the
-  fabrication gate itself.
+  fix is the citation. When the quoted "tool" is an ordinary word rather than a named tool,
+  the fix is your `Tools:` instead: see "Many leads skipped with `MISATTRIBUTED TOOL` on an
+  ordinary word" below.
+- `FABRICATED` — a term you listed in `cv.fabrication_decoys`, found as a whole term in the
+  profile or a bullet the model wrote.
 
 `violations=0` on a `skipped-gate` row does **not** mean there is nothing to read. The
 blocking tier is `violations` *plus* the slop linter's HARD findings, so an em dash or a
-literal `--` anywhere in the document bins the lead on its own, and the only indented lines
+literal `--` in the profile or a bullet the model wrote (never in your own vault text, which renders as written) bins the lead on its own, and the only indented lines
 are `SLOP EM-DASH:` / `SLOP DOUBLE-HYPHEN-DASH:`. Those are always answerable without
 inventing anything — rewrite the punctuation. Note the same block also carries the
 non-blocking STYLE tier (`SLOP <phrase>:`), so not every `SLOP` line you see is the reason
@@ -222,20 +242,6 @@ runs** still says something one run's artefacts cannot: a category that keeps co
 fresh invocations points upstream of the model — the composer prompt, the evidence corpus,
 the Candidate Profile note, or the lead's own `culture_flags`/`triage_concerns` (fixed by editing the
 note) — rather than at a one-off bad draft.
-
-## A gate-clean CV is still refused (a renderer `precheck` violation)
-
-The hard fabrication gate (`cv/validate.py`) can pass while the `template` renderer's own
-grammar check (`precheck`) still refuses — a formatting mismatch, not a fabrication one. The
-engine folds both into the same one retry the LLM gets, so this usually self-corrects; if it
-doesn't, the refusal prints as a `FORMAT:` line under the `skipped-gate` summary (see the
-section above) naming the specific formatting rule it hit: a date-range separator, a missing
-field, a mis-cased section header, and so on — see `docs/ARCHITECTURE.md`'s "A renderer's
-`precheck`" section for the full list and why it exists as a *second*, narrower gate rather
-than being folded into `validate.py`. If the refusal
-asks for something that can't be answered without inventing content (a `LOCATION` field
-nothing upstream supplied, for instance), that is a known, deliberately-left gap — see
-`docs/ARCHITECTURE.md` — not something to work around by guessing a value.
 
 ## Ingest/dossier fetch fails: Camofox unreachable
 
@@ -363,52 +369,31 @@ actually answers, not just that a key is present.
   your config, or `$VAULT_DIR` exported, it is `dead` (exit 1): the vault you named has moved or
   been deleted — an unmounted drive, a renamed Obsidian folder, a Syncthing path change. Point
   the config at where it actually is, or bring the volume back.
-- **baseline CV not found or empty**: `baseline_rel` (default `My CV/CV.md`, relative to the
-  store root) isn't there, or has no content. Blocks `cv`, and follows the same rule: at the
-  shipped default it is `setup` (exit 0, you haven't written one yet), while a `baseline_rel`
-  you set yourself that isn't there is `dead` (exit 1) — you told sluice where your CV is, so
-  it has been renamed or moved. A baseline that IS there but
-  cannot be READ does not produce a `baseline_rel` row at all — the permissions error is allowed
-  to propagate rather than be read as "absent", so the whole store section collapses to a single
-  `store | preflight | dead` row carrying the real error. Fix the permissions and the ordinary
-  rows come back. (A baseline that is a symlink pointing outside the vault reads `ok`; sluice
-  reads through it. The symlink refusals are on the evidence directories, not on this file.)
 - **`degraded`, Judging Profile absent**: `triage` falls back to the shipped neutral default,
   which states only that nothing is configured and prefers `research` over a confident
   verdict. Not fatal, just under-informed — fill in `Job Applications/Judging Profile.md`.
 - **Experience Library / Skills Inventory / STAR Stories counts** (#164): one row per evidence
   corpus — `<verified> verified / <total> total entries`. Zero verified `experience` entries
-  **blocks `cv`** (#242), as a `setup` row: `cv run` refuses such a vault outright, once for the run
-  and before any fetch or backend call, so `doctor` grades it as the blocker it is rather than
-  reporting it informationally. (It used to say the opposite — that this was "a `cv run`
+  **blocks `cv`** (#242), as a `setup` row, while your CV Layout asks for bullets: `cv run`
+  refuses such a vault, once for the run and before any fetch or backend call, so `doctor`
+  grades it as the blocker it is rather than reporting it informationally. A layout whose every
+  role has `bullets_max: 0` renders headings only and cites nothing, so `cv run` composes it
+  with no entry, and the row is then a `notice` that blocks nothing. (It used to say the opposite — that this was "a `cv run`
   failure, not a `doctor` one" — which left `doctor` calling an install fine about the very
-  thing that stopped the next command.) The other two stay `notice`: since #165 a verified
-  `skills` entry reaches the composer as framing (citable by nothing) and a verified `stories`
-  entry is consumed by nothing yet, so an empty one of either blocks nothing. A non-zero
+  thing that stopped the next command.) The other two stay `notice`: a verified `skills` entry
+  reaches the composer as framing and its name can appear in a CV's SKILLS section, but it is
+  citable by nothing, and a verified `stories` entry is consumed by nothing yet, so an empty
+  one of either blocks nothing. A non-zero
   PENDING count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)`
   — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
   command.
-- **`notice`, `Experience Library (Skills)`** (#259): `0 of <n> verified entries carry a
-  Skills: field`. This is what gates a **SKILLS section** on a composed CV, and it is the
-  one number that used to be reported nowhere. `cv run` asks for the section only when at
-  least one verified Experience Library entry carries a `Skills:` value; the field goes on
-  that entry's own note, *not* on a Skills Inventory entry. The Skills Inventory row above
-  is easy to read as the lever here — it shows a `<verified> / <total>` ratio directly
-  beside the Experience Library row, where that ratio really does gate citability — but the
-  inventory is framing the composer is shown and licenses nothing, so verifying all of it
-  changes nothing about whether a SKILLS section appears. The row disappears as soon as one
-  entry is annotated, and it is never emitted for a corpus with nothing verified in it (the
-  `setup` row above is the blocker there, and verifying an entry is the step to take first).
-  It also disappears for a `Skills:` value the composer's own reader **refuses** — one that
-  is not blank but carries no name at all, such as `...` or a bare `-`. That is deliberate:
-  such a value does not merely skip the SKILLS section, it makes `cv run` fail *every* lead,
-  so a row saying "no CV gets a SKILLS section" would be reassuring about a corpus that
-  composes nothing. The cost is that doctor is then silent on this axis, so if you have
-  annotated an entry and `cv run` reports an error for every lead, check that entry's
-  `Skills:` value spells at least one real name. `cv run` logs a warning per failed lead
-  (`cv run failed for …: skill '…' is invalid: it contains no name at all…`) that quotes the
-  offending value; the per-lead result itself records only `error`, so the warning is where
-  the diagnosis is.
+- **`cv_layout`**: `setup` when `Job Applications/CV Layout.md` does not exist yet, `dead`
+  when it is malformed (each problem listed with its place) or cannot be read. Every state but
+  `ok` blocks `cv`, in step with `cv run`, which refuses such a vault before any spend. The
+  note's shape and rules are in the CV Layout section of `docs/CONFIGURATION.md`.
+- **`dead`, `Experience Library (Tools)`**: a count of verified entries whose `Tools:` holds an
+  item the gate cannot use, usually a word that starts with a digit. `cv run` names the entry
+  and the item; `job-sluice experience list` shows every entry's `Tools:`.
 - **`dead`, an evidence corpus that cannot be read**: `<Corpus> | dead | cannot be read — …`,
   and this one genuinely is `dead` rather than `setup` — the directory exists and the store
   cannot read it, which is a fault rather than an unfinished setup step, so it exits 1.
@@ -416,8 +401,8 @@ actually answers, not just that a key is present.
   the store refuses to read or write through one anywhere below the vault root, because
   promoting an entry from behind it would make content from outside your vault citable — and
   `verify`'s cleanup would then delete a file outside your vault. Move the real folder into the
-  vault. Only the `experience` row names `blocks: cv`; nothing composes off `skills`/`stories`
-  yet. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
+  vault. Only the `experience` row names `blocks: cv`: an unreadable `skills` corpus is
+  composed without (no framing, no skill names), and nothing reads `stories` yet. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
   your config and Judging Profile, and skips the capture step rather than offering it against a
   corpus it could not read; `--no-input` never reads the corpus at all.
 - **A command refuses citing a relocated state file** (`seen.db`, `track-seen.db`,
@@ -425,6 +410,54 @@ actually answers, not just that a key is present.
   `docs/CONFIGURATION.md` — the fix is the printed `mv` command, not a config change. This is
   deliberately loud rather than silent: starting a dedup pass from an empty set can re-create
   a lead you'd merged away, or apply to the same job twice.
+
+## `doctor` counts entries "not on your CV" or with "no company"
+
+A verified experience entry is cited only under a role its `Company:` matches (see the CV
+Layout section of `docs/CONFIGURATION.md`). Run `job-sluice experience list` to see each
+entry's company, then either add that company to a role's `employers` (listing the heading
+too, if other entries name it), list it under
+`any_role:` or `omitted:`, or give the entry the `Company:` it happened at. When no role can
+cite any verified entry at all, `cv run` refuses the whole run before any spend and says so,
+and `doctor` reports it as a `cv_layout (no citable entry)` row under "Not working", blocking
+`cv`.
+
+## `doctor` counts verified skill notes with no `Label:`
+
+A CV's SKILLS section shows a verified skill note under its `Label:`, else its title. Since
+4.0, `skills add` keeps the name you typed in `Label:` because the note's filename is a slug;
+a note it made before 4.0 has no `Label:`, so a CV would list it under the slug. `doctor`
+counts only those: a note with no `Label:` whose title is slug-shaped (lowercase letters and
+digits joined by hyphens), since a note you titled with its real name already reaches a CV
+under that name. Run `job-sluice skills list` -- a slug title on a line ending
+`Label: (none)` is one of them -- and add a `Label:` line to that note's frontmatter with the
+name as a CV should show it. Nothing is broken meanwhile: the CV still composes.
+
+## `doctor` says the cv attribution check is off
+
+No verified experience entry declares `Tools:`, while some still carry the retired `Skills:`.
+sluice no longer reads `Skills:`. Copy the named tools from each entry's `Skills:` into
+`Tools:` (tools, technologies, languages, platforms, standards, named methods) and leave
+practice words such as `security` or `coaching` out; see the next section for why. Once any
+entry declares one, a bullet naming a tool must cite an entry that lists it. `cv run` logs the
+same sentence once per run, and each result line says `attribution_check_off=True`.
+
+## Many leads skipped with `MISATTRIBUTED TOOL` on an ordinary word
+
+The `MISATTRIBUTED TOOL` lines under the `skipped-gate` rows quote words like `security`,
+`pairing` or `architecture` rather than a product name. Some verified entry declares that word
+in `Tools:`, usually because it was copied from the retired `Skills:` on upgrade. Every declared
+item is matched as a whole term, case-sensitively as declared, in every WORK bullet, so any
+bullet using the word must cite an entry that declares it or names it in its own title or body.
+A hyphenated compound still counts, because a hyphen is not part of a word: `security-focused`
+matches a declared `security`. Ordinary prose rarely cites such an entry, and when the one retry
+draws the same finding the lead is skipped.
+
+Run `job-sluice experience list` to see each entry's `Tools:`, and keep only named tools,
+technologies, languages, platforms, standards and named methods (`Terraform`, `React`, `WCAG`,
+`Scrum`). Move a practice you want shown under SKILLS into a Skills Inventory note
+(`job-sluice skills add`); its `Label:` can appear in SKILLS and is not checked in bullets.
+`docs/CONFIGURATION.md` has the rule under "`Tools:` on experience entries".
 
 ## `track` reauth needed
 
