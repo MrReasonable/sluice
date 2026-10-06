@@ -940,8 +940,9 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   ticked, and verify only the entries they leave ticked and accept. A form holds about
   one screen of entries; `not_shown_titles` names the ones that did not fit -- call
   again with those as `names` (a bare second call would show the same unticked entries
-  first). An entry over about 1,900 characters is never put in a form, since the client
-  would cut it short; it is reported for `job-sluice <kind> verify`. An entry whose text
+  first). An entry over about 1,900 characters, or taller than one form, is never put in
+  a form, since the client would cut it short or it would run off a screen that does not
+  scroll everywhere; it is reported for `job-sluice <kind> verify`. An entry whose text
   changed after the form was built is reported `changed` and left pending; one that left
   the queue in the meantime (verified through the CLI, or deleted) is reported
   `no_longer_pending`. It needs a client on the

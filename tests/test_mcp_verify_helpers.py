@@ -59,12 +59,13 @@ def test_an_entry_too_long_for_a_description_is_never_shown():
     assert [t for t, _ in shown] == ["a", "b"] and oversize == ["big"] and rest == []
 
 
-def test_an_entry_taller_than_a_screen_still_gets_a_form_of_its_own():
-    """Rare: under the character cap but many short lines. It is shown alone rather
-    than sent to the CLI, since nothing about it is hidden -- only scrolling is needed."""
+def test_an_entry_taller_than_a_screen_is_never_shown():
+    """The dialog does not scroll in every terminal (tmux), so an entry taller than one
+    form would have its end off-screen when the human approves it -- the same harm as a
+    cut description. It goes to the CLI instead."""
     tall = "\n".join(f"line {i}" for i in range(60))
     shown, rest, oversize = m._pack_form([("tall", tall), ("next", "x")])
-    assert [t for t, _ in shown] == ["tall"] and rest == ["next"] and not oversize
+    assert [t for t, _ in shown] == ["next"] and oversize == ["tall"] and rest == []
 
 
 def test_a_huge_queue_of_short_entries_still_shows_a_form():

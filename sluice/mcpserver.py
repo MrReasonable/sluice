@@ -173,17 +173,17 @@ def _entry_lines(title: str, body: str) -> int:
 
 def _pack_form(entries):
     """Fill one form with entries that fit about one screen; returns (shown, titles left
-    for a later form, titles too long for any form). An entry over _DESC_MAX_CHARS is
-    never shown -- the client would cut it, and the human would approve text they did
-    not see -- and is reported wherever it sits in the queue. An entry under the cap but
-    taller than a screen still gets a form of its own: nothing in it is hidden, it only
-    needs scrolling, and refusing it would push a readable entry to the CLI."""
+    for a later form, titles too big for any form). An entry over _DESC_MAX_CHARS, or
+    taller than a whole form, is never shown: the client would cut the first, and the
+    second would run off a screen that does not scroll in every terminal (tmux) -- either
+    way the human would approve text they did not see. Such an entry is reported
+    wherever it sits in the queue, for the CLI's per-entry review instead."""
     shown, rest, oversize, used = [], [], [], 0
     for title, body in entries:
-        if len(_describe(title, body)) > _DESC_MAX_CHARS:
+        lines = _entry_lines(title, body)
+        if len(_describe(title, body)) > _DESC_MAX_CHARS or lines > _FORM_LINES:
             oversize.append(title)
             continue
-        lines = _entry_lines(title, body)
         # First fit, not strict order: a later short entry fills the room a tall one
         # could not use, so a queue takes fewer forms -- fewer clicks for the human.
         if not shown or used + lines <= _FORM_LINES:
@@ -955,7 +955,7 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
         report["not_found"], report["failed"] = found["not_found"], found["failed"]
         shown, rest, oversize = _pack_form(found["entries"])
         message = _render_form(shown, phrase)
-        report["failed"] += [(t, f"too long for a review form -- run `job-sluice {kind} "
+        report["failed"] += [(t, f"too big to show in full in a review form -- run `job-sluice {kind} "
                                  f"verify` for this one") for t in oversize]
         if not shown:
             # "nothing_pending" only when the queue is genuinely empty: a name that
