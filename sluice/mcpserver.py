@@ -172,7 +172,7 @@ def _entry_lines(title: str, body: str) -> int:
 
 
 def _pack_form(entries):
-    """Take entries in order while they fit about one screen; returns (shown, titles left
+    """Fill one form with entries that fit about one screen; returns (shown, titles left
     for a later form, titles too long for any form). An entry over _DESC_MAX_CHARS is
     never shown -- the client would cut it, and the human would approve text they did
     not see -- and is reported wherever it sits in the queue. An entry under the cap but
@@ -184,11 +184,13 @@ def _pack_form(entries):
             oversize.append(title)
             continue
         lines = _entry_lines(title, body)
-        if not rest and (not shown or used + lines <= _FORM_LINES):
+        # First fit, not strict order: a later short entry fills the room a tall one
+        # could not use, so a queue takes fewer forms -- fewer clicks for the human.
+        if not shown or used + lines <= _FORM_LINES:
             shown.append((title, body))
             used += lines
         else:
-            rest.append(title)  # once one entry spills, keep order: the rest wait
+            rest.append(title)
     return shown, rest, oversize
 
 
