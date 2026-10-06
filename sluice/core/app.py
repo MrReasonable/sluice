@@ -2158,6 +2158,80 @@ class Sluice:
         return (store.read_pending_evidence(kind) if pending
                 else store.read_evidence(kind, verified_only=True))
 
+    def pending_evidence_for_review(self, *, kind: str, names=None) -> dict:
+        """The pending entries a reviewer should be shown, each with its EXACT stored text.
+
+        Serves the MCP `verify_evidence` tool. The CLI keeps its own per-entry loop in
+        verify_evidence_interactive, deliberately untouched: that loop reads each entry
+        just before asking about it, while a form shows a batch at once.
+
+        `names` only NARROWS the set, never approves. Each name matches a title verbatim
+        or through `evidence_slug` -- the same two arms verify_evidence_interactive's
+        `only` uses -- and a title reached twice (a name and its slug) is offered once.
+        Unmatched names are reported in `not_found` rather than absorbed, so "you named
+        nothing pending" stays distinguishable from "nothing is pending". One unreadable
+        entry is isolated into `failed` rather than sinking the batch, as in the CLI loop."""
+        from sluice.core.vault import evidence_slug
+
+        store = self.store()
+        pending = [e["title"] for e in store.read_pending_evidence(kind)]
+        not_found: list = []
+        if names:
+            wanted: list = []
+            for name in names:
+                try:
+                    reduced = evidence_slug(name)
+                except ValueError:
+                    reduced = None  # cannot reduce at all -- only the verbatim arm applies
+                hits = [t for t in pending if t == name or t == reduced]
+                if not hits:
+                    not_found.append(name)
+                wanted.extend(hits)
+            titles = list(dict.fromkeys(wanted))
+        else:
+            titles = pending
+        entries, failed = [], []
+        for title in titles:
+            try:
+                entries.append((title, store.read_pending_evidence_text(kind, title)))
+            except (OSError, ValueError) as e:
+                failed.append((title, _evidence_failure_reason(e)))
+        return {"entries": entries, "failed": failed, "not_found": not_found}
+
+    def promote_reviewed_evidence(self, *, kind: str, approved,
+                                  today: str | None = None) -> dict:
+        """Promote each (title, text-the-human-was-shown) pair through Store.verify_evidence.
+
+        Named apart from the Store member for the isolation-sweep reason add_evidence
+        gives. `reviewed` is the exact text the caller showed, so the store's own
+        compare-and-set refuses an entry edited after review; that is reported as
+        `changed`, never as promoted. Failures are isolated per entry, as in
+        verify_evidence_interactive."""
+        store = self.store()
+        # `self._today` is a zero-arg CALLABLE, as verify_evidence_interactive notes.
+        clock = self._today or _today
+        today = today or clock()
+        out = {"promoted": [], "changed": [], "failed": []}
+        for title, reviewed in approved:
+            try:
+                ok = store.verify_evidence(kind, title, today=today, reviewed=reviewed)
+            except (OSError, ValueError) as e:
+                out["failed"].append((title, _evidence_failure_reason(e)))
+                continue
+            (out["promoted"] if ok else out["changed"]).append(title)
+        return out
+
+    def evidence_verify_outcome(self, kind: str, subject: str = "it") -> str:
+        """What verifying buys for `kind`, worded by the one keyed helper
+        (core/protocols.py::verify_outcome). A facade method because mcpserver.py may
+        not import sluice.core.protocols (the isolation allow-list)."""
+        from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
+
+        if kind not in EVIDENCE_KINDS:
+            raise ValueError(
+                f"unknown evidence kind {kind!r}; expected one of {sorted(EVIDENCE_KINDS)}")
+        return verify_outcome(EVIDENCE_KINDS[kind], subject=subject)
+
     def verify_evidence_interactive(self, *, kind: str, asker, only: str | None = None,
                                     today: str | None = None) -> dict:
         """Offer each pending entry for review and promote the ones a human accepts.
