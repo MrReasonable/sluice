@@ -192,8 +192,9 @@ Every figure you put in `--metrics` must come from their CV or from something th
 the pool the fabrication gate licenses bullets against, so a number you rounded, extrapolated or
 invented here becomes a number the gate will happily certify in a CV sent under their name.
 
-Then **stop**, and tell them to run `job-sluice experience verify`. Nothing is citable until they
-do, and `cv run` now refuses outright while NO verified `experience` entry exists -- once for the
+Then **stop** and hand the decision to them: call `verify_evidence` so they can tick the entries
+in a review form without leaving the session, or have them run `job-sluice experience verify`.
+Nothing is citable until they do, and `cv run` now refuses outright while NO verified `experience` entry exists -- once for the
 run, before any fetch or backend call, exiting 2 and naming the two commands. The bar is one, not
 all: a corpus holding one verified entry and ten pending ones composes fine. So an unverified
 corpus costs nothing, but it also composes nothing until the human verifies at least one.

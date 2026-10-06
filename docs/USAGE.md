@@ -938,7 +938,8 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   (or just those `names` picks; names only narrow, never approve) in one review form,
   each entry's full text in its own code block and every box ticked, and verify only
   the entries they leave ticked and accept. An entry whose text changed after the form
-  was built is reported `changed` and left pending. If the entries do not fit in one
+  was built is reported `changed` and left pending; one that left the queue in the
+  meantime (verified through the CLI, or deleted) is reported `no_longer_pending`. If the entries do not fit in one
   form, `remaining_titles` names the ones not shown -- call again with those as `names`
   (a bare second call would show the same unticked entries first); one too long
   for any form is reported for `job-sluice <kind> verify`. It needs a client on the

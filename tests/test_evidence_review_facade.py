@@ -3,7 +3,7 @@ mcpserver.py never names a Store member (tests/test_mcpserver.py's isolation swe
 call by attribute name), and so the CLI's per-entry review loop is left untouched."""
 import pytest
 
-from sluice.core.app import Sluice
+from sluice.core.app import Sluice, verify_outcome_text
 from sluice.core.config import Config
 
 _FIELDS = {"Company": "Example Ltd", "Best For": "platform"}
@@ -68,10 +68,10 @@ def test_promote_reviewed_isolates_one_failure(tmp_path):
 @pytest.mark.parametrize("kind,expected", [
     ("experience", "make it citable"), ("skills", "make it available to a CV's skills list"),
     ("stories", "mark it reviewed")])
-def test_evidence_verify_outcome_is_keyed_on_cited_by_gate(tmp_path, kind, expected):
-    assert _app(tmp_path).evidence_verify_outcome(kind) == expected
+def test_verify_outcome_text_is_keyed_on_the_kinds_flags(kind, expected):
+    assert verify_outcome_text(kind) == expected
 
 
-def test_evidence_verify_outcome_rejects_unknown_kind(tmp_path):
+def test_verify_outcome_text_rejects_unknown_kind():
     with pytest.raises(ValueError, match="experience"):
-        _app(tmp_path).evidence_verify_outcome("nope")
+        verify_outcome_text("nope")
