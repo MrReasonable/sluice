@@ -40,6 +40,35 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.0.0](https://github.com/MrReasonable/sluice/compare/v3.2.0...v4.0.0) (2026-10-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cv:** CVs are now composed as structured content and assembled from your vault ([#364](https://github.com/MrReasonable/sluice/issues/364), [#365](https://github.com/MrReasonable/sluice/issues/365), [#368](https://github.com/MrReasonable/sluice/issues/368)). The model writes only a profile paragraph, cited bullets per role and SKILLS picks from your verified skills and tools; every heading, date, location, title, certificate and education line comes from a new vault note. To migrate:
+  1. **Create `Job Applications/CV Layout.md`** (shape in `docs/CONFIGURATION.md`). `cv run` refuses without it and `doctor` says so. An entry is cited under a role when its `Company:` (or one of its `,` `;` `/` parts) equals one of the role's `employers`, or the role's heading when it lists none. Listing `employers` replaces the heading as a match. Matching ignores case and runs of spaces but not accents. Use `any_role:` for companies whose entries fit any role and `omitted:` for ones you leave off; a company may not be under both `any_role:` and a role's `employers`. Run `doctor` afterwards: it counts entries that match no role.
+  2. **Split each experience entry's annotations into two fields.** `Tools:` holds specific tools and hard skills (Terraform, React, WCAG, Scrum), tied to the job: a bullet naming one must cite an entry that declares it, so keep general words out of it. `Skills:` holds general soft skills and practices (coaching, stakeholder management, people management), not tied to any job: they are offered for the SKILLS list and never checked against bullets. Move the named tools from your old `Skills:` into `Tools:` and leave the practices in `Skills:`. `experience add --tools` and `--skills` write the two fields.
+  3. **Move any "never claim X" from `cv.negatives` into `cv.fabrication_decoys`**, which matches whole terms. `cv.negatives` stays as guidance to the composer and no check reads it.
+  4. **The baseline CV is no longer read.** Anything only it says must be in an evidence note to be used.
+  5. **SKILLS comes from verified Skills Inventory notes and entries' `Tools:` and `Skills:`.** A skill note `skills add` made before 4.0 has a slugged title: add a `Label:` with the spelling you want on CVs (`doctor` counts the ones without).
+  6. **Remove the root `baseline_rel` key and `cv.employers`.** Both now stop every command until removed.
+  7. **`script` renderer users:** the meta line is always three positional fields and dates use an en dash. **Custom templates:** a role can now have no title.
+
+  Accepted residuals, stated in `docs/GUARANTEES.md`: an ASCII letter O or l written for a digit, spelled-out numbers, and an entry's own space-grouped number licensing its joined reading.
+
+### Features
+
+* **core:** tokeniser, CV Layout note and skill labels for structured CVs ([0553fd7](https://github.com/MrReasonable/sluice/commit/0553fd78dc11d499d104abf8b0400bd2c6763800))
+* **cv:** compose CVs as structured content assembled from the vault ([9465eb2](https://github.com/MrReasonable/sluice/commit/9465eb24edd5969be512f5f229142ee70d29d3c1))
+* **cv:** offer an entry's Skills: as general soft skills for the SKILLS list ([716efb9](https://github.com/MrReasonable/sluice/commit/716efb960ffdc15e4c4d60fb5e71cd3113410ed4))
+* **cv:** read, select and check a structured reply, beside the text pipeline ([2b2ffe1](https://github.com/MrReasonable/sluice/commit/2b2ffe19e67ae6ebb24b6239ad8623f4925fa139))
+* **cv:** renderer seam, artefacts, structured run loop and doctor rows ([81a5e53](https://github.com/MrReasonable/sluice/commit/81a5e53d392aff693658566913575cc5b75120a5))
+
+
+### Documentation
+
+* **spec:** design and plan for structured CV composition ([#364](https://github.com/MrReasonable/sluice/issues/364), [#365](https://github.com/MrReasonable/sluice/issues/365), [#368](https://github.com/MrReasonable/sluice/issues/368)) ([b9357f7](https://github.com/MrReasonable/sluice/commit/b9357f7e0c1c5d2257e0ae3efd331767b10caf16))
+
 ## [3.2.0](https://github.com/MrReasonable/sluice/compare/v3.1.0...v3.2.0) (2026-10-03)
 
 
