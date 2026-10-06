@@ -165,30 +165,43 @@ def _entry_block(index: int, title: str, body: str) -> str:
 
 
 def _pack_form(entries, budget: int):
-    """Take entries in order while the rendered form stays within `budget`. An entry
-    too big for a form on its own is never truncated -- truncating would show the human
-    less than they approve -- it is reported for the CLI instead."""
-    shown, oversize, used = [], [], 0
-    remaining = 0
-    for i, (title, body) in enumerate(entries):
-        size = len(_entry_block(len(shown) + 1, title, body))
+    """Take entries in order while their blocks fit within `budget`; returns (shown,
+    titles left for a later form, titles too big for any form). An oversize entry is
+    never truncated -- that would show the human less than they approve -- and is
+    reported wherever it sits in the queue, not only before the cut-off. Each block is
+    sized at the widest box number this batch could use, so the estimate never
+    undershoots."""
+    widest = len(entries)
+    shown, rest, oversize, used = [], [], [], 0
+    for title, body in entries:
+        size = len(_entry_block(widest, title, body))
         if size > budget:
             oversize.append(title)
-            continue
-        if used + size > budget:
-            remaining = sum(1 for t, b in entries[i:]
-                            if len(_entry_block(1, t, b)) <= budget)
-            break
-        shown.append((title, body))
-        used += size
-    return shown, remaining, oversize
+        elif not rest and used + size <= budget:
+            shown.append((title, body))
+            used += size
+        else:
+            rest.append(title)  # once one entry spills, keep order: the rest wait
+    return shown, rest, oversize
+
+
+def _form_header(count: int, outcome_phrase: str) -> str:
+    return (f"Review these {count} evidence entries. Ticked entries are verified, "
+            f"which will {outcome_phrase}. Untick anything that is wrong or that you "
+            f"did not actually do.\n\n")
 
 
 def _render_form(shown, outcome_phrase: str) -> str:
-    head = (f"Review these {len(shown)} evidence entries. Ticked entries are verified, "
-            f"which will {outcome_phrase}. Untick anything that is wrong or that you "
-            f"did not actually do.\n\n")
-    return head + "\n".join(_entry_block(i, t, b) for i, (t, b) in enumerate(shown, 1))
+    return _form_header(len(shown), outcome_phrase) + "\n".join(
+        _entry_block(i, t, b) for i, (t, b) in enumerate(shown, 1))
+
+
+def _build_form(entries, outcome_phrase: str, budget: int):
+    """Pack and render one form whose WHOLE message -- header and separators included
+    -- stays within `budget`. Returns (shown, rest, oversize, message)."""
+    reserve = len(_form_header(len(entries), outcome_phrase)) + len(entries)
+    shown, rest, oversize = _pack_form(entries, budget - reserve)
+    return shown, rest, oversize, _render_form(shown, outcome_phrase)
 
 
 def _form_schema(shown) -> dict:
@@ -202,11 +215,12 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _encode_state(kind: str, shown, remaining: int = 0) -> str:
+def _encode_state(kind: str, shown, rest=()) -> str:
     """Plain JSON, deliberately unsigned: the threat is the model accidentally approving,
-    not a client forging protocol state (see the spec's threat model). `remaining` rides
-    along so the final report can tell the model to call again."""
-    return json.dumps({"kind": kind, "remaining": remaining, "entries": [
+    not a client forging protocol state (see the spec's threat model). `rest` -- the
+    titles that did not fit this form -- rides along so the final report can name them:
+    unticked entries stay pending, so a bare second call would rebuild the same form."""
+    return json.dumps({"kind": kind, "rest": list(rest), "entries": [
         [f"entry_{i}", title, _sha(body)] for i, (title, body) in enumerate(shown, 1)]})
 
 
@@ -916,7 +930,7 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     not see in full and tick. It is not hardened against a client or hook configured to
     answer the form for the user -- that is the user's own tooling acting for them."""
     report = {"outcome": "", "promoted": [], "changed": [], "skipped": [], "failed": [],
-              "remaining": 0, "not_found": [], "detail": ""}
+              "remaining": 0, "remaining_titles": [], "not_found": [], "detail": ""}
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
     phrase = sluice.evidence_verify_outcome(kind, subject="them")
@@ -929,16 +943,25 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     if responses is None:
         found = sluice.pending_evidence_for_review(kind=kind, names=names)
         report["not_found"], report["failed"] = found["not_found"], found["failed"]
-        shown, remaining, oversize = _pack_form(found["entries"], _VERIFY_FORM_BUDGET)
+        shown, rest, oversize, message = _build_form(
+            found["entries"], phrase, _VERIFY_FORM_BUDGET)
         report["failed"] += [(t, f"too long for a review form -- run `job-sluice {kind} "
                                  f"verify` for this one") for t in oversize]
         if not shown:
-            report["outcome"] = "nothing_pending"
-            report["detail"] = "no pending entries to review"
+            # "nothing_pending" only when the queue is genuinely empty: a name that
+            # matched nothing, or entries too long or unreadable, must not let the model
+            # tell the user there is nothing waiting for them.
+            if report["not_found"] or report["failed"]:
+                report["outcome"] = "nothing_shown"
+                report["detail"] = ("no entry could be shown -- see not_found and failed "
+                                    "for what is still pending")
+            else:
+                report["outcome"] = "nothing_pending"
+                report["detail"] = "no pending entries to review"
             return report
-        return {"ask": {"message": _render_form(shown, phrase),
+        return {"ask": {"message": message,
                         "schema": _form_schema(shown),
-                        "state": _encode_state(kind, shown, remaining)}}
+                        "state": _encode_state(kind, shown, rest)}}
 
     decoded = _decode_state(state)
     action = getattr(responses, "action", None)
@@ -948,7 +971,9 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
                             "nothing was verified")
         return report
     titles = [title for _, title, _ in decoded["entries"]]
-    report["remaining"] = int(decoded.get("remaining", 0))
+    rest = decoded.get("rest") if isinstance(decoded.get("rest"), list) else []
+    report["remaining_titles"] = rest
+    report["remaining"] = len(rest)
     if action != "accept":
         report["outcome"] = "declined" if action == "decline" else "cancelled"
         report["skipped"] = titles
@@ -977,8 +1002,9 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     report["detail"] = (f"verified {len(report['promoted'])}, left "
                         f"{len(report['skipped'])} unticked, {len(report['changed'])} "
                         f"changed since review, {len(report['failed'])} failed"
-                        + (f"; {report['remaining']} more pending -- call again to review "
-                           f"them" if report["remaining"] else ""))
+                        + (f"; {report['remaining']} more were not shown -- call again "
+                           f"with names={json.dumps(rest)} to review them"
+                           if rest else ""))
     return report
 
 

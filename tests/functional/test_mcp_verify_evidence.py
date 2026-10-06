@@ -111,6 +111,43 @@ def test_long_corpus_reports_remaining_and_a_second_call_shows_the_rest(tmp_path
     assert len(_citable(app)) == len(first["promoted"]) + len(second["promoted"])
 
 
+def test_unticking_everything_still_lets_the_rest_of_the_queue_be_reached(tmp_path):
+    """Unticked entries stay pending, so a bare second call would rebuild the SAME form.
+    The report names what was never shown, and calling with those names reaches it."""
+    names = [f"Example entry {i}" for i in range(12)]
+    cfg, app = _seed(tmp_path, *names, body="x" * 1500)
+    seen = []
+    first = _call(cfg, _all(False), seen=seen)
+    shown_first = {p["description"] for p in seen[0].requested_schema["properties"].values()}
+    assert first["remaining"] == len(first["remaining_titles"]) > 0
+    assert "names=" in first["detail"]
+    seen.clear()
+    _call(cfg, _all(False), seen=seen,
+          args={"kind": "experience", "names": first["remaining_titles"]})
+    shown_second = {p["description"] for p in seen[0].requested_schema["properties"].values()}
+    assert shown_second and not (shown_first & shown_second)
+    assert _citable(app) == []
+
+
+def test_entry_deleted_between_legs_is_reported_changed(tmp_path):
+    cfg, app = _seed(tmp_path, "Example alpha")
+
+    def delete_then_accept(params):
+        next(pathlib.Path(tmp_path / "vault").rglob("_inbox/*.md")).unlink()
+        return "accept", {"entry_1": True}
+
+    out = _call(cfg, delete_then_accept)
+    assert out["changed"] == ["example-alpha"] and out["promoted"] == []
+    assert _citable(app) == []
+
+
+def test_pending_entries_that_cannot_be_shown_are_not_reported_as_nothing_pending(tmp_path):
+    cfg, _ = _seed(tmp_path, "Example alpha")
+    out = _call(cfg, _all(True), args={"kind": "experience", "names": ["No such entry"]})
+    assert out["outcome"] == "nothing_shown" and out["not_found"] == ["No such entry"]
+    assert "no pending entries" not in out["detail"]
+
+
 def test_nothing_pending_shows_no_form(tmp_path):
     cfg, _ = _seed(tmp_path)
     seen = []
