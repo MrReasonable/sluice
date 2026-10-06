@@ -50,8 +50,9 @@ the property that makes the flag meaningful rather than advisory.
 **Mark evidence verified.** The `verified:` key is what makes an evidence entry citable by the CV
 fabrication gate, and it has exactly one writer, reached only through a human's approval. There
 are two ways to give it: the CLI's `job-sluice <kind> verify`, which asks `[y/N]` per entry, or
-`verify_evidence` under `--write`, which has your MCP client show every entry it offers, in full,
-in one review form and verifies only the entries you leave ticked and accept. The tool takes no
+`verify_evidence` under `--write`, which has your MCP client show a review form with each entry's
+full text under its own checkbox, about a screen of entries at a time, and verifies only the
+entries you leave ticked and accept. An entry too long to show in full is left for the CLI. The tool takes no
 argument that approves on your behalf, so an agent can open the form but cannot answer it.
 `propose_evidence` puts an entry in the queue and stops there, and the CLI's `verify` carries no
 `--all` and no `--yes`, because a bulk flag is a promotion with no human in it.

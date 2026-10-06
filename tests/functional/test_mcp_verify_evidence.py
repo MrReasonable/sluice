@@ -91,22 +91,23 @@ def test_entry_edited_between_legs_is_reported_changed_not_promoted(tmp_path):
     assert _citable(app) == []
 
 
-def test_form_shows_every_entry_in_full(tmp_path):
+def test_form_shows_every_entry_in_full_under_its_checkbox(tmp_path):
     body = "Shipped ``` a fence and <!-- 40% --> literally."
     cfg, app = _seed(tmp_path, "Example alpha", body=body)
     seen = []
     _call(cfg, lambda p: ("cancel", None), seen=seen)
     assert len(seen) == 1
     text = app.store().read_pending_evidence_text("experience", "example-alpha")
-    assert text in seen[0].message
-    assert "make them citable" in seen[0].message
+    desc = seen[0].requested_schema["properties"]["entry_1"]["description"]
+    assert text in desc
+    assert "\n" not in seen[0].message and "make them citable" in seen[0].message
 
 
-def test_long_corpus_reports_remaining_and_a_second_call_shows_the_rest(tmp_path):
+def test_long_corpus_reports_not_shown_and_a_second_call_shows_the_rest(tmp_path):
     names = [f"Example entry {i}" for i in range(12)]
     cfg, app = _seed(tmp_path, *names, body="x" * 1500)
     first = _call(cfg, _all(True))
-    assert first["remaining"] > 0 and first["promoted"]
+    assert first["not_shown"] > 0 and first["promoted"]
     second = _call(cfg, _all(True))
     assert len(_citable(app)) == len(first["promoted"]) + len(second["promoted"])
 
@@ -118,13 +119,15 @@ def test_unticking_everything_still_lets_the_rest_of_the_queue_be_reached(tmp_pa
     cfg, app = _seed(tmp_path, *names, body="x" * 1500)
     seen = []
     first = _call(cfg, _all(False), seen=seen)
-    shown_first = {p["description"] for p in seen[0].requested_schema["properties"].values()}
-    assert first["remaining"] == len(first["remaining_titles"]) > 0
+    shown_first = {p["description"].split("\n")[0]
+                   for p in seen[0].requested_schema["properties"].values()}
+    assert first["not_shown"] == len(first["not_shown_titles"]) > 0
     assert "names=" in first["detail"]
     seen.clear()
     _call(cfg, _all(False), seen=seen,
-          args={"kind": "experience", "names": first["remaining_titles"]})
-    shown_second = {p["description"] for p in seen[0].requested_schema["properties"].values()}
+          args={"kind": "experience", "names": first["not_shown_titles"]})
+    shown_second = {p["description"].split("\n")[0]
+                    for p in seen[0].requested_schema["properties"].values()}
     assert shown_second and not (shown_first & shown_second)
     assert _citable(app) == []
 

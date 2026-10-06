@@ -43,9 +43,10 @@ becoming citable.
 
 `job-sluice experience add` (and `skills add` / `stories add`) **proposes**. It lands the entry
 unverified and prints so. There is no `--all` and no `--yes` on `verify`. Under `mcp serve
---write` the `verify_evidence` tool shows the user a review form in their client, with every
-pending entry in full; only the entries they tick are verified, and you cannot answer that form
-for them. None of that is an obstacle to route around: the human reading each entry is the point
+--write` the `verify_evidence` tool shows the user a review form in their client, with each
+entry's full text under its own checkbox; only the entries they tick are verified, and you cannot
+answer that form for them. A form holds about a screen of entries, so a large queue takes a few
+calls: pass the result's `not_shown_titles` as `names` to show the next batch. None of that is an obstacle to route around: the human reading each entry is the point
 of it.
 
 So: propose freely, then hand the decision back. Call `verify_evidence` and let them tick the

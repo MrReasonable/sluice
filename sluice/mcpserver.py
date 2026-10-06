@@ -26,7 +26,6 @@ import dataclasses
 import hashlib
 import hmac
 import json
-import re
 import secrets
 from typing import Literal
 
@@ -128,11 +127,18 @@ _LIST_EVIDENCE_CONTENT_WARNING = (
 # helpers are pure so tests drive them without mcp; the tool in build_server only
 # wires them to the protocol.
 
-# One form's message, in characters. Bounds what a client dialog can usefully show;
-# not a user preference, so a constant rather than config. The pre-merge live check
-# (docs/superpowers/specs/2026-10-06-mcp-verify-elicitation-design.md) is what
-# confirms Claude Code shows this much without cutting it.
-_VERIFY_FORM_BUDGET = 8000
+# How Claude Code 2.1.29x shows an input-required form, measured 2026-10-06 with a probe
+# server: the MESSAGE folds after three lines ("... (+N more lines)") with no way to
+# expand it, while each checkbox DESCRIPTION is shown in full as plain text -- any number
+# of lines, but cut with "..." at about 2,000 characters. And the dialog does not scroll
+# in every terminal (tmux), so a form should fit about one screen. Hence: a one-line
+# message, each entry's text in its own description, a character cap under the cut, and
+# forms packed to a conservative screen estimate (the server cannot know the width).
+# Client facts, not user preferences, so constants rather than config.
+_DESC_MAX_CHARS = 1900   # under the ~2,000-character cut, so nothing is ever hidden
+_FORM_COLS = 80          # assumed terminal width for the wrap estimate
+_DESC_WIDTH = _FORM_COLS - 8  # descriptions are indented under their checkbox
+_FORM_LINES = 30         # display lines of entries per form: about one screen
 
 # SEP-2322 input-required results exist from this protocol on. Claude Code 2.1.291
 # negotiates it, and cannot take a server-PUSHED elicitation at all (NoBackChannelError,
@@ -152,62 +158,51 @@ def _can_elicit(protocol_version, elicitation) -> bool:
     return form is not None or url is None
 
 
-def _fence(body: str) -> str:
-    """A backtick fence one longer than any run inside `body` (CommonMark), so nothing
-    in the body can close it and markdown inside shows literally."""
-    longest = max((len(r) for r in re.findall(r"`+", body)), default=0)
-    return "`" * max(3, longest + 1)
+def _describe(title: str, body: str) -> str:
+    """What sits under an entry's checkbox: its title, then its exact stored text."""
+    return f"{title}\n{body}"
 
 
-def _entry_block(index: int, title: str, body: str) -> str:
-    fence = _fence(body)
-    return f"entry_{index}: {title}\n{fence}\n{body}\n{fence}\n"
+def _entry_lines(title: str, body: str) -> int:
+    """Estimated display lines for one checkbox: its label, its wrapped description,
+    and the blank line after it."""
+    wrapped = sum(max(1, -(-len(line) // _DESC_WIDTH))
+                  for line in _describe(title, body).split("\n"))
+    return wrapped + 2
 
 
-def _pack_form(entries, budget: int):
-    """Take entries in order while their blocks fit within `budget`; returns (shown,
-    titles left for a later form, titles too big for any form). An oversize entry is
-    never truncated -- that would show the human less than they approve -- and is
-    reported wherever it sits in the queue, not only before the cut-off. Each block is
-    sized at the widest box number this batch could use, so the estimate never
-    undershoots."""
-    widest = len(entries)
+def _pack_form(entries):
+    """Take entries in order while they fit about one screen; returns (shown, titles left
+    for a later form, titles too long for any form). An entry over _DESC_MAX_CHARS is
+    never shown -- the client would cut it, and the human would approve text they did
+    not see -- and is reported wherever it sits in the queue. An entry under the cap but
+    taller than a screen still gets a form of its own: nothing in it is hidden, it only
+    needs scrolling, and refusing it would push a readable entry to the CLI."""
     shown, rest, oversize, used = [], [], [], 0
     for title, body in entries:
-        # +1 for the newline _render_form joins blocks with, so separators are paid for
-        # by the entries actually shown rather than reserved for the whole queue.
-        size = len(_entry_block(widest, title, body)) + 1
-        if size > budget:
+        if len(_describe(title, body)) > _DESC_MAX_CHARS:
             oversize.append(title)
-        elif not rest and used + size <= budget:
+            continue
+        lines = _entry_lines(title, body)
+        if not rest and (not shown or used + lines <= _FORM_LINES):
             shown.append((title, body))
-            used += size
+            used += lines
         else:
             rest.append(title)  # once one entry spills, keep order: the rest wait
     return shown, rest, oversize
 
 
-def _form_header(count: int, outcome_phrase: str) -> str:
-    return (f"Review these {count} evidence entries. Ticked entries are verified, "
-            f"which will {outcome_phrase}. Untick anything that is wrong or that you "
-            f"did not actually do.\n\n")
-
-
 def _render_form(shown, outcome_phrase: str) -> str:
-    return _form_header(len(shown), outcome_phrase) + "\n".join(
-        _entry_block(i, t, b) for i, (t, b) in enumerate(shown, 1))
-
-
-def _build_form(entries, outcome_phrase: str, budget: int):
-    """Pack and render one form whose WHOLE message -- header and separators included
-    -- stays within `budget`. Returns (shown, rest, oversize, message)."""
-    reserve = len(_form_header(len(entries), outcome_phrase))
-    shown, rest, oversize = _pack_form(entries, budget - reserve)
-    return shown, rest, oversize, _render_form(shown, outcome_phrase)
+    """ONE line: Claude Code folds the message after three, so nothing that matters may
+    sit below the first. The entries themselves are in the checkbox descriptions."""
+    return (f"Review {len(shown)} evidence entries below. Ticked ones are verified, which "
+            f"will {outcome_phrase}. Untick anything wrong.")
 
 
 def _form_schema(shown) -> dict:
-    """Positional keys: a title is free text and does not belong in a schema key.
+    """Positional keys: a title is free text and does not belong in a schema key. Each
+    description carries the entry's title and full text -- the only part of the form
+    Claude Code shows in full (see _DESC_MAX_CHARS).
 
     Boxes start TICKED by the owner's decision, so reviewing a batch is one click rather
     than a "yes" per entry. That is opt-out, unlike the CLI's `[y/N]`, and it is a
@@ -215,8 +210,9 @@ def _form_schema(shown) -> dict:
     client (or a reflexive Accept) that sends the defaults back approves them all. The
     form's own text tells the human to untick what is wrong."""
     return {"type": "object", "properties": {
-        f"entry_{i}": {"type": "boolean", "default": True, "description": title}
-        for i, (title, _) in enumerate(shown, 1)}}
+        f"entry_{i}": {"type": "boolean", "default": True,
+                       "description": _describe(title, body)}
+        for i, (title, body) in enumerate(shown, 1)}}
 
 
 def _sha(text: str) -> str:
@@ -941,7 +937,7 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     not see in full and tick. It is not hardened against a client or hook configured to
     answer the form for the user -- that is the user's own tooling acting for them."""
     report = {"outcome": "", "promoted": [], "changed": [], "skipped": [], "failed": [],
-              "remaining": 0, "remaining_titles": [], "not_found": [],
+              "not_shown": 0, "not_shown_titles": [], "not_found": [],
               "no_longer_pending": [], "detail": ""}
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
@@ -955,8 +951,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     if responses is None:
         found = sluice.pending_evidence_for_review(kind=kind, names=names)
         report["not_found"], report["failed"] = found["not_found"], found["failed"]
-        shown, rest, oversize, message = _build_form(
-            found["entries"], phrase, _VERIFY_FORM_BUDGET)
+        shown, rest, oversize = _pack_form(found["entries"])
+        message = _render_form(shown, phrase)
         report["failed"] += [(t, f"too long for a review form -- run `job-sluice {kind} "
                                  f"verify` for this one") for t in oversize]
         if not shown:
@@ -985,8 +981,10 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
         return report
     titles = [title for _, title, _ in decoded["entries"]]
     rest = decoded.get("rest") if isinstance(decoded.get("rest"), list) else []
-    report["remaining_titles"] = rest
-    report["remaining"] = len(rest)
+    # `not_shown`, not "remaining": an unticked entry is ALSO still pending, and a model
+    # reading "remaining: 0" concluded nothing was left (observed 2026-10-06).
+    report["not_shown_titles"] = rest
+    report["not_shown"] = len(rest)
     report["not_found"] = list(decoded.get("not_found") or [])
     report["failed"] = [tuple(f) for f in decoded.get("failed") or []]
     if action != "accept":
@@ -1026,7 +1024,7 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
                         f"{len(report['skipped'])} unticked, {len(report['changed'])} "
                         f"changed since review, {len(report['no_longer_pending'])} no "
                         f"longer pending, {len(report['failed'])} failed"
-                        + (f"; {report['remaining']} more were not shown -- call again "
+                        + (f"; {report['not_shown']} more were not shown -- call again "
                            f"with names={json.dumps(rest)} to review them"
                            if rest else ""))
     return report

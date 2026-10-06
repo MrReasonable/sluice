@@ -18,57 +18,50 @@ def test_can_elicit_needs_the_modern_protocol_and_form_elicitation():
     assert m._can_elicit(None, _cap(form={})) is False
 
 
-def test_fence_is_longer_than_any_backtick_run_in_the_body():
-    assert m._fence("plain") == "```"
-    assert m._fence("has ``` inside") == "````"
-    assert m._fence("has ````` inside") == "``````"
-
-
-def test_render_form_shows_every_body_in_full_inside_its_own_fence():
-    shown = [("example-alpha", "Line with ``` and <!-- 40% --> and [a](b)"),
-             ("example-beta", "Second body")]
-    msg = m._render_form(shown, "make them citable")
-    for title, body in shown:
-        assert title in msg
-        fence = m._fence(body)
-        assert f"{fence}\n{body}\n{fence}" in msg
-    assert "make them citable" in msg
-
-
-def test_form_schema_uses_positional_keys_ticked_by_default():
-    schema = m._form_schema([("a title with spaces", "x"), ("entry_9", "y")])
+def test_each_entry_is_shown_in_full_under_its_own_checkbox():
+    """Claude Code folds the form MESSAGE after three lines but shows each checkbox
+    DESCRIPTION in full (up to ~2,000 characters, any number of lines, as plain text:
+    measured 2026-10-06). So the body lives in the description, verbatim."""
+    body = "Line one\nwith <!-- 40% --> and [a](b) and ```\nline three"
+    schema = m._form_schema([("example-alpha", body), ("example-beta", "short")])
     assert list(schema["properties"]) == ["entry_1", "entry_2"]
+    desc = schema["properties"]["entry_1"]["description"]
+    assert desc.startswith("example-alpha") and body in desc
     for prop in schema["properties"].values():
         assert prop["type"] == "boolean" and prop["default"] is True
-    assert schema["properties"]["entry_1"]["description"] == "a title with spaces"
 
 
-def test_pack_form_keeps_order_reports_the_rest_and_every_oversize_entry():
-    small = [(f"t{i}", "x" * 100) for i in range(5)]
-    shown, rest, oversize = m._pack_form(small, budget=350)
-    assert [t for t, _ in shown] == ["t0", "t1"]
-    assert rest == ["t2", "t3", "t4"] and oversize == []
-    shown, rest, oversize = m._pack_form([("big", "x" * 500), ("ok", "y")], budget=350)
-    assert [t for t, _ in shown] == ["ok"] and oversize == ["big"] and rest == []
-    # An oversize entry AFTER the cut-off is still reported, not silently dropped.
-    entries = [("a", "x" * 200), ("b", "x" * 200), ("huge", "x" * 900)]
-    shown, rest, oversize = m._pack_form(entries, budget=350)
-    assert [t for t, _ in shown] == ["a"] and rest == ["b"] and oversize == ["huge"]
+def test_form_message_fits_in_the_three_lines_claude_code_shows():
+    message = m._render_form([("a", "x")] * 4, "make them citable")
+    assert "\n" not in message and "make them citable" in message
+    assert len(message) <= 2 * m._FORM_COLS  # one logical line, at most two wrapped
 
 
-def test_build_form_keeps_the_whole_message_within_budget():
-    entries = [(f"t{i}", "x" * 300) for i in range(40)]
-    shown, rest, oversize, message = m._build_form(entries, "make them citable", 2000)
-    assert shown and rest and not oversize
-    assert len(message) <= 2000
+def test_pack_form_fills_about_one_screen_and_keeps_order():
+    entries = [(f"t{i}", "x" * 200) for i in range(10)]   # ~3 wrapped lines + 3 each
+    shown, rest, oversize = m._pack_form(entries)
+    assert 1 < len(shown) < 10 and not oversize
+    assert [t for t, _ in shown] + rest == [t for t, _ in entries]
+    assert sum(m._entry_lines(t, b) for t, b in shown) <= m._FORM_LINES
+
+
+def test_an_entry_too_long_for_a_description_is_never_shown():
+    big = "y" * (m._DESC_MAX_CHARS + 1)
+    shown, rest, oversize = m._pack_form([("a", "x"), ("big", big), ("b", "x")])
+    assert [t for t, _ in shown] == ["a", "b"] and oversize == ["big"] and rest == []
+
+
+def test_an_entry_taller_than_a_screen_still_gets_a_form_of_its_own():
+    """Rare: under the character cap but many short lines. It is shown alone rather
+    than sent to the CLI, since nothing about it is hidden -- only scrolling is needed."""
+    tall = "\n".join(f"line {i}" for i in range(60))
+    shown, rest, oversize = m._pack_form([("tall", tall), ("next", "x")])
+    assert [t for t, _ in shown] == ["tall"] and rest == ["next"] and not oversize
 
 
 def test_a_huge_queue_of_short_entries_still_shows_a_form():
-    """The header reserve must not scale with the WHOLE queue, or a big enough backlog of
-    short entries leaves no budget for any of them."""
-    entries = [(f"t{i}", "x") for i in range(9000)]
-    shown, rest, oversize, message = m._build_form(entries, "make them citable", 8000)
-    assert shown and len(message) <= 8000 and not oversize
+    shown, rest, oversize = m._pack_form([(f"t{i}", "x") for i in range(9000)])
+    assert shown and not oversize and len(shown) + len(rest) == 9000
 
 
 def test_ticked_default_is_a_recorded_decision():

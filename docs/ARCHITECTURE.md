@@ -1177,7 +1177,9 @@ CR or ESC, and both of those are escaped.
 `read_evidence` cannot see, so it is inert until a human promotes it. VERIFYING is what
 makes it citable, so the standing property is that a human approves every promotion
 (#164's central decision, unchanged): `verify_evidence` returns an SEP-2322
-`InputRequiredResult` carrying a review form with every pending entry in full, the client
+`InputRequiredResult` carrying a review form -- each entry's full text in its own checkbox
+description, since Claude Code folds the form's message after three lines but shows a
+description in full up to about 2,000 characters (measured) -- the client
 shows it to the user, and on the protocol's retry only entries the client returned an
 explicit `true` for -- and whose current text still hashes to what was shown -- reach
 `Store.verify_evidence` through `Sluice.promote_reviewed_evidence`. The tool takes no
