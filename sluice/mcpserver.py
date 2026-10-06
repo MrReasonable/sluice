@@ -26,6 +26,7 @@ import dataclasses
 import hashlib
 import hmac
 import json
+import re
 import secrets
 from typing import Literal
 
@@ -120,6 +121,114 @@ _CV_SIGNOFF_FRAMING_WARNING = f"The framing entries {TRIAGE_FRAMING_CONTENT_WARN
 # calling agent reads the RESPONSE, and the structural warning is what rides along with it.
 _LIST_EVIDENCE_CONTENT_WARNING = (
     f"Each entry's title and fields {USER_AUTHORED_CONTENT_WARNING}")
+
+# ── verify_evidence helpers ─────────────────────────────────────────────────
+# The verify step exists so the MODEL cannot accidentally make its own claims citable:
+# a human sees each entry's full text, and only the human's tick approves it. These
+# helpers are pure so tests drive them without mcp; the tool in build_server only
+# wires them to the protocol.
+
+# One form's message, in characters. Bounds what a client dialog can usefully show;
+# not a user preference, so a constant rather than config. The pre-merge live check
+# (docs/superpowers/specs/2026-10-06-mcp-verify-elicitation-design.md) is what
+# confirms Claude Code shows this much without cutting it.
+_VERIFY_FORM_BUDGET = 8000
+
+# SEP-2322 input-required results exist from this protocol on. Claude Code 2.1.291
+# negotiates it, and cannot take a server-PUSHED elicitation at all (NoBackChannelError,
+# measured 2026-10-06), so this is the only mechanism that reaches the user there. An
+# older client cannot even parse an InputRequiredResult, so it must never be sent one.
+_MIN_PROTOCOL = "2026-07-28"
+
+
+def _can_elicit(protocol_version, elicitation) -> bool:
+    """True when this client can show an input-required form. A bare `elicitation: {}`
+    counts as form support (the library's own rule, mcp/server/mcpserver/resolve.py);
+    a declaration naming only `url` does not. ISO dates compare correctly as strings."""
+    if not protocol_version or protocol_version < _MIN_PROTOCOL or elicitation is None:
+        return False
+    form = getattr(elicitation, "form", None)
+    url = getattr(elicitation, "url", None)
+    return form is not None or url is None
+
+
+def _fence(body: str) -> str:
+    """A backtick fence one longer than any run inside `body` (CommonMark), so nothing
+    in the body can close it and markdown inside shows literally."""
+    longest = max((len(r) for r in re.findall(r"`+", body)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+def _entry_block(index: int, title: str, body: str) -> str:
+    fence = _fence(body)
+    return f"entry_{index}: {title}\n{fence}\n{body}\n{fence}\n"
+
+
+def _pack_form(entries, budget: int):
+    """Take entries in order while the rendered form stays within `budget`. An entry
+    too big for a form on its own is never truncated -- truncating would show the human
+    less than they approve -- it is reported for the CLI instead."""
+    shown, oversize, used = [], [], 0
+    remaining = 0
+    for i, (title, body) in enumerate(entries):
+        size = len(_entry_block(len(shown) + 1, title, body))
+        if size > budget:
+            oversize.append(title)
+            continue
+        if used + size > budget:
+            remaining = sum(1 for t, b in entries[i:]
+                            if len(_entry_block(1, t, b)) <= budget)
+            break
+        shown.append((title, body))
+        used += size
+    return shown, remaining, oversize
+
+
+def _render_form(shown, outcome_phrase: str) -> str:
+    head = (f"Review these {len(shown)} evidence entries. Ticked entries are verified, "
+            f"which will {outcome_phrase}. Untick anything that is wrong or that you "
+            f"did not actually do.\n\n")
+    return head + "\n".join(_entry_block(i, t, b) for i, (t, b) in enumerate(shown, 1))
+
+
+def _form_schema(shown) -> dict:
+    """Positional keys: a title is free text and does not belong in a schema key."""
+    return {"type": "object", "properties": {
+        f"entry_{i}": {"type": "boolean", "default": True, "description": title}
+        for i, (title, _) in enumerate(shown, 1)}}
+
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _encode_state(kind: str, shown, remaining: int = 0) -> str:
+    """Plain JSON, deliberately unsigned: the threat is the model accidentally approving,
+    not a client forging protocol state (see the spec's threat model). `remaining` rides
+    along so the final report can tell the model to call again."""
+    return json.dumps({"kind": kind, "remaining": remaining, "entries": [
+        [f"entry_{i}", title, _sha(body)] for i, (title, body) in enumerate(shown, 1)]})
+
+
+def _decode_state(state):
+    try:
+        data = json.loads(state) if state else None
+    except ValueError:
+        return None
+    if (not isinstance(data, dict) or not isinstance(data.get("kind"), str)
+            or not isinstance(data.get("entries"), list)
+            or not all(isinstance(e, list) and len(e) == 3 for e in data["entries"])):
+        return None
+    return data
+
+
+def _approved_keys(content) -> set:
+    """Only an explicit True approves. A client that omits an unticked key, or answers
+    with an empty form, must approve nothing -- never fall back to the schema default."""
+    if not isinstance(content, dict):
+        return set()
+    return {k for k, v in content.items() if v is True}
+
 
 class McpNotInstalled(RuntimeError):
     """Raised by `build_server()` when the `mcp` package's import fails.
