@@ -1,7 +1,5 @@
 """Tests for evidence kind definitions."""
-import pytest
-
-from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind
+from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.vault import Vault
 
 _FM = ("---\nCompany: {company}\nCategory: \nBest For: \nMetrics: \n{extra}"
@@ -74,7 +72,3 @@ def test_only_the_skills_kind_lists_its_names_in_the_skills_pool():
 def test_the_skills_kind_declares_a_label():
     assert "Label" in EVIDENCE_KINDS["skills"].fields
 
-
-def test_a_legacy_field_may_not_also_be_a_declared_field():
-    with pytest.raises(ValueError, match="legacy"):
-        EvidenceKind("Job Applications/Example", ("Company",), legacy_fields=("Company",))

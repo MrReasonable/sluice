@@ -184,7 +184,11 @@ def _tools_line(entry: dict) -> list[str]:
     on purpose: `entry_facts` harvests figures from `_entry_block` alone, so a digit inside
     a tool name (`Examplelang9`) can never license a figure."""
     items = tool_items(entry)
-    return [f"tools={', '.join(items)}"] if items else []
+    # An item may itself hold a comma (a quoted flow-list item), and joined bare it would read
+    # to the model as two tools; quote it so the line is unambiguous. Presentation only: the
+    # gate reads the structured items, never this text.
+    shown = [f'"{t}"' if "," in t else t for t in items]
+    return [f"tools={', '.join(shown)}"] if shown else []
 
 
 def _defang(lines: list[str]) -> list[str]:
@@ -219,7 +223,11 @@ def _entries_section(bundle: dict, heading: str) -> list[str]:
 
 def render_structured_bundle(bundle: dict) -> str:
     """The composer's source text: entries with their tools, the Skills Inventory as
-    framing, sluice's own tools rule, the guidance. No baseline (#364 D2)."""
+    framing, sluice's own tools rule, the guidance. No baseline (#364 D2). An entry's
+    `Skills:` is deliberately absent: those are general soft skills tied to no job, which
+    reach the model only as SKILLS-pool candidates (cv/compose.py). Shown inside an entry, a
+    tool name left in `Skills:` could be claimed under that employer with nothing to flag
+    it."""
     lines = _entries_section(bundle, _ENTRIES_HEADER_PROMPT)
     if bundle.get("skills"):
         lines.append(_INVENTORY_HEADER_PROMPT)
@@ -236,8 +244,8 @@ def render_structured_bundle(bundle: dict) -> str:
 def render_audit_bundle(bundle: dict) -> str:
     """The advisory auditor's truth: the entries WITH their tools -- the hard gate licenses
     a tool through Tools:, so the auditor must see the same evidence or every tool-naming
-    bullet would read unsupported and be held (#364 spec §6.4) -- and the guidance. No baseline,
-    no inventory."""
+    bullet would read unsupported and be held (#364 spec §6.4) -- and the guidance. No
+    baseline, no inventory, and no entry's `Skills:`, which is tied to no job."""
     lines = _entries_section(bundle, _AUDIT_ENTRIES_HEADER_PROMPT)
     return "\n".join(lines + _guidance_section(bundle))
 

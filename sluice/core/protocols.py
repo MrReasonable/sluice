@@ -145,15 +145,10 @@ class EvidenceKind:
     # citable, which is the over-claim `cited_by_gate` was introduced to prevent.
     read_by_composer: bool = False
     floor_map: tuple = ()
-    # Keys this kind no longer READS as data but whose PRESENCE stays visible
-    # (#364/#365/#368 spec §4.2): `Skills:` after `Tools:` replaced it, so `doctor` and `cv
-    # run` can tell an upgraded vault from an unconfigured one. Materialised by the store
-    # under each entry's own "legacy" key, never inside "fields", so no CLI flag, wizard
-    # prompt or MCP proposal can carry one.
-    legacy_fields: tuple = ()
     # A verified entry's CV NAME (its `Label:`, else its title) may be listed in a CV's
-    # SKILLS section (#364 D12). The NAMES route only: an experience entry's `Tools:` reach
-    # the pool through core/tokens.py::tool_items whatever this flag says.
+    # SKILLS section (#364 D12). The NAMES route only: an experience entry's `Tools:` and
+    # `Skills:` reach the pool through core/tokens.py::tool_items and ::skill_items whatever
+    # this flag says.
     names_in_skills_pool: bool = False
 
     def __post_init__(self):
@@ -188,10 +183,6 @@ class EvidenceKind:
             raise ValueError(
                 "cited_by_gate=True requires read_by_composer=True: the fabrication gate "
                 "cannot license a corpus the composer never emits into the bundle")
-        overlap = set(self.legacy_fields) & set(self.fields)
-        if overlap:
-            raise ValueError(f"legacy_fields {sorted(overlap)} are also declared fields; a key "
-                             "is either read as data or retired, never both")
         for floor, key in self.floor_map:
             if floor not in FLOOR_FIELD_SOURCES:
                 raise ValueError(
@@ -261,11 +252,15 @@ EVIDENCE_KINDS = {
     # second that the gate may license its content. They coincide here and diverge for
     # `skills`.
     #
-    # `Tools` (#364/#365/#368, spec §4.2) is the attribution index: the tools an entry
-    # declares it used. It replaces #168's `Skills`, and lives here rather than on a skill
-    # note for #168's reason -- it is where the gate already reads, so a per-entry set slots
-    # in beside the entry's figures with no name join. No `floor_map` entry: it has no floor
-    # analogue, exactly like the skills kind's own Proficiency/Evidence/Signal Value.
+    # `Tools` (#364/#365/#368, spec §4.2) is the attribution index: the specific tools and
+    # hard skills, tied to the job, that an entry declares it used. It took over that job
+    # from #168's `Skills`, and lives here rather than on a skill note for #168's reason --
+    # it is where the gate already reads, so a per-entry set slots in beside the entry's
+    # figures with no name join. `Skills` (the owner's model, 2026-10-06) holds general
+    # soft skills tied to NO job: they feed a CV's SKILLS pick list and nothing else --
+    # never shown inside the entry, never vault vocabulary, never attribution-checked.
+    # Neither has a `floor_map` entry: no floor analogue, exactly like the skills kind's
+    # own Proficiency/Evidence/Signal Value.
     #
     # DECLARING a field makes it live immediately across several independent readers of
     # `spec.fields` -- an argparse flag builder (`cli.py`), an interactive prompt
@@ -286,15 +281,12 @@ EVIDENCE_KINDS = {
     #
     # A tool's digits are never licensed as a metric: `tool_items` values are matched as
     # terms, never added to an entry's figures, so the `3` in "Examplelang3" is not a
-    # citable number.
+    # citable number. `Skills` items reach neither the figures, the matcher nor the
+    # composer's entry text (core/tokens.py::skill_items says why they skip the token rule).
     "experience": EvidenceKind("Job Applications/Experience Library",
-                               ("Company", "Category", "Best For", "Metrics", "Tools"),
-                               cited_by_gate=True, read_by_composer=True,
-                               # #364/#365/#368 (spec §4.2): `Tools:` is the attribution
-                               # index now. `Skills:` is no longer read; the store reports
-                               # only whether an entry still carries it, so doctor and
-                               # `cv run` can say the check is off on an upgraded vault.
-                               legacy_fields=("Skills",)),
+                               ("Company", "Category", "Best For", "Metrics", "Skills",
+                                "Tools"),
+                               cited_by_gate=True, read_by_composer=True),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
     # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
     # `best_for` was the empty string for every skill, so a skills entry in domain
@@ -906,10 +898,7 @@ class Store(Protocol):
 
         Returns dicts carrying at least `title`, `company`, `category`, `best_for`,
         `metrics`, `verified`, `body` (the floor cv/bundle.py's ranker needs on every
-        kind) plus `fields`, the kind's own frontmatter under its own names, and `legacy`,
-        `{key: bool}` per retired field (`EvidenceKind.legacy_fields`): presence only, never
-        the value. Consumers read `legacy` with `.get()`, so a store that omitted it would
-        never be caught and the attribution warning would simply never fire. Which of a
+        kind) plus `fields`, the kind's own frontmatter under its own names. Which of a
         kind's fields fills each of the four TEXT floor keys is `FLOOR_FIELD_SOURCES`
         merged with that kind's `floor_map` -- not an identity mapping the store invents
         for itself, and not every field: one with no floor analogue is reachable only

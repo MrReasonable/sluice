@@ -96,3 +96,35 @@ def test_a_forged_header_line_is_defanged_and_changes_no_fact():
     # The gate reads structured entries (#174): the forged line adds no figure.
     facts = entry_facts(bundle, LAYOUT)["EA1"].figures
     assert facts == entry_facts(plain, LAYOUT)["EA1"].figures
+
+
+_PRACTICE = {**ENTRY, "body": "Grew 3 to 8.", "fields": dict(Tools="Exampleco",
+                                                           Skills="examplecoach, 5X")}
+
+
+def test_an_entrys_skills_are_shown_in_no_entry_line_of_either_bundle():
+    """Owner's model (binding, replaces the 2026-10-06 `skills=` entry line): `Skills` items
+    are general soft skills tied to no job, so they reach the model ONLY as SKILLS-pool
+    candidates (cv/compose.py), never inside an entry. Shown in an entry, a tool name left in
+    `Skills` could be claimed under that employer with no flag at all."""
+    b = B.build_bundle([_PRACTICE], [], [], {"Example Alpha": "EA"})
+    for text in (B.render_structured_bundle(b), B.render_audit_bundle(b)):
+        assert "tools=Exampleco" in text, "control: the entry section was rendered"
+        assert "examplecoach" not in text and "skills=" not in text
+
+
+def test_an_entrys_skills_never_license_a_figure():
+    # The entry's ONLY 5 is inside a Skills item, which `_entry_block` -- where `entry_facts`
+    # harvests figures -- never reads.
+    b = B.build_bundle([_PRACTICE], [], [], {"Example Alpha": "EA"})
+    assert "5" not in entry_facts(b, LAYOUT)["EA1"].figures
+
+
+def test_a_tool_holding_a_comma_is_shown_to_the_model_as_one_tool():
+    """A quoted flow-list item may contain a comma; joined with ", " as-is it read to the
+    model as two tools. Quoted, it reads as one. Presentation only: the gate reads the
+    structured items."""
+    entry = {**ENTRY, "fields": dict(Tools='[examplecoach, "Example Framework, Example Query"]')}
+    b = B.build_bundle([entry], [], [], {"Example Alpha": "EA"})
+    assert ('tools=examplecoach, "Example Framework, Example Query"'
+            in B.render_structured_bundle(b))

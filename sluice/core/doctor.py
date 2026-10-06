@@ -1205,11 +1205,18 @@ def classify_skill_labels(named_entries, kinds) -> list:
 
 
 def classify_attribution(experience_entries) -> list:
-    """The #364 spec §6.6 warning. On an UPGRADED vault -- a verified entry still carries a
-    non-empty legacy Skills: and none declares Tools: -- the misattributed-tool check is
-    off, and the user who annotated their entries is owed the reason. A vault with neither
-    field is an unconfigured install and draws nothing (empty config abstains)."""
-    from sluice.core.tokens import tool_items
+    """A NOTICE (#364 spec §6.6, softened by the owner's model of 2026-10-06): no verified
+    entry declares Tools:, so the misattributed-tool check is off, while some verified entry
+    declares Skills:. A vault with neither field is an unconfigured install and draws nothing
+    (empty config abstains).
+
+    NOTICE rather than a default-view warning: `Tools:` holds the specific tools and hard
+    skills tied to a job and `Skills:` the general soft skills tied to none, so a vault that
+    declares only soft skills is a legitimate shape, not a fault -- the row is information
+    for `--verbose`, blocks nothing and never reaches the exit code, `--strict` included.
+    `cv run` logs nothing for it either. Count-only, never a value -- a DoctorReport reaches
+    MCP clients whole."""
+    from sluice.core.tokens import skill_items, tool_items
 
     def declares(entry):
         try:
@@ -1219,27 +1226,28 @@ def classify_attribution(experience_entries) -> list:
 
     if any(declares(e) for e in experience_entries):
         return []
-    legacy = sum(1 for e in experience_entries if (e.get("legacy") or {}).get("Skills"))
-    if not legacy:
+    annotated = sum(1 for e in experience_entries if skill_items(e))
+    if not annotated:
         return []
     return [ComponentCheck(
-        "store", "cv attribution check", DEGRADED,
-        f"off: no verified experience entry declares Tools:, and {legacy} still "
-        f"carr{'ies' if legacy == 1 else 'y'} the retired Skills: -- sluice no longer reads "
-        "Skills:; copy each entry's named tools into Tools: to turn the check on, leaving "
-        "practice words out, since every declared item is checked in every bullet "
-        "(docs/CONFIGURATION.md)", warn_by_default=True)]
+        "store", "cv attribution check", NOTICE,
+        f"off: no verified experience entry declares Tools:, though {annotated} "
+        f"declare{'s' if annotated == 1 else ''} Skills: -- Tools: (specific tools and hard "
+        "skills tied to the job) is what turns the check on, since each declared tool is "
+        "checked in every bullet; Skills: holds general soft skills, offered for a CV's "
+        "skills list only and never checked (docs/CONFIGURATION.md)")]
 
 
 def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
     """The #364 spec §8 warning: a `cv.fabrication_decoys` entry matching, as a whole term, the
-    user's own data -- a verified entry's Tools: item, a verified skill's CV name, or any CV
+    user's own data -- a verified entry's Tools: or Skills: item (both feed the SKILLS pool,
+    the latter since the owner decision of 2026-10-06), a verified skill's CV name, or any CV
     Layout text. The ban contradicts that data: it keeps the tool or skill off every CV's
     skills list, while layout text renders regardless. `skill_names` arrive already derived
     (Sluice.doctor passes cv/selection.py::cv_name's answers), so this and the pool agree.
     Decoys are named by POSITION, never echoed."""
     from sluice.core.layout import layout_strings
-    from sluice.core.tokens import find_term, tool_items
+    from sluice.core.tokens import find_term, skill_items, tool_items
 
     def items(entry):
         try:
@@ -1247,7 +1255,8 @@ def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
         except ValueError:
             return []
 
-    texts = ([t for e in experience_entries for t in items(e)] + list(skill_names)
+    texts = ([t for e in experience_entries for t in items(e)]
+             + [t for e in experience_entries for t in skill_items(e)] + list(skill_names)
              # Each layout string on its own: searching their join matched a phrase across
              # two of them, a warning about text the user never wrote.
              + (list(layout_strings(layout)) if layout is not None else []))
@@ -1261,7 +1270,8 @@ def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
         verb = "match"
     return [ComponentCheck(
         "gates", "cv.fabrication_decoys", DEGRADED,
-        f"cv.fabrication_decoys {where} {verb} your own Tools:, a verified skill's name or "
-        "your CV Layout -- it keeps that tool or skill off every CV's skills list, and "
+        f"cv.fabrication_decoys {where} {verb} your own Tools: or Skills:, a verified "
+        "skill's name or your CV Layout -- it keeps that tool or skill off every CV's skills "
+        "list, and "
         "layout text renders regardless; remove the decoy, or the data it contradicts",
         warn_by_default=True)]

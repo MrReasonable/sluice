@@ -4,6 +4,7 @@ In core/, not cv/: `core/doctor.py` must answer the same questions the gate answ
 this decoy match that tool?), and core/ may not import a sub-app. A second copy in doctor
 is how the two would come to disagree -- the bug class this repo's #30 incident names.
 """
+import csv
 import functools
 import re
 import unicodedata
@@ -307,23 +308,57 @@ def figures(text, *, remove=()):
     return frozenset(found)
 
 
-def tool_items(entry, field="Tools"):
-    """The `Tools:` items one evidence entry declares; a blank value declares none.
+def _declared_items(entry, field):
+    """The comma- or list-separated items of one entry field; a blank value declares none.
 
-    Raises on a value the gate could not safely use: an item with no name at all, or a
-    token that leads with a digit (see TOKEN_RULE_RE)."""
+    The ONE splitter `tool_items` and `skill_items` share, so the two fields cannot come to
+    disagree about what an item is. Raises on a value that is neither text nor a list of
+    text: an Obsidian list property (`Tools:` with `- a` lines) arrives as a YAML list from a
+    store that parses one."""
     raw = (entry.get("fields") or {}).get(field, "") or ""
     if isinstance(raw, str):
-        parts = raw.split(",")
+        # YAML's flow-list spelling (`Skills: [a, b]`) arrives as a literal string, because
+        # the vault's frontmatter read is line-based. Strip that ONE enclosing pair, or the
+        # items come back as `[a` and `b]` -- a fragment that renders on a CV and never
+        # matches. Only when the whole value is a single pair with no other bracket inside:
+        # `[a], [b]` (bracketed items) and `[[X]], [[Y]]` (Obsidian wikilinks) also start
+        # with `[` and end with `]`, and are the user's own text, split as typed.
+        text = raw.strip()
+        inner = text[1:-1]
+        if (text.startswith("[") and text.endswith("]")
+                and "[" not in inner and "]" not in inner):
+            # A flow list may double-quote an item that holds a comma
+            # (`[a, "b, c"]`); splitting at every comma made it two fragments, each a pool
+            # value and, for Tools, a name a bullet could be refused against. The stdlib's
+            # csv reader splits quote-aware and drops the quotes. Flow lists only: the plain
+            # comma-separated spelling keeps its plain split, so a quote there stays text.
+            # A single-quoted YAML item is not recognised here, a stated residual.
+            try:
+                parts = next(csv.reader([inner], skipinitialspace=True), [])
+            except csv.Error as exc:
+                # csv's own error (its field-size limit, for one) is not a ValueError, so it
+                # escaped `skill_items`' guard and could cost a lead over a skills list.
+                # Re-raised as the one error both readers handle: Tools refuses, Skills
+                # declares none.
+                raise ValueError(f"{field} could not be read as a list: {exc}") from exc
+        else:
+            parts = text.split(",")
     elif isinstance(raw, (list, tuple)):
-        # An Obsidian list property (`Tools:` with `- a` lines) arrives as a YAML list.
         if not all(isinstance(p, str) for p in raw):
             raise ValueError(f"{field} must be text or a list of text items")
         parts = raw
     else:
         raise ValueError(f"{field} must be text or a list of text items, "
                          f"not {type(raw).__name__}")
-    items = [t.strip() for t in parts if t.strip()]
+    return [t.strip() for t in parts if t.strip()]
+
+
+def tool_items(entry, field="Tools"):
+    """The `Tools:` items one evidence entry declares; a blank value declares none.
+
+    Raises on a value the gate could not safely use: an item with no name at all, or a
+    token that leads with a digit (see TOKEN_RULE_RE)."""
+    items = _declared_items(entry, field)
     for item in items:
         toks = tokens(item)
         if not toks:
@@ -336,6 +371,35 @@ def tool_items(entry, field="Tools"):
                     f"letter, or a dot then a letter -- {tok!r} does not. A digit-led name "
                     "is refused because span removal would let a figure vanish with it")
     return items
+
+
+def skill_items(entry):
+    """The `Skills:` items one experience entry declares: general soft skills tied to no
+    job (the owner's model; `Tools:` holds the job-tied tools and hard skills). They are
+    offered for a CV's SKILLS list (cv/selection.py::build_pool) and used nowhere else --
+    not shown inside the entry, not vault vocabulary for the term check, never a figure. A
+    blank value declares none.
+
+    Deliberately WITHOUT `tool_items`' per-token rule. That rule exists for one reason: a
+    tool's name is span-removed from a bullet or the profile before its figures are read
+    (cv/validate.py::check_selection), so a digit-led name would let a figure vanish with it,
+    and a name the tokeniser cannot see could never be matched. A `Skills:` item reaches
+    neither path -- it is never in `EntryFacts.tools`, never matched against a bullet, never
+    removed from any text -- and renders only as the user's own vault text in SKILLS, which
+    no check reads, exactly like a Skills Inventory name (which carries no token rule
+    either). Refusing `5X` or `9E modelling` from the SKILLS list would cost the user a real
+    practice and protect nothing; tests/test_cv_checks.py::test_a_skills_item_neither_licenses_nor_hides_a_figure
+    pins that it is never used the way the rule guards against.
+
+    A value that is not text at all is treated as declaring none rather than raising, for
+    #167's rule: a skills list affects only tailoring QUALITY, so it may never cost a lead
+    (`cv run` would otherwise have to refuse the whole run over it). The vault cannot
+    produce one -- its frontmatter parse yields text -- so this is a contract-shape guard for
+    another store, not a path a vault user reaches."""
+    try:
+        return _declared_items(entry, "Skills")
+    except ValueError:
+        return []
 
 
 def decoy_problem(decoy):

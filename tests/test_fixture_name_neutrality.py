@@ -2681,6 +2681,21 @@ _REVIEWED_SKILL_VALUES = frozenset({
     "Examplelangscript",
     "Examplestandard 9001",
     "examplecoach",
+    # Introduced by the entry-Skills pool change (owner decision 2026-10-06,
+    # tests/test_cv_selection.py): an all-caps spelling of the reviewed `Examplelang`, written
+    # under an entry's `Skills` so the pool's case-insensitive de-duplication drops it.
+    "EXAMPLELANG",
+    # Introduced by the bracket-list fix (tests/test_core_tokens.py): the fragments a
+    # flow-list spelling `[examplecoach, Example Framework]` split into before the shared
+    # splitter dropped the enclosing pair -- the reviewed values above with a stray bracket.
+    "[examplecoach",
+    "Example Framework]",
+    # Introduced by the comma-holding-tool row (tests/test_cv_structured_bundle.py): the
+    # halves this sweep's plain comma split makes of the quoted flow-list item
+    # `"Example Framework, Example Query"` -- two reviewed values above, each carrying the
+    # quote and (for the last item) the closing bracket of the literal it was cut from.
+    '"Example Framework',
+    'Example Query"]',
 })
 
 # `_REVIEWED_FIXTURE_IDENTITIES` is about LEAD identities -- employers a fixture names.
@@ -2783,7 +2798,7 @@ _SKILL_BLOCK_LIST_COLLECTOR = ("evidence Skills: (YAML block list)",
 
 # #364/#365/#368: `Tools:` is the experience entries' attribution field now (spec §4.2) and
 # holds what `Skills:` held -- a tool's NAME -- so it is swept in every spelling `Skills:` is,
-# onto the same reviewed roster. `Skills:` stays swept too: upgrade fixtures still write it.
+# onto the same reviewed roster. `Skills:` stays swept too: it is a live experience field.
 _TOOLS_COLLECTOR = ("evidence Tools: (frontmatter or dict literal)",
                     _evidence_field_re("Tools"))
 _TOOLS_BLOCK_LIST_COLLECTOR = ("evidence Tools: (YAML block list)",
@@ -3775,9 +3790,10 @@ def test_the_evidence_tools_collectors_see_every_shape_they_claim_to():
 
 
 def test_the_residual_skills_fixtures_are_still_swept():
-    """Upgrade fixtures still write the retired `Skills:` field, so its collector must keep
-    finding them: a floor of its own, so a broken `Skills:` pattern cannot hide behind the
-    `Tools:` values in the union."""
+    """Fixtures write the experience kind's `Skills:` field (a live field again since the
+    owner's model of 2026-10-06: general soft skills for the SKILLS list), so its collector
+    must keep finding them: a floor of its own, so a broken `Skills:` pattern cannot hide
+    behind the `Tools:` values in the union."""
     assert _collect(_SKILL_COLLECTOR[1]), "the Skills: collector matched no fixture"
 
 

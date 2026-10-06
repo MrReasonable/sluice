@@ -243,8 +243,8 @@ def test_the_declared_constant_sweep_actually_walks_both_command_packages():
     exactly this reason. It reaches no PROSE in `sluice.evidence.commands` -- that module's
     user-facing `print()`/error messages are in-body f-strings, the same shape `wizard.py`
     was in before Task 8's fix, so widening discovery to include the module does not sweep
-    them; its module-level constants are field-name tables (`EVIDENCE_KINDS`,
-    `RETIRED_FIELDS`), named in `_NOT_PROSE`.
+    them; its module-level constant is a field-name table (`EVIDENCE_KINDS`), named in
+    `_NOT_PROSE`.
 
     Those messages are no longer unswept, though, and this docstring used to say hoisting
     was the outstanding fix (#164 review, L2). They are swept WHERE THEY RUN, by

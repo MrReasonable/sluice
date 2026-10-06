@@ -668,19 +668,6 @@ def missing_prerequisites(vault) -> list:
     return missing
 
 
-def run_warnings(vault) -> list:
-    """WARNINGS `cv run` logs once per RUN, never per lead (#364 spec §6.6): today, the
-    misattributed-tool check gone quiet on an upgraded vault. The sentence is doctor's own row
-    (core/doctor.py::classify_attribution), so the two cannot disagree. An unreadable corpus
-    is `missing_prerequisites`' to report, and is not repeated here."""
-    from sluice.core.doctor import classify_attribution
-    try:
-        entries = vault.read_evidence("experience", verified_only=True)
-    except (OSError, ValueError):
-        return []
-    return [f"cv: {row.subject} {row.detail}" for row in classify_attribution(entries)]
-
-
 def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
               dry_run=False, policy=StalenessPolicy(), usage=None) -> list:
     notes = [n for n in vault.read_leads({"shortlist"})]

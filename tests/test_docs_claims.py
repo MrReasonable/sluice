@@ -1500,14 +1500,7 @@ def test_every_evidence_add_flag_is_documented(kind):
     Derived from the real parser on both sides rather than hand-listed, which is the point:
     correcting the one missing flag would leave the next field addition free to repeat it.
     """
-    from sluice.evidence.commands import RETIRED_FIELDS, field_flag
-
-    # A RETIRED field's flag is hidden from --help on purpose and only refuses, naming its
-    # replacement (cli.py's evidence loop), so it is not one to document. Subtracted by
-    # derivation from the same registry the parser reads -- never by "whatever is hidden",
-    # which would let any flag escape this check by being hidden.
-    retired = {field_flag(f) for f in EVIDENCE_KINDS[kind].legacy_fields if f in RETIRED_FIELDS}
-    real = _parser_flags(kind, "add") - retired
+    real = _parser_flags(kind, "add")
     assert real, (
         f"walked no flags for `{kind} add` -- for a comparison this is the vacuous-pass "
         f"shape, so the scope is asserted before the contents are")

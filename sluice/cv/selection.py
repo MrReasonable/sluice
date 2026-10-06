@@ -7,7 +7,7 @@ reported, never refused).
 """
 from dataclasses import dataclass
 
-from sluice.core.tokens import find_term, tool_items
+from sluice.core.tokens import find_term, skill_items, tool_items
 
 
 @dataclass(frozen=True)
@@ -55,11 +55,15 @@ def _key(item):
 
 def build_pool(named, experience_entries, decoys=()):
     """The closed list a CV's SKILLS section may draw from: verified skill names first
-    (so their spelling wins), then verified entries' Tools:, de-duplicated. An item a
-    `fabrication_decoys` term matches never enters it: a ban beats the user's own list."""
+    (so their spelling wins), then verified entries' Tools:, then their Skills: (owner
+    decision 2026-10-06: general soft skills, which this pool is the only consumer of),
+    de-duplicated. Tools before Skills, so a name an entry declares under both keeps the
+    spelling the attribution check matches. An item a `fabrication_decoys` term matches
+    never enters it: a ban beats the user's own list."""
     out, seen = [], set()
     candidates = [cv_name(e) for e in named]
     candidates += [t for e in experience_entries for t in tool_items(e)]
+    candidates += [t for e in experience_entries for t in skill_items(e)]
     for item in candidates:
         key = _key(item)
         if not key or key in seen:

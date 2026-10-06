@@ -1783,13 +1783,12 @@ def test_read_cv_layout_refuses_non_mapping_frontmatter(store_name, tmp_path, mo
         store.read_cv_layout()
 
 
-def test_a_legacy_field_is_surfaced_as_presence_outside_fields(store_name, tmp_path,
-                                                               monkeypatch):
-    """#364 spec §4.2: `Skills:` is retired, but whether an entry still carries it is what lets
-    doctor and `cv run` say the attribution check is off on an UPGRADED vault rather than an
-    unconfigured one. Every store must surface that presence under the entry's own "legacy"
-    key -- on EVERY entry, including one carrying no retired key, so a reader never has to
-    guess at a missing key -- and never inside `fields`, the user-supplied set."""
+def test_an_experience_entrys_skills_is_read_as_data(store_name, tmp_path, monkeypatch):
+    """Owner decision 2026-10-06 (replaces 4.0's presence-only `legacy` contract): `Skills`
+    is a declared experience field again, so every store hands it back under `fields` like
+    any other declared field -- the pool (cv/selection.py::build_pool) and doctor's
+    attribution and decoy rows all read it there. An entry without the line reads `""`,
+    the absent-is-blank rule every declared field follows."""
     store = _make_store(store_name, tmp_path, monkeypatch)
     seed(store_name, store, experience=[
         {"id": "SF1", "verified": True, "extra": {"Skills": "Examplelang"}},
@@ -1797,6 +1796,5 @@ def test_a_legacy_field_is_surfaced_as_presence_outside_fields(store_name, tmp_p
     ])
     by_title = {e["title"]: e for e in store.read_evidence("experience")}
     assert set(by_title) == {"SF1", "SF2"}, "the seeder did not land"
-    assert by_title["SF1"]["legacy"] == dict(Skills=True)
-    assert by_title["SF2"]["legacy"] == dict(Skills=False)
-    assert all("Skills" not in e["fields"] for e in by_title.values())
+    assert by_title["SF1"]["fields"]["Skills"] == "Examplelang"
+    assert by_title["SF2"]["fields"]["Skills"] == ""

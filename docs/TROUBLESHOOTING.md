@@ -433,20 +433,22 @@ under that name. Run `job-sluice skills list` -- a slug title on a line ending
 `Label: (none)` is one of them -- and add a `Label:` line to that note's frontmatter with the
 name as a CV should show it. Nothing is broken meanwhile: the CV still composes.
 
-## `doctor` says the cv attribution check is off
+## `doctor --verbose` notes the cv attribution check is off
 
-No verified experience entry declares `Tools:`, while some still carry the retired `Skills:`.
-sluice no longer reads `Skills:`. Copy the named tools from each entry's `Skills:` into
-`Tools:` (tools, technologies, languages, platforms, standards, named methods) and leave
-practice words such as `security` or `coaching` out; see the next section for why. Once any
-entry declares one, a bullet naming a tool must cite an entry that lists it. `cv run` logs the
-same sentence once per run, and each result line says `attribution_check_off=True`.
+A notice, not a fault: it blocks nothing and does not fail `--strict`. No verified experience
+entry declares `Tools:`, while some declare `Skills:`. `Tools:` holds the specific tools and
+hard skills tied to an entry's job (tools, technologies, languages, platforms, standards, named
+methods), and declaring any is what turns the misattributed-tool check on. `Skills:` holds
+general soft skills tied to no job, such as `coaching`; its items are offered for the SKILLS
+list only and never checked, so leave soft skills there rather than in `Tools:` (see the next
+section for why). Once any entry declares a tool, a bullet naming it must cite an entry that
+lists it. Each `cv run` result line says `attribution_check_off=True` meanwhile.
 
 ## Many leads skipped with `MISATTRIBUTED TOOL` on an ordinary word
 
 The `MISATTRIBUTED TOOL` lines under the `skipped-gate` rows quote words like `security`,
 `pairing` or `architecture` rather than a product name. Some verified entry declares that word
-in `Tools:`, usually because it was copied from the retired `Skills:` on upgrade. Every declared
+in `Tools:`, often because a 3.x `Skills:` list was copied into it whole on upgrade. Every declared
 item is matched as a whole term, case-sensitively as declared, in every WORK bullet, so any
 bullet using the word must cite an entry that declares it or names it in its own title or body.
 A hyphenated compound still counts, because a hyphen is not part of a word: `security-focused`
@@ -455,8 +457,9 @@ draws the same finding the lead is skipped.
 
 Run `job-sluice experience list` to see each entry's `Tools:`, and keep only named tools,
 technologies, languages, platforms, standards and named methods (`Terraform`, `React`, `WCAG`,
-`Scrum`). Move a practice you want shown under SKILLS into a Skills Inventory note
-(`job-sluice skills add`); its `Label:` can appear in SKILLS and is not checked in bullets.
+`Scrum`). Move a general soft skill you want shown under SKILLS into `Skills:`, whose items
+are offered for SKILLS only and never checked in bullets, or into a Skills Inventory note
+(`job-sluice skills add`), whose `Label:` can appear in SKILLS and is not checked either.
 `docs/CONFIGURATION.md` has the rule under "`Tools:` on experience entries".
 
 ## `track` reauth needed

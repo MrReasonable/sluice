@@ -167,10 +167,10 @@ theirs: never fill in a date, a title or a qualification they did not give you.
 
 ### 5. Evidence: propose, then hand back
 
-If they have an existing CV, read it as source material and propose one entry per real achievement, each with the `--company` a role in their CV Layout names and its named tools in `--tools`:
+If they have an existing CV, read it as source material and propose one entry per real achievement, each with the `--company` a role in their CV Layout names and the specific tools and hard skills that job used in `--tools`. General soft skills, tied to no particular job, go in `--skills`:
 
 ```bash
-job-sluice experience add --name "..." --company "..." --metrics "..." --tools "..." --body "..."
+job-sluice experience add --name "..." --company "..." --metrics "..." --tools "..." --skills "..." --body "..."
 ```
 
 Put only named tools in `--tools`: tools, technologies, languages, platforms, standards and named
@@ -178,8 +178,12 @@ methods (`Terraform`, `React`, `WCAG`, `Scrum`). Never general practices or conc
 `security`, `coaching`, `pairing` or `architecture`. Every declared item is checked, as spelled, in
 every bullet of every CV, hyphenated compounds included (`security-focused` matches a declared
 `security`), so a practice word there can turn ordinary prose into a `MISATTRIBUTED TOOL` refusal
-and get leads skipped. A practice they want listed under SKILLS goes in a Skills Inventory note
-(`job-sluice skills add`) instead.
+and get leads skipped. General soft skills (`coaching`, `stakeholder management`) go in
+`--skills` instead: those items are offered for the CV's SKILLS section and used nowhere else --
+never shown as part of the entry, never checked. Never put a tool in `--skills`: a tool named
+only under `Skills:` and nowhere else in their evidence, then claimed in a bullet, is reported
+as a term named in no evidence (while `cv.term_check` is on, its default). A Skills Inventory note
+(`job-sluice skills add`) also works.
 
 Every figure you put in `--metrics` must come from their CV or from something they told you. This is
 the pool the fabrication gate licenses bullets against, so a number you rounded, extrapolated or
@@ -276,10 +280,11 @@ End by telling them, concretely:
   list fully enforced. Neither is an unset preference waiting for you to fill it in; populating
   either because it looked empty would invert rule 1 rather than satisfy it.
 - **`triage run --no-llm` puts every lead in `keep`.** Same reason as the abstaining gates.
-- **`doctor` says the cv attribution check is off.** No verified entry declares `Tools:` while
-  some still carry the retired `Skills:`. Nothing is broken, but a bullet can then name a tool
-  from another role unchecked. Tell the user; copying the named tools (not the practice words)
-  from `Skills:` into `Tools:` on their verified notes is their edit to make.
+- **`doctor --verbose` notes the cv attribution check is off.** No verified entry declares
+  `Tools:` while some declare `Skills:`. A notice, not a fault, but a bullet can then name a tool
+  from another role unchecked. Tell the user: `Tools:` (specific tools and hard skills tied to the
+  job) is what turns the check on, and `Skills:` holds general soft skills, which are never
+  checked. Adding tools to `Tools:` on their verified notes is their edit to make.
 - **`doctor` counts entries "not on your CV" or with "no company".** Those verified entries
   match no role in the CV Layout, so no CV cites them. `job-sluice experience list` shows each
   entry's company; ask the user which role it belongs to rather than guessing.

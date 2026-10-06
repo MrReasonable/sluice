@@ -2024,9 +2024,6 @@ class Vault:
                 # floor analogue (skills' Proficiency/Evidence/Signal Value) stays
                 # reachable.
                 "fields": {k: fm.get(k, "") for k in spec.fields},
-                # Presence only, never the value: a retired key is not data (#364 spec §4.2).
-                "legacy": {k: bool(str(fm.get(k, "") or "").strip())
-                           for k in spec.legacy_fields},
             })
         return out
 

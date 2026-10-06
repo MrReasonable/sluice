@@ -134,6 +134,31 @@ the user wrote is never refused by them.
 - **D14 — Non-blocking warnings are shown by default** (owner decision after round 2). The
   "not on your CV", "no company" and "attribution check off" rows appear in `doctor`'s
   default view as warnings that block nothing, so `doctor --require cv` still passes.
+- **D15 — An entry's `Skills:` feeds the SKILLS list** (owner decision, 2026-10-06, after this
+  spec merged and before 4.0.0 shipped; it amends D4 and D5 rather than replacing them). Hard
+  skills live in an entry's `Tools:`, soft skills and practices in its `Skills:`. So `Skills:`
+  is read as data again: its items join D5's pool (after `Tools:`, under the same
+  de-duplication, decoy filter and `skills_max`), count as vault vocabulary for the term check,
+  and are shown to the composer and the auditor on their own `skills=` line. They are never
+  attribution-checked, never a figure and never span-blanked, so the digit-led-token rule stays
+  a `Tools:` rule. `experience add --skills` writes the field again, `EvidenceKind.legacy_fields`
+  and the presence-only plumbing are removed, and the §6.6 "attribution check off" row says
+  what each field is for instead of calling `Skills:` retired. Why: under D4 a user's practices
+  had nowhere on an entry to live -- putting them in `Tools:` turned ordinary prose into
+  `MISATTRIBUTED TOOL` refusals, and the only alternative was one Skills Inventory note per
+  practice.
+- **D16 — `Skills:` is the SKILLS list and nothing else** (owner's model, 2026-10-06, after the
+  pre-push review of D15; it narrows D15). `Tools:` is the specific tools and hard skills tied
+  to the job, attribution-checked. `Skills:` is general soft skills tied to NO job, so its items
+  are SKILLS-pool candidates only: not shown inside the entry to the composer or the auditor,
+  not counted as vocabulary for the term check, never a figure, never checked. The §6.6
+  "attribution check off" row becomes a NOTICE (verbose view only, blocking nothing, never
+  failing `--strict`) and `cv run` stops logging it, because a vault of soft skills without
+  tools is legitimate. Why: shown inside an entry and counted as vocabulary, a tool name left
+  in `Skills:` could be claimed under another employer with no flag at all -- before `Skills:`
+  was read, the term check reported exactly that -- and a digit in a `Skills:` item shown in
+  an entry invited a bullet into an invented-metric refusal. The shared splitter also drops one
+  enclosing pair of brackets, so `Skills: [a, b]` reads as two items for both fields.
 
 ## 4. Vault data model
 

@@ -17,7 +17,6 @@ someone to "restore" the laziness it describes by hoisting the per-function `Slu
 import up here, which would move a heavy import onto every single invocation while
 reading as a tidy-up.
 """
-import argparse
 import sys
 
 from sluice.core.protocols import EVIDENCE_KINDS
@@ -28,27 +27,6 @@ def field_flag(field: str) -> str:
     """`Signal Value` -> `--signal-value`. One place, so the parser and the command
     body cannot disagree about what argparse called the destination."""
     return "--" + field.lower().replace(" ", "-")
-
-
-# A field a kind used to take, mapped to the field that replaced it. 4.0 (#364/#365/#368,
-# #364 spec §4.2) retired `Skills:` on experience entries for `Tools:`, so `experience add
-# --skills` would otherwise die as a bare argparse "unrecognized arguments" that never says
-# what to type instead. Keyed by field and applied to a kind only when its EvidenceKind
-# lists the field in `legacy_fields`, so the retired flag exists exactly where it existed.
-RETIRED_FIELDS = {"Skills": "Tools"}
-
-
-def retired_flag_action(retired: str, replacement: str):
-    """An argparse Action class for a retired field flag: it refuses at parse time naming
-    the replacement, through `parser.error` -- exit 2 and a usage line, never a traceback.
-    An Action rather than a post-parse check, so the refusal names the flag the user
-    actually typed even when some other argument is also wrong."""
-
-    class _Retired(argparse.Action):
-        def __call__(self, parser, namespace, values, option_string=None):
-            parser.error(f"{field_flag(retired)} was retired in 4.0 -- sluice no longer "
-                         f"reads {retired}:; use {field_flag(replacement)} instead")
-    return _Retired
 
 
 def field_dest(field: str) -> str:
@@ -112,13 +90,15 @@ def cmd_evidence_add(args, config) -> int:
 
 def cmd_evidence_list(args, config) -> int:
     """List one kind's entries. For a kind that declares them, every line shows the
-    entry's `Company:` (or `(none)`), any `Tools:` it declares and its `Label:` (or
-    `(none)`), so `core/doctor.py`'s eligibility, tools and skill-label rows -- "not on
+    entry's `Company:` (or `(none)`), any `Tools:` and `Skills:` it declares and its
+    `Label:` (or `(none)`), so `core/doctor.py`'s eligibility, tools and skill-label rows -- "not on
     your CV", "no company", the unusable-`Tools:` row and "cv skills (no Label)", which
     report a COUNT and never the entry's own text, by this codebase's own "no doctor row
     carries user-authored text" rule -- have somewhere actionable to point a user at: this
     command is the resolving command (`job-sluice experience list`, `job-sluice skills
-    list`) those rows name.
+    list`) those rows name. `Skills:` (owner decision 2026-10-06) is shown because it is a
+    live field -- its items feed a CV's SKILLS list -- and this is where a user checks what
+    each entry declares.
 
     Keyed on the kind's declared `fields` rather than a hardcoded `args.kind ==
     "experience"` check, so a future kind that grows either field gets this for free
@@ -139,7 +119,9 @@ def cmd_evidence_list(args, config) -> int:
         print(f"no {'pending' if args.pending else 'verified'} {args.kind} entries")
         return 0
     fields = EVIDENCE_KINDS[args.kind].fields
-    show_company, show_tools = "Company" in fields, "Tools" in fields
+    show_company = "Company" in fields
+    # Tools, then Skills: the two annotation fields, shown by one rule (below).
+    annotations = [f for f in ("Tools", "Skills") if f in fields]
     show_label = "Label" in fields
     for e in entries:
         marker = "pending" if args.pending else e["verified"]
@@ -151,26 +133,34 @@ def cmd_evidence_list(args, config) -> int:
             company = declared.get("Company", "")
             company = company.strip() if isinstance(company, str) else ""
             line += f"  Company: {company or '(none)'}"
-        if show_tools:
-            tools = declared.get("Tools", "")
-            # Blank is absent (core/tokens.py::tool_items declares no item for it) --
-            # omitted rather than printed as a bare "Tools: " on every entry that has not
-            # annotated one, which would be noise on every line.
+        for field in annotations:
+            value = declared.get(field, "")
+            # Blank is absent (core/tokens.py::tool_items and ::skill_items declare no item
+            # for it) -- omitted rather than printed as a bare "Tools: " on every entry that
+            # has not annotated one, which would be noise on every line.
             #
             # WHITESPACE-ONLY is blank, and the check is on the stripped value for that
-            # reason: `tool_items` splits on commas and drops every item that is empty
+            # reason: both parsers split on commas and drop every item that is empty
             # after stripping, so `Tools: "   "` contributes nothing THERE while a bare
             # truthiness test would print an empty `Tools:` suffix HERE -- one value
             # described two ways. Only the QUOTED spelling reaches this line as
             # whitespace (measured: `_parse_fm_spaced` hands back `''` for an unquoted
             # run of spaces), and a human editing their own vault can write it.
             #
-            # `isinstance` rather than a bare `.strip()`: this is a display path,
-            # `core/protocols.py`'s Store contract does not require the field to be a
-            # `str`, and raising `AttributeError` out of `list` over one odd field is not
-            # a trade this command should make. A non-str value abstains.
-            if isinstance(tools, str) and tools.strip():
-                line += f"  Tools: {tools.strip()}"
+            # A list or tuple of text is shown joined with ", ": the Store contract lets a
+            # store hand a field back as one (core/tokens.py's readers accept it), and
+            # omitting it here would hide what the CV pipeline is using. Blank items are
+            # skipped by the same rule.
+            #
+            # `isinstance` rather than a bare `.strip()`: this is a display path, and
+            # raising `AttributeError` out of `list` over one odd field is not a trade this
+            # command should make. Any other value -- or a list holding a non-text item --
+            # abstains.
+            if (isinstance(value, (list, tuple))
+                    and all(isinstance(v, str) for v in value)):
+                value = ", ".join(v.strip() for v in value if v.strip())
+            if isinstance(value, str) and value.strip():
+                line += f"  {field}: {value.strip()}"
         if show_label:
             # ALWAYS shown, blank included, for the same reason as Company above: doctor's
             # "cv skills (no Label)" row counts the notes a CV lists under a slug title, and

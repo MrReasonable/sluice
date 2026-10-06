@@ -2,8 +2,9 @@
 
 The property is unchanged from #168's: an unbacked skill never reaches a CV. Only the
 mechanism moved (#364/#365/#368, spec §6.2): the composer now picks skills from a CLOSED
-list -- the verified entries' `Tools:` and verified Skills Inventory names -- and a pick
-off that list is DROPPED and reported, never rendered, rather than refusing the whole CV.
+list -- the verified entries' `Tools:` and `Skills` items and verified Skills Inventory names --
+and a pick off that list is DROPPED and reported, never rendered, rather than refusing the
+whole CV.
 So the lead renders, without the pick, on its first attempt.
 
 Driven through the real `Sluice.compose_cv` composition root with a FAKE BACKEND emitting a
