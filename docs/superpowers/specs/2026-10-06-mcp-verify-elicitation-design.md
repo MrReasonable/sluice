@@ -148,6 +148,17 @@ Run one interactive check in Claude Code, against a scratch vault (`job-sluice i
    - the markdown shows literally;
    - the boxes start ticked.
 
+## Revision 5 (2026-10-06): what the interactive check found
+
+The live check in Claude Code showed the form MESSAGE folded after three lines, so the first
+design showed no entry text at all -- an Accept approved unseen entries. A probe established
+the client's actual rendering: each checkbox DESCRIPTION is shown in full as plain text, any
+number of lines, cut with "..." at about 2,000 characters; and the dialog does not scroll in a
+tmux pane. The design therefore changed: a one-line message; each entry's title and text in
+its own checkbox description; entries over 1,900 characters never shown (CLI instead); forms
+packed to about one screen (80-column wrap estimate, 30 lines), with the overflow named in
+`not_shown_titles` (renamed from `remaining`, which a model misread as "nothing left").
+
 ## Out of scope
 
 - Legacy-protocol clients.

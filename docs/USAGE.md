@@ -934,15 +934,17 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   recovery a caller needs to be able to act on. Malformed input (an unknown kind, an
   undeclared field key, an unusable name) still raises and reaches the client as a
   tool error.
-- `verify_evidence(kind, names=None)` -- show the user every pending entry of `kind`
-  (or just those `names` picks; names only narrow, never approve) in one review form,
-  each entry's full text in its own code block and every box ticked, and verify only
-  the entries they leave ticked and accept. An entry whose text changed after the form
-  was built is reported `changed` and left pending; one that left the queue in the
-  meantime (verified through the CLI, or deleted) is reported `no_longer_pending`. If the entries do not fit in one
-  form, `remaining_titles` names the ones not shown -- call again with those as `names`
-  (a bare second call would show the same unticked entries first); one too long
-  for any form is reported for `job-sluice <kind> verify`. It needs a client on the
+- `verify_evidence(kind, names=None)` -- show the user the pending entries of `kind`
+  (or just those `names` picks; names only narrow, never approve) in a review form,
+  each entry's title and full text under its own checkbox (as plain text), every box
+  ticked, and verify only the entries they leave ticked and accept. A form holds about
+  one screen of entries; `not_shown_titles` names the ones that did not fit -- call
+  again with those as `names` (a bare second call would show the same unticked entries
+  first). An entry over about 1,900 characters is never put in a form, since the client
+  would cut it short; it is reported for `job-sluice <kind> verify`. An entry whose text
+  changed after the form was built is reported `changed` and left pending; one that left
+  the queue in the meantime (verified through the CLI, or deleted) is reported
+  `no_longer_pending`. It needs a client on the
   2026-07-28 MCP protocol that supports form elicitation (Claude Code does); any other
   client gets `outcome: "unsupported_client"` and nothing is written. There is no
   argument that approves on the user's behalf.
