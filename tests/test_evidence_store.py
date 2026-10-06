@@ -75,7 +75,9 @@ def test_every_shipped_kind_passes_its_own_construction_guard():
         rebuilt = EvidenceKind(spec.relpath, spec.fields,
                                cited_by_gate=spec.cited_by_gate,
                                read_by_composer=spec.read_by_composer,
-                               floor_map=spec.floor_map)
+                               floor_map=spec.floor_map,
+                               legacy_fields=spec.legacy_fields,
+                               names_in_skills_pool=spec.names_in_skills_pool)
         assert rebuilt == spec, kind
 
 
@@ -211,16 +213,16 @@ def test_an_unknown_kind_raises_and_lists_the_valid_names(tmp_path):
 
 
 def test_read_evidence_returns_the_eight_key_floor_plus_fields_for_every_kind(tmp_path):
-    """Three of skills' four user fields map to none of the eight legacy keys (`Domain`
+    """Most of skills' user fields map to none of the eight legacy keys (`Domain`
     is the exception, routed onto `best_for` by `EvidenceKind.floor_map`), so pinning the
-    return to those eight alone would write four fields per skill and read back zero."""
+    return to those eight alone would write every field but one per skill and read back zero."""
     v = Vault(str(tmp_path))
     _seed(tmp_path, "skills", "alpha",
           "Proficiency: P\nDomain: D\nEvidence: E\nSignal Value: S\nverified: 2026-01-01")
     entry = v.read_evidence("skills")[0]
     assert _EIGHT <= set(entry), "the eight-key floor is missing"
     assert entry["fields"] == {"Proficiency": "P", "Domain": "D",
-                               "Evidence": "E", "Signal Value": "S"}
+                               "Evidence": "E", "Signal Value": "S", "Label": ""}
 
 
 def test_a_skills_entrys_domain_reaches_the_ranker_the_cv_bundle_actually_uses(tmp_path):
@@ -525,8 +527,11 @@ def test_the_refusal_names_the_outermost_symlink_not_an_inner_one(tmp_path):
     with pytest.raises(OSError) as excinfo:
         v.read_pending_evidence("skills")
     message = str(excinfo.value)
-    assert f"{ancestor!r} is a symlink" in message, \
+    # Vault-RELATIVE: the message reaches doctor rows and MCP clients, so it must name the
+    # link without carrying the vault's absolute (home) directory.
+    assert "'Job Applications' is a symlink" in message, \
         f"the refusal did not name the OUTERMOST link: {message}"
+    assert str(tmp_path) not in message, f"the refusal leaked the vault path: {message}"
     assert "_inbox" not in message, \
         f"the refusal named an inner link the user cannot act on: {message}"
 
@@ -1085,3 +1090,20 @@ def test_the_registry_flags_are_what_this_change_intends():
     flipped in either direction reddens here rather than passing vacuously."""
     assert {k: (s.read_by_composer, s.cited_by_gate) for k, s in EVIDENCE_KINDS.items()} \
         == {"experience": (True, True), "skills": (True, False), "stories": (False, False)}
+
+
+def test_a_legacy_field_reports_presence_outside_fields(tmp_path, monkeypatch):
+    import dataclasses
+    from sluice.core import protocols
+    spec = dataclasses.replace(protocols.EVIDENCE_KINDS["experience"],
+                               legacy_fields=("Retired",))
+    monkeypatch.setitem(protocols.EVIDENCE_KINDS, "experience", spec)
+    v = Vault(str(tmp_path))
+    v.write_document("Job Applications/Experience Library/one.md",
+                     "---\nCompany: Example Alpha\nRetired: anything\nverified: 2026-01-01\n---\nBody\n")
+    v.write_document("Job Applications/Experience Library/two.md",
+                     "---\nCompany: Example Alpha\nRetired: \nverified: 2026-01-01\n---\nBody\n")
+    by_title = {e["title"]: e for e in v.read_evidence("experience")}
+    assert by_title["one"]["legacy"] == {"Retired": True}
+    assert by_title["two"]["legacy"] == {"Retired": False}
+    assert "Retired" not in by_title["one"]["fields"]

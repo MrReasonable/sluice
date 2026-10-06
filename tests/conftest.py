@@ -13,6 +13,8 @@ import unicodedata
 import pytest
 from faker import Faker
 
+from sluice.core.protocols import CvLayout, LayoutRole
+
 # Every variable `paths.resolve` consults as `env_var=`, i.e. the rung that outranks the
 # XDG pins below. Hand-listed HERE so the fixture stays trivial, and pinned against the
 # source by `test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var` -- adding another
@@ -184,6 +186,27 @@ def cfg_titles(titles):
 # name neither. Module-level (importable) because the bare `_lead()` helpers in test_vault.py
 # and the conformance suite cannot receive a fixture.
 LOCATIONS = ("Alfa", "Bravo", "Charlie", "Foxtrot")
+
+# One shared synthetic layout for every CV test (spec 12.2): a heading matching the
+# engine tests' Example Foundry entry, a title from the seeded faker pool, a location from
+# LOCATIONS. Never a real employment history.
+SYNTHETIC_LAYOUT = CvLayout(
+    roles=(LayoutRole(heading="Example Foundry", start="02/2023", end="present",
+                      location=LOCATIONS[0], title=_title_pool()[0]),),
+    certificates=("Example Scrum Master",), education=("Example University, BSc Example",))
+
+
+def layout_yaml(roles=None, **top):
+    """A CV Layout note's TEXT: YAML frontmatter written with BLOCK lists -- the shape
+    docs/CONFIGURATION.md documents, and the route a user's note takes. In block style a
+    comma inside an item is safe; only the inline `[a, b]` style splits on it."""
+    import yaml
+    roles = roles if roles is not None else [
+        {"heading": "Example Foundry", "from": "02/2023", "to": "present"}]
+    body = yaml.safe_dump({"roles": roles, **top}, default_flow_style=False,
+                          allow_unicode=True, sort_keys=False)
+    return f"---\n{body}---\n"
+
 
 # Synthetic triage framing values (#329). A lead's `culture_flags` and `triage_concerns` reach the
 # CV composer's prompt, so a realistic flag or concern here would be a shipped opinion about which

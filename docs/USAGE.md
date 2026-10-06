@@ -668,7 +668,7 @@ requirement that a `Skills:` name also exist as a verified `skills` entry, or th
 skill's own name, and neither direction affects its exit code.
 
 ### `job-sluice experience add --name NAME [--company V] [--category V] [--best-for V] [--metrics V] [--skills V] [--body TEXT] [--body-file PATH|-]`
-### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--body TEXT] [--body-file PATH|-]`
+### `job-sluice skills add --name NAME [--proficiency V] [--domain V] [--evidence V] [--signal-value V] [--label V] [--body TEXT] [--body-file PATH|-]`
 ### `job-sluice stories add --name NAME [--company V] [--best-for V] [--body TEXT] [--body-file PATH|-]`
 
 Proposes one entry. `--name` becomes the entry's filename (reduced to letters, digits and
@@ -681,6 +681,9 @@ like a bundle citation code, `--body-file` cannot be read, or the store refuses 
 symlinked evidence directory); otherwise prints the written path and exits 0. (An unknown *field*
 is not among them: each group's flags are generated from its own kind, so argparse rejects an
 undeclared one as a usage error before the command runs.)
+
+A `skills` entry also keeps the name you typed in a `Label:` field, because the filename is a
+slug (`C#` becomes `c`). `--label` sets it explicitly; left blank it takes the `--name` value.
 
 ### `job-sluice experience list [--pending]`
 ### `job-sluice skills list [--pending]`

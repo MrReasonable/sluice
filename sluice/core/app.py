@@ -2103,6 +2103,13 @@ class Sluice:
         `Store.propose_evidence`'s requirement to reject an undeclared field key by name
         -- `_render_evidence_note` in the one store that exists -- plus its requirement to
         write where `read_evidence` cannot see it."""
+        # D13: a skill note's filename is a slug (`C#` becomes `c.md`), so the name the user
+        # typed is kept in Label:, which is what a CV lists. An explicit Label wins.
+        from sluice.core.protocols import EVIDENCE_KINDS
+        spec = EVIDENCE_KINDS.get(kind)
+        if spec is not None and "Label" in spec.fields \
+                and not str(fields.get("Label") or "").strip():
+            fields = {**fields, "Label": name}
         return self.store().propose_evidence(kind, name=name, fields=fields, body=body)
 
     def list_evidence(self, *, kind: str, pending: bool = False) -> list:

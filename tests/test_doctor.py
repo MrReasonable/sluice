@@ -3545,3 +3545,78 @@ def test_no_usage_is_recorded_when_no_log_is_configured(monkeypatch, tmp_path):
     assert not os.path.exists(os.path.join(str(state), "sluice", "sluice_usage.jsonl"))
     assert not os.path.exists(os.path.join(str(state), "sluice")), \
         "no state directory should be created either -- append() makes the parent"
+
+
+def _a_directory_at_the_candidate_profile_path(tmp_path):
+    from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+    (tmp_path / "vault").joinpath(*CANDIDATE_PROFILE_RELPATH.split("/")).mkdir(parents=True)
+
+
+def test_an_unreadable_candidate_profile_keeps_every_other_store_fact(tmp_path):
+    """#259 again, for the one read outside the per-kind guard: a directory at the profile
+    path used to make the whole `preflight` raise, collapsing every store row."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    _a_directory_at_the_candidate_profile_path(tmp_path)
+    vault_dir = tmp_path / "vault"
+    facts = Vault(str(vault_dir)).preflight()
+
+    assert "Is a directory" in facts["candidate_error"]
+    assert str(tmp_path) not in facts["candidate_error"], "the reason leaked a path"
+    assert "candidate_name_present" not in facts and "candidate_contact_present" not in facts
+    assert facts["vault_exists"] is True and "baseline_exists" in facts
+    for kind in EVIDENCE_KINDS:
+        assert f"{kind}_total" in facts
+
+
+def test_an_unreadable_candidate_profile_is_a_dead_row_blocking_cv(tmp_path):
+    from sluice.core.vault import Vault
+
+    _a_directory_at_the_candidate_profile_path(tmp_path)
+    rows = classify_store(Vault(str(tmp_path / "vault")).preflight())
+    row = _one(rows, "Candidate Profile")
+    assert row.state == DEAD and row.blocks == ("cv",)
+    assert "cannot be read" in row.detail
+    assert {"baseline_rel", "Judging Profile"} <= {r.subject for r in rows}
+
+
+def test_doctor_exits_1_for_an_unreadable_candidate_profile(tmp_path, monkeypatch):
+    from sluice.core.config import Config
+
+    _a_directory_at_the_candidate_profile_path(tmp_path)
+    monkeypatch.setattr(Sluice, "store", _REAL_STORE)
+    report = Sluice(Config(vault_dir=str(tmp_path / "vault"))).doctor(offline=True)
+    assert [r for r in report.components if r.subject == "preflight"] == []
+    assert report.exit_code() == 1
+
+
+def test_an_unreadable_evidence_corpus_reports_its_error_without_the_vault_path(tmp_path):
+    """Round-4 review: `<kind>_error` was `str(exc)`, and a SYSTEM OSError's own text names
+    the absolute path it failed on -- the user's home directory, carried into a doctor row
+    and from there to an MCP client. The same disclosure `candidate_error` was fixed for,
+    on the sibling fact. A DIRECTORY named like an entry file is the fixture: real bytes on
+    disk, and `_read` raises IsADirectoryError, which carries an errno and the full path.
+
+    Asserted against every component of the vault's absolute directory, not only the whole
+    string, so a message that dropped the vault root but kept (say) the home directory or
+    the temp-dir name still fails. The strerror is asserted present so a reason that lost
+    the cause altogether cannot pass as "leaks nothing".
+    """
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import Vault
+
+    vault_dir = tmp_path / "vault"
+    (vault_dir.joinpath(*EVIDENCE_KINDS["experience"].relpath.split("/"))
+     / "alpha.md").mkdir(parents=True)
+
+    facts = Vault(str(vault_dir)).preflight()
+
+    reason = facts["experience_error"]
+    assert "Is a directory" in reason
+    # Components of three characters or more: a one- or two-letter component (macOS's
+    # temp root has a `T`) could match a coincidental substring of the strerror itself.
+    leaked = [part for part in vault_dir.parts if len(part) >= 3 and part in reason]
+    assert not leaked, f"the reason leaked part of the vault's absolute path: {leaked}"
+    for key in ("experience_total", "experience_verified", "experience_pending"):
+        assert key not in facts

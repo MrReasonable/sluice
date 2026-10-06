@@ -8,6 +8,11 @@ from typing import NamedTuple
 
 from sluice.core.stem import stem_all as _stem_all
 
+# The one tokeniser and its per-token rule now live in core/tokens.py, where core/doctor.py
+# can share them; these names stay importable from here for cv/terms.py and cv/validate.py.
+from sluice.core.tokens import TOKEN_RULE_RE as SKILL_TOKEN_RE
+from sluice.core.tokens import WORD_RE as _WORD_RE
+
 
 def _prefix(company: str, prefix_map: dict) -> str:
     """Two-uppercase-letter company prefix. Coerces ANY source (a prefix_map
@@ -101,8 +106,8 @@ _DERIVED_NEGATIVE_PROMPT = ("claim no technology, language, framework or tool th
 
 def build_bundle(entries, baseline, negatives, jd_keywords, prefix_map,
                  skills=()) -> dict:
-    # Fail loudly at construction (#168, this module's house rule -- see SKILL_TOKEN_RE's
-    # own comment). `_skill_items` is otherwise only reached lazily, from `bundle_sources`,
+    # Fail loudly at construction (#168, this module's house rule -- see
+    # `core/tokens.py::TOKEN_RULE_RE`'s own comment). `_skill_items` is otherwise only reached lazily, from `bundle_sources`,
     # which most callers invoke well after `build_bundle` -- an entry with a malformed
     # `Skills:` value would then surface far from the note that caused it, at gate time
     # instead of at load time. Called for its validation side effect only: the returned
@@ -173,67 +178,6 @@ def _baseline_block(bundle: dict) -> list[str]:
     return [bundle["baseline"]]
 
 
-# EVERY TOKEN of a `Skills:` item must begin with a letter, or with a DOT then a letter.
-# Span removal (cv/validate.py) makes this the first field that SUBTRACTS from the hard
-# numeric gate, so an unconstrained value is a laundering path.
-#
-# PER TOKEN, and that is the whole guard: an ITEM-level check (`^[A-Za-z]` against the
-# comma-separated item) accepts `Result 92`, because the item begins with `R` -- and removal
-# then blanks `92` from every bullet citing the entry, which is the exact path this rule
-# exists to close. A per-token rule refuses `Result 92`, `92x`, `120ms` and a bare `92`
-# alike, while accepting `Example Widget3`, where the digit is INSIDE a letter-led token.
-#
-# The `\.?` admits `.NET` and `.NET Core`, which the letter-only rule refused outright --
-# a shipped technology nobody could express, with no answer to the refusal but to misspell
-# it. Safe on this rule's own terms: the harm it guards is a token whose DIGITS span removal
-# would then blank, and a dot-then-letter token carries none. (`_WORD_RE` below keeps a
-# LEADING dot on a token for exactly this reason, while dropping a trailing one.)
-#
-# WHAT STAYS REFUSED, stated rather than implied, because the shapes are real and a user
-# meeting one gets an error rather than a gap they can reason about: any token that leads
-# with a DIGIT. `ISO 9001`, `Web 2.0`, `Section 508`, `3D modelling`, `5S` and `802.11ac`
-# are all refused, and that is NOT a case this rule merely fails to reach -- it is
-# structurally indistinguishable from the metric shorthand the rule exists to refuse
-# (`Result 92` is the same shape as `ISO 9001`), so admitting one admits the other and
-# re-opens the laundering path. A letter-led metric shorthand IS reachable and is a
-# separate, stated residual (spec section 14): `p99` still licenses removing `99` for its
-# own entry, and tightening further (two leading alphabetic characters) would kill
-# legitimate short names.
-SKILL_TOKEN_RE = re.compile(r"^\.?[A-Za-z]")
-
-# The ONE tokeniser. `cv/validate.py` imports this rather than redefining it -- two copies
-# let the vocabulary the gate BUILDS drift from the one it SEARCHES with.
-#
-# A dot is part of a token only BETWEEN alphanumerics, or leading one -- never trailing.
-# The original `[A-Za-z0-9#+.]+` folded a sentence-final period into the token before it,
-# and only `.` did that, which broke all three consumers at once (measured, on a bullet
-# reading `Migrated to Examplestore3.` against `Skills: Examplestore3`):
-#
-#   row 1 / span removal -> the declared skill tokenises `Examplestore3` while the prose
-#                           tokenises `Examplestore3.`, so the span never matches, the
-#                           digit survives extraction, and the gate reports
-#                           `INVENTED METRIC ['3']` on a name the user really declared.
-#                           Same shape in PROFILE prose -> `INVENTED PROFILE METRIC 3`.
-#   row 2               -> a skill sourced from an entry BODY that happens to end a
-#                          sentence (`...ran on Example Widget.`) reads as `UNSOURCED
-#                          SKILL`, which is false, and the only actionable answer is to
-#                          delete a true skill.
-#
-# Both refusals are answerable only by deleting or corrupting true content -- the shape
-# CLAUDE.md's LOCATION-field incident names -- and `S3`, `p99`, `OAuth2` and `Log4j` all
-# sit in an ordinary bullet that ends with a full stop. The internal dot MUST survive:
-# `Node.js` and `ASP.NET` are one token each, and splitting them would make a two-token
-# needle that no `Skills:` value could match. The leading dot survives so `.NET` stays
-# distinguishable from a bare `NET` (see `SKILL_TOKEN_RE` above).
-#
-# `802.11ac` is deliberately NOT cited as an example here, though it has the same token
-# shape: `SKILL_TOKEN_RE` refuses it as a `Skills:` value outright (digit-leading), so it
-# can never be a needle, and citing it would read as if this rule made it expressible. It
-# is still governed by this pattern on the OTHER side -- as an EMITTED skill in a SKILLS
-# section, row 2 matches it against source text, where it must stay one token or a body
-# mentioning it could never source it. The two directions are not the same mechanism, and
-# an example that only holds for one of them belongs with that one.
-_WORD_RE = re.compile(r"\.?[A-Za-z0-9#+]+(?:\.[A-Za-z0-9#+]+)*")
 
 
 def _skill_items(entry: dict) -> list[str]:
@@ -326,7 +270,9 @@ def _framing_lines(skill: dict) -> list[str]:
     and Signal Value have no floor analogue and are reachable only here.
     """
     f = skill.get("fields") or {}
-    head = f"- {skill.get('title','')}"
+    # Headed by the CV name (Label when set, else the title): the composer should see the
+    # spelling the SKILLS pool offers, and the filename is a slug that destroys `C#`.
+    head = f"- {f.get('Label') or skill.get('title','')}"
     for label, key in (("proficiency", "Proficiency"), ("domain", "Domain"),
                        ("signal", "Signal Value")):
         if f.get(key):

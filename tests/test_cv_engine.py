@@ -10,7 +10,9 @@ from sluice.core.backends import (
     BackendError, Completion, OpenAiCompatibleBackend, RetryingBackend,
 )
 from sluice.core.leads import StalenessPolicy
-from sluice.core.protocols import CandidateProfile
+from sluice.core import status as _status
+from sluice.core.protocols import CandidateProfile, Store
+from tests.conftest import SYNTHETIC_LAYOUT
 
 # #107: the identity every test in this file gets unless it asks for something
 # else. full_name() -> "Jane Roe" -- the literal name CLEAN_CV's header line
@@ -34,9 +36,12 @@ class Note:
         self.fm = fm; self.ref = path; self.slug = path.split("/")[-1][:-3]
 
 class FakeVault:
-    def __init__(self, entries, notes=None, candidate=DEFAULT_CANDIDATE):
+    def __init__(self, entries, notes=None, candidate=DEFAULT_CANDIDATE,
+                 layout=SYNTHETIC_LAYOUT):
         self._entries = entries; self._notes = notes or []; self.written = {}; self.fields = {}
         self._candidate = candidate
+        self._layout = layout
+    def read_cv_layout(self): return self._layout
     def read_evidence(self, kind, verified_only=True):
         return self._entries if kind == "experience" else []
     # #107: cv/engine.py's identity gate is MUST-support (Store.read_candidate_profile),
@@ -49,9 +54,10 @@ class FakeVault:
     # Tracks the SUBSET of protocols.Store that cv actually exercises, and each
     # method it does carry must match that method's real signature exactly -- this
     # fake carrying the old read_baseline(rel=...) is what let a real TypeError ship
-    # green. Deliberately NOT the whole contract: update_fields below omits
-    # require_status and require_blank, which cv never passes; the conformance suite
-    # in tests/conformance/ is what holds real stores to the full signature.
+    # green. Deliberately NOT the whole contract, but every member it does carry has
+    # the real parameter list: a guard the fake accepted and ignored is the shape that
+    # made a real guard look tested, so it honours what it cheaply can and RAISES on the
+    # rest. The conformance suite in tests/conformance/ holds real stores to the contract.
     def read_baseline(self): return "BASELINE"
     def read_leads(self, statuses=None): return self._notes
     def _fresh(self, ref): return next((n for n in self._notes if n.ref == ref), None)
@@ -67,13 +73,33 @@ class FakeVault:
         if fresh is not None:
             fresh.fm["tailored_cv"] = value
         return True
-    def update_fields(self, ref, fields, *, append_note=None, note_tag=None):
+    def update_fields(self, ref, fields, *, append_note=None, note_tag=None,
+                      require_status=None, require_blank=None, blank_values=None,
+                      require_unchanged=None, preserve_block_values=None):
         # Surgical named-key set. Records to self.fields for assertion and applies to the
         # fresh note (mirrors the real store setting frontmatter without touching the body).
-        self.fields.setdefault(ref, {}).update(fields)
+        for name, value in (("blank_values", blank_values),
+                            ("require_unchanged", require_unchanged),
+                            ("preserve_block_values", preserve_block_values)):
+            if value is not None:
+                raise NotImplementedError(
+                    f"FakeVault.update_fields does not mirror `{name}`; a fake that "
+                    "silently ignored a guard would make the real one look tested")
         fresh = self._fresh(ref)
+        if fresh is None and (require_status is not None or require_blank is not None):
+            # The real store re-reads the note inside the transform, so a guard on a note it
+            # does not hold raises FileNotFoundError rather than passing or abstaining.
+            raise FileNotFoundError(ref)
+        if require_status is not None \
+                and _status.normalize(str(fresh.fm.get("status") or "")) not in require_status:
+            return False
+        if require_blank is not None \
+                and any(str(fresh.fm.get(k) or "").strip() for k in require_blank):
+            return False
+        self.fields.setdefault(ref, {}).update(fields)
         if fresh is not None:
             fresh.fm.update(fields)
+        return True
     def hold_for_signoff(self, ref, *, pending, claims):
         # Mirrors Vault.hold_for_signoff: stamp only if no tailored_cv on the FRESH note.
         fresh = self._fresh(ref)
@@ -83,12 +109,14 @@ class FakeVault:
         if fresh is not None:
             fresh.fm.update({"pending_cv": pending, "needs_signoff": claims})
         return True
-    def sign_off(self, ref, *, accept=True):
+    def sign_off(self, ref, *, accept=True, require_pending=None):
         # Mirrors Vault.sign_off's outcome verdict on the fresh note (#60).
         fresh = self._fresh(ref)
         pending = fresh.fm.get("pending_cv") if fresh is not None else None
         if not pending:
             return "nothing"
+        if require_pending is not None and pending != require_pending:
+            return "stale"
         fresh.fm.pop("pending_cv", None); fresh.fm.pop("needs_signoff", None)
         if not accept:
             return "discarded"
@@ -1708,8 +1736,13 @@ def test_the_fake_vault_conforms_to_the_real_store_signature():
     from sluice.core.vault import Vault
 
     fake = FakeVault([])
-    for name in ("read_evidence", "read_baseline", "read_leads", "set_tailored_cv",
-                 "read_candidate_profile"):
+    shared = sorted(n for n in dir(Store)
+                    if not n.startswith("_") and callable(getattr(Store, n))
+                    and hasattr(FakeVault, n))
+    # Scope floor: the members the CV path drives must be among those checked.
+    assert {"read_evidence", "read_candidate_profile", "read_cv_layout",
+            "set_tailored_cv", "read_leads"} <= set(shared), shared
+    for name in shared:
         real_sig = inspect.signature(getattr(Vault, name))
         fake_sig = inspect.signature(getattr(FakeVault, name))
         assert list(fake_sig.parameters) == list(real_sig.parameters), (

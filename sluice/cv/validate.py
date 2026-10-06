@@ -317,13 +317,13 @@ def _tokens(text):
     """Case-PRESERVING runs of letters, digits, `#`, `+` and the dots INSIDE a name.
 
     Not "alphanumeric runs" -- that description was wrong in the one way that mattered.
-    `_WORD_RE` (cv/bundle.py, the ONE definition, imported rather than copied) also admits
+    `_WORD_RE` (`core/tokens.py::WORD_RE`, the ONE definition, imported rather than copied) also admits
     `#` and `+` so `C#` and `C++` survive as single tokens, and a dot BETWEEN alphanumerics
     or LEADING one so `Node.js`, `ASP.NET` and `.NET` do. A TRAILING dot is not part of the
     token: while it was, a sentence-final period silently made `Examplestore3.` a different
     token from the declared `Examplestore3`, which produced a false `INVENTED METRIC` in a
     bullet, a false `INVENTED PROFILE METRIC` in prose, and a false `UNSOURCED SKILL`
-    against a skill the entry body really carried -- see `_WORD_RE`'s own comment for the
+    against a skill the entry body really carried -- see `core/tokens.py::WORD_RE`'s own comment for the
     measured cases.
 
     Deliberately not core/stem.py: stemming answers a RELEVANCE question (right for

@@ -27,7 +27,7 @@ def candidates(line):
 
     Citations are stripped with render's exact `_CITE_RE`, so the check sees what the
     reader sees; then a leading bullet marker (defensive only, as the
-    first-token rule already covers it). Tokenised with `_WORD_RE`, the ONE tokeniser the
+    first-token rule already covers it). Tokenised with `_WORD_RE` (`core/tokens.py::WORD_RE`), the ONE tokeniser the
     #168 rows use (`cv/validate.py::_tokens` is its `findall`; positions are needed here).
 
     A candidate contains NO digit -- any digit belongs to the numeric gate, which already

@@ -482,7 +482,7 @@ def test_the_framing_reads_the_kinds_own_declared_fields():
     from sluice.core.protocols import EVIDENCE_KINDS
 
     declared = set(EVIDENCE_KINDS["skills"].fields)
-    assert declared == {"Proficiency", "Domain", "Evidence", "Signal Value"}, (
+    assert declared == {"Proficiency", "Domain", "Evidence", "Signal Value", "Label"}, (
         "the skills kind's fields changed; sluice/cv/bundle.py:_framing_lines reads them "
         "by name and must change with them")
     # Every declared field, given a distinct value, must reach the rendered section.
@@ -756,7 +756,7 @@ def test_a_digit_leading_skill_token_stays_refused_whatever_it_names(value):
     number name is structurally identical to the metric shorthand `Result 92`, and
     nothing available here tells them apart, so admitting one admits the laundering path
     the rule exists to close. The honest position is to refuse both and SAY so (see
-    `SKILL_TOKEN_RE`'s comment and docs/USAGE.md), not to characterise the rule as
+    `core/tokens.py::TOKEN_RULE_RE`'s comment and docs/USAGE.md), not to characterise the rule as
     catching only metric shorthand.
 
     The values are synthetic, and the real names they stand for live in `docs/USAGE.md`,

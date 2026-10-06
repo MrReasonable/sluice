@@ -28,9 +28,11 @@ import pytest
 from sluice.core import plugins
 from sluice.core.app import Sluice
 from sluice.core.leads import Lead
-from sluice.core.protocols import EVIDENCE_KINDS, CandidateProfile, Store
+from sluice.core.protocols import (
+    EVIDENCE_KINDS, CandidateProfile, CvLayout, LayoutError, LayoutRole, Store,
+)
 from tests.conformance.seeds import seed, witness
-from tests.conftest import LOCATIONS
+from tests.conftest import LOCATIONS, layout_yaml
 
 _STORES = Sluice.available("store")
 
@@ -1755,3 +1757,44 @@ def test_every_member_raises_on_an_unknown_kind(store_name, member, tmp_path, mo
               "verify_evidence": {"name": "a", "today": "2026-08-22", "reviewed": ""}}
     with pytest.raises(ValueError, match="skills"):
         getattr(store, member)("nope", **kwargs.get(member, {}))
+
+
+def test_read_cv_layout_is_none_when_the_note_is_absent(store_name, tmp_path, monkeypatch):
+    assert _make_store(store_name, tmp_path, monkeypatch).read_cv_layout() is None
+
+
+def test_read_cv_layout_round_trips_a_declared_layout(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, layout=layout_yaml(
+        [{"heading": "Example Alpha", "from": "01/2020", "to": "present",
+          "location": "Example Location A", "bullets_max": 3}], skills_max=5))
+    assert store.read_cv_layout() == CvLayout(
+        roles=(LayoutRole("Example Alpha", "01/2020", "present",
+                          location="Example Location A", employers=("Example Alpha",),
+                          bullets_max=3),), skills_max=5)
+
+
+def test_read_cv_layout_refuses_a_malformed_layout_listing_every_problem(
+        store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, layout=layout_yaml(
+        [{"heading": "Example Alpha", "from": "13/2020", "to": "soon"}]))
+    with pytest.raises(LayoutError) as exc:
+        store.read_cv_layout()
+    assert len(exc.value.problems) == 2
+
+
+def test_read_cv_layout_reports_invalid_yaml_as_malformed(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, layout="---\nroles: [unclosed\n---\n")
+    with pytest.raises(LayoutError, match="not valid YAML") as exc:
+        store.read_cv_layout()
+    # It says WHERE, and never repeats the note's text.
+    assert "frontmatter line" in str(exc.value) and "unclosed" not in str(exc.value)
+
+
+def test_read_cv_layout_refuses_non_mapping_frontmatter(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, layout="---\n- a list\n---\n")
+    with pytest.raises(LayoutError, match="frontmatter"):
+        store.read_cv_layout()

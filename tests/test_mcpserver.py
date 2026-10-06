@@ -366,7 +366,8 @@ def test_list_evidence_shapes_entries_to_title_verified_fields_only(tmp_path):
     assert out == {"kind": "skills", "pending": False, "count": 1,
                    "entries": [{"title": "alpha", "verified": "2026-01-01",
                                 "fields": {"Proficiency": "P", "Domain": "D",
-                                           "Evidence": "E", "Signal Value": "S"}}],
+                                           "Evidence": "E", "Signal Value": "S",
+                                               "Label": ""}}],
                    "content_warning": mcpserver_mod._LIST_EVIDENCE_CONTENT_WARNING}
 
 
@@ -1709,14 +1710,14 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
 # previous version's comment already claimed this and the literal set happened to
 # agree, but a future write method added to Store would silently miss this sweep
 # with no test failure to say so. Its read-only members (read_leads,
-# read_baseline, read_criteria, read_candidate_profile,
+# read_baseline, read_criteria, read_candidate_profile, read_cv_layout,
 # read_evidence, read_pending_evidence, read_pending_evidence_text; the optional
 # preflight hook, which is never declared in the class body at all) are excluded by
 # name, since a read reaching this deep is exactly what the module-allow-list above
 # already permits via Sluice's own store() access.
 _STORE_READ_METHODS = frozenset({
     "read_leads", "read_baseline", "read_criteria",
-    "read_candidate_profile", "read_evidence", "read_pending_evidence",
+    "read_candidate_profile", "read_cv_layout", "read_evidence", "read_pending_evidence",
     "read_pending_evidence_text",
 })
 # Everything NOT in this literal is derived as a WRITE method below, so a read
@@ -1734,6 +1735,14 @@ _STORE_WRITE_METHODS = frozenset(
 assert _STORE_WRITE_METHODS, (
     "Store protocol introspection found no write methods -- the derivation above is "
     "broken, not the protocol; the isolation sweep would silently guard nothing")
+
+
+def test_store_read_methods_are_exactly_the_protocols_reads():
+    # _STORE_WRITE_METHODS subtracts this hand list from every Store member, so a read
+    # missing here is swept as a WRITE, and one the protocol dropped lingers here. Checked
+    # against the protocol itself, in both directions.
+    reads = {n for n, m in vars(Store).items() if n.startswith("read_") and callable(m)}
+    assert reads == _STORE_READ_METHODS
 
 
 def _isolation_violations(tree) -> list:

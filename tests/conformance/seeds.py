@@ -18,11 +18,11 @@ that a green tick over an untested store is worse than no tick at all.
 """
 import re
 
-from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH
+from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH
 
 
 def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
-                candidate=None, evidence=(), multi_line_key=None):
+                candidate=None, evidence=(), multi_line_key=None, layout=None):
     """Seed the markdown vault by writing the files it reads.
 
     This knows the vault's layout, which is fine: it is the VAULT's seeder. The contract
@@ -71,6 +71,9 @@ def _seed_vault(store, *, experience=(), criteria="", conflicted_status=None,
         # to the Store contract: it only ever does what a real Store write can do.
         lines = "\n".join(f"{k}: {v}" for k, v in candidate.items())
         store.write_document(CANDIDATE_PROFILE_RELPATH, f"---\n{lines}\n---\n")
+
+    if layout is not None:
+        store.write_document(CV_LAYOUT_RELPATH, layout)
 
     for item in evidence:
         # Every WRITE goes through the store's own propose_evidence/verify_evidence,
