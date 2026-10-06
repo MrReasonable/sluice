@@ -40,6 +40,18 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.1.0](https://github.com/MrReasonable/sluice/compare/v4.0.0...v4.1.0) (2026-10-06)
+
+
+### Features
+
+* **mcp:** verify evidence from Claude Code through a review form ([#373](https://github.com/MrReasonable/sluice/pull/373)). Under `job-sluice mcp serve --write`, the new `verify_evidence` tool shows your pending experience, skills or stories entries in your MCP client's review form, each entry's full text under its own checkbox, starting unticked. Only the entries you tick become citable, and only while the entry still reads exactly as it was shown. A long queue takes a few forms. An entry that will not fit one form, or that carries a terminal control character or bidirectional reordering, is set aside with its reason, for `job-sluice experience verify` (or `skills` / `stories`). A client that cannot show the form is told to use those commands instead.
+
+
+### Documentation
+
+* **mcp:** describe `verify_evidence` wherever MCP was said to have no verifier ([cac3524](https://github.com/MrReasonable/sluice/commit/cac352423e42c3d35421e004987f663d118813ea))
+
 ## [4.0.0](https://github.com/MrReasonable/sluice/compare/v3.2.0...v4.0.0) (2026-10-06)
 
 
