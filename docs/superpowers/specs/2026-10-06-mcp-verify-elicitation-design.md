@@ -73,8 +73,9 @@ which pending entries are offered. Unknown names are reported back.
 
 - Decline, cancel, or a missing or unreadable state → nothing is written.
 - An entry is approved only if the answer holds an explicit `true` for its key. A missing
-  key or an empty answer approves nothing. This is the one guard against a client quietly
-  filling in the ticked defaults.
+  key or an empty answer approves nothing. This guards against a client that leaves a box
+  out of its answer; it does NOT guard against one that sends the ticked defaults back as
+  `true`, which is the accepted cost of starting the boxes ticked.
 - For each approved entry, the server re-reads the current text. If its hash matches what
   was shown, the entry is promoted through `Store.verify_evidence(..., reviewed=text)`, the
   existing single writer with its existing compare-and-set. If the text changed since the

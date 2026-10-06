@@ -31,7 +31,7 @@ import secrets
 from typing import Literal
 
 from sluice.core.app import (Sluice, evidence_kinds_text, evidence_verify_effects,
-                             pending_evidence_detail)
+                             pending_evidence_detail, verify_outcome_text)
 from sluice.core.leads import (
     FRAMING_KEYS,
     TRIAGE_FRAMING_CONTENT_WARNING,
@@ -207,7 +207,13 @@ def _build_form(entries, outcome_phrase: str, budget: int):
 
 
 def _form_schema(shown) -> dict:
-    """Positional keys: a title is free text and does not belong in a schema key."""
+    """Positional keys: a title is free text and does not belong in a schema key.
+
+    Boxes start TICKED by the owner's decision, so reviewing a batch is one click rather
+    than a "yes" per entry. That is opt-out, unlike the CLI's `[y/N]`, and it is a
+    trade: _approved_keys stops a client that leaves a box OUT of its answer, but a
+    client (or a reflexive Accept) that sends the defaults back approves them all. The
+    form's own text tells the human to untick what is wrong."""
     return {"type": "object", "properties": {
         f"entry_{i}": {"type": "boolean", "default": True, "description": title}
         for i, (title, _) in enumerate(shown, 1)}}
@@ -939,7 +945,7 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
               "no_longer_pending": [], "detail": ""}
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
-    phrase = sluice.evidence_verify_outcome(kind, subject="them")
+    phrase = verify_outcome_text(kind, subject="them")
     if not _can_elicit(protocol_version, elicitation):
         report["outcome"] = "unsupported_client"
         report["detail"] = (f"this client cannot show a review form -- run "

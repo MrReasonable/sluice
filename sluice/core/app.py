@@ -53,6 +53,46 @@ def _today() -> str:
 
 
 
+def _match_pending(pending_titles, names):
+    """Which pending titles the requested `names` pick, and which names picked nothing.
+
+    The one matching rule for both verify routes (the CLI's `--id`, the MCP tool's
+    `names`): a name matches a title verbatim -- `... list --pending` DISPLAYS the real
+    basename, and a hand-added `_inbox/My Entry.md` is titled `My Entry`, which no
+    reduction produces (#164 whole-branch review, IMPORTANT 2) -- or through
+    `evidence_slug`, because a user types the same NAME `--name` took, and `"Beta
+    Thing"` must find `beta-thing` (#164 Task 7 review, IMPORTANT 3). A name that does
+    not reduce at all keeps only the verbatim arm rather than letting evidence_slug's
+    ValueError escape. A title reached twice (a name and its slug) is returned once, in
+    queue order; an unmatched name is reported rather than absorbed."""
+    from sluice.core.vault import evidence_slug
+
+    picked, not_found = set(), []
+    for name in names:
+        try:
+            reduced = evidence_slug(name)
+        except ValueError:
+            reduced = None  # cannot reduce at all -- only the verbatim arm applies
+        hits = {t for t in pending_titles if t == name or t == reduced}
+        if not hits:
+            not_found.append(name)
+        picked |= hits
+    return [t for t in pending_titles if t in picked], not_found
+
+
+def verify_outcome_text(kind: str, subject: str = "it") -> str:
+    """What verifying buys for `kind`, worded by core/protocols.py::verify_outcome -- here
+    beside pending_evidence_detail, for the same reason: mcpserver.py may not import
+    core/protocols.py itself (its isolation sweep). An unknown kind raises ValueError
+    naming the valid ones, which reaches an MCP client as an ordinary tool error."""
+    from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
+
+    if kind not in EVIDENCE_KINDS:
+        raise ValueError(
+            f"unknown evidence kind {kind!r}; expected one of {sorted(EVIDENCE_KINDS)}")
+    return verify_outcome(EVIDENCE_KINDS[kind], subject=subject)
+
+
 def pending_evidence_detail(kind: str) -> str:
     """The MCP `propose_evidence` result's detail: what a proposal is, and what verifying it
     would buy for THIS kind (#364 D12) -- here because mcpserver.py may not import
@@ -2172,25 +2212,9 @@ class Sluice:
         Unmatched names are reported in `not_found` rather than absorbed, so "you named
         nothing pending" stays distinguishable from "nothing is pending". One unreadable
         entry is isolated into `failed` rather than sinking the batch, as in the CLI loop."""
-        from sluice.core.vault import evidence_slug
-
         store = self.store()
         pending = [e["title"] for e in store.read_pending_evidence(kind)]
-        not_found: list = []
-        if names:
-            wanted: list = []
-            for name in names:
-                try:
-                    reduced = evidence_slug(name)
-                except ValueError:
-                    reduced = None  # cannot reduce at all -- only the verbatim arm applies
-                hits = [t for t in pending if t == name or t == reduced]
-                if not hits:
-                    not_found.append(name)
-                wanted.extend(hits)
-            titles = list(dict.fromkeys(wanted))
-        else:
-            titles = pending
+        titles, not_found = _match_pending(pending, names) if names else (pending, [])
         entries, failed = [], []
         for title in titles:
             try:
@@ -2221,17 +2245,6 @@ class Sluice:
                 continue
             (out["promoted"] if ok else out["changed"]).append(title)
         return out
-
-    def evidence_verify_outcome(self, kind: str, subject: str = "it") -> str:
-        """What verifying buys for `kind`, worded by the one keyed helper
-        (core/protocols.py::verify_outcome). A facade method because mcpserver.py may
-        not import sluice.core.protocols (the isolation allow-list)."""
-        from sluice.core.protocols import EVIDENCE_KINDS, verify_outcome
-
-        if kind not in EVIDENCE_KINDS:
-            raise ValueError(
-                f"unknown evidence kind {kind!r}; expected one of {sorted(EVIDENCE_KINDS)}")
-        return verify_outcome(EVIDENCE_KINDS[kind], subject=subject)
 
     def verify_evidence_interactive(self, *, kind: str, asker, only: str | None = None,
                                     today: str | None = None) -> dict:
@@ -2298,8 +2311,6 @@ class Sluice:
         own messages get. Witnessed: a taxonomy word planted in that f-string is caught by
         that test and by nothing else in the suite.
         """
-        from sluice.core.vault import evidence_slug
-
         store = self.store()
         # `self._today` is a zero-arg CALLABLE (see staleness() above), not a string:
         # `today or clock()` must call it, mirroring the one other place this class
@@ -2311,14 +2322,9 @@ class Sluice:
                  "interactive": bool(getattr(asker, "interactive", False))}
         pending = store.read_pending_evidence(kind)
         if only:
-            try:
-                reduced = evidence_slug(only)
-            except ValueError:
-                reduced = None  # cannot reduce at all -- the verbatim arm alone applies
-            pending = [e for e in pending
-                       if e["title"] == only or e["title"] == reduced]
-            if not pending:
-                report["not_found"] = [only]
+            titles, report["not_found"] = _match_pending(
+                [e["title"] for e in pending], [only])
+            pending = [e for e in pending if e["title"] in titles]
         if not report["interactive"]:
             report["skipped"] = [e["title"] for e in pending]
             return report
@@ -2341,16 +2347,15 @@ class Sluice:
             if not asker.confirm(f"{reviewed}\nverify this entry? [y/N] "):
                 report["skipped"].append(entry["title"])
                 continue
-            try:
-                promoted = store.verify_evidence(kind, entry["title"], today=today,
-                                                 reviewed=reviewed)
-            except (OSError, ValueError) as e:
-                report["failed"].append((entry["title"], _evidence_failure_reason(e)))
-                continue
-            if promoted:
-                report["promoted"].append(entry["title"])
-            else:
-                report["unchanged"].append(entry["title"])
+            # One entry at a time through the SAME promotion the MCP verify tool uses, so
+            # the two routes cannot drift; this loop's own job is the per-entry ask. The
+            # facade calls a compare-and-set refusal `changed`; this report has always
+            # called it `unchanged` (it was not promoted), and its callers print that key.
+            result = self.promote_reviewed_evidence(
+                kind=kind, approved=[(entry["title"], reviewed)], today=today)
+            report["promoted"] += result["promoted"]
+            report["unchanged"] += result["changed"]
+            report["failed"] += result["failed"]
         return report
 
     def create_lead(self, *, title: str, company: str, url: str, location: str = "",

@@ -355,8 +355,9 @@ claude mcp add job-sluice -- job-sluice mcp serve
 ```
 
 `--write` additionally registers the write tools, as a per-registration trust decision rather than
-a per-call one. Nothing at any level can mark evidence verified — that stays a human action at a
-prompt. [`docs/MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) has the tool tables and the reasoning.
+a per-call one. Verifying evidence stays yours: under `--write`, `verify_evidence` shows you the
+pending entries in a review form and verifies only the ones you tick, and nothing can tick it for
+you. [`docs/MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) has the tool tables and the reasoning.
 
 ## Configuration
 
