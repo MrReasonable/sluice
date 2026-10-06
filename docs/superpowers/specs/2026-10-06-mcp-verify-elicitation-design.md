@@ -1,8 +1,12 @@
 # MCP evidence verification through elicitation — design
 
-Status: revision 4, 2026-10-06. This is piece 1 of 4 in "drive sluice from Claude Code".
-The other three each get their own spec: (2) pipeline tools over MCP, (3) setup tools over
-MCP, (4) a rewrite of `docs/AI-SETUP.md` around a single Claude Code session.
+Status: revision 4, approved 2026-10-06. This is piece 1 of "drive sluice from Claude Code".
+The order is 1 (this), then setup in-session (`init` interview, the Judging and Candidate
+Profiles, config and searches through tools), then a rewrite of `docs/AI-SETUP.md` around
+a single Claude Code session. Pipeline commands as MCP tools come last and are optional:
+Claude Code can already run them through its shell, so they do not remove a terminal
+hop. After the first three pieces, the user leaves the session only for job-board logins,
+Google OAuth consent, and submitting applications.
 
 ## What this guards against, and what it doesn't
 
