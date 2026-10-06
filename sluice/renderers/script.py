@@ -20,7 +20,7 @@ import os
 # here, which made an implementation module the home of a contract type and gave `core/`
 # its one and only import from an implementation package. Kept importable under the old
 # name so no existing call site had to move for a pure relocation.
-from sluice.core.protocols import RenderError
+from sluice.core.protocols import CvDocument, RenderError
 from sluice.renderers import register
 
 __all__ = ["RenderError", "ScriptRenderer"]
@@ -40,9 +40,20 @@ class ScriptRenderer:
             )
         self.script, self.python_bin, self.home = script, python_bin, home
 
-    def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
+    def render(self, document, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
         from sluice.cv.render import render as _render
-        return _render(cv_text, out_dir, render_script=self.script,
+        # A CvDocument is written in the canonical text format (cv/document.py::to_text),
+        # citation-free: exactly what a script received from the old pipeline, pinned by
+        # tests/test_cv_script_golden.py. TRANSITIONAL: the str branch is removed in Task 19.
+        if isinstance(document, CvDocument):
+            from sluice.cv.document import to_text
+            document = to_text(document)
+        elif not isinstance(document, str):
+            # Fail loud, never coerce: str() of a wrong object would hand the script junk.
+            raise RenderError(
+                f"renderer 'script': render() takes a CvDocument, "
+                f"got {type(document).__name__}")
+        return _render(document, out_dir, render_script=self.script,
                        python_bin=self.python_bin, home=self.home,
                        neutral_name=neutral_name)
 

@@ -290,9 +290,11 @@ role, lowercased, with each run of characters other than `a-z` and `0-9` turned 
 | File | Holds |
 |---|---|
 | `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: everything the composer was shown, of which only the source bundle is citable. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
-| `cv.attempt-N.md` | the text attempt N's compose returned, before any gate ruled on it |
+| `reply.attempt-N.txt` | attempt N's reply exactly as the backend returned it, before anything read it. `.txt` because a reply can carry chat around its JSON |
 | `cv.rendered.md` | the text handed to the renderer; absent when nothing was rendered |
-| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
+| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `skills_dropped`, `bullets_trimmed`, `attribution_check_off`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
+
+A directory holding a 3.x run's `cv.attempt-N.md` files has them cleared by the next run, like the rest of the set.
 
 There is no history: a later run for the same lead deletes this set (by name, leaving the PDF
 and any other file alone) and writes its own. `run.json`'s `files` lists every other file the

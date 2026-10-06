@@ -215,8 +215,8 @@ from scratch against each draft rather than accumulating — so a line here may 
 model was already shown and did not fix, or one the retry introduced while fixing
 something else. The result line cannot tell you which, but the run's diagnostic artefacts
 can. In the lead's working directory, `<cv.output_dir>/<slug>/`, `prompt.attempt-2.txt` is
-the retry prompt and ends with the first attempt's findings verbatim, `cv.attempt-1.md` and
-`cv.attempt-2.md` are the two drafts they were found in, and `run.json` lists the bundle
+the retry prompt and ends with the first attempt's findings verbatim, `reply.attempt-1.txt` and
+`reply.attempt-2.txt` are the two replies they were found in, exactly as received, and `run.json` lists the bundle
 entry ids the composer was given (see `cv run` in `docs/USAGE.md`). Repetition **across
 runs** still says something one run's artefacts cannot: a category that keeps coming back on
 fresh invocations points upstream of the model — the composer prompt, the evidence corpus,

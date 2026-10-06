@@ -807,3 +807,28 @@ def test_a_missing_system_library_raises_naming_both_fixes(monkeypatch):
         "the message does not point at the documented macOS step with a url a reader can follow "
         f"to the right SECTION -- this is printed to a user's terminal, not a contributor's: {msg}")
     assert isinstance(ei.value.__cause__, OSError)
+
+
+def test_a_document_renders_without_being_parsed(tmp_path, monkeypatch):
+    from sluice.core.protocols import CvDocument, Role
+    import sluice.cv.parse as parse_mod
+
+    def refuse(_text):
+        raise AssertionError("a CvDocument must not be parsed")
+
+    monkeypatch.setattr(parse_mod, "parse_cv", refuse)
+    # The renderer binds parse_cv at import, so patch its own reference too.
+    import sluice.renderers.template as tmpl_mod
+    monkeypatch.setattr(tmpl_mod, "parse_cv", refuse)
+    doc = CvDocument(name="JANE ROE", contact="+1 555 0100", profile="I build.",
+                     work=[Role("Example Alpha", "01/2020–present", "", "", ["Shipped it"])],
+                     skills=[], certificates=[], education=[])
+    r = _renderer(tmp_path, "{{ document.work[0].company }}|{{ document.work[0].bullets[0] }}")
+    r.render(doc, str(tmp_path / "out"))
+    assert FakeHTML.captured["html"] == "Example Alpha|Shipped it"
+
+
+def test_a_wrong_argument_type_raises_naming_the_renderer(tmp_path):
+    r = _renderer(tmp_path, "x")
+    with pytest.raises(RenderError, match="renderer 'template'"):
+        r.render(["not", "a", "document"], str(tmp_path / "out"))

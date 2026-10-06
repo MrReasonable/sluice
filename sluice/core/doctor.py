@@ -121,6 +121,12 @@ class ComponentCheck:
     state: str
     detail: str
     blocks: tuple = ()
+    # D14 (#364/#365/#368): a DEGRADED row that blocks nothing but is worth reading by
+    # default -- a CV that composes while leaving some of the user's work off, or a check
+    # gone quiet. Without it the default view folds the row into "N more degraded".
+    # `--require` reads `blocks` alone, so this can never make a row block; `--strict` fails
+    # on it as on any DEGRADED row.
+    warn_by_default: bool = False
 
     def __post_init__(self):
         """Every name in `blocks` must be a capability the verdict knows (#243).
@@ -135,6 +141,10 @@ class ComponentCheck:
         An EMPTY `blocks` stays legal and is not the same mistake: the unreadable
         `stories` corpus carries it deliberately, because nothing reads that corpus, and
         an unread row genuinely stops nothing."""
+        if self.warn_by_default and self.state != DEGRADED:
+            raise ValueError(
+                f"ComponentCheck({self.component}/{self.subject}) sets warn_by_default on a "
+                f"{self.state!r} row; only a DEGRADED row is printed as a warning")
         unknown = [b for b in self.blocks if b not in ALL_CAPABILITIES]
         if unknown:
             raise ValueError(
@@ -173,6 +183,8 @@ class Verdict:
     # not only under `--strict`, because a row saying `blocks: ingest` is a thing the user
     # must act on whether or not this run's exit code turns on it.
     degraded_blocking_rows: list = field(default_factory=list)
+    # DEGRADED rows that block nothing but carry `warn_by_default` (D14).
+    warning_rows: list = field(default_factory=list)
 
 
 @dataclass
@@ -284,7 +296,10 @@ class DoctorReport:
                        broken_rows=[c for c in rows if c.state == DEAD],
                        degraded_rows=degraded_rows,
                        degraded_blocking_rows=[c for c in degraded_rows
-                                               if getattr(c, "blocks", ())])
+                                               if getattr(c, "blocks", ())],
+                       warning_rows=[c for c in degraded_rows
+                                     if getattr(c, "warn_by_default", False)
+                                     and not getattr(c, "blocks", ())])
 
     def awaiting_setup(self) -> list:
         """Every row the user has not supplied yet, in report order (#243).
@@ -1508,3 +1523,157 @@ def classify_gate(owner: str, name: str, value: list, role: str) -> ComponentChe
     if not value:
         return ComponentCheck("gates", subject, NOTICE, GATE_ROLES[role])
     return ComponentCheck("gates", subject, NOTICE, f"active: {len(value)} value(s)")
+
+
+# --- #364/#365/#368: the CV Layout and what the structured CV reads --------------------
+#
+# Every row here reports counts, positions and the command that lists the entries -- never
+# an entry title, a tool, a skill or a decoy -- because a DoctorReport reaches MCP clients
+# whole. Pure: Sluice.doctor reads the store once and passes what it read.
+
+def classify_cv_layout(layout, error=None) -> ComponentCheck:
+    """The `store / cv_layout` row: the note every CV is assembled into (spec §9.1).
+
+    From ONE read, which Sluice.doctor makes in its own `try` (#259: one bad note never
+    collapses the store rows), passing the parsed layout or the exception. It blocks `cv`
+    in every state but OK, in step with `cv run`, which refuses before any spend when the
+    note is absent, malformed or unreadable."""
+    from sluice.core.protocols import CV_LAYOUT_RELPATH, LayoutError
+    if isinstance(error, LayoutError):
+        return ComponentCheck("store", "cv_layout", DEAD,
+                              f"{CV_LAYOUT_RELPATH} is malformed: " + "; ".join(error.problems),
+                              blocks=("cv",))
+    if error is not None:
+        # Unreadable is never reported as absent (#242). The reason goes through the one
+        # path-free formatter the Vault's own `<kind>_error` facts use: a system OSError's
+        # str() names the absolute path, and a DoctorReport reaches MCP clients whole.
+        from sluice.core.vault import _unreadable_reason
+        return ComponentCheck("store", "cv_layout", DEAD,
+                              f"{CV_LAYOUT_RELPATH} could not be read -- "
+                              f"{_unreadable_reason(error)}",
+                              blocks=("cv",))
+    if layout is None:
+        return ComponentCheck(
+            "store", "cv_layout", SETUP,
+            f"no CV Layout note at {CV_LAYOUT_RELPATH} -- every heading, date, location and "
+            "title on a CV comes from it (docs/CONFIGURATION.md)", blocks=("cv",))
+    n = len(layout.roles)
+    return ComponentCheck("store", "cv_layout", OK, f"{n} role{'' if n == 1 else 's'}")
+
+
+def classify_tools(experience_entries) -> list:
+    """One DEAD row, blocking `cv`, when a verified experience entry's `Tools:` holds an
+    item the gate cannot use (spec §4.2): `cv run` refuses before any spend then, naming
+    the entry and the item on the user's own terminal; this row counts them."""
+    from sluice.core.tokens import tool_items
+    bad = 0
+    for entry in experience_entries:
+        try:
+            tool_items(entry)
+        except ValueError:
+            bad += 1
+    if not bad:
+        return []
+    return [ComponentCheck(
+        "store", "Experience Library (Tools)", DEAD,
+        f"{bad} verified entr{'y' if bad == 1 else 'ies'} declare{'s' if bad == 1 else ''} a "
+        "Tools: item the CV gate cannot use -- every word of a tool's name must begin with "
+        "a letter (job-sluice experience list)", blocks=("cv",))]
+
+
+def classify_cv_eligibility(layout, experience_entries) -> list:
+    """D14 warning rows: verified entries no CV can cite (spec §4.3, D6).
+
+    `unmatched` -- a Company: matching no role's heading or employers, nor any_role or
+    omitted -- and `blank` -- no Company: at all -- are citable nowhere, and the CV still
+    composes. So each is DEGRADED, blocks nothing, and is listed by default: a user who
+    verified an entry and never sees its work on a CV is owed the reason. `omitted` is the
+    user's own choice and draws nothing."""
+    from sluice.core.layout import placement_counts
+    counts = placement_counts(layout, experience_entries)
+    rows = []
+
+    def pronoun(n):
+        return "it" if n == 1 else "them"
+
+    def entries(n):
+        return f"{n} verified experience entr{'y' if n == 1 else 'ies'}"
+
+    if counts.get("unmatched"):
+        n = counts["unmatched"]
+        rows.append(ComponentCheck(
+            "store", "cv_layout (not on your CV)", DEGRADED,
+            f"{entries(n)} name{'s' if n == 1 else ''} a Company: that matches no role's "
+            "heading or employers, nor "
+            "any_role or omitted, in the CV Layout, so no CV can cite "
+            f"{pronoun(n)} -- add the company to a role, or to omitted if leaving it off is "
+            "deliberate "
+            "(job-sluice experience list)", warn_by_default=True))
+    if counts.get("blank"):
+        n = counts["blank"]
+        rows.append(ComponentCheck(
+            "store", "cv_layout (no company)", DEGRADED,
+            f"{entries(n)} ha{'s' if n == 1 else 've'} no Company:, so no CV can cite "
+            f"{pronoun(n)} -- give {'it' if n == 1 else 'each'} the company it happened at "
+            "(job-sluice experience list)", warn_by_default=True))
+    return rows
+
+
+def classify_attribution(experience_entries) -> list:
+    """The spec §6.6 warning. On an UPGRADED vault -- a verified entry still carries a
+    non-empty legacy Skills: and none declares Tools: -- the misattributed-tool check is
+    off, and the user who annotated their entries is owed the reason. A vault with neither
+    field is an unconfigured install and draws nothing (empty config abstains)."""
+    from sluice.core.tokens import tool_items
+
+    def declares(entry):
+        try:
+            return bool(tool_items(entry))
+        except ValueError:
+            return True   # an unusable item is classify_tools' DEAD row, not this one
+
+    if any(declares(e) for e in experience_entries):
+        return []
+    legacy = sum(1 for e in experience_entries if (e.get("legacy") or {}).get("Skills"))
+    if not legacy:
+        return []
+    return [ComponentCheck(
+        "store", "cv attribution check", DEGRADED,
+        f"off: no verified experience entry declares Tools:, and {legacy} still "
+        f"carr{'ies' if legacy == 1 else 'y'} the retired Skills: -- sluice no longer reads "
+        "Skills:; move each entry's tools into Tools: to turn the check on "
+        "(docs/CONFIGURATION.md)", warn_by_default=True)]
+
+
+def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
+    """The spec §8 warning: a `cv.fabrication_decoys` entry matching, as a whole term, the
+    user's own data -- a verified entry's Tools: item, a verified skill's CV name, or any CV
+    Layout text. The ban contradicts that data: it keeps the tool or skill off every CV's
+    skills list, while layout text renders regardless. `skill_names` arrive already derived
+    (Sluice.doctor passes cv/selection.py::cv_name's answers), so this and the pool agree.
+    Decoys are named by POSITION, never echoed."""
+    from sluice.core.layout import layout_text
+    from sluice.core.tokens import find_term, tool_items
+
+    def items(entry):
+        try:
+            return tool_items(entry)
+        except ValueError:
+            return []
+
+    texts = ([t for e in experience_entries for t in items(e)] + list(skill_names)
+             + ([layout_text(layout)] if layout is not None else []))
+    hits = [i for i, d in enumerate(decoys, 1) if any(find_term(t, d) for t in texts)]
+    if not hits:
+        return []
+    if len(hits) == 1:
+        where, verb = f"entry {hits[0]}", "matches"
+    else:
+        where = "entries " + ", ".join(map(str, hits[:-1])) + f" and {hits[-1]}"
+        verb = "match"
+    return [ComponentCheck(
+        "gates", "cv.fabrication_decoys", DEGRADED,
+        f"cv.fabrication_decoys {where} {verb} your own Tools:, a verified skill's name or "
+        "your CV Layout -- it keeps that tool or skill off every CV's skills list, and "
+        "layout text renders regardless; remove the decoy, or the data it contradicts",
+        warn_by_default=True)]

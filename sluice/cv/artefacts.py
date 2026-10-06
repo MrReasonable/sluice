@@ -12,7 +12,8 @@ WHAT. Into the per-lead working directory the renderer already writes its PDF in
 
   prompt.attempt-N.txt  the exact prompt handed to the backend for attempt N. Written BEFORE
                         the backend call, so a compose that hangs or raises still leaves it.
-  cv.attempt-N.md       what attempt N's compose returned.
+  reply.attempt-N.txt   attempt N's reply exactly as the backend returned it. `.txt` because
+                        a reply can be chat-wrapped, so it promises nothing about its content.
   cv.rendered.md        the text handed to the renderer; absent when nothing was rendered.
                         Written before the render call, so a renderer that raises still
                         leaves what it was given.
@@ -58,8 +59,10 @@ def prompt_name(attempt: int) -> str:
     return f"prompt.attempt-{attempt}.txt"
 
 
-def draft_name(attempt: int) -> str:
-    return f"cv.attempt-{attempt}.md"
+def reply_name(attempt: int) -> str:
+    # The backend's reply exactly as received (#364/#365/#368): `.txt` because a reply can
+    # be chat-wrapped or fenced, so it promises nothing about being JSON.
+    return f"reply.attempt-{attempt}.txt"
 
 
 # Every name this module writes, and nothing else, because `begin` DELETES whatever matches.
@@ -67,7 +70,11 @@ def draft_name(attempt: int) -> str:
 # matched survives into the next run as a stale file, and a pattern wider than the names
 # deletes something this module never wrote. Attempt numbers are `\d+` rather than the
 # engine's current two, so a larger retry budget cannot leave a stale attempt 3 behind.
-_OWNED = re.compile(r"run\.json|cv\.rendered\.md|prompt\.attempt-\d+\.txt|cv\.attempt-\d+\.md")
+# Every name this module writes -- and the 3.x attempt name it no longer writes, so the
+# first 4.0 run in an upgraded directory clears a stale cv.attempt-N.md rather than leaving
+# it beside the new run.json looking current.
+_OWNED = re.compile(r"run\.json|cv\.rendered\.md|prompt\.attempt-\d+\.txt"
+                    r"|reply\.attempt-\d+\.txt|cv\.attempt-\d+\.md")
 
 
 def _now() -> str:
@@ -142,7 +149,7 @@ class RunArtefacts:
 
     def composed(self, attempt, text):
         self._attempt(attempt)
-        self._write(draft_name(attempt), text)
+        self._write(reply_name(attempt), text)
 
     def compose_failed(self, attempt, exc):
         self._attempt(attempt)["compose_error"] = _describe(exc)
@@ -165,6 +172,10 @@ class RunArtefacts:
                            violations=list(result.violations),
                            audit_flags=list(result.audit_flags), slop=list(result.slop),
                            voice_flags=list(result.voice_flags), terms=list(result.terms),
+                           skills_dropped=list(getattr(result, "skills_dropped", [])),
+                           bullets_trimmed=list(getattr(result, "bullets_trimmed", [])),
+                           attribution_check_off=bool(
+                               getattr(result, "attribution_check_off", False)),
                            served=result.served,
                            error=None)
 
@@ -173,11 +184,13 @@ class RunArtefacts:
         run_batch's word for that outcome. The finding lists are null rather than empty:
         the run never got as far as settling them, and an empty list would read as clean."""
         self._write_record(status="error", backend=None, violations=None, audit_flags=None,
-                           slop=None, voice_flags=None, terms=None, served=None,
+                           slop=None, voice_flags=None, terms=None, skills_dropped=[],
+                           bullets_trimmed=[], attribution_check_off=False, served=None,
                            error=_describe(exc))
 
     def _write_record(self, *, status, backend, violations, audit_flags, slop, voice_flags,
-                      terms, served, error):
+                      terms, skills_dropped, bullets_trimmed, attribution_check_off,
+                      served, error):
         if self.out_dir is None:
             return
         record = {
@@ -199,6 +212,9 @@ class RunArtefacts:
             "slop": slop,
             "voice_flags": voice_flags,
             "terms": terms,
+            "skills_dropped": skills_dropped,
+            "bullets_trimmed": bullets_trimmed,
+            "attribution_check_off": attribution_check_off,
             "rendered_pdf": self._rendered_pdf,
             "served": served,
             "error": error,

@@ -21,7 +21,7 @@ import os
 from sluice.core import plugins
 # The seam's error type, taken from the seam rather than from the sibling implementation
 # that happened to define it first (see `core/protocols.py`).
-from sluice.core.protocols import RenderDependencyError, RenderError
+from sluice.core.protocols import CvDocument, RenderDependencyError, RenderError
 from sluice.cv.parse import CvParseError, parse_cv
 from sluice.renderers import register
 
@@ -191,14 +191,23 @@ class TemplateRenderer:
             return [f"FORMAT: {e}"]
         return []
 
-    def render(self, cv_text: str, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
-        # parse_cv, not a second gate: the fabrication gate has already run on cv_text by
-        # the time any renderer sees it (see sluice/cv/parse.py's module docstring). A
-        # SHAPE this parser cannot model raises CvParseError -- which `precheck` above
-        # has already reported to cv/engine.py's retry loop, so reaching this call with
-        # an unparseable CV means the retry was exhausted and the engine chose not to
-        # render. Left uncaught deliberately: it is the loud failure, not the silent one.
-        document = parse_cv(cv_text)
+    def render(self, document, out_dir: str, *, neutral_name: str = "CV.pdf") -> str:
+        # TRANSITIONAL: removed in Task 19. Until the engine assembles a CvDocument it still
+        # hands this renderer composed text, which is parsed exactly as before. parse_cv,
+        # not a second gate: the fabrication gate has already run on that text by the time
+        # any renderer sees it (see sluice/cv/parse.py's module docstring). A SHAPE this
+        # parser cannot model raises CvParseError -- which `precheck` above has already
+        # reported to cv/engine.py's retry loop, so reaching this call with an unparseable
+        # CV means the retry was exhausted and the engine chose not to render. Left
+        # uncaught deliberately: it is the loud failure, not the silent one.
+        if isinstance(document, str):
+            document = parse_cv(document)
+        elif not isinstance(document, CvDocument):
+            # Fail loud, never coerce: a template given some other shape would render a
+            # blank or half-filled PDF under the user's name.
+            raise RenderError(
+                f"renderer 'template': render() takes a CvDocument, "
+                f"got {type(document).__name__}")
         os.makedirs(out_dir, exist_ok=True)
         pdf_path = os.path.join(out_dir, neutral_name)
         # StrictUndefined (see __init__) turns a typo'd field reference into an

@@ -41,13 +41,17 @@ from sluice.core.backends import BackendError
 from sluice.core.candidate import contact_block, full_name
 from sluice.core.leads import (FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
                                framing_entries, index_by_slug)
-from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.core.layout import build_slots
+from sluice.core.protocols import CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH, EVIDENCE_KINDS
 from sluice.core.log import get_logger
 from sluice.core.usage import meter
 from sluice.cv import artefacts as _artefacts
 from sluice.cv import bundle as _bundle
 from sluice.cv import compose as _compose
 from sluice.cv.audit import run_audit, unsupported_claims
+from sluice.cv.document import assemble, audit_text, model_lines, to_text
+from sluice.cv.reply import Reply, extract_json, parse_reply
+from sluice.cv.selection import build_pool, named_entries, select, zero_bullet_findings
 # The two TIERS separately, never `check_text` (#167). That wrapper scans every line of
 # the document for phrases, and the whole point of the split is that the STYLE tier is
 # SCOPED: it is handed only the PROFILE prose and WORK bullets `section_spans` yields.
@@ -57,6 +61,7 @@ from sluice.cv.audit import run_audit, unsupported_claims
 from sluice.cv.slop import check_hard as _slop_hard
 from sluice.cv.slop import check_phrases as _slop_phrases
 from sluice.cv.terms import unbundled_terms as _unbundled_terms
+from sluice.cv.validate import check_selection, entry_facts
 from sluice.cv.validate import section_spans, validate as _validate
 from sluice.cv.voice import run_voice
 
@@ -118,6 +123,9 @@ class CvResult:
     # the reason `voice_flags` is: a reader would otherwise parse a string back into a
     # kind. Empty whenever `cv.term_check` is off.
     terms: list = field(default_factory=list)
+    skills_dropped: list = field(default_factory=list)     # #365: picks off the pool, over the cap
+    bullets_trimmed: list = field(default_factory=list)    # bullets beyond a role's budget
+    attribution_check_off: bool = False                    # no verified entry declares Tools:
     served: str | None = None
     backend: str | None = None
     # #18: set when the lead's job description did not arrive, and composition proceeded
@@ -150,9 +158,11 @@ class CvResult:
     # by mcpserver.py's cv_run. Always False for a lead refused before composition, which
     # writes nothing and so has nothing to fail.
     artefacts_failed: bool = False
-    # Why a backend failure ended this lead (#333): set on `backend-unavailable`, and on the
-    # `error` the single-lead path returns for a non-transient BackendError. Empty otherwise.
-    # A message rather than the exception, so a result stays a plain value to print.
+    # Why this lead ended without a CV, as a message rather than an exception so a result
+    # stays a plain value to print: a backend failure (#333, on `backend-unavailable` and on
+    # the single-lead path's `error`), or which note refused a `skipped-config` lead (the
+    # Candidate Profile or the CV Layout, #364/#365/#368), so a caller names the right one.
+    # Empty otherwise.
     error: str = ""
 
 
@@ -446,7 +456,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # on blank prose, or raising. Read only by the retention comparison below.
         best_voice_measured = False
         # Numbered from 1 because the number is user-facing: it names the attempt's
-        # artefact files (prompt.attempt-1.txt, cv.attempt-1.md) and run.json's
+        # artefact files (prompt.attempt-1.txt, reply.attempt-1.txt) and run.json's
         # `retained_attempt`.
         for attempt in range(1, 3):
             # Only the COMPOSE call is wrapped, never the loop body. The body raises a
@@ -1001,6 +1011,267 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                         audit_flags=audit_flags, served=served, backend=backend_used,
                         dossier_failed=dossier_failed,
                         skills_unreadable=skills_unreadable)
+    except Exception as e:
+        e.dossier_failed = dossier_failed
+        raise
+
+
+# --- #364/#365/#368: structured composition --------------------------------------------
+# TRANSITIONAL until Task 18, which makes this `run_one` and deletes the text loop above.
+# Every refusal, the retry contract, the retention rule and the hold/write tail are
+# `_run_one`'s, carried over with their reasons (see the comments there). What changed is
+# what an attempt IS: a JSON reply read and checked as data, against slots built from the
+# CV Layout, instead of a CV document re-read by three grammars.
+
+_IDENTITY_REFUSAL = (
+    f"the vault's Candidate Profile note ({CANDIDATE_PROFILE_RELPATH}) has no declared name "
+    "or contact details -- fill it in before composing (the name becomes the PDF's "
+    "headline, and the contact block is emitted verbatim)")
+_LAYOUT_REFUSAL = (
+    f"the vault has no CV Layout note ({CV_LAYOUT_RELPATH}) -- create it before composing: "
+    "every role heading, date, location and title on the CV comes from it")
+
+
+def run_one_structured(note, vault, cvcfg, backend, dossier_cache, *, renderer,
+                       dry_run=False, guard_existing_cv=False, policy=StalenessPolicy(),
+                       usage=None) -> CvResult:
+    # `run_one`'s wrapper, unchanged: every way out of the body finishes the artefacts here.
+    record = _artefacts.RunArtefacts(dry_run=dry_run)
+    try:
+        result = _run_structured(note, vault, cvcfg, backend, dossier_cache,
+                                 renderer=renderer, dry_run=dry_run,
+                                 guard_existing_cv=guard_existing_cv, policy=policy,
+                                 usage=usage, record=record)
+    except Exception as e:
+        record.finish_error(e)
+        e.artefacts_failed = record.failed
+        raise
+    record.finish(result)
+    result.artefacts_failed = record.failed
+    return result
+
+
+def _run_structured(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
+                    guard_existing_cv, policy, usage, record) -> CvResult:
+    fm = note.fm
+    # The refusals before any spend, in `_run_one`'s order: not shortlisted, held for
+    # sign-off (#60), stale (#9), no declared identity (#107).
+    if _status.normalize(fm.get("status", "")) != "shortlist":
+        return CvResult(note.ref, "skipped-selection")
+    if fm.get("pending_cv"):
+        return CvResult(note.ref, "skipped-needs-signoff")
+    if policy.blocks(fm.get("last_seen", "")):
+        return CvResult(note.ref, "skipped-stale")
+    candidate = vault.read_candidate_profile()
+    cv_name = full_name(candidate)
+    if not cv_name.strip() or not contact_block(candidate).strip():
+        return CvResult(note.ref, "skipped-config", error=_IDENTITY_REFUSAL)
+    # The CV Layout is the structure every CV is assembled into (spec §4.1), so without one
+    # there is nothing to compose INTO. `missing_prerequisites` refuses the whole run first;
+    # this catches a note deleted since, before any spend. `None` is never read as zero
+    # roles. A malformed or unreadable note RAISES here, and run_batch records that lead as
+    # `error`: naming the problem is the prerequisite check's job, once per run.
+    layout = vault.read_cv_layout()
+    if layout is None:
+        return CvResult(note.ref, "skipped-config", error=_LAYOUT_REFUSAL)
+
+    company, role = fm.get("company", ""), fm.get("role", "")
+    framing = _compose.framing_lines(*(fm.get(key, "") for key in FRAMING_KEYS))
+    jd, dossier_failed = "", False
+    try:
+        d = dossier_cache.get_or_build(fm)
+        jd = (d.get("jd") or {}).get("markdown", "")
+        # #18/#169: a fetch that produced no JD earns the flag, and keeps the text it got.
+        if not dossier_cache.jd_arrived(d):
+            dossier_failed = True
+    except Exception as e:
+        _log.warning("dossier for %s failed: %s", note.ref, e)
+        dossier_failed = True
+
+    try:
+        entries = vault.read_evidence("experience", verified_only=True)
+        # A broken Skills Inventory never costs a lead (#165): its framing AND its skill
+        # names fall back to nothing together. (OSError, ValueError): a non-UTF-8 note
+        # raises UnicodeDecodeError, a ValueError.
+        skills_unreadable = False
+        try:
+            skills = vault.read_evidence("skills", verified_only=True)
+            named = named_entries(vault.read_evidence)
+        except (OSError, ValueError) as e:
+            _log.warning("skills inventory for %s unreadable, composing without it: %s",
+                         note.ref, e)
+            skills, named, skills_unreadable = [], [], True
+        # Everything below is derived ONCE, before any compose, from the same bundle: a
+        # fault knowable here must not cost an LLM call first.
+        b = _bundle.build_bundle(entries, "", cvcfg.negatives, _jd_keywords(role, jd),
+                                 cvcfg.prefix_map, skills=skills)
+        slots = build_slots(layout, b["entries"])
+        slot_ids = [s.id for s in slots]
+        facts = entry_facts(b, layout)
+        # spec §6.6: the misattributed-tool check runs only while some verified entry
+        # declares Tools:, and every result says whether it did.
+        attribution_off = not any(f.tools for f in facts.values())
+        pool = build_pool(named, entries, decoys=cvcfg.fabrication_decoys)
+        bundle_text = _bundle.render_structured_bundle(b)
+        audit_bundle_text = _bundle.render_audit_bundle(b)
+        vocab = _bundle.term_vocabulary(b, layout)
+
+        out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
+        record.begin(out_dir, lead=note.slug, entry_ids=[e["id"] for e in b["entries"]],
+                     dossier_failed=dossier_failed, skills_unreadable=skills_unreadable)
+
+        retry_findings = retry_drops = None
+        violations, slop_err, slop_msgs, term_msgs, voice_flags = [], [], [], [], []
+        selection = None
+        # The hard-clean attempt with the fewest style/voice findings, as
+        # (selection, slop_msgs, term_msgs, voice_flags); `_run_one`'s `best`, holding the
+        # SELECTION -- and with it the drop report -- instead of a draft's text.
+        best, best_voice_measured = None, False
+        for attempt in range(1, 3):
+            try:
+                raw = _compose.compose_structured(
+                    meter(usage, backend, "cv-compose", lead=note.slug), bundle_text, jd,
+                    company, role, name=cv_name, slots=slots, pool=pool,
+                    skills_max=layout.skills_max, prior_findings=retry_findings,
+                    prior_drops=retry_drops, slop_allow=cvcfg.slop_allow,
+                    triage_framing=framing, on_prompt=partial(record.prompt, attempt))
+            except Exception as e:
+                # `_run_one`'s rule: a retry that never returns must not bin a lead attempt
+                # 1 already earned; with nothing retained, re-raise.
+                record.compose_failed(attempt, e)
+                if best is None:
+                    raise
+                _log.warning("cv retry compose for %s failed (%s); shipping the retained "
+                             "hard-clean draft", note.ref, e)
+                break
+            record.composed(attempt, raw)
+            # spec §6.0, per attempt: read the reply, select from it, check the selection.
+            # A reply that cannot be read has nothing to select: its REPLY findings are the
+            # whole of this attempt's verdict.
+            obj = extract_json(raw)
+            reply = parse_reply(obj, slot_ids) if isinstance(obj, dict) else obj
+            voice_flags, voice_failed, voice_measured = [], False, False
+            if not isinstance(reply, Reply):
+                violations, slop_err, slop_msgs, term_msgs = list(reply), [], [], []
+                selection = None
+            else:
+                selection = select(reply, slots, pool, layout.skills_max)
+                violations = (zero_bullet_findings(selection, slots)
+                              + check_selection(selection, slots, facts,
+                                                decoys=cvcfg.fabrication_decoys))
+                lines = model_lines(selection, slots)
+                # The BLOCKING slop tier -- an em dash or a literal `--` -- over the model's
+                # texts only (spec §6.1): a vault string carrying one is the user's and
+                # renders. Reported in `slop`, beside the phrase tier, as it always has been.
+                slop_err = [f"SLOP {label}: {snip}" for _n, text in lines
+                            for _ln, label, snip in _slop_hard(text)]
+                # The STYLE tier over the text the MODEL wrote and nothing else (spec
+                # §6.3): a slop stem inside a certificate or a skill's name is the user's.
+                slop_msgs = [f"SLOP {phrase}: {snip}" for _ln, phrase, snip
+                             in _slop_phrases(lines, allow=cvcfg.slop_allow)]
+                term_msgs = ([f"UNBUNDLED TERM {term!r}: named nowhere in your evidence: "
+                              f"{snip}" for _ln, term, snip in _unbundled_terms(lines, vocab)]
+                             if cvcfg.term_check else [])
+                excerpt = "\n".join(text for _ln, text in lines)
+                if not violations and not slop_err:
+                    # Opt-in, and never spent on a draft the hard gate already refused or
+                    # on blank prose; fails open (see `_run_one`).
+                    if cvcfg.voice_check and excerpt.strip():
+                        try:
+                            _report, voice_flags = run_voice(
+                                meter(usage, backend, "cv-voice", lead=note.slug), excerpt)
+                            voice_measured = True
+                        except Exception as e:
+                            _log.warning("voice check for %s failed (%s); treating as "
+                                         "clean", note.ref, e)
+                            voice_flags, voice_failed = [], True
+                    # `_run_one`'s retention rule (#194): fewest style/voice findings, a tie
+                    # keeps the later attempt, and an attempt whose voice check failed never
+                    # displaces one whose voice was measured.
+                    found = len(slop_msgs) + len(term_msgs) + len(voice_flags)
+                    if best is None or (
+                            found <= len(best[1]) + len(best[2]) + len(best[3])
+                            and not (voice_failed and best_voice_measured)):
+                        best = (selection, slop_msgs, term_msgs, voice_flags)
+                        best_voice_measured = voice_measured
+                        record.retained(attempt)
+                    if not found:
+                        break
+            retry_findings = (violations + slop_err + slop_msgs + term_msgs
+                              + [f"VOICE: {flag}" for flag in voice_flags])
+            # spec §6.2: a drop never causes a retry, but a retry lists them so the model
+            # can choose better.
+            retry_drops = (list(selection.skills_dropped + selection.bullets_trimmed)
+                           if selection is not None else None)
+
+        backend_used = getattr(backend, "label", None)
+        if best is None:
+            # No attempt was ever hard-clean: every finding describes the LAST attempt.
+            return CvResult(
+                note.ref, "skipped-gate", violations=violations, slop=slop_err + slop_msgs,
+                terms=term_msgs, voice_flags=voice_flags, backend=backend_used,
+                dossier_failed=dossier_failed, skills_unreadable=skills_unreadable,
+                skills_dropped=list(selection.skills_dropped) if selection else [],
+                bullets_trimmed=list(selection.bullets_trimmed) if selection else [],
+                attribution_check_off=attribution_off)
+        # THE REBIND (see `_run_one`): every reader below takes the RETAINED attempt, and
+        # this is the one assignment that makes it so.
+        selection, slop_msgs, term_msgs, voice_flags = best
+        report = dict(slop=slop_msgs, terms=term_msgs, voice_flags=voice_flags,
+                      backend=backend_used, dossier_failed=dossier_failed,
+                      skills_unreadable=skills_unreadable,
+                      skills_dropped=list(selection.skills_dropped),
+                      bullets_trimmed=list(selection.bullets_trimmed),
+                      attribution_check_off=attribution_off)
+
+        assembled = assemble(layout, slots, selection, candidate)
+        # Kept BEFORE the audit, so a dry run, and a run whose audit or render raises, still
+        # leave the document sluice built -- each bullet with its citations -- beside the
+        # replies it came from (spec §7.4).
+        record.rendering(to_text(assembled.document, cites=assembled.cites))
+        # The audit reads what the MODEL wrote, never vault text (spec §6.4). Advisory to
+        # the model, but whether it RAN is not (#333): see `_run_one`.
+        audit_unavailable = ""
+        try:
+            _report, audit_flags = run_audit(
+                meter(usage, backend, "cv-audit", lead=note.slug),
+                audit_text(selection, slots), audit_bundle_text)
+        except Exception as e:
+            _log.warning("advisory audit failed for %s: %s", note.ref, e)
+            audit_flags, audit_unavailable = [], str(e)
+        if dry_run:
+            return CvResult(note.ref, "dry-run", audit_flags=audit_flags, **report)
+
+        from sluice.cv import render as _render
+        pdf = renderer.render(assembled.document, out_dir,
+                              neutral_name=cvcfg.neutral_filename)
+        record.rendered(pdf)
+        served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
+                  if cvcfg.served_dir else None)
+        # The hold/write tail is `_run_one`'s, unchanged (#60, #167, #194, #329, #333).
+        style_blockers = ([f"style\t{msg}" for msg in slop_msgs + voice_flags]
+                          + [f"term\t{msg}" for msg in term_msgs]
+                          if cvcfg.style_hold else [])
+        unaudited = [f"unaudited\t{audit_unavailable}"] if audit_unavailable else []
+        blockers = (
+            (unsupported_claims(audit_flags) + unaudited if cvcfg.require_signoff else [])
+            + style_blockers)
+        if served and blockers:
+            held = vault.hold_for_signoff(
+                note.ref, pending=f"{served} ({date.today().isoformat()})",
+                claims=json.dumps(blockers + framing_entries(framing)))
+            if not held:
+                return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags, **report)
+            return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
+                            served=served, **report)
+        if served:
+            wrote = vault.set_tailored_cv(
+                note.ref, f"{served} ({date.today().isoformat()})",
+                only_if_absent=guard_existing_cv)
+            if guard_existing_cv and not wrote:
+                return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags, **report)
+        return CvResult(note.ref, "rendered", audit_flags=audit_flags, served=served,
+                        **report)
     except Exception as e:
         e.dossier_failed = dossier_failed
         raise
