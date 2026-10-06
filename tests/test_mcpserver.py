@@ -482,10 +482,19 @@ def test_mcp_imported_nowhere_outside_build_server():
             else:
                 continue
             for name in names:
-                if name == "mcp" or name.startswith("mcp."):
+                # `mcp_types` is a SEPARATE distribution mcp depends on (the protocol
+                # types verify_evidence returns), so a bare `mcp` prefix would let a
+                # module-scope import of it through -- and load mcp's dependency tree on
+                # every command.
+                if (name == "mcp" or name.startswith("mcp.")
+                        or name == "mcp_types" or name.startswith("mcp_types.")):
                     if id(node) not in allowed_ids:
                         bad.append(name)
         return bad
+
+    # The widened predicate must actually fire on mcp_types, or the line above is inert.
+    assert _bad_mcp_imports(ast.parse("from mcp_types import TextContent\n")) == [
+        "mcp_types"]
 
     checked = 0
     for path in sorted(sluice_dir.rglob("*.py")):
@@ -1888,7 +1897,8 @@ _EVIDENCE_WRITE_SHAPED_NAMES = ("propose", "verify", "add_evidence")
 # un-guard `verify` at exactly the level where forbidding it is the whole point.
 # Equality also fails when propose_evidence is MISSING at --write, so the row cannot
 # quietly become vacuous the way a one-sided `not any(...)` can.
-_EXPECTED_EVIDENCE_WRITE_TOOLS = {False: set(), True: {"propose_evidence"}}
+_EXPECTED_EVIDENCE_WRITE_TOOLS = {False: set(),
+                                  True: {"propose_evidence", "verify_evidence"}}
 
 
 def test_only_propose_evidence_and_only_at_write_true_is_registered():
@@ -1901,12 +1911,11 @@ def test_only_propose_evidence_and_only_at_write_true_is_registered():
     -- its value is a fast, readable failure message naming the offending tool,
     ahead of a bare set-mismatch diff.
 
-    #175 shipped `propose_evidence` at --write. A VERIFY tool must never exist at
-    either level: promotion to citable stays interactive-only, which is #164's
-    central decision, and a second promotion path is a new trust root rather than a
-    convenience. `propose_evidence` is not one -- it lands under the inbox
-    `read_evidence` cannot see and never stamps the citability key -- which is why
-    this row permits the one and still forbids the other."""
+    #175 shipped `propose_evidence` at --write, and `verify_evidence` followed it there:
+    the one promotion tool, which verifies only what the human ticks in a client-shown
+    form. Both are forbidden below --write, and any OTHER verify- or propose-shaped name
+    is a failure at either level -- a second promotion path would be one with no form in
+    front of the human."""
     for write in (False, True):
         names = _tool_names(build_server(Config(), write=write))
         matched = {n for n in names

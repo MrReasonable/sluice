@@ -962,6 +962,9 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     approved = []
     for title, sha in approved_titles.items():
         text = current.get(title)
+        # The PRIMARY guard against promoting an edit nobody saw: the text handed to the
+        # store below is this fresh re-read, so the store's own compare-and-set has
+        # nothing older to compare it against (measured by deleting this comparison).
         if text is None or _sha(text) != sha:
             report["changed"].append(title)
         else:
