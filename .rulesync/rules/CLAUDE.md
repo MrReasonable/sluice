@@ -824,23 +824,26 @@ against.) `EvidenceKind.fields` is the user-facing set only, and `cli.py` derive
 flags from that tuple, so listing `verified` there would generate a `--verified` flag — exactly
 what an agent shelling out to the CLI would reach for; and `verify` carries no `--all` and no
 `--yes`, because a bulk flag is the same
-hole one level up. The MCP server exposes `list_evidence` at every level and, since #175,
-`propose_evidence` under `--write` — and nothing that VERIFIES, at any level. That line is where
-it is for a reason: a proposal lands under `INBOX_SUBDIR`, which `read_evidence` cannot see, and
-cannot stamp the key (the same `_render_evidence_note` refusal above is what holds it, since
-`fields` is caller-supplied), so it is inert until a human promotes it. Do not read the
-trust-root sentence below as forbidding it, and do not read this one as licence to add the verify
-tool beside it. `verify_evidence` itself is compare-and-set against the exact bytes a human
-was shown, so an edit made after approval abstains rather than becoming citable — the same
-discipline `update_fields`' `require_status` uses, and reachable in practice, since the human sits
-at a prompt while their editor is free to save. Two things follow. The `verified:` key is
-STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a second PROMOTION
-path — a bulk verifier, an MCP verify tool, a `--yes` — is not a convenience but a new trust root,
-and would need the whole set of refusals above rebuilt around it. This list said "an MCP write
-tool" until #175, which made that reading actively wrong: `propose_evidence` IS an MCP write tool
-and is not a promotion path, so the phrase would have argued against the one thing on this axis
-that shipped while leaving the one that must not ship unnamed. What makes something a promotion
-path is that it can stamp `verified:`, not that it writes. `EvidenceKind` carries a flag per question, because the questions stopped having one answer:
+hole one level up. The MCP server exposes `list_evidence` at every level and, under `--write`,
+`propose_evidence` (#175) and `verify_evidence`. A proposal lands under `INBOX_SUBDIR`, which
+`read_evidence` cannot see, and cannot stamp the key (the same `_render_evidence_note` refusal above
+is what holds it, since `fields` is caller-supplied), so it is inert until a human promotes it.
+The `verify_evidence` MCP tool is a second route to `Store.verify_evidence` (through
+`Sluice.promote_reviewed_evidence`), and it keeps a human in front of every promotion: it has the CLIENT show, in full, every entry it offers in a review
+form (SEP-2322 input-required elicitation), promotes only entries the client returned an explicit
+`true` for, and only when the entry's current text still hashes to what the form showed. Its input
+is exactly `{kind, names}` (pinned in `tests/functional/test_mcp_contract.py`), so the model has no
+argument through which to approve. What this guards against is the MODEL accidentally making its
+own claims citable; it is deliberately NOT hardened against a client or hook configured to answer
+the form for the user, which is the user's own tooling acting for them -- do not add signed state or
+tamper checks in its name. `Store.verify_evidence` itself is compare-and-set against the exact bytes
+a human was shown, so an edit made after approval abstains rather than becoming citable — the same
+discipline `update_fields`' `require_status` uses, and reachable in practice, since the human
+reviews while their editor is free to save. Two things follow. The `verified:` key is
+STORE-MANAGED, so a new evidence field must never be one a caller supplies; and a promotion path
+with NO human in it — a bulk verifier, a `--yes`, a verify argument the model could set — must not
+ship. What makes something a promotion path is that it can stamp `verified:`, not that it writes:
+`propose_evidence` writes and is not one. `EvidenceKind` carries a flag per question, because the questions stopped having one answer:
 `read_by_composer` says the corpus reaches the composer's prompt, `cited_by_gate` says the
 fabrication gate may LICENSE its content, and `names_in_skills_pool` (#364/#365/#368, D12)
 says a verified note's NAME -- its `Label:`, else its title (`cv/selection.py::cv_name`) -- may

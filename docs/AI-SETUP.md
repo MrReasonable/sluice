@@ -42,11 +42,14 @@ against the exact bytes a human was shown, so an edit made after approval abstai
 becoming citable.
 
 `job-sluice experience add` (and `skills add` / `stories add`) **proposes**. It lands the entry
-unverified and prints so. There is no `--all` and no `--yes` on `verify`, and the MCP server exposes
-no tool that verifies at any `--write` level. None of that is an obstacle to route around: it is a
-trust root, and the human sitting at the prompt is the point of it.
+unverified and prints so. There is no `--all` and no `--yes` on `verify`. Under `mcp serve
+--write` the `verify_evidence` tool shows the user a review form in their client, with every
+pending entry in full; only the entries they tick are verified, and you cannot answer that form
+for them. None of that is an obstacle to route around: the human reading each entry is the point
+of it.
 
-So: propose freely, then stop and hand back. `job-sluice experience verify` is theirs to run.
+So: propose freely, then hand the decision back. Call `verify_evidence` and let them tick the
+form, or have them run `job-sluice experience verify`. Either way the verifying is theirs.
 
 ### 3. Never fabricate identity or experience
 
@@ -71,7 +74,7 @@ under their name.
 | Interview for identity, then write the Candidate Profile | yes | answers |
 | Interview for the CV Layout, then write it | yes | answers |
 | Propose evidence entries from their existing CV, if they have one | yes | |
-| **Verify evidence** | **never** | **only they can** |
+| **Verify evidence** | **never** (you may open the `verify_evidence` form) | **only they can** (by ticking that form, or with the CLI) |
 | API key or `claude` CLI | | supplies |
 | Start Camofox, log into job boards over VNC | can start it | does the logins |
 | `ingest` / `triage` / `cv` runs | yes | |
@@ -256,7 +259,8 @@ one — it is required, and it is what triage fetches the job description from.
 End by telling them, concretely:
 
 - what you set up, and what you deliberately left unset because they did not answer
-- that `job-sluice experience verify` is waiting for them, and nothing composes until it runs
+- that pending evidence is waiting for them to verify (the `verify_evidence` form, or
+  `job-sluice experience verify`), and nothing composes until they do
 - what `doctor` still lists under `Needs setup` or `Degraded`, and which command each one
   blocks, if any -- not every row blocks something. A missing Judging Profile is `degraded`
   and blocks nothing: triage falls back to the shipped neutral criteria rather than stopping

@@ -8,7 +8,8 @@ the part that makes this file different from every other doc in the tree. It tel
 it must NOT do, and it justifies each prohibition with a property of the code:
 
   - `verify` carries no `--all` and no `--yes`
-  - the MCP server exposes nothing that verifies, at any `--write` level
+  - the MCP server's only verifier is `verify_evidence`, at `--write`, and it promotes only
+    what the user ticks
   - `experience add` proposes rather than promotes
 
 Those three are what make "never mark evidence verified" enforceable rather than aspirational.

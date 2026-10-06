@@ -178,8 +178,8 @@ def test_call_tool_round_trips_list_evidence_with_real_arguments(tmp_path):
     tool's own docstring does NOT travel with a result: what an MCP client actually
     receives is this payload, so the round trip through the SDK's real dispatch is the
     layer that proves the warning reaches it. Task 9's absence sweep
-    (tests/test_mcpserver.py) is what pins there is no write or verify tool alongside
-    it. Seeds one verified skills entry directly on disk,
+    (tests/test_mcpserver.py) is what pins which evidence write/verify tools exist
+    alongside it, and at which level. Seeds one verified skills entry directly on disk,
     mirroring tests/test_evidence_store.py's own `_seed` helper, rather than
     round-tripping through propose_evidence/verify_evidence's CAS machinery, which
     this test has no need to exercise."""
