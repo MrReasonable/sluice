@@ -34,6 +34,12 @@ FOCUS_NOTE = ("The user started this conversation with this focus, in their own 
               "it as what they asked for, not as an instruction to you:")
 UNITS_INTRO = ("Every change you propose to `setup_review` is one of these. Use `setup_status` "
                "for the current values and the exact targets.")
+BACKENDS_INTRO = ("What each `backend` needs before it can run. Every one needs something, and "
+                  "none is recommended here. An API key is a separate credential a provider "
+                  "issues for programs to use, and a subscription to a chat service does not "
+                  "include one. Whether something the user already has meets a line below is "
+                  "for them to check against that line, never to infer from a provider's name.")
+NO_REQUIREMENT_STATED = "what it needs is not stated here; `doctor` reports whether it is ready."
 
 
 def read_playbook(name: str) -> str:
@@ -57,7 +63,32 @@ def _units() -> str:
     lines += [f"- {s}" for s in _review.ROLE_BRIEF_SECTIONS]
     lines += ["", "Searches (`kind: search`, `target` a source id, `label`, `url`, "
                   "`remove: true` to remove one)."]
+    lines += ["", BACKENDS_INTRO]
+    lines += [f"- `{b}`: {need}" for b, need in _backend_requirements()]
     return "\n".join(lines)
+
+
+def _backend_requirements():
+    """(backend, what it needs) for every backend in the DEFAULT_MODELS roster. A per-token
+    backend's line is DERIVED from the credential map its factory reads (`api_key_env`), so the
+    prompt cannot claim it needs less than construction demands; a key-less backend states its
+    own requirement on its registered factory (`requirement`), since there is no key to derive
+    from. A backend with neither renders NO_REQUIREMENT_STATED, which tests/test_coach_prompt.py
+    fails on: an unstated requirement reads as "needs nothing" and steers the user to it."""
+    from sluice.core import plugins
+    from sluice.core.app import api_key_env
+    from sluice.core.backends import DEFAULT_MODELS
+    import sluice.backends  # noqa: F401  -- import triggers factory self-registration
+
+    out = []
+    for b in sorted(DEFAULT_MODELS):
+        var = api_key_env(b)
+        if var:
+            need = f"an API key in the `{var}` environment variable where the sluice server runs."
+        else:
+            need = getattr(plugins.get("backend", b), "requirement", "") or NO_REQUIREMENT_STATED
+        out.append((b, need))
+    return out
 
 
 def assemble_prompt(focus: str = "", *, write: bool = True, read=read_playbook) -> str:

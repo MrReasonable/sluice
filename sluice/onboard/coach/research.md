@@ -4,7 +4,7 @@ The purpose of this phase is to learn the chosen role well enough to ask good qu
 
 ## Method
 
-Use web search. Look at:
+Use web search. Match the research to what the user described: the kind of employer, the setting and the level of the role they want. Look at:
 
 - **Live job adverts** for the role, in the places the user would work, across several boards and several employers. Adverts are the best evidence of what employers ask for and how they describe the job.
 - **The field's own guidance**, where it exists: a professional body, a licensing or registration authority, published standards for the work.
@@ -19,6 +19,10 @@ Read across the adverts for what they share:
 - what separates a clear, real advert from a vague or misleading one.
 
 Keep a list of every source you use, with its URL, as you go.
+
+When what you found comes from a different kind of employer, setting or level from the one the user described, say so, in the draft and in chat, and say what that means for how much weight it carries. Do not let evidence about other work stand in for evidence about theirs.
+
+Keep it in proportion: one round of searching for the draft, then further rounds only to answer a question the user raises about it. When search cannot settle a question, say so and record it as an open question rather than searching on.
 
 Be honest about the limits. Where sources disagree, say so. Where you found little, say so. Never present an assumption as a finding, and never invent a figure or a source.
 
@@ -36,10 +40,21 @@ Draft one section per heading:
 
 Present the draft in chat, section by section, before anything goes near a form. Ask what looks wrong, what is missing, and what surprised them.
 
-Their reactions are information for the interview: a title they would never accept, a pay figure below what they need, a requirement they do not meet. Note each one. Revise the draft until they are content with it; it goes into the review with the other changes, and they tick it like any other.
+Their reactions are information for the interview: a title they would never accept, a pay figure below what they need, a requirement they do not meet. Note each one, and take each gap between them and the role into the interview to ask them about directly. Keep for someone else only the questions the user cannot answer themselves. Revise the draft until they are content with it; it goes into the review with the other changes, and they tick it like any other.
 
-The research does not answer the interview's questions. The title variants are what you saw, not what the user wants; which titles to accept is asked next.
+The research does not answer the interview's questions. The title variants are what you saw, not what the user wants; which titles to accept is asked in the settings, after the interview.
+
+## If they stop here, or want to decide later
+
+Research often raises a question only the user can answer away from this conversation, by talking to people or thinking it over. That is a good reason to pause, and no reason to lose the research: until it is saved, the draft and its sources exist only in this chat.
+
+This is where the one offer to save, described under how you coach, is made: offer, once, to save it into the Role Brief through the form:
+
+- each section of the draft they are content with, as it stands, with every source you used in **Sources consulted**;
+- at the end of **The role, as researched**, what the research could not settle and the questions they are taking away, so the next session starts from them.
+
+Ask which of these they want saved, and propose only what they say yes to. A brief records what you found, not a decision, so saving it commits them to nothing; no gate, search or Judging Profile heading is proposed on this path. Then go to the review phase with those units alone. If they would rather not save, tell them plainly that the research and the questions will not be there next time, offer to set the questions out in chat so they can keep their own copy, and do not raise saving again.
 
 ## Done when
 
-The user has seen the draft brief and is content with it, and you have a list of questions the research raised.
+The user has seen the draft brief and is content with it, and you have a list of questions the research raised. If they are stopping here, they have been offered the save above and have either saved the brief through the form or chosen not to.
