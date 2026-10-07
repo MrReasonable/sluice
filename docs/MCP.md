@@ -22,6 +22,7 @@ command ever imports it. A bare install never loads any of it.
 | `doctor` | the same preflight report the CLI prints, as structured data |
 | `health` | per-source scrape baseline and retire state |
 | `list_evidence` | your evidence corpora |
+| `setup_status` | the current value of every setup change the career coach can propose, and which setup notes exist |
 
 That is the whole surface without `--write`.
 
@@ -32,7 +33,7 @@ claude mcp add job-sluice -- job-sluice mcp serve --write
 ```
 
 This additionally registers `dismiss_lead`, `apply_record`, `cv_run`, `cv_signoff`,
-`create_lead`, `propose_evidence` and `verify_evidence`. Each is a thin layer over one facade method rather than a
+`create_lead`, `propose_evidence`, `verify_evidence` and `setup_review`. Each is a thin layer over one facade method rather than a
 raw store write, so every invariant in [`GUARANTEES.md`](GUARANTEES.md) still holds — an agent
 cannot reach past them.
 
@@ -44,6 +45,18 @@ The decision is made **per registration, not per call**. A read-only server's `t
 genuinely omits the write tools' names and schemas; it does not advertise them and refuse at call
 time. An agent connected to a read-only server cannot see that a write surface exists, which is
 the property that makes the flag meaningful rather than advisory.
+
+## The career coach
+
+The server also offers a prompt, `career_interview`, at either privilege level. Claude Code
+surfaces it as the slash command `/mcp__job-sluice__career_interview` (the middle part is the name you gave
+`claude mcp add`), with one optional argument
+saying what you want from the session. Your client cannot list prompts for you, so start it by
+name. The coach interviews you, can research the role you choose, and proposes setup changes.
+`setup_review` (under `--write`) shows each change under its own unticked checkbox and writes
+only the ones you tick, so the model can open the form but cannot answer it. It needs a client
+that supports form elicitation, as `verify_evidence` does. `scripts/coach_eval/README.md`
+describes the developer-only harness that scores the coach; it never runs in CI.
 
 ## What no tool can do for you
 

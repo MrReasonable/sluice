@@ -357,7 +357,12 @@ claude mcp add job-sluice -- job-sluice mcp serve
 `--write` additionally registers the write tools, as a per-registration trust decision rather than
 a per-call one. Verifying evidence stays yours: under `--write`, `verify_evidence` shows you the
 pending entries in a review form and verifies only the ones you tick, and nothing can tick it for
-you. [`docs/MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) has the tool tables and the reasoning.
+you.
+
+In Claude Code, `/mcp__job-sluice__career_interview` starts a career coach that interviews you, can
+research the role you choose, and proposes setup changes you approve one by one in a review form
+(the review step needs `--write`). Your client cannot list this prompt, so type it by name. The middle part of that command is whatever name you registered the server under (`job-sluice` in the registration shown here).
+[`docs/MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) has the tool tables and the reasoning.
 
 ## Configuration
 

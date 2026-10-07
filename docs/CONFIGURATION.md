@@ -198,6 +198,17 @@ compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them,
 (same doc) for how a blank name/contact — or a legacy `cv.name`/`cv.contact` left in
 `sluice.yaml` from before this note existed — is reported.
 
+## Role Brief (vault note)
+
+`Job Applications/Role Brief.md` records what the career coach found when it researched the
+role you chose (`/mcp__job-sluice__career_interview`, named after the server's registration, see `docs/MCP.md`). It is written only
+through the coach's review form, one section per tick, and you can edit it in Obsidian at any
+time. Its sections are `The role, as researched`, `Title variants seen on boards`, `Pay
+structure`, `Signals of a good posting and a poor one` and `Sources consulted`. **No pipeline
+stage reads it**: ingest, triage, cv, apply and track behave identically with or without the
+note, so it informs you and the coach, and changes nothing sluice does until you carry
+something from it into the Judging Profile or the config.
+
 ## CV Layout (vault note)
 
 `Job Applications/CV Layout.md` decides what every CV shows, in what order: each role's

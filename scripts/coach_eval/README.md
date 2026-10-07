@@ -77,7 +77,7 @@ written: a form the user declined or cancelled still returns a successful call. 
 (career-changer) ended with no `setup_review` call and its four review
 checks read `pass`, which is indistinguishable from a run whose proposals were all clean.
 
-Graded by the Haiku grader (1-5 each): `asked_before_proposing`, `role_specific_questions`,
+Graded by the grader (sonnet by default) (1-5 each): `asked_before_proposing`, `role_specific_questions`,
 `coaching_quality`, plus free-text notes. These are indicative, not gating. The grader sees only
 the conversation, so its prompt states what `setup_review` actually received (from the tool
 calls), and `asked_before_proposing` is scored only from those calls: with none, the grader is

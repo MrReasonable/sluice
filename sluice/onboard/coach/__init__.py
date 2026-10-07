@@ -1,4 +1,4 @@
-"""The career coach's prompt (`/mcp__sluice__career_interview`), assembled from Markdown
+"""The career coach's prompt (the `career_interview` prompt), assembled from Markdown
 playbooks packaged beside this file: a persona core plus one playbook per phase, each with
 its method and exit criteria. Later phases add files rather than growing one text.
 
