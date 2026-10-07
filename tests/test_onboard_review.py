@@ -94,7 +94,20 @@ def test_a_second_change_to_the_same_unit_is_set_aside_not_merged():
     units, aside = propose([{"kind": "config", "target": "lead_ttl_days", "value": "30"},
                             {"kind": "config", "target": "lead_ttl_days", "value": "60"}],
                            snap(CONFIG))
-    assert [u.after for u in units] == ["30"] and "already proposes" in aside[0].reason
+    assert [u.after for u in units] == ["30"] and "same thing" in aside[0].reason
+
+
+def test_an_add_and_a_remove_of_one_search_share_a_key_so_the_second_is_set_aside():
+    """The one case the key check holds alone: the key leaves the verb out, the title keeps it,
+    so an add and a remove of one search are two titles but one key. Without the key check both
+    boxes would be shown -- two contradictory writes to one search behind two ticks."""
+    search = {"kind": "search", "target": "remoteok", "label": "A",
+              "url": "https://example.invalid/1"}
+    # No search configured yet: the add is valid, so the remove reaches the duplicate check
+    # rather than its own "not configured" refusal.
+    units, aside = propose([search, {**search, "remove": True}], snap(CONFIG))
+    assert [u.title for u in units] == ["Search on remoteok: add A (https://example.invalid/1)"]
+    assert len(aside) == 1 and "same thing" in aside[0].reason
 
 
 def test_two_searches_with_one_label_but_different_urls_are_two_units_with_two_titles():
@@ -167,3 +180,75 @@ def test_an_add_and_a_remove_of_one_search_are_one_box_not_two():
                              "url": "https://example.invalid/1", "remove": True}], snap(CONFIG))
     assert len(units) == 1 and "add" in units[0].title
     assert len(aside) == 1 and "already proposes" in aside[0].reason
+
+
+@pytest.mark.parametrize("raw", ["/example/chosen-vault", "~/example-vault"])
+def test_the_vault_dir_box_shows_the_resolved_path_it_approves(raw):
+    """The user must see every value before it is written, and this one decides where every
+    note goes: the box carries the path parse_path will write, never a placeholder."""
+    from sluice.onboard.questions import parse_path
+    units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw}], snap(None))
+    assert aside == [] and len(units) == 1
+    assert review.unit_body(units[0]) == f"New:\n{review.scalar(parse_path(raw))}"
+
+
+@pytest.mark.parametrize("raw", ["notes", "./notes", "../notes", "", "~nosuchuser-sluice-test/notes"])
+def test_a_relative_vault_dir_is_set_aside_and_names_no_vault_for_the_rest(raw):
+    """A relative answer would resolve against the folder the server was started from. It is
+    set aside, and it does not count as naming the vault, so the batch's other boxes are not
+    shown only to be set aside on retry."""
+    units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw},
+                            {"kind": "config", "target": "lead_ttl_days", "value": "30"}],
+                           snap(None))
+    assert units == []
+    by = {a.label: a.reason for a in aside}
+    assert "relative path" in by["config: vault_dir"]
+    assert "where your notes live" in by["config: lead_ttl_days"]
+
+
+def test_clear_on_a_search_is_set_aside_by_name_not_read_as_an_add():
+    units, aside = propose([{"kind": "search", "target": "remoteok", "label": "Example",
+                             "url": "https://example.invalid/a", "clear": True}], snap(CONFIG))
+    assert units == [] and "`remove: true`" in aside[0].reason
+
+
+_A = ["Example", "https://example.invalid/a"]
+_B = ["Second", "https://example.invalid/b"]
+
+
+@pytest.mark.parametrize("change,configured,why", [
+    ({"label": _A[0], "url": _A[1]}, [_A], "already configured"),
+    ({"label": _B[0], "url": _B[1], "remove": True}, [_A], "not configured"),
+    ({"label": _A[0], "url": _A[1], "remove": True}, [_A], "last search"),
+])
+def test_a_search_box_that_could_not_be_written_is_never_shown(change, configured, why):
+    """Checked against snap.searches at propose time: before this, each was shown, ticked, and
+    only then set aside by build_writes' editor."""
+    units, aside = propose([{"kind": "search", "target": "remoteok", **change}],
+                           snap(CONFIG, searches={"remoteok": configured}))
+    assert units == [] and why in aside[0].reason
+
+
+def test_removing_one_of_two_configured_searches_is_shown():
+    units, aside = propose([{"kind": "search", "target": "remoteok", "label": _A[0],
+                             "url": _A[1], "remove": True}],
+                           snap(CONFIG, searches={"remoteok": [_A, _B]}))
+    assert aside == [] and len(units) == 1
+
+
+@pytest.mark.parametrize("first,second", [
+    ({"kind": "profile", "target": "## Who this candidate is"},
+     {"kind": "profile", "target": "Who this candidate is"}),
+    ({"kind": "profile", "target": "Who this candidate is"},
+     {"kind": "profile", "target": "#  Who this candidate is "}),
+    ({"kind": "candidate", "target": "cv_surname"},
+     {"kind": "candidate", "target": "surname"}),
+])
+def test_two_spellings_of_one_target_are_one_unit_and_a_duplicate(first, second):
+    """The unit key normalises a heading's spelling and a candidate field's name, so two
+    spellings of one target are caught as the SAME thing (not merely the same title)."""
+    units, aside = propose([{**first, "value": "Example one."},
+                            {**second, "value": "Example two."}],
+                           snap(CONFIG, {"profile": PROFILE}))
+    assert len(units) == 1 and units[0].change.value == "Example one."
+    assert len(aside) == 1 and "the same thing" in aside[0].reason

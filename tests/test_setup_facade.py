@@ -190,3 +190,71 @@ def test_a_faulty_editor_that_flips_an_unrelated_key_is_caught(monkeypatch):
     out = s.apply_setup(writes)
     assert out["config"].status == "set_aside" and "min_jd_chars" in out["config"].reason
     assert Path(config_file()).read_text() == old
+
+
+def test_snapshot_keeps_a_dotted_source_id_whole(monkeypatch):
+    """The snapshot slices `sources.` and `.searches` off; splitting on "." would keep only
+    the id's first segment."""
+    real = app_mod._config_settings
+    monkeypatch.setattr(app_mod, "_config_settings", lambda text: {
+        **real(text), "sources.example.dotted.searches": [["A", "https://example.invalid/1"]]})
+    snap = Sluice.from_config_file().setup_snapshot()
+    assert snap.searches["example.dotted"] == [["A", "https://example.invalid/1"]]
+    assert "example" not in snap.searches
+
+
+def test_a_note_whose_store_write_abstains_is_a_conflict_and_is_untouched():
+    """The store-level CAS the consent guarantee rests on: write_document returning "" (stale
+    sha on an update, an existing note on a create) must report `conflict`, never `written`."""
+    s = Sluice.from_config_file()
+    note = Path(s.store().dir) / CRITERIA_RELPATH
+    note.parent.mkdir(parents=True, exist_ok=True)
+    note.write_text("# Judging Profile\n\nedited in Obsidian\n")
+    out = s.apply_setup([ArtefactWrite("profile", "# new\n", document_sha("# shown\n"))])
+    assert out["profile"].status == "conflict"
+    out = s.apply_setup([ArtefactWrite("profile", "# new\n", None)])
+    assert out["profile"].status == "conflict"
+    assert note.read_text() == "# Judging Profile\n\nedited in Obsidian\n"
+
+
+def test_a_hand_written_four_space_block_is_never_left_broken():
+    """edit.py inserts a missing key at two spaces; in a block indented by four that is a
+    file no loader reads. The config check must catch it before the write."""
+    from sluice.onboard import review
+    hand = 'triage:\n    resolve_backend: ""\n'
+    _cfg(hand)
+    s = Sluice.from_config_file()
+    snap = s.setup_snapshot()
+    parsed, _ = review.parse_changes([{"kind": "config", "target": "accept_titles",
+                                       "value": "Example Title"}])
+    units, aside = review.propose(parsed, snap)
+    assert aside == [] and len(units) == 1
+    writes, aside = review.build_writes(units, snap)
+    assert aside == [] and [w.artefact for w in writes] == ["config"]
+    out = s.apply_setup(writes)
+    assert out["config"].status == "failed" and "load_config" in out["config"].reason
+    assert Path(config_file()).read_text() == hand
+
+
+def test_snapshot_names_an_unreadable_config_without_its_path(tmp_path):
+    s = Sluice.from_config_file()
+    os.makedirs(config_file())          # a directory where the file should be: unreadable
+    snap = s.setup_snapshot()
+    assert snap.config_text is None and "config" in snap.unreadable
+    from sluice.onboard.review import status_view
+    text = repr(snap.unreadable) + repr(status_view(snap))
+    assert str(tmp_path) not in text and os.path.realpath(tmp_path) not in text
+    assert status_view(snap)["artefacts"]["config"] == "unreadable"
+
+
+def test_without_path_replaces_the_real_spelling_behind_a_symlink(tmp_path):
+    """macOS symlinks its temp root, so PyYAML can report the REAL path of a file opened by its
+    link; both spellings must go, whichever the host uses."""
+    real = tmp_path / "real"
+    real.mkdir()
+    (tmp_path / "link").symlink_to(real)
+    path = str(tmp_path / "link" / "config.yaml")
+    resolved = os.path.realpath(path)
+    assert resolved != path, "the symlink did not make two spellings; this row tests nothing"
+    msg = app_mod._without_path(f'in "{resolved}", line 2; also "{path}"', path)
+    assert msg == 'in "config.yaml", line 2; also "config.yaml"'

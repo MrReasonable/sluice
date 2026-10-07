@@ -39,4 +39,9 @@ def test_docs_give_the_registered_form_only_beside_the_naming_rule():
     for p in mentions:
         t = _text(p)
         assert all(m.group(0) == "/mcp__job-sluice__" for m in FIXED.finditer(t)), p
-        assert DOCS_FORM in t and RULE.search(t), f"{p} shows the command without the naming rule"
+        assert DOCS_FORM in t, p
+        # Per PARAGRAPH, not per file: a rule word anywhere in a long doc (the MCP server's
+        # registration steps, say) would otherwise vouch for a mention pages away from it.
+        bare = [para for para in re.split(r"\n\s*\n", t)
+                if FIXED.search(para) and not RULE.search(para)]
+        assert bare == [], f"{p} shows the command without the naming rule beside it: {bare}"

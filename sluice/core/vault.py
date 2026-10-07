@@ -2337,9 +2337,8 @@ class Vault:
         self.dir entirely, and "../" walks out -- either would let the one wholesale-write
         primitive on a never-clobber contract scribble anywhere on the disk, including over
         a verified evidence entry, which is what the fabrication gate's truth is made of.
-        Not currently
-        reachable (the only caller passes a config constant), which is exactly when to
-        close it.
+        Every caller passes a document-key constant today (the digest's, `SETUP_NOTES`'), so
+        no caller-supplied `rel` reaches here; the check is for the first caller that does.
         """
         # realpath, not abspath: a symlink INSIDE the store (link -> /etc) would otherwise
         # satisfy commonpath and escape anyway.

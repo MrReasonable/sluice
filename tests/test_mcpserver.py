@@ -17,6 +17,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import types
 
 import pytest
 
@@ -1865,6 +1866,15 @@ def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
 # cannot see what review (or the coach) does once loaded. This second sweep covers every
 # onboard module setup reaches, transitively, and bans any write path: store writes, file
 # writes, the facade's apply, and any vault/config import beyond the two pure names.
+#
+# Its posture is a TRIPWIRE for the shapes a write would plausibly take here, not a proof that
+# none exists. Matched: the store's write methods and the repo's own write helpers by call name,
+# `os.replace/rename/remove/unlink` through any alias of `os`, and `open(...)` with a w/x/a
+# mode. NOT matched, knowingly: `Path.write_text`/`write_bytes`, `shutil.move`/`copy`,
+# `Path.open("w")`, an `open(..., "r+")` mode, and a bound-method alias
+# (`w = store.write_document; w(...)`). What holds the property is the layering: the onboard
+# modules are handed texts and return texts, and `Sluice.apply_setup` is the one writer. A
+# new write shape here should be added to the sweep in the same change that needs it.
 
 _ONBOARD_VAULT_NAMES = frozenset({"parse_frontmatter", "set_frontmatter_line"})
 _FILE_WRITE_CALLS = frozenset({"_write", "_atomic_write", "_cas_write", "write_config_text",
@@ -1883,7 +1893,16 @@ def _onboard_violations(tree) -> list:
     os_names = {"os"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.Import)
                          for a in n.names if a.name == "os" and a.asname}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "os":
+        if isinstance(node, ast.ImportFrom) and node.level:
+            # A relative import names its module by position, which this sweep cannot read
+            # without knowing the file's package; the onboard modules use full dotted names.
+            bad.append(f"relative import from {'.' * node.level}{node.module or ''}")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core" and {
+                a.name for a in node.names} & {"vault", "config"}:
+            # The module form binds the whole module, every write helper included, under a
+            # name (or alias) no call-name match below can recognise as a vault import.
+            bad.append("from sluice.core import vault/config")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
             bad += [f"from os import {a.name}" for a in node.names
                     if a.name in _OS_WRITE_ATTRS]
         elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core.vault":
@@ -1959,7 +1978,11 @@ def test_the_onboard_sweep_catches_planted_writes():
                 "import os\nos.replace('a', 'b')\n",
                 "import os as _o\n_o.replace('a', 'b')\n",
                 "from os import replace\n",
-                "from sluice.core.vault import Vault\n"):
+                "from sluice.core.vault import Vault\n",
+                "from sluice.core import vault\n",
+                "from sluice.core import config as _c\n",
+                "from ..core import vault\n",
+                "from .edit import set_key\n"):
         assert _onboard_violations(ast.parse(src)), src
 
 
@@ -2185,9 +2208,65 @@ def test_setup_status_reports_a_config_the_loaders_refuse(tmp_path):
     os.makedirs(os.path.dirname(config_file()), exist_ok=True)
     pathlib.Path(config_file()).write_text("triage:\n  accept_titles: [unclosed\n")
     out = setup_status_or_refusal()
-    assert out["outcome"] == "config_refused" and "load_config" in out["detail"]
+    assert out["outcome"] == "config_refused"
+    assert out["detail"].startswith("sluice could not load its config file (")
+    assert "Error: " in out["detail"]     # the exception's type name is kept
     text = json.dumps(out)
     # PyYAML embeds the file's path; macOS temp roots are symlinked, so check both spellings.
     assert str(tmp_path) not in text
     assert os.path.realpath(os.path.dirname(config_file())) not in text
     assert os.path.dirname(config_file()) not in text
+
+
+def _setup_state(**over):
+    state = {"kind": "setup", "changes": [{"kind": "config", "target": "lead_ttl_days",
+                                           "value": "30"}],
+             "shown": [["entry_1", "config:lead_ttl_days"]], "shas": {"config": None},
+             "config_existed": True, "rest": [], "set_aside": []}
+    state.update(over)
+    return json.dumps(state)
+
+
+@pytest.mark.parametrize("state", [
+    "not json", json.dumps(["a list"]), _setup_state(kind="verify"),
+    _setup_state(shown=[["entry_1"]]), _setup_state(shown=[["entry_1", 7]]),
+    _setup_state(shown="entry_1"), _setup_state(shas="x"), _setup_state(shas={"config": 7}),
+    _setup_state(config_existed="yes"), _setup_state(changes=[{"kind": "config"}]),
+    _setup_state(changes=[{"kind": "config", "target": ["x"], "value": "30"}]),
+    _setup_state(changes=[{"kind": "config", "target": "x", "bogus": "y"}]),
+    _setup_state(rest=[1]), _setup_state(set_aside=["x"]),
+])
+def test_a_garbled_setup_state_is_invalid_state_and_writes_nothing(state):
+    """Explicit shape checks, not an `assert` that `python -O` strips: every garbled field the
+    retry reads is `invalid_state`, never an exception."""
+    from sluice.core.paths import config_file
+    from sluice.mcpserver import setup_review_step
+    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+    before = "lead_ttl_days: 0\n"
+    pathlib.Path(config_file()).write_text(before)
+    responses = types.SimpleNamespace(action="accept", content={"entry_1": True})
+    out = setup_review_step(Sluice.from_config_file(), changes=[],
+                            protocol_version="2026-07-28",
+                            elicitation=types.SimpleNamespace(form={}, url=None),
+                            responses=responses, state=state)
+    assert out["outcome"] == "invalid_state" and out["units"] == []
+    assert pathlib.Path(config_file()).read_text() == before
+
+
+def test_an_intact_setup_state_is_not_invalid_state():
+    """The control for the row above: the same builder, unmutated, reaches a write."""
+    from sluice.core.paths import config_file
+    from sluice.mcpserver import setup_review_step
+    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+    pathlib.Path(config_file()).write_text("lead_ttl_days: 0\n")
+    from sluice.core.protocols import document_sha
+    out = setup_review_step(Sluice.from_config_file(), changes=[],
+                            protocol_version="2026-07-28",
+                            elicitation=types.SimpleNamespace(form={}, url=None),
+                            responses=types.SimpleNamespace(action="accept",
+                                                            content={"entry_1": True}),
+                            state=_setup_state(shas={"config": document_sha(
+                                "lead_ttl_days: 0\n")}))
+    assert out["outcome"] == "completed", out
+    assert out["units"] == [{"unit": "config:lead_ttl_days", "outcome": "written",
+                             "reason": ""}]

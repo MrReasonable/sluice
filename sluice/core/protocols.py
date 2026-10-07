@@ -90,7 +90,6 @@ def document_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-
 FLOOR_FIELD_SOURCES = {
     "company": "Company",
     "category": "Category",

@@ -7,6 +7,7 @@ in full or applied safely is SET ASIDE here, with a reason naming a remedy that 
 that unit, before any form is built.
 """
 import dataclasses
+import os
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -182,10 +183,32 @@ def set_aside_reason(unit) -> str:
     return f"it does not fit the review form in full -- {REMEDY[unit.kind]}"
 
 
+def vault_path_problem(raw) -> str | None:
+    """Why a `vault_dir` answer cannot be taken in the setup path, or None. `parse_path` makes
+    any answer absolute, and a relative one would resolve against the folder the MCP server was
+    started from: in `init` that is the user's own terminal, but here it is wherever the client
+    launched the server, which the user never chose and cannot see. So only an answer that
+    already says where it is -- absolute, or anchored at `~` -- is taken. The test runs on the
+    EXPANDED text, as `core/paths.py` expands at ingress: `expanduser` leaves a `~user` it cannot
+    resolve unchanged, and `parse_path` would then anchor `~nosuchuser/notes` at that same
+    folder, so a prefix check on the raw text would wave it through."""
+    text = os.path.expanduser((raw or "").strip())
+    if os.path.isabs(text):
+        return None
+    return ("a relative path would be resolved against the folder the sluice MCP server was "
+            "started from, which is not one you chose; give the full path, or one under your "
+            "home folder starting with `~/`")
+
+
 def _vault_problem(c, snap, batch):
-    """A reason no vault unit (or, on a first run, no unit at all) can be written now."""
-    if not snap.config_exists and not snap.vault_from_env and not any(
-            b.kind == "config" and b.target == "vault_dir" and not b.clear for b in batch):
+    """A reason no vault unit (or, on a first run, no unit at all) can be written now. Only a
+    `vault_dir` change that will itself be accepted counts as naming the vault: counting a
+    refused one would show the other boxes, only for every tick to be set aside on retry. A
+    refused `vault_dir` change itself falls through, so `_config_unit` names its own reason."""
+    names_vault = c.kind == "config" and c.target == "vault_dir" and not c.clear
+    if not names_vault and not snap.config_exists and not snap.vault_from_env and not any(
+            b.kind == "config" and b.target == "vault_dir" and not b.clear
+            and vault_path_problem(b.value) is None for b in batch):
         return NO_VAULT_YET
     if (c.kind in ("profile", "candidate", "brief") and snap.config_exists
             and snap.vault_is_default and not snap.vault_from_env):
@@ -256,6 +279,8 @@ def _config_unit(c, snap, qs):
     if q.key == "vault_dir" and snap.vault_from_env:
         raise ValueError("$VAULT_DIR decides the vault where the server runs, so this setting "
                          "would change nothing")
+    if q.key == "vault_dir" and not c.clear and vault_path_problem(c.value):
+        raise ValueError(vault_path_problem(c.value))
     if q.key == "backend":
         stages = [snap.settings.get(d) for d in q.writes_to]
         if len(set(stages)) > 1:
@@ -269,7 +294,14 @@ def _config_unit(c, snap, qs):
     value = None if c.clear else q.parse(c.value or "")
     before = snap.settings.get(q.writes_to[0])
     if q.key == "vault_dir":
-        before, after = None, ("(set)" if value else CLEARED)
+        # The RESOLVED path, in full: the user must see every value before it is written, and
+        # this one decides where every note goes. Showing it is no disclosure. The "no
+        # absolute path in a response" rule covers paths the SERVER discovers (the config's
+        # location, an existing vault -- which setup_status still masks as set/unset), not the
+        # user's own typed answer echoed back to them; the form's state carries it anyway.
+        # A leading `~` is shown expanded, so the home folder the server resolved it to is
+        # the one part of the box the user did not type -- and the part they most need to check.
+        before, after = None, _display(value)
     else:
         before, after = _display(before), _display(value)
     return Unit(f"config:{q.key}", "config", "config", f"Config: {q.key}", before, after, c)
@@ -281,9 +313,24 @@ def _search_unit(c, snap):
     label = _search_label(c)
     if not label:
         raise ValueError("a search needs a label")
+    if c.clear:
+        # `clear` means nothing for a search; read as an add it would write the opposite of
+        # what was asked, so it is refused by name rather than ignored.
+        raise ValueError("`clear` does not apply to a search; use `remove: true` to remove one")
     url = _questions.parse_url(c.url or "")
     verb = "remove" if c.remove else "add"
     c = dataclasses.replace(c, label=label, url=url)
+    # Checked against what is configured NOW, so the user is never shown a box that cannot be
+    # written (build_writes' editor would refuse the same three cases after the tick).
+    current = [list(e) for e in snap.searches.get(c.target, [])]
+    if not c.remove and [label, url] in current:
+        raise ValueError("that search is already configured")
+    if c.remove and [label, url] not in current:
+        raise ValueError("that search is not configured")
+    if c.remove and len(current) == 1:
+        raise ValueError(f"it is the last search for {c.target}, and an empty list makes the "
+                         f"source run its built-in example search; run `job-sluice ingest "
+                         f"disable {c.target}` to stop it")
     return Unit(unit_key(c), "search", "config",
                 f"Search on {c.target}: {verb} {label} ({url})", None,
                 f"[{label}, {url}]", c)

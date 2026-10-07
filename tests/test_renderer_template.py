@@ -237,9 +237,18 @@ def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
     # tool for them (every line of a playbook is content of its own); they are swept by
     # tests/test_coach_prompt.py with both taxonomy vocabularies and the example-list ban.
     covered = {
-        "templates/*.html.j2": "test_every_shipped_template_contributes_no_content",
-        "onboard/coach/*.md": "tests/test_coach_prompt.py",
+        "templates/*.html.j2": ("tests/test_renderer_template.py",
+                                "test_every_shipped_template_contributes_no_content"),
+        "onboard/coach/*.md": ("tests/test_coach_prompt.py",
+                               "test_the_assembled_prompt_names_no_preference"),
     }
+    # Each named sweep must EXIST: a renamed or deleted test would leave `covered` naming
+    # nothing while this row stayed green.
+    import ast
+    for path, test in covered.values():
+        tree = ast.parse((REPO / path).read_text(encoding="utf-8"))
+        assert test in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}, (
+            f"`covered` names {path}::{test}, which does not exist")
     assert set(patterns) == set(covered), (
         f"pyproject ships package data no neutrality sweep inspects: "
         f"{sorted(set(patterns) - set(covered))}. Write a sweep that covers it (extend "

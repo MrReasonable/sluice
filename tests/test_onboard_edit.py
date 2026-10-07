@@ -133,3 +133,19 @@ def test_a_genuine_block_header_is_still_a_block():
     commented = "triage:\n\n  # backend:   # x\ncv:\n  renderer: \"script\"\n"
     out = edit.set_key(commented, "triage.backend", '"x"')
     assert out.count("triage:") == 1 and out.index('backend: "x"') < out.index("cv:")
+
+
+MULTILINE_ENTRY = (INIT + "sources:\n  remoteok:\n    searches:\n"
+                   "      - [Example search,\n        \"https://example.invalid/a\"]\n"
+                   "      - [Second, \"https://example.invalid/b\"]\n")
+
+
+@pytest.mark.parametrize("op", [edit.add_search, edit.remove_search])
+def test_a_flow_entry_spread_over_lines_is_refused_not_raised_as_a_yaml_error(op):
+    """Valid YAML as a whole file; one physical line of it is not. The editor must refuse with
+    its own reason, since a yaml.YAMLError is not a ValueError and escaped every caller."""
+    import yaml
+    assert yaml.safe_load(MULTILINE_ENTRY)["sources"]["remoteok"]["searches"][0] == [
+        "Example search", "https://example.invalid/a"]
+    with pytest.raises(EditRefused, match="flow form"):
+        op(MULTILINE_ENTRY, "remoteok", "Second", "https://example.invalid/b")

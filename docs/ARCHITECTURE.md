@@ -1040,9 +1040,10 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   module scope) rather than staying import-free like `questions.py` above: the check is only
   meaningful against the SAME reader production uses, and rolling a second frontmatter parser
   here to avoid the import would defeat the very thing the check exists to prove.
-- **`edit.py`** (pure): surgical text edits to the config file and the setup notes (set or
-  clear one key, add or remove one search, replace one heading's body), keeping every other
-  byte, comment and line ending. A cleared config key returns to the exact unset line `plan.py`
+- **`edit.py`** (pure): surgical text edits to the config file (set or clear one key, add or
+  remove one search), keeping every other byte, comment and line ending. Note edits live
+  elsewhere: a heading's body is replaced by `review.py::replace_section`, a Candidate Profile
+  field by `core/vault.py::set_frontmatter_line`. A cleared config key returns to the exact unset line `plan.py`
   emits, so a cleared key and an unanswered `init` question leave identical text. It carries
   the same guarded `try/except ImportError` `yaml` import the config modules do.
 - **`review.py`** (pure): the in-session setup model. `status_view` turns a
@@ -2160,7 +2161,8 @@ sentence cannot be.
   `write_document(rel, text, *, only_if_absent, expect_sha)` writes one; `expect_sha`
   (compared against `core/protocols.py::document_sha`) is in-session setup's update arm, which
   replaces the document only when its current text still hashes to what a human was shown, and
-  writes nothing otherwise. Creates stay exclusive. The Role Brief note
+  writes nothing otherwise. In-session setup's creates are exclusive (`only_if_absent`); a bare
+  `write_document` (the rejected-leads digest) is still a plain atomic replace. The Role Brief note
   (`ROLE_BRIEF_RELPATH`) is written only that way, and no pipeline stage reads it
   (`tests/test_role_brief_unread.py`).
   This seam has a second, OPTIONAL member too: `preflight() -> dict`,
