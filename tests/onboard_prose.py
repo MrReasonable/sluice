@@ -14,7 +14,7 @@ line, which a whole-artefact match cannot. Terminal prose that never reaches a f
 prompts, `cmd_init`'s report -- is not renderable, so it stays enumerated here, and the completeness
 guard below is what stops a new one shipping unswept.
 
-Discovery is `pkgutil.iter_modules`, not three hand-named modules: the previous hand-list meant a new
+Discovery is `pkgutil.walk_packages`, not three hand-named modules: the previous hand-list meant a new
 sixth module would ship entirely unswept, and `set` was missing from the type tuple so `_BOOL_WORDS`
 evaded it.
 """
@@ -68,6 +68,10 @@ _NOT_PROSE = {
     # An identifier table: the unit kinds a setup change may name, matched as keys and never shown
     # as guidance. Everything shown from review.py is rostered in shipped_prose() below.
     ("sluice.onboard.review", "UNIT_KINDS"),
+    # The coach's playbook FILE NAMES (identifiers `read_playbook` joins with `.md`), never shown
+    # as prose. The playbooks' TEXT is swept whole as `rendered:coach_prompt` below, and by
+    # tests/test_coach_prompt.py with the judge prompt's vocabulary as well.
+    ("sluice.onboard.coach", "PLAYBOOKS"),
     ("sluice.evidence.wizard", "EVIDENCE_KINDS"),
 }
 
@@ -80,6 +84,11 @@ _SOURCES_FIXTURE = {"example_source": {
 def _role_brief_text():
     from sluice.onboard.review import render_role_brief
     return render_role_brief({})
+
+
+def _coach_prompt_text():
+    from sluice.onboard.coach import assemble_prompt
+    return assemble_prompt()
 
 
 def rendered_artefacts():
@@ -119,7 +128,11 @@ def rendered_artefacts():
             ("rendered:view_text", walked.view_text),
             # In-session setup's Role Brief, rendered with every section on its placeholder:
             # bytes written into a stranger's vault, so swept like the other artefacts.
-            ("rendered:role_brief", _role_brief_text())]
+            ("rendered:role_brief", _role_brief_text()),
+            # The career coach's prompt, assembled from the packaged playbooks exactly as the
+            # MCP server serves it: shipped prose a model reads as instructions to the user's
+            # coach. Data files, not module constants, so only a rendered sweep reaches them.
+            ("rendered:coach_prompt", _coach_prompt_text())]
 
 
 def terminal_transcript():
@@ -309,6 +322,7 @@ def shipped_prose(tmp_path=None):
     subset that silently omits two `cmd_init` branches.
     """
     import sluice.evidence.wizard as wizard_mod
+    import sluice.onboard.coach as coach_mod
     import sluice.onboard.ask as ask_mod
     import sluice.onboard.edit as edit_mod
     import sluice.onboard.plan as plan_mod
@@ -369,6 +383,10 @@ def shipped_prose(tmp_path=None):
     for section in review_mod.ROLE_BRIEF_SECTIONS:
         out.append((f"review.ROLE_BRIEF_SECTIONS[{section}]", section))
     out.append(("review.ROLE_BRIEF_INTRO", review_mod.ROLE_BRIEF_INTRO))
+    # The coach's module-level text: appended to its prompt on a read-only server, around the
+    # user's focus, and above the list of units it may propose.
+    for name in ("READ_ONLY_NOTE", "FOCUS_NOTE", "UNITS_INTRO"):
+        out.append((f"coach.{name}", getattr(coach_mod, name)))
     out.append(("wizard._INTRO", wizard_mod._INTRO))
     out.append(("wizard._CAPTURE_PROMPT", wizard_mod._CAPTURE_PROMPT))
     out.append(("wizard._NAME_PROMPT", wizard_mod._NAME_PROMPT))
@@ -385,13 +403,18 @@ def _package_modules():
     """Every module in `sluice.onboard` AND `sluice.evidence`, DISCOVERED. A hand-list meant a
     sixth module would ship entirely unswept -- the same enumeration failure this file exists to
     close -- and hand-adding `sluice.evidence.wizard` as a single named entry point would
-    reintroduce that exact regime for a whole second package rather than one module."""
+    reintroduce that exact regime for a whole second package rather than one module.
+
+    SUBPACKAGES too (`walk_packages`, not `iter_modules`): `iter_modules` lists a subpackage
+    such as `sluice.onboard.coach` by name but never descends into it, so a module added inside
+    one would be invisible to the completeness guard. `walk_packages` yields the subpackage
+    itself (its `__init__` constants included) and every module beneath it."""
     import sluice.evidence
     import sluice.onboard
     mods = []
     for pkg in (sluice.onboard, sluice.evidence):
-        mods += [importlib.import_module(f"{pkg.__name__}.{m.name}")
-                 for m in pkgutil.iter_modules(pkg.__path__)]
+        mods += [importlib.import_module(m.name)
+                 for m in pkgutil.walk_packages(pkg.__path__, prefix=pkg.__name__ + ".")]
     return mods
 
 

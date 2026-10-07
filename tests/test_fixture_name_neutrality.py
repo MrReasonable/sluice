@@ -2595,6 +2595,10 @@ _REVIEWED_SKILL_VALUES = frozenset({
     # (tests/test_mcpserver.py) and `s` (tests/test_evidence_store.py) are one-token
     # placeholder titles, a Greek letter and a single letter.
     "Example Cloud Skill", "Example Data Skill", "alpha", "s",
+    # Reviewed for tests/test_coach_eval.py: `WebSearch` is a Claude Code BUILT-IN tool name,
+    # reached only because `check_init_event(..., tools=...)` shares the keyword the collector
+    # reads for a `Tools:` vocabulary. It names no candidate skill and no person's technology.
+    "WebSearch",
     # Invented for #194 (tests/test_cv_mention_vocab.py): single-token, Example-prefixed
     # names, because that file asserts on the case-folded single token a one-word term
     # becomes in `term_vocabulary`.

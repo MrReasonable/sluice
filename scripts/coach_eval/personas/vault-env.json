@@ -1,0 +1,3 @@
+{"id": "vault-env", "name_seed": 106, "location": "Bravo",
+ "situation": "Knows exactly the kind of work wanted and answers precisely and quickly. Already keeps notes in a folder named by an environment variable.",
+ "focus": "a precise target", "vault_env": true}

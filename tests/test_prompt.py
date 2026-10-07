@@ -5,6 +5,21 @@ from sluice.triage.prompt import (
 )
 
 
+# The judge prompt's role-and-culture vocabulary. Hoisted from inside
+# test_shipped_prompt_expresses_no_role_or_culture_preference so the coach sweep
+# (tests/test_coach_prompt.py) applies the same list; contents and matching unchanged.
+# This list may only GROW. If a coach playbook trips a term, reword the playbook: removing
+# a term here would weaken the judge prompt's own guard (a load-bearing guard test).
+FORBIDDEN_ROLE_AND_CULTURE_TERMS = (
+    # target/anti-target role shapes
+    "engineering manager", "software engineering manager", "development manager",
+    "team lead", "tech lead", "technical lead", "scrum master", "agile coach",
+    "head of engineering", "vp engineering", "manager-of-managers",
+    # a specific culture rubric
+    "transformation-shaped", "dora", "kanban", "wip limits", "retros are sacred",
+)
+
+
 def _write_criteria(vault_dir, text):
     path = os.path.join(vault_dir, _CRITERIA_RELPATH)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -56,15 +71,7 @@ def test_the_prompt_offers_unjudgeable_for_a_page_that_is_not_a_job_description(
 # Profile, and this test fails the moment somebody bakes one back into the code.
 def test_shipped_prompt_expresses_no_role_or_culture_preference():
     p = SYSTEM_PROMPT.lower()
-    forbidden = [
-        # target/anti-target role shapes
-        "engineering manager", "software engineering manager", "development manager",
-        "team lead", "tech lead", "technical lead", "scrum master", "agile coach",
-        "head of engineering", "vp engineering", "manager-of-managers",
-        # a specific culture rubric
-        "transformation-shaped", "dora", "kanban", "wip limits", "retros are sacred",
-    ]
-    leaked = [t for t in forbidden if t in p]
+    leaked = [t for t in FORBIDDEN_ROLE_AND_CULTURE_TERMS if t in p]
     assert not leaked, (
         "the shipped judge prompt names a role or culture preference: "
         f"{leaked}. Those are personal and belong in the vault Judging Profile.")

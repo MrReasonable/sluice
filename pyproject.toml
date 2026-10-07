@@ -187,8 +187,10 @@ test = [
 # `packages.find` selects PACKAGES, not DATA. Without this table a built wheel ships
 # sluice/templates/__init__.py and NOT the template beside it -- measured 2026-08-06 --
 # so every `pip install job-sluice` would get the default renderer with no template to render.
+# The career coach's playbooks (sluice/onboard/coach/*.md) are data for the same reason: the
+# `career_interview` prompt reads them at runtime through importlib.resources.
 [tool.setuptools.package-data]
-sluice = ["templates/*.html.j2"]
+sluice = ["templates/*.html.j2", "onboard/coach/*.md"]
 
 # Homepage and Source deliberately point at the identical URL: no separate docs/marketing
 # site exists for this project, so there is nothing distinct for Homepage to name. Not an
