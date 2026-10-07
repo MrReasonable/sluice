@@ -37,7 +37,8 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
     # exact-set `==` is what enforces that -- deliberately not a separate `not in`
     # clause beside it, which would only restate what the set already says while
     # being free to go stale on its own.
-    assert set(by_name) == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}
+    assert set(by_name) == {"list_leads", "get_lead", "doctor", "health", "list_evidence",
+                           "setup_status"}
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
         assert "sluice" not in props, (
@@ -372,7 +373,8 @@ def test_tools_list_under_default_write_false_returns_exactly_the_original_read_
 
     result = asyncio.run(_run())
     names = {t.name for t in result.tools}
-    assert names == {"list_leads", "get_lead", "doctor", "health", "list_evidence"}, (
+    assert names == {"list_leads", "get_lead", "doctor", "health", "list_evidence",
+                           "setup_status"}, (
         "every write tool must be genuinely ABSENT from tools/list under the default "
         "(no --write) registration, not merely refusing at call time -- #175's "
         "propose_evidence included, since a read-only registration is exactly the one "
@@ -399,9 +401,9 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
         f"exactly one promotion path may exist here, and it must put a human's tick "
         f"between the model and citability")
     assert set(by_name) == {
-        "list_leads", "get_lead", "doctor", "health", "list_evidence",
+        "list_leads", "get_lead", "doctor", "health", "list_evidence", "setup_status",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
-        "propose_evidence", "verify_evidence",
+        "propose_evidence", "verify_evidence", "setup_review",
     }
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
@@ -413,6 +415,13 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
     assert set(by_name["verify_evidence"].input_schema["properties"]) == {"kind", "names"}, (
         "verify_evidence must take no argument that could approve on the human's behalf")
+    # setup_review takes only the proposed changes -- no argument that could tick a box.
+    schema = by_name["setup_review"].input_schema
+    items = schema["properties"]["changes"]["items"]
+    if "$ref" in items:   # pydantic emits the TypedDict as a $defs entry, not inline
+        items = schema["$defs"][items["$ref"].rsplit("/", 1)[-1]]
+    assert set(items.get("properties", {})) == {
+        "kind", "target", "value", "clear", "label", "url", "remove"}
     # Minor #9 (final whole-branch review): `backend` was an unconstrained str,
     # so an invalid value surfaced only as a runtime BackendError -- typing it
     # Literal[...] puts the constraint into the client-facing schema as a genuine

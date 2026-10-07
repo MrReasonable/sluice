@@ -15,6 +15,7 @@ import ast
 import asyncio
 import dataclasses
 import json
+import os
 import pathlib
 
 import pytest
@@ -1743,6 +1744,8 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.app", "sluice.core.leads", "sluice.core.safeout", "sluice.core.status",
     # Pure measurement helpers (how much text a form can show); no write path.
     "sluice.core.formfit",
+    # Pure view of a setup snapshot; no write path (a later task makes the sweep prove it).
+    "sluice.onboard.review",
 })
 
 # Every WRITE method on the Store protocol (sluice/core/protocols.py), DERIVED off
@@ -1851,6 +1854,114 @@ def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
     never catch this regardless of how wide its allow-list is."""
     src = "def f(sluice):\n    return sluice.store().update_fields(None, {})\n"
     assert _isolation_violations(ast.parse(src)) == ["call to .update_fields(...)"]
+
+
+# ── the onboard modules setup reaches ────────────────────────────────────────
+#
+# mcpserver.py's own sweep above stops at the import line `sluice.onboard.review`, so it
+# cannot see what review (or the coach) does once loaded. This second sweep covers every
+# onboard module setup reaches, transitively, and bans any write path: store writes, file
+# writes, the facade's apply, and any vault/config import beyond the two pure names.
+
+_ONBOARD_VAULT_NAMES = frozenset({"parse_frontmatter", "set_frontmatter_line"})
+_FILE_WRITE_CALLS = frozenset({"_write", "_atomic_write", "_cas_write", "write_config_text",
+                               "apply_setup"})
+# Matched as `os.<name>(...)` only: a bare "replace" would flag str.replace and
+# dataclasses.replace, and an implementer would then narrow the guard until it caught nothing.
+_OS_WRITE_ATTRS = frozenset({"replace", "rename", "remove", "unlink"})
+
+
+def _onboard_violations(tree) -> list:
+    """For the sluice.onboard modules the setup tools reach: no store write, no file write,
+    no facade write, and from sluice.core.vault only the two pure names."""
+    bad = []
+    # The local names `os` is bound to (`import os as _o` walks past a sweep keyed on "os"),
+    # and any write name pulled in bare (`from os import replace`).
+    os_names = {"os"} | {a.asname for n in ast.walk(tree) if isinstance(n, ast.Import)
+                         for a in n.names if a.name == "os" and a.asname}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "os":
+            bad += [f"from os import {a.name}" for a in node.names
+                    if a.name in _OS_WRITE_ATTRS]
+        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core.vault":
+            extra = {a.name for a in node.names} - _ONBOARD_VAULT_NAMES
+            if extra:
+                bad.append(f"from sluice.core.vault import {sorted(extra)}")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core.config":
+            bad.append("from sluice.core.config import ...")
+        elif isinstance(node, ast.Import) and any(a.name in ("sluice.core.vault",
+                                                             "sluice.core.config")
+                                                  for a in node.names):
+            bad.append("import of sluice.core.vault/config")
+        elif isinstance(node, ast.Call):
+            name = (node.func.attr if isinstance(node.func, ast.Attribute)
+                    else getattr(node.func, "id", ""))
+            on_os = (isinstance(node.func, ast.Attribute)
+                     and isinstance(node.func.value, ast.Name) and node.func.value.id in os_names)
+            if name in _STORE_WRITE_METHODS or name in _FILE_WRITE_CALLS:
+                bad.append(f"call to {name}(...)")
+            elif on_os and name in _OS_WRITE_ATTRS:
+                bad.append(f"call to os.{name}(...)")
+            elif name == "open" and any(isinstance(a, ast.Constant) and isinstance(a.value, str)
+                                        and set(a.value) & {"w", "x", "a"}
+                                        for a in node.args[1:2] + [k.value for k in node.keywords
+                                                                   if k.arg == "mode"]):
+                bad.append("open(..., write mode)")
+    return bad
+
+
+def _setup_reached_modules():
+    """sluice.onboard.review plus every sluice.onboard module it imports, transitively, plus
+    the coach package once it exists -- discovered, not hand-listed. Three import shapes:
+    `from sluice.onboard.X import name` (module X), `from sluice.onboard import X` (X is a
+    submodule of the package), `import sluice.onboard.X as y`."""
+    import importlib
+    import importlib.util
+    import inspect
+    seen, todo = set(), ["sluice.onboard.review"]
+    if importlib.util.find_spec("sluice.onboard.coach") is not None:
+        todo.append("sluice.onboard.coach")
+    while todo:
+        name = todo.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        tree = ast.parse(inspect.getsource(importlib.import_module(name)))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "sluice.onboard":
+                todo += [f"sluice.onboard.{a.name}" for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                    "sluice.onboard."):
+                todo.append(node.module)
+            elif isinstance(node, ast.Import):
+                todo += [a.name for a in node.names if a.name.startswith("sluice.onboard.")]
+    return seen
+
+
+def test_the_modules_setup_reaches_have_no_write_path():
+    import importlib
+    import inspect
+    mods = _setup_reached_modules()
+    # Scope, not just violations: a discovery that found nothing would pass every row below.
+    assert {"sluice.onboard.review", "sluice.onboard.edit", "sluice.onboard.plan"} <= mods
+    for name in sorted(mods):
+        tree = ast.parse(inspect.getsource(importlib.import_module(name)))
+        assert _onboard_violations(tree) == [], name
+
+
+def test_the_onboard_sweep_catches_planted_writes():
+    for src in ("from sluice.core.vault import _atomic_write\n_atomic_write('p', 't')\n",
+                "def f(s):\n    s.store().write_document('r', 't')\n",
+                "import os\nos.replace('a', 'b')\n",
+                "import os as _o\n_o.replace('a', 'b')\n",
+                "from os import replace\n",
+                "from sluice.core.vault import Vault\n"):
+        assert _onboard_violations(ast.parse(src)), src
+
+
+def test_the_onboard_sweep_does_not_flag_string_or_dataclass_replace():
+    src = "import dataclasses\nx = 'a'.replace('a', 'b')\ny = dataclasses.replace(z, a=1)\n"
+    assert _onboard_violations(ast.parse(src)) == []
 
 
 # ── write-flag registration ──────────────────────────────────────────────────
@@ -2048,3 +2159,31 @@ def test_the_evidence_tool_descriptions_say_what_verifying_buys_per_kind():
         assert "verification is what makes an entry citable" not in desc, tool
         for kind in uncited:
             assert f"make {kind} entries citable" not in desc, (tool, kind)
+
+
+def test_setup_status_reports_kinds_and_no_absolute_path(tmp_path):
+    from sluice.mcpserver import setup_status
+    out = setup_status(Sluice.from_config_file())
+    assert out["config_exists"] is False and out["kinds"]["brief"]
+    assert str(tmp_path) not in json.dumps(out)
+
+
+def test_isolation_sweep_flags_a_package_style_import_of_an_unlisted_onboard_module():
+    # `from sluice.onboard import ask` reaches the sweep as module "sluice.onboard"; it must be
+    # flagged, so mcpserver imports setup modules by full dotted name instead.
+    assert _isolation_violations(ast.parse("from sluice.onboard import ask\n")) == [
+        "from sluice.onboard import ..."]
+
+
+def test_setup_status_reports_a_config_the_loaders_refuse(tmp_path):
+    from sluice.core.paths import config_file
+    from sluice.mcpserver import setup_status_or_refusal
+    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+    pathlib.Path(config_file()).write_text("triage:\n  accept_titles: [unclosed\n")
+    out = setup_status_or_refusal()
+    assert out["outcome"] == "config_refused" and "load_config" in out["detail"]
+    text = json.dumps(out)
+    # PyYAML embeds the file's path; macOS temp roots are symlinked, so check both spellings.
+    assert str(tmp_path) not in text
+    assert os.path.realpath(os.path.dirname(config_file())) not in text
+    assert os.path.dirname(config_file()) not in text
