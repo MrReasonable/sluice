@@ -165,7 +165,9 @@ there is the vault/backend-touching `Sluice` construction, one layer further in,
 distinction -- it previously asserted the opposite, crediting the `_build_parser` import for a
 deferral that import does not provide, which invited someone to "restore" the laziness by
 hoisting the per-function `Sluice` import to module scope and putting a heavy import on every
-invocation. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
+invocation. `sluice/mcpserver.py` is a further importer of `sluice.onboard`: it imports the pure
+`review` and `coach` modules (and through them `edit`) at its own module scope, for
+`setup_status`, `setup_review` and the `career_interview` prompt, so `cli.py` is not onboard's only importer. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
 imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
 imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
 the two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
@@ -471,6 +473,16 @@ mismatch. That check CANNOT be hoisted into the caller — probed against a real
 enumerated `LeadNote` is byte-identical to no guard at all, because the snapshot is stale by
 construction. It is a parameter on the existing writer rather than a second write function, because
 CodeQL flags a new write function as a new sink.
+The Store contract also carries `read_document(rel)` and `write_document(rel, text, *,
+only_if_absent, expect_sha)` for store-managed documents (Judging Profile, Candidate Profile, the
+Role Brief). `expect_sha` is in-session setup's update arm: the document is replaced only when its
+current text still hashes to the bytes a human was shown in a review form, else nothing is
+written, and a create through that path is exclusive (`only_if_absent`); a bare `write_document` is still a
+plain atomic replace. The config file's own writer is `core/config.py::write_config_text`, which
+likewise creates exclusively when given no `expect_sha` and replaces only on a matching hash when given one. `mcp serve` does not hold one
+`Sluice` for its whole life: the setup tools build a fresh one from the config file on
+every call, and the shared holder is rebuilt after a setup write changes the config.
+
 `update_fields` also takes `preserve_block_values` (#329): a named key whose fresh stored
 value spans several lines -- a hand-typed block list or block scalar -- is left unwritten rather
 than corrupted by `_set_fm`'s single-line replace, while the other fields still land. Its
@@ -924,7 +936,8 @@ rule keyed on bare lowercase city names corrupts a real error string.
 
 **`sluice/` is standard-library only.** The sole exceptions: `yaml`, imported under a guarded
 `try/except ImportError` in each config module and in `core/vault.py`, whose write path asks PyYAML
-whether a single-line frontmatter write would break a note a person typed by hand (#329); the Google
+whether a single-line frontmatter write would break a note a person typed by hand (#329), and
+`onboard/edit.py`, whose guarded import parses a search entry written in flow form; the Google
 client libraries, imported lazily inside
 functions in `track/google_client.py`; `google_auth_oauthlib`, imported lazily inside functions in
 `track/auth.py` (#201, and see below); `jinja2`/`weasyprint`, both imported lazily inside

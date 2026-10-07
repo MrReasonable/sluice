@@ -872,7 +872,7 @@ install (see `sluice/mcpserver.py`'s `McpNotInstalled`) rather than a traceback.
 Blocks for the life of the process once started; there is no `--dry-run`.
 
 **Without `--write`** (the default), the read-only tools are registered:
-`list_leads`, `get_lead`, `doctor`, `health`, `list_evidence`. `list_evidence(kind,
+`list_leads`, `get_lead`, `doctor`, `health`, `list_evidence`, `setup_status`. `list_evidence(kind,
 pending=False)` lists evidence corpus entries (`experience`, `skills`, `stories`) --
 verified ones by default, or the not-yet-verified queue when `pending=True`. Verified
 does not mean citable for every kind: the CV fabrication gate licenses the Experience
@@ -886,6 +886,16 @@ an entry citable, so a human approves every one, here or through `job-sluice <ki
 verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
 
 **With `--write`**, these further tools are registered:
+
+- `setup_review(changes)` -- show proposed setup changes (a config key, a search to add or
+  remove, a Judging Profile heading, a Candidate Profile field, a Role Brief section) in a
+  review form, each under its own UNTICKED checkbox, and write only the ones you tick.
+  `setup_status` (read-only, registered at both levels) reports what can be changed and its
+  current value. Changes that cannot be shown or applied come back in `set_aside` with the
+  reason; ones that did not fit the form come back in `not_shown`, to send again. Other
+  outcomes: `config_refused` (the config file does not load; fix it by hand),
+  `unsupported_client` (the client cannot show a form; use `job-sluice init`), and
+  `restart_needed` (a config was written but the server could not reload it).
 
 - `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
@@ -955,6 +965,16 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
 `--write` is a per-registration trust decision about one MCP client: every existing
 read-only registration is unaffected, and a read-only server's `tools/list`
 genuinely omits every write tool, not merely refusing them at call time.
+
+**The career coach.** In Claude Code, type `/mcp__job-sluice__career_interview` (optionally
+followed by what you want from the session; the middle part is whatever name you registered
+the server under, `job-sluice` in `claude mcp add job-sluice -- job-sluice mcp serve`). The coach interviews you, can research the role
+you choose, and proposes setup changes that you approve one by one in a review form; only the
+boxes you tick are written. Your client cannot list this prompt for you, so start it by name.
+The prompt is available on a read-only server too, but the review step needs `--write`; the
+coach says so. What the research produces is kept in the `Job Applications/Role Brief.md`
+note, which no pipeline stage reads (see `docs/CONFIGURATION.md`). The coach's evaluation
+harness is a developer tool and never runs in CI: `scripts/coach_eval/README.md`.
 
 ## `job-sluice init`
 

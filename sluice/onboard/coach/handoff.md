@@ -9,7 +9,7 @@ Call `doctor` (its default, offline, is enough). It reports what is ready and wh
 
 ## How to come back
 
-Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances. They start this same conversation again; in Claude Code that is `/mcp__sluice__career_interview`, optionally followed by what they want from the session. If they added the sluice server under a different name, that name replaces `sluice` in the command. The next session knows only what was written: `setup_status` shows the saved settings and the Role Brief, and nothing said in this conversation.
+Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances. They start this same conversation again; in Claude Code that is the `career_interview` prompt, typed as `/mcp__<name>__career_interview` and optionally followed by what they want from the session, where `<name>` is what sluice was registered as. The next session knows only what was written: `setup_status` shows the saved settings and the Role Brief, and nothing said in this conversation.
 
 ## Closing
 

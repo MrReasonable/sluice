@@ -11,7 +11,14 @@ Shared by every sub-app:
   contract discussion below. Each sub-app's loader reads its own block, with one
   exception: `load_config` also refuses the retired CV inputs (the root `baseline_rel`
   and the `cv:` block's `employers`, `refuse_retired_cv_inputs`), so that EVERY command
-  stops on them, not only the commands that load the `cv:` block.
+  stops on them, not only the commands that load the `cv:` block. `write_config_text`
+  is the config file's one writer (in-session setup): with no `expect_sha` it creates the file
+  exclusively, with one it replaces the file only when its current text hashes to it, and a
+  symlinked config has its TARGET replaced so a link into a dotfiles repository survives.
+- `formfit.py`: pure measurement of what one checkbox in a client's review form can show in
+  full (`DESC_MAX_CHARS` and how many display lines an entry takes). The evidence-verify form in
+  `mcpserver.py` and the setup form in `onboard/review.py` each import it, so they share one
+  answer about what fits.
 - `vault.py`: the lead/experience store. Reads and writes an Obsidian-style
   markdown vault without clobbering status, scores, or notes a human or
   another agent has already set: a fresh scrape touches only a `last_seen`
@@ -995,7 +1002,9 @@ whichever neighbour it was written next to:
 
 `sluice/onboard/` backs `job-sluice init` (#8). It sits BESIDE the pipeline rather
 than inside it: nothing in `ingest -> triage -> cv -> apply -> track` imports it,
-and it has no engine, no store of its own and no place in any run.
+and it has no engine, no store of its own and no place in any run. `cli.py` is no longer its
+only importer: `sluice/mcpserver.py` imports its pure `review` and `coach` modules for
+in-session setup (below).
 
 Split pure-from-impure, which is the whole reason its guarantees are unit-testable:
 
@@ -1031,6 +1040,18 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   module scope) rather than staying import-free like `questions.py` above: the check is only
   meaningful against the SAME reader production uses, and rolling a second frontmatter parser
   here to avoid the import would defeat the very thing the check exists to prove.
+- **`edit.py`** (pure): surgical text edits to the config file and the setup notes (set or
+  clear one key, add or remove one search, replace one heading's body), keeping every other
+  byte, comment and line ending. A cleared config key returns to the exact unset line `plan.py`
+  emits, so a cleared key and an unanswered `init` question leave identical text. It carries
+  the same guarded `try/except ImportError` `yaml` import the config modules do.
+- **`review.py`** (pure): the in-session setup model. `status_view` turns a
+  `Sluice.setup_snapshot()` into what `setup_status` reports; the finish functions turn a
+  proposed change into the whole new text of one artefact, the Role Brief note included, and
+  set aside what cannot be shown or applied, with the reason.
+- **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
+  it (a persona plus one page per phase). It writes nothing; the only route from the coach to
+  a write is the `setup_review` form.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
   rather than reading stdin, because a wizard blocking on a pipe is a hung CI job
@@ -1156,6 +1177,20 @@ moment #175 registered a sixth. No count of THOSE either — three reviewers tal
 the stale statements and returned three different totals, which is the argument for
 enumerating rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
 assertions pin the roster at both privilege levels; prose cannot.
+
+In-session setup adds `setup_status` (read-only, always registered), `setup_review` (under
+`--write`) and the `career_interview` PROMPT (registered at both levels). Unlike the other
+tools, which share the server's one `Sluice` (the holder), the two setup tools build a fresh
+`Sluice` from the config file on every call, because setup edits that file: a config the
+loaders refuse comes back as `config_refused`, and when `setup_review` wrote a config the
+holder is rebuilt so the other tools see it (`restart_needed` if that rebuild fails).
+`setup_review` shows each change under its own unticked checkbox and, on the retry, refuses
+any artefact whose text changed since it was shown and hands only the ticked units to
+`Sluice.apply_setup`, which owns the config check and every write. So the claim above still
+holds: it is a thin translation layer over exactly one `Sluice` write method. The isolation
+sweep in `tests/test_mcpserver.py` allows `mcpserver.py` the pure `onboard.review` and
+`onboard.coach` imports and also walks every `sluice.onboard` module they reach, asserting none
+of them calls a Store write method.
 
 `cli.py::main` is not purely a thin shell either: it wraps the whole invocation in
 `core/safeout.py::installed()`, a stream wrapper that escapes terminal control characters on
@@ -2121,6 +2156,13 @@ sentence cannot be.
   its outcomes kept apart: `None` for an absent note, `LayoutError` for a malformed one,
   and `OSError`/`ValueError` for one that cannot be read, which must never read as absent
   (#242). The store has no baseline-CV member any more: nothing reads a baseline CV.
+  `read_document(rel)` returns a store-managed document's exact text, or `None` when absent, and
+  `write_document(rel, text, *, only_if_absent, expect_sha)` writes one; `expect_sha`
+  (compared against `core/protocols.py::document_sha`) is in-session setup's update arm, which
+  replaces the document only when its current text still hashes to what a human was shown, and
+  writes nothing otherwise. Creates stay exclusive. The Role Brief note
+  (`ROLE_BRIEF_RELPATH`) is written only that way, and no pipeline stage reads it
+  (`tests/test_role_brief_unread.py`).
   This seam has a second, OPTIONAL member too: `preflight() -> dict`,
   undeclared on the `Protocol` because a Protocol member is a REQUIRED member
   and this one must stay optional. `job-sluice doctor` reaches it via `getattr(store, "preflight", None)`;
