@@ -62,7 +62,8 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CI = os.path.join(ROOT, ".github", "workflows", "ci.yml")
-PKG_DATA = '[tool.setuptools.package-data]\nsluice = ["templates/*.html.j2"]\n'
+PKG_DATA = ('[tool.setuptools.package-data]\n'
+            'sluice = ["templates/*.html.j2", "onboard/coach/*.md"]\n')
 
 
 def _expected_templates():
@@ -76,6 +77,16 @@ def _expected_templates():
     """
     d = f"{ROOT}/sluice/templates"
     return sorted(f"sluice/templates/{n}" for n in os.listdir(d) if n.endswith(".html.j2"))
+
+
+def _expected_playbooks():
+    """Every career-coach playbook the package-data glob `onboard/coach/*.md` picks up,
+    enumerated from the tree for the reason `_expected_templates` gives. These are the only
+    other non-`.py` files the package reads at runtime (`sluice/onboard/coach/__init__.py`
+    through `importlib.resources`), so a playbook that does not ship is a coach prompt
+    assembled from a missing file: `read_playbook` raises on the first prompt request."""
+    d = f"{ROOT}/sluice/onboard/coach"
+    return sorted(f"sluice/onboard/coach/{n}" for n in os.listdir(d) if n.endswith(".md"))
 
 
 def _build_wheel(dest, *, pyproject_text=None, readme_text=None):
@@ -350,6 +361,16 @@ def test_every_shipped_template_is_in_the_built_wheel(pristine_wheel):
         f"ships the default renderer with no template for it to render.")
 
 
+def test_every_coach_playbook_is_in_the_built_wheel(pristine_wheel):
+    expected = _expected_playbooks()
+    assert expected, "found no playbooks to check, so this guard would pass vacuously"
+    missing = [t for t in expected if t not in pristine_wheel.namelist]
+    assert not missing, (
+        f"{missing} missing from the built wheel. `packages.find` selects PACKAGES, not "
+        f"data: without `onboard/coach/*.md` in [tool.setuptools.package-data] every install "
+        f"ships a career_interview prompt whose playbooks are not there to read.")
+
+
 def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
     """The guard above must be FALSIFIABLE, not merely green.
 
@@ -369,6 +390,12 @@ def test_the_wheel_guard_is_falsified_by_dropping_package_data(tmp_path):
     names = _build_wheel(str(tmp_path), pyproject_text=original.replace(PKG_DATA, ""))
     assert "sluice/templates/__init__.py" in names   # the PACKAGE still ships...
     assert not [t for t in expected if t in names]   # ...its DATA does not
+    # The same table carries the coach playbooks, so the same strip falsifies their guard:
+    # the coach package's code still ships, its Markdown does not.
+    playbooks = _expected_playbooks()
+    assert playbooks, "found no playbooks to check, so this guard would pass vacuously"
+    assert "sluice/onboard/coach/__init__.py" in names
+    assert not [t for t in playbooks if t in names]
 
 
 def test_wheel_metadata_carries_the_spdx_license_expression(pristine_wheel):
@@ -917,6 +944,20 @@ def test_the_sdist_ships_every_packaged_template(pristine_sdist):
     assert not missing, (
         f"{missing} missing from the built sdist. The sdist is what the wheel is built FROM "
         f"and what PyPI keeps permanently, so a template absent here is absent everywhere "
+        f"downstream of it.")
+
+
+def test_the_sdist_ships_every_coach_playbook(pristine_sdist):
+    """The playbook sibling of `test_the_sdist_ships_every_packaged_template`, for the same
+    reason: root MEMBERS say `sluice` is present and nothing about what is inside it, and the
+    sdist is what the wheel is built FROM. DERIVED from the tree via `_expected_playbooks`."""
+    expected = _expected_playbooks()
+    assert expected, "found no playbooks to check, so this guard would pass vacuously"
+    prefix = _sdist_root_prefix(pristine_sdist)
+    missing = [t for t in expected if f"{prefix}/{t}" not in pristine_sdist]
+    assert not missing, (
+        f"{missing} missing from the built sdist. The sdist is what the wheel is built FROM "
+        f"and what PyPI keeps permanently, so a playbook absent here is absent everywhere "
         f"downstream of it.")
 
 

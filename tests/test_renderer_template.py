@@ -221,22 +221,37 @@ def test_every_shipped_template_contributes_no_content():
 def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
     """SCOPE, against the packaging manifest rather than against itself.
 
-    The sweep above inspects `*.html.j2` under `sluice.templates`. That is the only
-    package-data route today, and the assertion is what makes "only" true rather than
-    assumed: adding, say, `templates/*.css` or a second data directory to
-    `[tool.setuptools.package-data]` would ship a file into every install that the sweep
-    cannot see, and no test would say so. Derived from pyproject, so this reds on the
+    The sweep above inspects `*.html.j2` under `sluice.templates`, and the career coach's
+    playbooks have their own sweep. The assertion is what makes "every route is swept" true
+    rather than assumed: adding, say, `templates/*.css` or another data directory to
+    `[tool.setuptools.package-data]` would ship a file into every install that no sweep
+    can see, and no test would say so. Derived from pyproject, so this reds on the
     change that creates the hole instead of on the leak that eventually follows.
     """
-    from tests.template_content import packaged_data_patterns
+    from tests.template_content import REPO, packaged_data_patterns
 
     patterns = packaged_data_patterns()
     assert patterns, "read no package-data patterns, so this guard checked nothing"
-    assert set(patterns) == {"templates/*.html.j2"}, (
-        f"pyproject ships package data this neutrality sweep does not inspect: "
-        f"{sorted(set(patterns) - {'templates/*.html.j2'})}. Extend "
-        "tests/template_content.py::packaged_templates to cover it, then widen this "
-        "assertion -- do not widen this assertion alone.")
+    # Each shipping route, mapped to the neutrality sweep that inspects what it ships. The
+    # coach's playbooks are PROSE a model reads, so the no-content sweep above is the wrong
+    # tool for them (every line of a playbook is content of its own); they are swept by
+    # tests/test_coach_prompt.py with both taxonomy vocabularies and the example-list ban.
+    covered = {
+        "templates/*.html.j2": "test_every_shipped_template_contributes_no_content",
+        "onboard/coach/*.md": "tests/test_coach_prompt.py",
+    }
+    assert set(patterns) == set(covered), (
+        f"pyproject ships package data no neutrality sweep inspects: "
+        f"{sorted(set(patterns) - set(covered))}. Write a sweep that covers it (extend "
+        "tests/template_content.py::packaged_templates for a template), then name it in "
+        "`covered` -- do not widen `covered` alone.")
+    # The coach sweep reaches its files through `coach.PLAYBOOKS`, not through the glob, so
+    # pin that the glob ships exactly the files that roster names: a playbook dropped into
+    # the directory but missing from PLAYBOOKS would ship to every install and be read by
+    # nothing that sweeps it.
+    from sluice.onboard import coach
+    shipped = {p.stem for p in (REPO / "sluice" / "onboard" / "coach").glob("*.md")}
+    assert shipped and shipped == set(coach.PLAYBOOKS), (shipped, coach.PLAYBOOKS)
 
 
 @pytest.mark.parametrize("planted,why", [

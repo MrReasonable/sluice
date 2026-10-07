@@ -185,7 +185,8 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     from sluice.core.criteria import DEFAULT_CRITERIA
     from tests.onboard_prose import rendered_artefacts
     surfaces = dict(rendered_artefacts())
-    assert len(surfaces) == 6          # +candidate_text, +view_text (#240), +role_brief (setup)
+    # +candidate_text, +view_text (#240), +role_brief (setup), +coach_prompt (the career coach)
+    assert len(surfaces) == 7
     for label, text in surfaces.items():
         assert text.strip(), f"{label} swept nothing"
 
@@ -198,6 +199,12 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     # The shipped default prose is swept, not stripped: it is written into the user's vault.
     first = DEFAULT_CRITERIA.split("\n\n")[1].strip()
     assert first and first in surfaces["rendered:profile_text"]
+
+    # The coach's playbooks are data files, so this rendered surface is the only route by which
+    # the taxonomy sweep reads them: pin that it carries every playbook, not just the first.
+    from sluice.onboard import coach
+    assert all(coach.read_playbook(n).strip() in surfaces["rendered:coach_prompt"]
+               for n in coach.PLAYBOOKS)
 
     # candidate_text has only one structural shape (every field always present), so there is no
     # second arm to miss the way `_render_sources` had one -- just confirm it is actually reached.

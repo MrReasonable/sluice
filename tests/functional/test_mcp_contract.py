@@ -619,3 +619,24 @@ def test_call_tool_concurrency_sanity_check_reaches_dismiss_lead_under_overlap(t
     # calls reached dismiss_lead, and exactly one of them wrote.
     assert set(outcomes) <= {"dismissed", "unchanged", "conflict"}, outcomes
     assert outcomes.count("dismissed") == 1, outcomes
+
+
+def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
+    """The coach is a PROMPT, not a tool, so `tools/list` never shows it: this drives
+    `prompts/list` and `prompts/get` through the real SDK. Registered at the DEFAULT
+    privilege level (write=False), because a read-only server's coach can still interview
+    and research -- the prompt itself tells the user to restart with `--write` before the
+    review step. Exact-set `==` so a second prompt cannot arrive unreviewed."""
+    async def _run():
+        from mcp import Client
+        server = build_server(Config())
+        async with Client(server, raise_exceptions=True) as client:
+            return (await client.list_prompts(),
+                    await client.get_prompt("career_interview", {"focus": "x"}))
+
+    listed, got = asyncio.run(_run())
+    assert {p.name for p in listed.prompts} == {"career_interview"}
+    (prompt,) = listed.prompts
+    assert [(a.name, bool(a.required)) for a in (prompt.arguments or [])] == [("focus", False)]
+    text = "".join(m.content.text for m in got.messages)
+    assert "setup_status" in text

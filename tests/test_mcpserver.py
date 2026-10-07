@@ -1746,6 +1746,9 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.formfit",
     # Pure view of a setup snapshot; no write path (a later task makes the sweep prove it).
     "sluice.onboard.review",
+    # The career coach's prompt assembler: reads its packaged playbooks, writes nothing.
+    # Covered by the onboard write-path sweep below via _setup_reached_modules.
+    "sluice.onboard.coach",
 })
 
 # Every WRITE method on the Store protocol (sluice/core/protocols.py), DERIVED off
@@ -1943,7 +1946,8 @@ def test_the_modules_setup_reaches_have_no_write_path():
     import inspect
     mods = _setup_reached_modules()
     # Scope, not just violations: a discovery that found nothing would pass every row below.
-    assert {"sluice.onboard.review", "sluice.onboard.edit", "sluice.onboard.plan"} <= mods
+    assert {"sluice.onboard.review", "sluice.onboard.edit", "sluice.onboard.plan",
+            "sluice.onboard.coach"} <= mods
     for name in sorted(mods):
         tree = ast.parse(inspect.getsource(importlib.import_module(name)))
         assert _onboard_violations(tree) == [], name

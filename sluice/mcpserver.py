@@ -30,6 +30,7 @@ import os
 import secrets
 from typing import Literal
 
+import sluice.onboard.coach as coach
 import sluice.onboard.review as _review
 from sluice.core.app import (Sluice, config_error_text, evidence_kinds_text, evidence_verify_effects,
                              pending_evidence_detail, verify_outcome_text)
@@ -1243,6 +1244,17 @@ def build_server(config, write: bool = False):
         walk this tool deliberately does not do. Run `job-sluice health --leads` for
         that."""
         return health(holder.sluice)
+
+    # A PROMPT, registered at every privilege level: a read-only server's coach can still
+    # interview and research, and the assembled text tells the user to restart with `--write`
+    # before the review step. The text names no role, sector, seniority or employer
+    # (tests/test_coach_prompt.py sweeps it and this description).
+    @mcp_server.prompt(name="career_interview")
+    def career_interview_prompt(focus: str = "") -> str:
+        """A career coach that interviews you, researches the role you choose, and sets up
+        your job hunt through review forms. Optional `focus`: what you want from this session,
+        in your own words."""
+        return coach.assemble_prompt(focus, write=write)
 
     @mcp_server.tool(name="setup_status")
     def setup_status_tool() -> dict:
