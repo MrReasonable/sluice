@@ -618,6 +618,93 @@ def _build_backend(name, model, *, effort, host, claude_path, timeout=None):
                         timeout=timeout)
 
 
+def _config_loaders():
+    """Every config loader, as (setting prefix, loader). Hand-listed so the config check names
+    what it ran; tests/test_setup_facade.py asserts it equals the loaders discovered in sluice/.
+    The imports stay in here because core/ may not import a sub-app at module scope."""
+    from sluice.apply.config import load_apply_config
+    from sluice.core.config import load_config
+    from sluice.cv.config import load_cv_config
+    from sluice.track.config import load_track_config
+    from sluice.triage.config import load_triage_config
+    return (("", load_config), ("triage.", load_triage_config), ("cv.", load_cv_config),
+            ("apply.", load_apply_config), ("track.", load_track_config))
+
+
+def _config_settings(text: str) -> dict:
+    """Every setting every loader reads from `text`, keyed "block.field" (root: "field").
+    The root `sources` mapping is flattened per source -- "sources.<id>.enabled",
+    ".searches" (as [[label, url], ...]) and ".tuning" -- so a search change can be allowed to
+    touch ONE source's searches and nothing else. The loaders take a path, so the text goes
+    through a private temporary file. A loader refusing the text raises ValueError naming the
+    loader, whatever its parser raised (yaml.YAMLError is not a ValueError)."""
+    import dataclasses as _dc
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "config.yaml")
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        out = {}
+        for prefix, load in _config_loaders():
+            try:
+                cfg = load(path)
+            except Exception as exc:  # noqa: BLE001 -- re-raised, never swallowed: a loader
+                # refusing the text in whatever type its parser raises becomes ONE type the
+                # setup paths map to a named outcome.
+                raise ValueError(f"{load.__name__}: {_without_path(str(exc), path)}") from exc
+            for fld in _dc.fields(cfg):
+                value = getattr(cfg, fld.name)
+                if prefix == "" and fld.name == "sources":
+                    for sid, sc in (value or {}).items():
+                        out[f"sources.{sid}.enabled"] = sc.enabled
+                        out[f"sources.{sid}.searches"] = [list(e[:2]) for e in sc.searches or []]
+                        out[f"sources.{sid}.tuning"] = sc.tuning
+                    continue
+                out[prefix + fld.name] = value
+        return out
+
+
+def _config_change_problems(old_text, new_text, settings, expect) -> list:
+    """The config check (in-session setup): every setting that CHANGED is one `settings` names,
+    and every (setting, value) in `expect` READS that value afterwards. It deliberately does not
+    require each named setting to change: an answer equal to the value in force is a legitimate
+    no-op, and the second clause is what catches a fan-out key written to only some blocks."""
+    old, new = _config_settings(old_text), _config_settings(new_text)
+    allowed = set(settings)
+    problems = [f"`{k}` would change, and the approved change does not touch it"
+                for k in sorted(k for k in new if old.get(k) != new.get(k) and k not in allowed)]
+    problems += [f"`{k}` would not read the approved value" for k, v in expect
+                 if new.get(k) != v]
+    return problems
+
+
+def _without_path(message: str, path: str) -> str:
+    """`message` with every spelling of `path` replaced by its bare file name. PyYAML embeds the
+    file name in its parse errors, and the realpath differs from the path where a temp root is
+    symlinked (macOS /var -> /private/var), so both are replaced -- longest first, or the short
+    spelling would leave the tail of the long one behind. Keeps the line and column; drops the
+    directory, which MCP responses must never carry."""
+    name = os.path.basename(path)
+    for spelling in sorted({path, os.path.realpath(path)}, key=len, reverse=True):
+        message = message.replace(spelling, name)
+    return message
+
+
+def config_error_text(exc) -> str:
+    """A config loader's refusal as text with the config file's directory removed. PyYAML puts the
+    real file's path in its parse errors; the facade owns the path rule, so a front-end that may
+    not import `core.paths` (the MCP server) asks here instead of rediscovering it."""
+    from sluice.core.paths import config_file
+    return _without_path(str(exc), config_file())
+
+
+def _reason(exc) -> str:
+    """An error's kind and OS message, never a path (MCP responses carry no absolute path)."""
+    detail = getattr(exc, "strerror", None) or ("not valid UTF-8"
+                                                if isinstance(exc, UnicodeDecodeError) else "")
+    return f"{type(exc).__name__}{': ' + detail if detail else ''}"
+
+
 class Sluice:
     """Resolve the configured adapters and expose the pipeline operations.
 
@@ -684,9 +771,11 @@ class Sluice:
             # every other concurrent seam user would have to rediscover the same fix.
             # Guarding here covers all of them at the point the invariant lives.
             #
-            # Reachable concurrently today: `mcp serve` builds ONE shared Sluice and
-            # dispatches tools on distinct worker threads (see sluice/mcpserver.py), and
-            # triage's pooled dossier fetch is the second such caller.
+            # Reachable concurrently today: `mcp serve` dispatches tools on distinct worker
+            # threads (see sluice/mcpserver.py), each holding whichever Sluice the server
+            # held when it started (in-session setup replaces it after writing a config, and
+            # an in-flight call may finish on the previous one), and triage's pooled dossier
+            # fetch is the second such caller.
             with self._cache_lock:
                 if seam not in self._cache:
                     # Import the plugin package so its members self-register. Done here
@@ -697,6 +786,129 @@ class Sluice:
                     factory = plugins.get(seam, name)
                     self._cache[seam] = factory(cfg)
         return self._cache[seam]
+
+    @classmethod
+    def from_config_file(cls):
+        """A Sluice built from the config file on disk NOW (in-session setup re-reads it on every
+        call, so a config the coach just created is seen without a restart)."""
+        from sluice.core.config import load_config
+        return cls(load_config())
+
+    def setup_snapshot(self):
+        """What in-session setup reads before proposing or writing: the config file and the setup
+        notes as raw text, the loaded settings, and the vault's situation. Reads only."""
+        from sluice.core.paths import config_file
+        from sluice.core.protocols import SETUP_NOTES, SetupSnapshot
+        from sluice.ingest import sources as registry
+        unreadable = {}
+        config_text = None
+        try:
+            with open(config_file(), encoding="utf-8", newline="") as f:
+                config_text = f.read()
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError) as exc:
+            unreadable["config"] = _reason(exc)
+        store = self.store()
+        notes = {}
+        for art, rel in SETUP_NOTES.items():
+            try:
+                notes[art] = store.read_document(rel)
+            except (OSError, ValueError) as exc:
+                notes[art] = None
+                unreadable[art] = _reason(exc)
+        try:
+            settings = _config_settings(config_text or "")
+        except ValueError as exc:
+            settings = {}
+            unreadable["config"] = f"a config loader refused it: {exc}"
+        defaults = _config_settings("")
+        preflight = getattr(store, "preflight", None)
+        is_default = bool(preflight and preflight().get("vault_dir_is_default"))
+        searches = {k.split(".")[1]: v for k, v in settings.items()
+                    if k.startswith("sources.") and k.endswith(".searches")}
+        return SetupSnapshot(config_text=config_text, notes=notes, unreadable=unreadable,
+                             vault_from_env=bool(os.environ.get("VAULT_DIR")),
+                             vault_is_default=is_default, settings=settings, defaults=defaults,
+                             source_ids=tuple(sorted(s.id for s in registry.all_sources())),
+                             searches=searches)
+
+    def apply_setup(self, writes):
+        """Write ticked in-session setup changes: the config first, then the notes, each
+        artefact isolated. The ONE creator and updater for setup, and the owner of the config
+        check -- a caller cannot reach a config write that skips it. Never raises for a write's
+        own failure: each artefact gets an ArtefactOutcome."""
+        from sluice.core.config import write_config_text
+        from sluice.core.paths import config_file
+        from sluice.core.protocols import SETUP_NOTES, ArtefactOutcome, document_sha
+        out = {}
+        target = self
+        cfg = next((w for w in writes if w.artefact == "config"), None)
+        first_run = cfg is not None and cfg.expect_sha is None
+        if cfg is not None:
+            out["config"] = self._apply_config(cfg, config_file(), write_config_text,
+                                               ArtefactOutcome, document_sha)
+            if out["config"].status == "written":
+                try:
+                    target = Sluice.from_config_file()
+                except Exception as exc:  # noqa: BLE001 -- the config HAS landed; its outcome
+                    # must survive. The notes are withheld with the reason, never written
+                    # through a store built from a config that will not load.
+                    for w in writes:
+                        if w.artefact != "config":
+                            out[w.artefact] = ArtefactOutcome(
+                                "set_aside", f"the config was written but could not be loaded "
+                                             f"({_reason(exc)}); restart the sluice MCP server")
+                    return out
+        if first_run and out["config"].status != "written":
+            for w in writes:
+                if w.artefact != "config":
+                    out[w.artefact] = ArtefactOutcome(
+                        "set_aside", "the config was not created, so there is no vault to "
+                                     "write this note into yet")
+            return out
+        store = target.store()
+        for w in writes:
+            if w.artefact == "config":
+                continue
+            try:
+                if w.expect_sha is None:
+                    handle = store.write_document(SETUP_NOTES[w.artefact], w.text,
+                                                  only_if_absent=True)
+                else:
+                    handle = store.write_document(SETUP_NOTES[w.artefact], w.text,
+                                                  expect_sha=w.expect_sha)
+            except (OSError, ValueError) as exc:
+                out[w.artefact] = ArtefactOutcome("failed", _reason(exc))
+                continue
+            out[w.artefact] = (ArtefactOutcome("written") if handle else ArtefactOutcome(
+                "conflict", "it changed, or appeared, after the form was shown"))
+        return out
+
+    def _apply_config(self, w, path, write, outcome, sha):
+        old = ""
+        if w.expect_sha is not None:
+            try:
+                with open(path, encoding="utf-8", newline="") as f:
+                    old = f.read()
+            except FileNotFoundError:
+                return outcome("conflict", "the config file is gone")
+            except (OSError, ValueError) as exc:
+                return outcome("failed", _reason(exc))
+            if sha(old) != w.expect_sha:
+                return outcome("conflict", "the config file changed after the form was shown")
+        try:
+            problems = _config_change_problems(old, w.text, w.settings, w.expect)
+        except ValueError as exc:
+            return outcome("failed", f"a config loader refused the result: {exc}")
+        if problems:
+            return outcome("set_aside", "; ".join(problems))
+        try:
+            ok = write(path, w.text, expect_sha=w.expect_sha)
+        except OSError as exc:
+            return outcome("failed", _reason(exc))
+        return outcome("written") if ok else outcome(
+            "conflict", "the config file changed, or appeared, after the form was shown")
 
     def store(self):
         """The configured Store. Defaults to `vault`, today's only implementation."""
