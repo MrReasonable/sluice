@@ -6,9 +6,14 @@ from sluice.onboard.plan import LEADS_VIEW_TEXT, build_plan
 from tests.test_onboard_review import CONFIG, PROFILE, snap
 
 
-def write_for(changes, s, tick=None, env_vault=None):
+def write_for(changes, s, tick=None, env_vault=None, proposed_on=None):
+    """`proposed_on` proposes against that config text instead of the snapshot's, so `propose`
+    cannot set aside an edit the file refuses: it reaches `build_writes` with the file as it
+    stands, the case where the file changed between the form and the write."""
+    import dataclasses
     parsed, _ = review.parse_changes(changes)
-    units, _ = review.propose(parsed, s)
+    units, _ = review.propose(parsed, s if proposed_on is None
+                              else dataclasses.replace(s, config_text=proposed_on))
     ticked = [u for u in units if tick is None or u.key in tick]
     return review.build_writes(ticked, s, env_vault=env_vault)
 
@@ -78,14 +83,14 @@ def test_a_candidate_note_is_created_only_when_something_is_declared():
 
 
 def test_a_search_write_may_change_only_its_own_source_and_must_read_the_full_list():
-    s = snap(CONFIG, searches={"remoteok": [["A", "https://example.invalid/1"]]})
-    text = review._edit.add_search(CONFIG, "remoteok", "A", "https://example.invalid/1")
-    s = snap(text, searches={"remoteok": [["A", "https://example.invalid/1"]]})
-    writes, _ = write_for([{"kind": "search", "target": "remoteok", "label": "B",
+    s = snap(CONFIG, searches={"example-board": [["A", "https://example.invalid/1"]]})
+    text = review._edit.add_search(CONFIG, "example-board", "A", "https://example.invalid/1")
+    s = snap(text, searches={"example-board": [["A", "https://example.invalid/1"]]})
+    writes, _ = write_for([{"kind": "search", "target": "example-board", "label": "B",
                             "url": "https://example.invalid/2"}], s)
     w = writes[0]
-    assert w.settings == ("sources.remoteok.searches",)
-    assert ("sources.remoteok.searches", [["A", "https://example.invalid/1"],
+    assert w.settings == ("sources.example-board.searches",)
+    assert ("sources.example-board.searches", [["A", "https://example.invalid/1"],
                                           ["B", "https://example.invalid/2"]]) in w.expect
 
 
@@ -97,7 +102,8 @@ def test_a_fan_out_key_that_fails_part_way_leaves_the_text_untouched():
                               snap(bad, settings={"triage.backend": "claude-max",
                                                   "cv.backend": "claude-max",
                                                   "track.backend": "claude-max",
-                                                  "lead_ttl_days": 0}))
+                                                  "lead_ttl_days": 0}),
+                              proposed_on=CONFIG)
     assert "anthropic" not in writes[0].text and "several lines" in aside[0].reason
 
 
@@ -189,6 +195,26 @@ def test_a_fan_out_key_breaking_in_any_block_changes_no_byte(block):
                               snap(bad, settings={"triage.backend": "claude-max",
                                                   "cv.backend": "claude-max",
                                                   "track.backend": "claude-max",
-                                                  "lead_ttl_days": 0}))
+                                                  "lead_ttl_days": 0}),
+                              proposed_on=CONFIG)
     assert writes[0].text == edit.set_key(bad, "lead_ttl_days", "30")
     assert [a.key for a in aside] == ["config:backend"] and "several lines" in aside[0].reason
+
+
+# ── a `#` line that is not a heading is section BODY (inv-001) ───────────────
+# An Obsidian tag line starts with `#` but is not a CommonMark heading. Read as a boundary, it
+# cut the "Replaces:" preview short while the old text below it survived the write, so the
+# judge kept reading a rule the user believed they had replaced.
+
+@pytest.mark.parametrize("old", ["Old rule A\n#remote\nOld rule B", "#remote\nOld rule B"],
+                         ids=["tag-mid-section", "tag-first-line"])
+def test_a_tag_line_is_shown_as_replaced_and_removed_by_the_write(old):
+    tagged = review.replace_section(PROFILE, "## Who this candidate is", ["", old, ""])
+    s = snap(CONFIG, {"profile": tagged})
+    change = [{"kind": "profile", "target": "Who this candidate is", "value": "NEW"}]
+    parsed, _ = review.parse_changes(change)
+    units, _ = review.propose(parsed, s)
+    assert units[0].before == old
+    writes, _ = write_for(change, s)
+    assert "#remote" not in writes[0].text and "Old rule B" not in writes[0].text
+    assert review.headings(writes[0].text) == review.headings(PROFILE)

@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import re
 from pathlib import Path
@@ -212,8 +213,12 @@ def test_a_note_whose_store_write_abstains_is_a_conflict_and_is_untouched():
     note.write_text("# Judging Profile\n\nedited in Obsidian\n")
     out = s.apply_setup([ArtefactWrite("profile", "# new\n", document_sha("# shown\n"))])
     assert out["profile"].status == "conflict"
+    assert "changed after the form" in out["profile"].reason
     out = s.apply_setup([ArtefactWrite("profile", "# new\n", None)])
     assert out["profile"].status == "conflict"
+    # inv-004: an abstained CREATE says the note is already there, never that it "changed
+    # after the form" -- on a first run the form showed no old text to have changed.
+    assert "already exists in the chosen vault" in out["profile"].reason
     assert note.read_text() == "# Judging Profile\n\nedited in Obsidian\n"
 
 
@@ -258,3 +263,29 @@ def test_without_path_replaces_the_real_spelling_behind_a_symlink(tmp_path):
     assert resolved != path, "the symlink did not make two spellings; this row tests nothing"
     msg = app_mod._without_path(f'in "{resolved}", line 2; also "{path}"', path)
     assert msg == 'in "config.yaml", line 2; also "config.yaml"'
+
+
+def test_a_search_creating_its_source_block_may_not_set_a_non_default_enabled_or_tuning():
+    """A search that creates a source's block declares that source's `enabled` and `tuning` at
+    their DEFAULTS, so the check stays exact: the same declared write carrying any other value
+    for either is refused, and nothing is written."""
+    from sluice.onboard import review
+    old = build_plan({}).config_text
+    _cfg(old)
+    s = Sluice.from_config_file()
+    snap = s.setup_snapshot()
+    parsed, _ = review.parse_changes([{"kind": "search", "target": "remoteok",
+                                       "label": "Example", "url": "https://example.invalid/s"}])
+    units, _ = review.propose(parsed, snap)
+    (w,), _ = review.build_writes(units, snap)
+    assert '"remoteok":\n    searches:\n' in w.text
+    for extra in ("    enabled: false\n", "    tuning: {page_size: 5}\n"):
+        bad = w.text.replace('"remoteok":\n', '"remoteok":\n' + extra)
+        assert bad != w.text
+        out = Sluice.from_config_file().apply_setup([dataclasses.replace(w, text=bad)])
+        key = extra.split(":")[0].strip()
+        assert out["config"].status == "set_aside", extra
+        assert f"sources.remoteok.{key}" in out["config"].reason
+        assert Path(config_file()).read_text() == old
+    out = s.apply_setup([w])
+    assert out["config"].status == "written"

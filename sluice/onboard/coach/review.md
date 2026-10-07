@@ -24,17 +24,21 @@ On a first run without a vault, include the `vault_dir` change and explain that 
 
 Report every unit's outcome to the user in plain words, never as raw field names.
 
-- `completed`: read `units`. Each unit is `written`, `declined` (left unticked), `conflict`, `set_aside` with a reason, or `failed` with a reason (the file could not be read or written, or sluice could not load the result); a `failed` change was not written, so say what the reason names and offer to send it again once that is fixed.
-- `artefacts`, beside `units`: what a first run created that no box stands for (the default Judging Profile and the Leads view). When one is not `written`, tell the user which and why.
+The result's `outcome` is one of these:
+
+- `completed`: read `units`. Each unit is `written`, `declined` (left unticked), `conflict`, `set_aside` with a reason, or `failed` with a reason (the file could not be read or written, or sluice could not load the result); a `failed` change was not written, so say what the reason names and offer to send it again once that is fixed. A `conflict` means what the form was shown against moved before the write: the file changed (often because the user was editing the note themselves), or the config file appeared or was removed, or the vault moved, while the form was open. The reason says which. Call `setup_status` again and offer to re-propose those changes against what is there now.
 - `declined` or `cancelled`: they closed or declined the whole form. Say plainly that nothing was written. Then ask whether to send it again, and whether to change anything first; never send it again on your own. If they ask for it again, send what they asked for. If the same form comes back cancelled a second time, do not send it a third time unasked: say so, and ask what they would like to do.
-- `set_aside`, at the top of the result: changes that could not be shown or applied, each with its reason. Explain the reason. When it is something you got wrong, a target or a value's shape, correct it and offer to send that change again. When the reason names something to do by hand, tell them what.
-- `not_shown`: the changes that did not fit in this form. A `not_shown` change is not a declined one: it was never in front of the user. After a `completed` form, tell the user how many are still to come and send exactly those in a new call, which is not re-sending. After a `declined` or `cancelled` form, they wait with the rest until the user says to send again.
-- `conflict`: the file changed between the form being shown and the write, often because the user was editing the note themselves. Call `setup_status` again and offer to re-propose those changes against what is there now.
-- `restart_needed`: the config was written, but the server could not reload it. Ask the user to restart the sluice server before any further changes.
-- `config_refused`: sluice cannot load the config file. Quote `detail`; it has to be fixed by hand.
-- `unsupported_client`: this client cannot show the form, so nothing can be written from this session. Tell the user. A new hunt can be created in a terminal with `job-sluice init`; an existing one is edited by hand in the config file and the vault notes.
 - `nothing_to_review`: every change was set aside. Explain each reason.
 - `invalid_state`: the form's answer did not come back intact, so nothing was written. Tell the user, and offer to send the same changes again.
+- `config_refused`: sluice cannot load the config file. Quote `detail`; it has to be fixed by hand.
+- `unsupported_client`: this client cannot show the form, so nothing can be written from this session. Tell the user. A new hunt can be created in a terminal with `job-sluice init`; an existing one is edited by hand in the config file and the vault notes.
+
+Beside `outcome`, these fields:
+
+- `set_aside`: changes that could not be shown or applied, each with its reason. Explain the reason. When it is something you got wrong, a target or a value's shape, correct it and offer to send that change again. When the reason names something to do by hand, tell them what.
+- `not_shown`: the changes that did not fit in this form. A `not_shown` change is not a declined one: it was never in front of the user. After a `completed` form, tell the user how many are still to come and send exactly those in a new call, which is not re-sending. After a `declined` or `cancelled` form, they wait with the rest until the user says to send again.
+- `artefacts`: what a first run created that no box stands for (the default Judging Profile and the Leads view). When one is not `written`, tell the user which and why.
+- `restart_needed`: empty unless the config was written but the server could not reload it. When it is set, ask the user to restart the sluice server before any further changes.
 
 A unit the user left unticked is their answer. Report it as unchanged and move on: do not ask them to reconsider it, and never send it again unless they ask you to.
 

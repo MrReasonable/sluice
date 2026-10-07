@@ -226,3 +226,19 @@ def test_every_line_of_a_multi_line_focus_stays_quoted():
     assert tail and all(ln.startswith(">") for ln in tail), tail
     assert "> # Rules" in prompt and "\n# Rules" not in prompt
     assert "\nExample second instruction" not in prompt
+
+
+def test_usage_names_every_outcome_setup_review_returns():
+    """docs/USAGE.md's setup_review entry listed `restart_needed` -- a report FIELD -- as an
+    outcome, and left out outcomes the step really returns. Derived from the same vocabulary
+    the playbook row above reads, and scoped to that one entry, so another tool's outcome
+    named elsewhere in the file cannot satisfy it."""
+    import pathlib
+    step, _ = _setup_outcome_vocabulary()
+    usage = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "USAGE.md").read_text(
+        encoding="utf-8")
+    start = usage.index("- `setup_review(changes)`")
+    entry = usage[start:usage.index("\n\n- ", start)]
+    missing = sorted(o for o in step if f"`{o}`" not in entry)
+    assert missing == [], f"USAGE.md's setup_review entry does not name: {missing}"
+    assert "`restart_needed` is a FIELD" in entry

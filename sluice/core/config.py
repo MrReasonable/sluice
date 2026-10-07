@@ -1061,16 +1061,26 @@ def write_config_text(path: str, text: str, *, expect_sha: str | None = None) ->
                 f = open(real, "xb")
             except FileExistsError:
                 return False
-            # Our exclusive open made the file, so any failure after it leaves a partial
-            # that is ours to remove -- whatever the exception type.
+            # Our exclusive open made the file, so a failure after it leaves a partial that is
+            # ours to remove -- whatever the exception type. But ownership at CREATE time is not
+            # ownership at CLEANUP time: another process (a second session, `init`, a hand
+            # save) may have replaced the pathname since, and unlinking by name would delete
+            # ITS config. So the open handle's identity is kept, and the name is removed only
+            # while it still points at that file. A replace landing between that check and the
+            # unlink is the residual no portable stdlib call closes.
+            mine = None
             try:
                 try:
+                    st = os.fstat(f.fileno())
+                    mine = (st.st_dev, st.st_ino)
                     f.write(data)
                 finally:
                     f.close()
             except BaseException:
                 try:
-                    os.unlink(real)
+                    now = os.lstat(real)
+                    if (now.st_dev, now.st_ino) == mine:
+                        os.unlink(real)
                 except OSError:
                     pass
                 raise

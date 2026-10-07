@@ -893,10 +893,16 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   `setup_status` (read-only, registered at both levels) reports what can be changed and its
   current value. Changes that cannot be shown or applied come back in `set_aside` with the
   reason; ones that did not fit the form come back in `not_shown`, to send again;
-  `artefacts` reports, per file, an outcome that no ticked box accounts for. Other
-  outcomes: `config_refused` (the config file does not load; fix it by hand),
-  `unsupported_client` (the client cannot show a form; use `job-sluice init`), and
-  `restart_needed` (a config was written but the server could not reload it).
+  `artefacts` reports, per file, an outcome that no ticked box accounts for. The result's
+  `outcome` is one of: `completed` (the form was answered; `units` gives each box's own
+  outcome -- `written`, `declined`, `conflict`, `set_aside` or `failed`), `declined` or
+  `cancelled` (the whole form was turned down; nothing was written), `nothing_to_review`
+  (every change was set aside), `invalid_state` (the form's answer did not come back
+  intact; nothing was written), `config_refused` (the config file does not load; fix it
+  by hand) and `unsupported_client` (the client cannot show a form; use `job-sluice
+  init`). `restart_needed` is a FIELD, not an outcome: it is non-empty beside a
+  `completed` outcome when a config was written but the server could not reload it, and
+  says to restart the server.
 
 - `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist

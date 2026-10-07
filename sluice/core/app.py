@@ -640,6 +640,14 @@ def _config_loaders():
             ("apply.", load_apply_config), ("track.", load_track_config))
 
 
+def _source_settings(sc) -> dict:
+    """One source's settings as `_config_settings` flattens them, keyed by field. The one home of
+    that flattening, so the setup snapshot's `source_defaults` (a fresh SourceConfig through
+    this) cannot name a different set of keys than the check reads."""
+    return {"enabled": sc.enabled, "searches": [list(e[:2]) for e in sc.searches or []],
+            "tuning": sc.tuning}
+
+
 def _config_settings(text: str) -> dict:
     """Every setting every loader reads from `text`, keyed "block.field" (root: "field").
     The root `sources` mapping is flattened per source -- "sources.<id>.enabled",
@@ -665,12 +673,17 @@ def _config_settings(text: str) -> dict:
                 value = getattr(cfg, fld.name)
                 if prefix == "" and fld.name == "sources":
                     for sid, sc in (value or {}).items():
-                        out[f"sources.{sid}.enabled"] = sc.enabled
-                        out[f"sources.{sid}.searches"] = [list(e[:2]) for e in sc.searches or []]
-                        out[f"sources.{sid}.tuning"] = sc.tuning
+                        out.update({f"sources.{sid}.{k}": v
+                                    for k, v in _source_settings(sc).items()})
                     continue
                 out[prefix + fld.name] = value
         return out
+
+
+def _source_defaults() -> dict:
+    """A source block's settings as a newly created block loads them, less its searches."""
+    from sluice.core.config import SourceConfig
+    return {k: v for k, v in _source_settings(SourceConfig()).items() if k != "searches"}
 
 
 def _config_change_problems(old_text, new_text, settings, expect) -> list:
@@ -838,11 +851,15 @@ class Sluice:
         # promised to be dot-free, and split would take only its first segment.
         searches = {k[len("sources."):-len(".searches")]: v for k, v in settings.items()
                     if k.startswith("sources.") and k.endswith(".searches")}
+        vault_dir = getattr(store, "dir", None)
+        vault_digest = (hashlib.sha256(os.path.realpath(vault_dir).encode("utf-8", "surrogatepass"))
+                        .hexdigest() if vault_dir else None)
         return SetupSnapshot(config_text=config_text, notes=notes, unreadable=unreadable,
                              vault_from_env=bool(os.environ.get("VAULT_DIR")),
                              vault_is_default=is_default, settings=settings, defaults=defaults,
                              source_ids=tuple(sorted(s.id for s in registry.all_sources())),
-                             searches=searches)
+                             searches=searches, source_defaults=_source_defaults(),
+                             vault_digest=vault_digest)
 
     def apply_setup(self, writes):
         """Write ticked in-session setup changes: the config first, then the notes, each
@@ -899,8 +916,13 @@ class Sluice:
             except (OSError, ValueError) as exc:
                 out[w.artefact] = ArtefactOutcome("failed", _reason(exc))
                 continue
+            # An abstained CREATE means the note is already there: on a first run the form
+            # could not read the vault being chosen, so it showed no old text, and saying the
+            # note "changed after the form" would describe something the user never saw.
             out[w.artefact] = (ArtefactOutcome("written") if handle else ArtefactOutcome(
-                "conflict", "it changed, or appeared, after the form was shown"))
+                "conflict", ("the note already exists in the chosen vault, so it was left as "
+                             "it is" if w.expect_sha is None
+                             else "it changed after the form was shown")))
         return out
 
     def _apply_config(self, w, path, write, outcome, sha):

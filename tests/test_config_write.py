@@ -48,3 +48,55 @@ def test_unencodable_text_raises_and_creates_nothing(tmp_path):
         write_config_text(str(p), bad)
     assert not p.exists()
     assert write_config_text(str(p), "a: 1\n")
+
+
+class _FailingAfterReplace:
+    """A created file whose write fails AFTER another process replaced the pathname: the
+    window between the exclusive create and the cleanup that removes a partial."""
+
+    def __init__(self, real, path, replacement):
+        self._real, self._path, self._replacement = real, path, replacement
+
+    def fileno(self):
+        return self._real.fileno()
+
+    def write(self, data):
+        other = self._path.with_name("other.tmp")
+        other.write_text(self._replacement)
+        os.replace(other, self._path)          # someone else's config lands at the name
+        raise OSError("disk full")
+
+    def close(self):
+        self._real.close()
+
+
+@pytest.mark.parametrize("replaced", [True, False], ids=["replaced", "still-ours"])
+def test_a_failed_create_removes_only_the_file_it_created(tmp_path, monkeypatch, replaced):
+    """CodeRabbit: the cleanup unlinked by NAME, so a config another process had put at the
+    path between the create and the failure was deleted. It is kept; the control shows a
+    partial that is still ours is still removed."""
+    import builtins
+
+    from sluice.core import config as config_mod
+    p = tmp_path / "config.yaml"
+
+    def fake_open(path, mode="r", *a, **kw):
+        f = builtins.open(path, mode, *a, **kw)
+        if mode != "xb":
+            return f
+        if not replaced:
+            class _Fails:
+                fileno, close = f.fileno, f.close
+
+                def write(self, data):
+                    raise OSError("disk full")
+            return _Fails()
+        return _FailingAfterReplace(f, p, "theirs: 1\n")
+
+    monkeypatch.setattr(config_mod, "open", fake_open, raising=False)
+    with pytest.raises(OSError, match="disk full"):
+        write_config_text(str(p), "a: 1\n")
+    if replaced:
+        assert p.read_text() == "theirs: 1\n"
+    else:
+        assert not p.exists()
