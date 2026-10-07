@@ -187,7 +187,13 @@ def regrade(directory, model):
 
 
 def run_persona(p, out_dir, grader_model=GRADER_MODEL):
-    sandbox = Path(tempfile.mkdtemp(prefix=f"coach-eval-{p.id}-"))
+    # The sandbox is removed on success AND on the SystemExit an isolation failure or a timeout
+    # raises; mkdtemp left one behind per persona per run. Scorecards go to `out_dir`, not here.
+    with tempfile.TemporaryDirectory(prefix=f"coach-eval-{p.id}-") as sandbox:
+        return _run_in_sandbox(p, out_dir, grader_model, Path(sandbox))
+
+
+def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     empty = sandbox / "client-cwd"
     empty.mkdir()
     mcp = sandbox / "mcp.json"
@@ -240,6 +246,13 @@ def run_persona(p, out_dir, grader_model=GRADER_MODEL):
     return card
 
 
+def _outside_repo(directory, flag):
+    path = Path(directory)
+    if path.resolve().is_relative_to(ROOT):
+        raise SystemExit(f"coach_eval: {flag} must be outside the repository")
+    return path
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     which = ap.add_mutually_exclusive_group()
@@ -253,13 +266,14 @@ def main(argv=None):
     ap.add_argument("--grader-model", default=GRADER_MODEL)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    # Every mode writes into its directory (scorecards, regrade cards, grader prompts), and
+    # what it writes carries live transcripts: none of it may land where git can see it.
     if args.regrade:
-        return regrade(args.regrade, args.grader_model)
+        return regrade(_outside_repo(args.regrade, "--regrade"), args.grader_model)
     if args.print_grader_prompt:
-        return print_grader_prompts(args.print_grader_prompt)
-    out = Path(args.out or tempfile.mkdtemp(prefix="coach-eval-out-"))
-    if out.resolve().is_relative_to(ROOT):
-        raise SystemExit("coach_eval: --out must be outside the repository")
+        return print_grader_prompts(_outside_repo(args.print_grader_prompt,
+                                                  "--print-grader-prompt"))
+    out = _outside_repo(args.out or tempfile.mkdtemp(prefix="coach-eval-out-"), "--out")
     out.mkdir(parents=True, exist_ok=True)
     ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
     chosen = ps if args.all else [p for p in ps if p.id == args.persona]

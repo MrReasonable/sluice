@@ -8,6 +8,7 @@ that unit, before any form is built.
 """
 import dataclasses
 import os
+import re
 from dataclasses import dataclass
 from typing import TypedDict
 
@@ -169,17 +170,23 @@ def _fits(title, body):
             and not formfit.hides_text(formfit.describe(title, body)))
 
 
+def _replaces(unit) -> bool:
+    return unit.before is not None and unit.before != unit.after
+
+
 def unit_body(unit) -> str:
-    if unit.before is not None and unit.before != unit.after:
-        both = f"New:\n{unit.after}\n\nReplaces:\n{unit.before}"
-        if _fits(unit.title, both):
-            return both
-        return (f"New:\n{unit.after}\n\n(Replaces the current text; compare it in "
-                f"{NOTE_NAMES[unit.artefact]}.)")
+    """What one box shows: the new text, and in full the text it replaces. There is no
+    shortened form -- a tick approves deleting what "Replaces:" shows, so a box that could not
+    show it would approve deleting text the user never saw; `propose` sets such a unit aside."""
+    if _replaces(unit):
+        return f"New:\n{unit.after}\n\nReplaces:\n{unit.before}"
     return f"New:\n{unit.after}"
 
 
 def set_aside_reason(unit) -> str:
+    if _replaces(unit) and _fits(unit.title, f"New:\n{unit.after}"):
+        return (f"the text it would replace cannot be shown in full beside it in the review "
+                f"form -- {REMEDY[unit.kind]}")
     return f"it does not fit the review form in full -- {REMEDY[unit.kind]}"
 
 
@@ -247,7 +254,7 @@ def propose(changes, snap) -> tuple:
         except ValueError as exc:      # BadAnswer, EditRefused, FrontmatterEditRefused
             skip(f"{exc} -- {REMEDY[c.kind]}")
             continue
-        if not _fits(unit.title, f"New:\n{unit.after}"):
+        if not _fits(unit.title, unit_body(unit)):
             skip(set_aside_reason(unit))
             continue
         if unit.title in seen_titles:      # titles key the form; never two boxes, one title
@@ -292,6 +299,15 @@ def _config_unit(c, snap, qs):
             raise ValueError("a stage names its own model, which would no longer match a new "
                              "backend")
     value = None if c.clear else q.parse(c.value or "")
+    if snap.config_text:
+        # Rehearse the edit NOW so a key this editor cannot place (a value spread over several
+        # lines, a duplicate) is set aside before the form; found only at write time it would
+        # be reported `failed` after the user had ticked the box.
+        for d in q.writes_to:
+            if c.clear:
+                _edit.clear_key(snap.config_text, d)
+            else:
+                _edit.set_key(snap.config_text, d, _render(value))
     before = snap.settings.get(q.writes_to[0])
     if q.key == "vault_dir":
         # The RESOLVED path, in full: the user must see every value before it is written, and
@@ -336,6 +352,14 @@ def _search_unit(c, snap):
                 f"[{label}, {url}]", c)
 
 
+def _snapshot_notes_are_the_target(snap) -> bool:
+    """False on a first run with no $VAULT_DIR: the snapshot then read the cwd-relative default
+    vault, not the one being chosen, so its notes say nothing about what a write will replace.
+    A unit shows no "Replaces:" then -- as `_note_writes(existing=False)` creates rather than
+    edits -- and a note that does exist in the chosen vault abstains in the store."""
+    return snap.config_exists or snap.vault_from_env
+
+
 def _prose_unit(c, snap):
     if c.kind == "profile":
         heading = _heading(c.target)
@@ -351,7 +375,7 @@ def _prose_unit(c, snap):
         problem = prose_problem(c.value)
         if problem:
             raise ValueError(problem)
-    text = snap.notes.get(c.kind)
+    text = snap.notes.get(c.kind) if _snapshot_notes_are_the_target(snap) else None
     before = section_text(text, heading) if text is not None else None
     after = default if c.clear else c.value.strip()
     return Unit(f"{c.kind}:{heading}", c.kind, c.kind, title, before, after, c)
@@ -369,7 +393,7 @@ def _candidate_unit(c, snap):
     if parse_frontmatter(f"---\n{field}: {literal}\n---\n").get(field, "") != value:
         raise ValueError("that value does not survive sluice's frontmatter reader unchanged "
                          "(a leading or trailing quote, or an escaped character)")
-    text = snap.notes.get("candidate")
+    text = snap.notes.get("candidate") if _snapshot_notes_are_the_target(snap) else None
     before = parse_frontmatter(text).get(field) if text is not None else None
     if text is not None:
         set_frontmatter_line(text, field, literal)     # refuses an unsafe note shape now
@@ -378,6 +402,18 @@ def _candidate_unit(c, snap):
 
 
 BRIEF_PLACEHOLDER = "Not researched yet."
+
+# A CommonMark ATX heading: up to three spaces, one to six `#`, then a space, a tab or the end of
+# the line. Nothing else ends a section -- an Obsidian tag line (`#remote`) or `#hashtag` prose is
+# BODY, so the form's "Replaces:" shows it and the write removes it with the rest. Cutting at any
+# leading `#` made the preview stop at a tag while the old text below it survived the write.
+_ATX_HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
+
+
+def is_heading(line) -> bool:
+    """The one section boundary `section_text`, `replace_section` and `headings` share, so the
+    text the form shows, the text the write replaces and the headings check cannot disagree."""
+    return _ATX_HEADING.match(line.rstrip("\r\n")) is not None
 
 
 def section_text(text, heading):
@@ -392,7 +428,7 @@ def section_text(text, heading):
         return None
     body = []
     for ln in lines[i + 1:]:
-        if ln.startswith("#"):
+        if is_heading(ln):
             break
         body.append(ln.rstrip("\r"))
     return "\n".join(body).strip() or None
@@ -408,7 +444,7 @@ class SectionRefused(ValueError):
 
 
 def headings(text) -> list:
-    return [ln.rstrip("\r") for ln in text.splitlines() if ln.startswith("#")]
+    return [ln.rstrip("\r") for ln in text.splitlines() if is_heading(ln)]
 
 
 def brief_section_lines(section, text) -> list:
@@ -436,7 +472,7 @@ def replace_section(text, heading, body_lines) -> str:
         sep = [nl] if lines and lines[-1].strip() else []
         return "".join(lines + sep + [heading + nl] + new)
     i = at[0]
-    j = next((k for k in range(i + 1, len(lines)) if lines[k].startswith("#")), len(lines))
+    j = next((k for k in range(i + 1, len(lines)) if is_heading(lines[k])), len(lines))
     head = lines[i] if lines[i].endswith(("\n", "\r")) else lines[i] + nl
     return "".join(lines[:i] + [head] + new + lines[j:])
 
@@ -576,6 +612,19 @@ def _search_setting(source_id):
     return f"sources.{source_id}.searches"
 
 
+def _created_source_settings(source_id, snap):
+    """The (setting, value) pairs a search ADDS beside its own list when it creates the source's
+    block. A source absent from the config reads as nothing at all, and once the block exists the
+    loader fills its other settings in -- so a search creating it changes those too, and the
+    config check would set the search aside as touching what it was not approved to touch.
+    Declared at the DEFAULTS the snapshot loaded (`source_defaults`), so the check stays exact: a
+    block created with any other `enabled` or `tuning` is still refused. A source the snapshot
+    already lists in `searches` has a block, and a search leaves its other settings alone."""
+    if source_id in snap.searches:
+        return []
+    return [(f"sources.{source_id}.{k}", v) for k, v in snap.source_defaults.items()]
+
+
 def _config_update(units, snap):
     """Each unit is applied to the text only when ALL of its edits succeed (a fan-out key
     either reaches every block or none). Searches are allowed to change only their own
@@ -595,6 +644,10 @@ def _config_update(units, snap):
                 else:
                     cur.append([c.label, c.url])
                 settings.append(_search_setting(c.target))
+                if not c.remove:
+                    created = _created_source_settings(c.target, snap)
+                    settings += [k for k, _ in created]
+                    expect += created
             else:
                 q = qs[c.target]
                 candidate = text
@@ -630,6 +683,9 @@ def _first_run_writes(units, by_art, snap, env_vault):
             expect += _expected(q, u.change, snap)
         else:
             settings.append(_search_setting(u.change.target))
+            created = _created_source_settings(u.change.target, snap)
+            settings += [k for k, _ in created]
+            expect += created
     expect += [(_search_setting(sid), spec["searches"]) for sid, spec in sources.items()]
     p = _plan.build_plan(answers, sources=sources)
     writes = [ArtefactWrite("config", p.config_text, None, tuple(dict.fromkeys(settings)),

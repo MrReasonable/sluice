@@ -207,13 +207,15 @@ def test_serve_execs_the_real_server_from_an_empty_cwd_when_sandboxed(tmp_path, 
     seen = {}
 
     def fake(exe, argv, env):
-        seen.update(exe=exe, argv=argv, cwd=Path.cwd())
+        seen.update(exe=exe, argv=argv, env=env, cwd=Path.cwd())
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("os.execve", fake)
     serve.main(["--sandbox", str(tmp_path)])
     assert seen["argv"][1:] == ["mcp", "serve", "--write"]
     assert seen["cwd"] == (tmp_path / "server-cwd").resolve()
+    # The environment the server is actually started with is the checked sandbox one.
+    assert isolation.isolation_problems(seen["env"], tmp_path, ROOT) == []
 
 
 def _server_tool_names():
@@ -721,3 +723,49 @@ def test_a_vault_env_pointing_outside_the_sandbox_is_reported(tmp_path):
     env["VAULT_DIR"] = str(tmp_path / "elsewhere")
     assert "VAULT_DIR points outside the sandbox" in isolation.isolation_problems(
         env, tmp_path / "sb", ROOT, vault_env=True)
+
+
+@pytest.mark.parametrize("flag", ["--regrade", "--print-grader-prompt"])
+def test_saved_run_modes_refuse_a_directory_inside_the_repository(flag):
+    """They write regrade cards and grader prompts beside the saved runs, and those carry live
+    transcripts, so the same refusal as the live run's --out applies. Hermetic: the refusal
+    comes before any read, write or `claude` call."""
+    from scripts.coach_eval import run
+
+    with pytest.raises(SystemExit, match="outside the repository"):
+        run.main([flag, str(ROOT / "scripts")])
+
+
+def _sandbox_probe(monkeypatch, init):
+    """Stub `_claude` and record the per-persona sandbox it was run in (the client cwd's parent)."""
+    from scripts.coach_eval import run
+    seen = []
+
+    def fake(args, cwd, prompt=None):
+        seen.append(Path(cwd).parent)
+        return [init] if "--mcp-config" in args else []
+
+    monkeypatch.setattr(run, "_claude", fake)
+    return seen
+
+
+def test_the_persona_sandbox_is_removed_after_a_run(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    init = {"subtype": "init", "session_id": "s", "claude_code_version":
+            next(iter(isolation.MEASURED_VERSIONS)), "plugins": [],
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+    seen = _sandbox_probe(monkeypatch, init)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    run.run_persona(p, tmp_path)
+    assert seen and not seen[0].exists()
+    assert (tmp_path / f"{p.id}.scorecard.json").exists()    # scorecards outlive the sandbox
+
+
+def test_the_persona_sandbox_is_removed_when_the_isolation_check_fails(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    seen = _sandbox_probe(monkeypatch, {"subtype": "init", "tools": ["Bash"]})
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    with pytest.raises(SystemExit, match="isolation check failed"):
+        run.run_persona(p, tmp_path)
+    assert seen and not seen[0].exists()

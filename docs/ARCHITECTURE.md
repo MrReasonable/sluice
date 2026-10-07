@@ -1003,8 +1003,11 @@ whichever neighbour it was written next to:
 `sluice/onboard/` backs `job-sluice init` (#8). It sits BESIDE the pipeline rather
 than inside it: nothing in `ingest -> triage -> cv -> apply -> track` imports it,
 and it has no engine, no store of its own and no place in any run. `cli.py` is no longer its
-only importer: `sluice/mcpserver.py` imports its pure `review` and `coach` modules for
-in-session setup (below).
+only importer: `sluice/mcpserver.py` imports its `review` and `coach` modules at module scope
+for in-session setup (below). Neither does I/O, but importing them is not free: `review`
+imports `core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver`
+loads the store module, and `coach`'s prompt assembly imports `core/app.py` and the backend
+registry (registering every backend) when the prompt is built.
 
 Split pure-from-impure, which is the whole reason its guarantees are unit-testable:
 
@@ -1046,13 +1049,15 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   field by `core/vault.py::set_frontmatter_line`. A cleared config key returns to the exact unset line `plan.py`
   emits, so a cleared key and an unanswered `init` question leave identical text. It carries
   the same guarded `try/except ImportError` `yaml` import the config modules do.
-- **`review.py`** (pure): the in-session setup model. `status_view` turns a
+- **`review.py`** (no I/O; importing it loads `core/vault.py`, for its frontmatter text
+  helpers): the in-session setup model. `status_view` turns a
   `Sluice.setup_snapshot()` into what `setup_status` reports; the finish functions turn a
   proposed change into the whole new text of one artefact, the Role Brief note included, and
   set aside what cannot be shown or applied, with the reason.
 - **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
   it (a persona plus one page per phase). It writes nothing; the only route from the coach to
-  a write is the `setup_review` form.
+  a write is the `setup_review` form. Building the prompt imports `core/app.py` and
+  `sluice.backends`, inside the function, to list what each backend needs.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
   rather than reading stdin, because a wizard blocking on a pipe is a hung CI job
@@ -1189,7 +1194,7 @@ holder is rebuilt so the other tools see it (`restart_needed` if that rebuild fa
 any artefact whose text changed since it was shown and hands only the ticked units to
 `Sluice.apply_setup`, which owns the config check and every write. So the claim above still
 holds: it is a thin translation layer over exactly one `Sluice` write method. The isolation
-sweep in `tests/test_mcpserver.py` allows `mcpserver.py` the pure `onboard.review` and
+sweep in `tests/test_mcpserver.py` allows `mcpserver.py` the `onboard.review` and
 `onboard.coach` imports and also walks every `sluice.onboard` module they reach, asserting none
 of them calls a Store write method.
 
@@ -2088,6 +2093,16 @@ sentence cannot be.
   its text, and (since #308) that response is a `Completion` whose `Usage` IDENTIFIES the
   call — so a new provider passes it or does not ship, exactly as the store bullet's
   conformance suite does.
+  This seam has an OPTIONAL member too, on the registered FACTORY rather than the backend
+  it builds: a `requirement` string saying, in the user's terms, what the backend needs
+  before it can run. Only a backend that needs NO API key sets it (`claude-max` does): a
+  per-token backend's requirement is derived from the credential map its factory reads
+  (`core/app.py::api_key_env`), so there is nothing for it to state. The career coach's
+  prompt is the one reader, via `getattr(..., "requirement", "")` in
+  `onboard/coach/__init__.py::_backend_requirements`, and `tests/test_coach_prompt.py`
+  fails when a key-less backend leaves it unset -- an unstated requirement reads as "needs
+  nothing" beside the per-token lines. It stays off any Protocol for the reason
+  `Store.preflight` does: a Protocol member is a required member.
 
   **Token usage is carried on the RESULT, not on a mutable attribute.** `Usage.input_tokens`
   is defined as the total input INCLUDING anything served from cache, and each provider's

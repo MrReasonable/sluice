@@ -191,6 +191,51 @@ def test_a_failed_holder_rebuild_keeps_the_outcomes_and_asks_for_a_restart(monke
     assert out["restart_needed"]
 
 
+def test_an_unexpected_error_in_the_step_is_a_structured_failure_with_no_path(
+        tmp_path, monkeypatch):
+    """mcp discards a tool exception's message, so an error escaping the review step would reach
+    the client as an opaque failure. It comes back as `failed` instead, naming the error's kind
+    but never the path the error carried, and the holder is still rebuilt."""
+    secret = str(tmp_path / "somewhere" / "config.yaml")
+
+    def boom(*a, **k):
+        raise PermissionError(13, "Permission denied", secret)
+
+    rebuilt = []
+    real = mcpserver._holder_sluice
+    monkeypatch.setattr(mcpserver, "setup_review_step", boom)
+    monkeypatch.setattr(mcpserver, "_holder_sluice", lambda: rebuilt.append(1) or real())
+    out = _call([{"kind": "config", "target": "lead_ttl_days", "value": "30"}], _tick_all)
+    assert out["outcome"] == "failed"
+    assert out["reason"].startswith("PermissionError: Permission denied")
+    assert secret not in json.dumps(out) and str(tmp_path) not in json.dumps(out)
+    assert rebuilt
+
+
+def test_a_step_crash_whose_holder_rebuild_also_fails_still_asks_for_a_restart(
+        tmp_path, monkeypatch):
+    """The crash report is built after the rebuild, from nothing the step returned, so the
+    rebuild's failure must be carried across to it: whatever the step wrote before it raised is
+    on disk while the holder still serves the old config. Both errors carry a path; the report
+    names neither."""
+    secret = str(tmp_path / "somewhere" / "config.yaml")
+
+    def step_boom(*a, **k):
+        raise PermissionError(13, "Permission denied", secret)
+
+    def rebuild_boom():
+        raise OSError(2, "No such file or directory", secret)
+
+    monkeypatch.setattr(mcpserver, "setup_review_step", step_boom)
+    monkeypatch.setattr(mcpserver, "_holder_sluice", rebuild_boom)
+    out = _call([{"kind": "config", "target": "lead_ttl_days", "value": "30"}], _tick_all)
+    assert out["outcome"] == "failed"
+    assert out["restart_needed"].startswith("FileNotFoundError: restart")
+    text = json.dumps(out)
+    assert secret not in text and str(tmp_path) not in text
+    assert os.path.realpath(tmp_path) not in text
+
+
 def test_the_vault_dir_box_shows_the_path_and_no_response_carries_a_discovered_one(
         tmp_path, monkeypatch):
     """Both halves of the path rule. The box ECHOES the user's own answer (resolved), because a
@@ -254,7 +299,10 @@ def test_a_config_created_while_a_first_run_form_is_open_conflicts_and_writes_no
 def test_a_multi_line_search_entry_is_a_structured_outcome_and_writes_nothing():
     """The search box is shown (propose does not run the editor for a search) and ticked; the
     retry must still answer with a structured outcome naming the remedy, never an error."""
-    from tests.test_onboard_edit import MULTILINE_ENTRY
+    from tests.test_onboard_edit import MULTILINE_ENTRY as _SYNTHETIC
+    # This row runs the real server, whose source registry decides what a search may target, so
+    # it genuinely needs a REGISTERED adapter id; the shared fixture text uses a synthetic one.
+    MULTILINE_ENTRY = _SYNTHETIC.replace("example-board", "remoteok")
     os.makedirs(os.path.dirname(config_file()), exist_ok=True)
     Path(config_file()).write_text(MULTILINE_ENTRY)
     out = _call([{"kind": "search", "target": "remoteok", "label": "Third",
@@ -330,3 +378,75 @@ def test_a_change_that_did_not_fit_the_form_is_reported_not_shown_and_not_writte
         assert (f"{s} marker." in brief) is (s not in left), s
     assert {u["unit"] for u in out["units"]}.isdisjoint(out["not_shown"])
     _no_discovered_path(out, tmp_path)
+
+
+def test_a_config_removed_while_the_form_is_open_conflicts_and_writes_nothing(tmp_path):
+    """CodeRabbit: the guard caught only a config CREATED during the form. One REMOVED moves the
+    vault too (back to $VAULT_DIR or the default), so the boxes would land somewhere else."""
+    from sluice.core.protocols import ROLE_BRIEF_RELPATH
+    _existing_hunt()
+
+    def remove_then_tick(params):
+        os.unlink(config_file())
+        return "accept", {k: True for k in params.requested_schema["properties"]}
+
+    out = _call([{"kind": "brief", "target": "Pay structure", "value": "Example."}],
+                remove_then_tick)
+    assert [(u["outcome"], u["reason"]) for u in out["units"]] == [
+        ("conflict", "the sluice config was removed while the form was open")]
+    assert not Path(config_file()).exists()
+    assert not (Path(os.environ["VAULT_DIR"]) / ROLE_BRIEF_RELPATH).exists()
+    _no_discovered_path(out, tmp_path)
+
+
+def test_a_vault_that_moved_while_the_form_is_open_conflicts_and_writes_nothing(
+        tmp_path, monkeypatch):
+    """The config exists on both legs and no shown artefact's sha changed (the Role Brief is
+    absent in both vaults), yet the vault now resolves elsewhere: only the vault recorded in
+    the form's state -- as a digest, so no path travels through the client -- can see it."""
+    from sluice.core.protocols import ROLE_BRIEF_RELPATH
+    _existing_hunt()
+    first = Path(os.environ["VAULT_DIR"])
+    other = tmp_path / "other-vault"
+
+    def move_then_tick(params):
+        monkeypatch.setenv("VAULT_DIR", str(other))
+        return "accept", {k: True for k in params.requested_schema["properties"]}
+
+    out = _call([{"kind": "brief", "target": "Pay structure", "value": "Example."}],
+                move_then_tick)
+    assert [(u["outcome"], u["reason"]) for u in out["units"]] == [
+        ("conflict", "the vault sluice writes to changed while the form was open")]
+    for vault in (first, other):
+        assert not (vault / ROLE_BRIEF_RELPATH).exists(), vault
+    _no_discovered_path(out, tmp_path)
+
+
+def _search_written(out):
+    """The search unit was written AND the file on disk loads it: read back through the loader,
+    never taken from the report."""
+    from sluice.core.config import load_config
+    (row,) = out["units"]
+    assert row["outcome"] == "written", row
+    src = load_config(config_file()).sources["remoteok"]
+    assert [list(e[:2]) for e in src.searches] == [["Example", "https://example.invalid/s"]]
+    assert src.enabled is True and src.tuning == {}
+
+
+_SEARCH = [{"kind": "search", "target": "remoteok", "label": "Example",
+            "url": "https://example.invalid/s"}]
+
+
+def test_a_first_run_search_creates_its_source_block_and_is_written():
+    """The search creates `sources.remoteok`, so the loader now reads that source's `enabled`
+    and `tuning` too: undeclared, the config check set the search aside as touching them."""
+    out = _call(_SEARCH, _tick_all)
+    assert out["config_written"] is True
+    _search_written(out)
+
+
+def test_a_search_on_an_existing_config_with_no_block_for_its_source_is_written():
+    _existing_hunt()
+    assert "remoteok" not in Path(config_file()).read_text()
+    out = _call(_SEARCH, _tick_all)
+    _search_written(out)

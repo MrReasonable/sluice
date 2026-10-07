@@ -101,21 +101,42 @@ def _region(lines, block):
 
 
 def _find(lines, block, leaf):
+    """(active lines, placeholder lines) for `leaf` in its region. A placeholder is EXACTLY the
+    line `init` writes for an unset key (`unset_line`), never any `# leaf:` comment: a user's own
+    commented line (`# leaf: [x]  tried this, too narrow`) is theirs, and replacing it lost it
+    with nothing to report the loss -- the form shows the loaded value, and the config check
+    compares loaded settings, so neither can see a comment."""
     indent = "  " if block else ""
     active = re.compile(rf"^{indent}{re.escape(leaf)}:(?:[ \t]|$)")
-    commented = re.compile(rf"^{indent}# {re.escape(leaf)}:(?:[ \t]|$)")
+    placeholder = unset_line(leaf, indent)
     region = _region(lines, block)
     return ([i for i in region if active.match(_bare(lines[i]))],
-            [i for i in region if commented.match(_bare(lines[i]))])
+            [i for i in region if _bare(lines[i]) == placeholder])
 
 
 def _opens_multiline(lines, i):
     value = _bare(lines[i]).split(":", 1)[1].strip()
     if value.startswith(("|", ">")):
         return True
-    if value and not value.startswith("#"):
-        return False
     indent = len(lines[i]) - len(lines[i].lstrip(" "))
+    if value and not value.startswith("#"):
+        # A flow sequence or quoted scalar that closes on a LATER line (`[a,` then `b]`) does not
+        # parse on its own line. Replacing only its first line leaves the continuation behind
+        # as a stray fragment the loaders reject -- after the user has ticked -- so an unparseable
+        # single line is treated as the opening of a multi-line value and refused.
+        if yaml is not None:
+            try:
+                yaml.safe_load(value)
+            except yaml.YAMLError:
+                return True
+        # A plain scalar also continues on a following MORE-INDENTED line (`foo` then `  bar`
+        # loads as "foo bar"); a sibling or shallower line is a different key, not a continuation.
+        for nxt in lines[i + 1:]:
+            s = _bare(nxt)
+            if not s.strip() or s.lstrip().startswith("#"):
+                continue
+            return len(s) - len(s.lstrip(" ")) > indent
+        return False
     for nxt in lines[i + 1:]:
         s = _bare(nxt)
         if not s.strip() or s.lstrip().startswith("#"):

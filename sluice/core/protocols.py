@@ -1347,6 +1347,14 @@ class SetupSnapshot:
     defaults: dict         # the same keys, loaded from an empty config
     source_ids: tuple
     searches: dict         # source id -> [[label, url], ...] currently configured
+    # A newly created source block's settings other than its searches ("enabled", "tuning")
+    # at their loaded defaults: a search that creates the block declares them (the config check).
+    source_defaults: dict
+    # A digest of the vault the store resolved, never the path: setup_review records it in the
+    # form's state (which travels through the client) and compares it on the retry, so a vault
+    # that moved while the form was open is caught without the response carrying a discovered
+    # path. None for a store with no directory to name.
+    vault_digest: str | None = None
 
     @property
     def config_exists(self) -> bool:

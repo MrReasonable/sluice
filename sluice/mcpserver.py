@@ -32,8 +32,8 @@ from typing import Literal
 
 import sluice.onboard.coach as coach
 import sluice.onboard.review as _review
-from sluice.core.app import (Sluice, config_error_text, evidence_kinds_text, evidence_verify_effects,
-                             pending_evidence_detail, verify_outcome_text)
+from sluice.core.app import (Sluice, _reason, config_error_text, evidence_kinds_text,
+                             evidence_verify_effects, pending_evidence_detail, verify_outcome_text)
 from sluice.core.leads import (
     FRAMING_KEYS,
     TRIAGE_FRAMING_CONTENT_WARNING,
@@ -1081,6 +1081,8 @@ def _decode_setup_state(state):
         return None
     if not isinstance(data.get("config_existed"), bool):
         return None
+    if not (data.get("vault") is None or isinstance(data.get("vault"), str)):
+        return None
     if not (_is_str_list(rest) and isinstance(set_aside, list)
             and all(isinstance(a, dict) for a in set_aside)):
         return None
@@ -1089,7 +1091,18 @@ def _decode_setup_state(state):
     except TypeError:          # a missing or unknown field
         return None
     return {"parsed": parsed, "shown": [tuple(p) for p in shown], "shas": shas,
-            "config_existed": data["config_existed"], "set_aside": set_aside, "rest": rest}
+            "config_existed": data["config_existed"], "vault": data.get("vault"),
+            "set_aside": set_aside, "rest": rest}
+
+
+def _setup_ground_moved(data, snap) -> str:
+    """Why the retry is no longer writing to what the form was shown against, or ""."""
+    if data["config_existed"] != snap.config_exists:
+        return ("a sluice config was created while the form was open" if snap.config_exists
+                else "the sluice config was removed while the form was open")
+    if data["vault"] != snap.vault_digest:
+        return "the vault sluice writes to changed while the form was open"
+    return ""
 
 
 def setup_review_step(sluice: Sluice, *, changes, protocol_version, elicitation, responses,
@@ -1129,6 +1142,7 @@ def setup_review_step(sluice: Sluice, *, changes, protocol_version, elicitation,
                                       enumerate(shown_units, 1)],
                             "shas": {u.artefact: snap.sha_for(u.artefact) for u in shown_units},
                             "config_existed": snap.config_exists,
+                            "vault": snap.vault_digest,
                             "rest": [by_title[t].key for t in rest],
                             "set_aside": report["set_aside"]})}}
     data = _decode_setup_state(state)
@@ -1145,18 +1159,18 @@ def setup_review_step(sluice: Sluice, *, changes, protocol_version, elicitation,
         report["units"] = [{"unit": k, "outcome": "declined", "reason": ""} for _, k in shown]
         report["detail"] = "nothing was written"
         return report
-    if not data["config_existed"] and snap.config_exists:
-        # A first-run form, and a config appeared before the retry (`init`, a hand edit, a
-        # second session). The notes' shas still match (absent == absent), but they were taken
-        # against the vault the user was choosing, and the new config names whichever vault
-        # IT names: writing them now would land an approved note somewhere the user never
-        # saw. So nothing is written, and every shown box says why.
+    moved = _setup_ground_moved(data, snap)
+    if moved:
+        # The form was shown against one config and one vault. A config that appeared (`init`,
+        # a hand edit, a second session) or vanished, or a vault that resolves elsewhere now,
+        # means the boxes describe writes to a place other than where they would land -- and
+        # the notes' shas cannot see it (absent == absent across two vaults). So nothing is
+        # written, and every shown box says why.
         report["outcome"] = "completed"
-        report["units"] = [{"unit": k, "outcome": "conflict",
-                            "reason": "a sluice config was created while the form was open"}
+        report["units"] = [{"unit": k, "outcome": "conflict", "reason": moved}
                            for _, k in shown]
         report["detail"] = (f"{len(shown)} conflict; nothing was written -- call setup_status "
-                            f"and propose again against the new config")
+                            f"and propose again")
         return report
     ticked = _approved_keys(getattr(responses, "content", None))
     units, aside = _review.propose(parsed, snap)
@@ -1442,7 +1456,7 @@ def build_server(config, write: bool = False):
             if refusal:
                 return CallToolResult(content=[TextContent(type="text",
                                                            text=json.dumps(refusal))])
-            out = None
+            out, crashed, restart_needed = None, None, ""
             try:
                 out = setup_review_step(
                     fresh, changes=changes,
@@ -1450,6 +1464,14 @@ def build_server(config, write: bool = False):
                     elicitation=getattr(caps, "elicitation", None),
                     responses=None if responses is None else responses.get("setup"),
                     state=ctx.request_state, env_vault=os.environ.get("VAULT_DIR") or None)
+            except Exception as exc:  # noqa: BLE001 -- mcp discards a tool exception's message,
+                # so an escaped error reaches the client as an opaque failure that cannot say
+                # whether the config landed. Report it as a structured `failed` outcome instead:
+                # the traceback goes to the server's stderr log, the response carries the error's
+                # kind only (`_reason`, never a path), and the holder is still rebuilt below.
+                from sluice.core.log import get_logger
+                get_logger("sluice.mcp").exception("setup_review failed unexpectedly")
+                crashed = exc
             finally:
                 if out is None or out.get("config_written"):
                     try:
@@ -1457,9 +1479,16 @@ def build_server(config, write: bool = False):
                     except Exception as exc:  # noqa: BLE001 -- the outcomes describe writes that
                         # already landed; a failed rebuild must not replace them. The old holder
                         # stays and the report says to restart (spec: Fresh state on every call).
-                        if out is not None:
-                            out["restart_needed"] = (f"{type(exc).__name__}: restart the sluice "
-                                                     f"MCP server to load the new config")
+                        # Recorded rather than written into `out`: after a crash `out` is None,
+                        # and the `failed` report below must say to restart just the same.
+                        restart_needed = (f"{type(exc).__name__}: restart the sluice MCP server "
+                                          f"to load the new config")
+            if crashed is not None:
+                out = {"outcome": "failed",
+                       "reason": (f"{_reason(crashed)}: setup_review stopped before it could "
+                                  f"report; call setup_status to see what was written")}
+            if restart_needed:
+                out["restart_needed"] = restart_needed
             if "ask" in out:
                 ask = out["ask"]
                 return InputRequiredResult(

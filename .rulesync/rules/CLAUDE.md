@@ -165,9 +165,13 @@ there is the vault/backend-touching `Sluice` construction, one layer further in,
 distinction -- it previously asserted the opposite, crediting the `_build_parser` import for a
 deferral that import does not provide, which invited someone to "restore" the laziness by
 hoisting the per-function `Sluice` import to module scope and putting a heavy import on every
-invocation. `sluice/mcpserver.py` is a further importer of `sluice.onboard`: it imports the pure
-`review` and `coach` modules (and through them `edit`) at its own module scope, for
-`setup_status`, `setup_review` and the `career_interview` prompt, so `cli.py` is not onboard's only importer. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
+invocation. `sluice/mcpserver.py` is a further importer of `sluice.onboard`: it imports the
+`review` and `coach` modules (and through them `edit`, `plan` and `questions`) at its own module
+scope, for `setup_status`, `setup_review` and the `career_interview` prompt, so `cli.py` is not
+onboard's only importer. Neither does I/O, but neither is free to import: `review` imports
+`core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver` loads the
+store module, and `coach.assemble_prompt` imports `core/app.py` and `sluice.backends` (registering
+every backend) inside the function, when the prompt is built. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
 imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
 imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
 the two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
@@ -1124,8 +1128,13 @@ turning the one documented machine-readable channel unparseable on a single scra
   differs in shape, though: `Sluice.backend()` resolves the stage's provider (or a one-run override)
   and wraps it in `RetryingBackend`, and its factory takes resolved construction params
   (model/key/base_url), not the config object -- so it does not go through `Sluice._resolve` the way the
-  other seams do. Route new implementations through those seams (a self-registering module) rather than
-  around them.
+  other seams do. Like the store seam, the backend seam has an OPTIONAL member, reached via `getattr`
+  and on no Protocol: a `requirement` string on the registered FACTORY, saying what a key-less backend
+  needs before it can run (`claude-max` sets it). A per-token backend's requirement is derived from
+  `core/app.py::api_key_env` instead. The career coach's prompt is the reader
+  (`onboard/coach/__init__.py::_backend_requirements`), and `tests/test_coach_prompt.py` fails when a
+  key-less backend leaves it unset. Route new implementations through those seams (a self-registering
+  module) rather than around them.
 - `.rulesync/` is canonical. `CLAUDE.md`, `AGENTS.md`, `.claude/` and the other AI-tool outputs are
   generated and gitignored; edit the source, then regenerate. **`.claude/settings.json` is the one
   deliberate exception, tracked rather than gitignored:** Claude Code's own `enabledPlugins` key

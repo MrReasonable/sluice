@@ -13,7 +13,8 @@ def snap(config=None, notes=None, *, env=False, default=False, settings=None, se
     return SetupSnapshot(config_text=config, notes={**base, **(notes or {})}, unreadable={},
                          vault_from_env=env, vault_is_default=default,
                          settings=settings or dict(_SETTINGS), defaults=dict(_SETTINGS),
-                         source_ids=("remoteok",), searches=searches or {})
+                         source_ids=("example-board",), searches=searches or {},
+                         source_defaults={"enabled": True, "tuning": {}})
 
 
 CONFIG = build_plan({"vault_dir": "/example/vault"}).config_text
@@ -101,19 +102,19 @@ def test_an_add_and_a_remove_of_one_search_share_a_key_so_the_second_is_set_asid
     """The one case the key check holds alone: the key leaves the verb out, the title keeps it,
     so an add and a remove of one search are two titles but one key. Without the key check both
     boxes would be shown -- two contradictory writes to one search behind two ticks."""
-    search = {"kind": "search", "target": "remoteok", "label": "A",
+    search = {"kind": "search", "target": "example-board", "label": "A",
               "url": "https://example.invalid/1"}
     # No search configured yet: the add is valid, so the remove reaches the duplicate check
     # rather than its own "not configured" refusal.
     units, aside = propose([search, {**search, "remove": True}], snap(CONFIG))
-    assert [u.title for u in units] == ["Search on remoteok: add A (https://example.invalid/1)"]
+    assert [u.title for u in units] == ["Search on example-board: add A (https://example.invalid/1)"]
     assert len(aside) == 1 and "same thing" in aside[0].reason
 
 
 def test_two_searches_with_one_label_but_different_urls_are_two_units_with_two_titles():
-    units, _ = propose([{"kind": "search", "target": "remoteok", "label": "A",
+    units, _ = propose([{"kind": "search", "target": "example-board", "label": "A",
                          "url": "https://example.invalid/1"},
-                        {"kind": "search", "target": "remoteok", "label": "A",
+                        {"kind": "search", "target": "example-board", "label": "A",
                          "url": "https://example.invalid/2"}], snap(CONFIG))
     assert len({u.key for u in units}) == 2 and len({u.title for u in units}) == 2
 
@@ -137,6 +138,23 @@ def test_every_set_aside_carries_its_own_units_key():
                         {"kind": "config", "target": "min_jd_chars", "value": "200x"}],
                        snap(CONFIG))
     assert {a.key for a in aside} == {"config:lead_ttl_days", "config:min_jd_chars"}
+
+
+def test_a_key_the_editor_cannot_place_is_set_aside_before_the_form_not_shown():
+    """The edit is rehearsed at propose time: a value continuing past its line would otherwise
+    get a box, be ticked, and be reported failed by the config check."""
+    cfg = CONFIG + '\ntriage:\n  accept_titles: [a,\n    b]\n'
+    units, aside = propose([{"kind": "config", "target": "accept_titles", "value": "x"}],
+                           snap(cfg))
+    assert units == [] and [a.key for a in aside] == ["config:accept_titles"]
+    assert "several lines" in aside[0].reason
+
+
+def test_a_plain_value_continuing_on_a_deeper_line_is_set_aside_before_the_form():
+    cfg = CONFIG + '\ntriage:\n  accept_titles: foo\n    bar\n'
+    units, aside = propose([{"kind": "config", "target": "accept_titles", "value": "x"}],
+                           snap(cfg))
+    assert units == [] and "several lines" in aside[0].reason
 
 
 def test_backend_is_set_aside_when_the_stages_disagree():
@@ -165,18 +183,18 @@ def test_units_carry_before_and_after_for_an_update():
 
 
 def test_label_spacing_does_not_make_a_second_box_for_one_search():
-    units, aside = propose([{"kind": "search", "target": "remoteok", "label": "B",
+    units, aside = propose([{"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1"},
-                            {"kind": "search", "target": "remoteok", "label": "B ",
+                            {"kind": "search", "target": "example-board", "label": "B ",
                              "url": " https://example.invalid/1 "}], snap(CONFIG))
     assert len(units) == 1 and len(aside) == 1 and "already proposes" in aside[0].reason
     assert aside[0].key == units[0].key
 
 
 def test_an_add_and_a_remove_of_one_search_are_one_box_not_two():
-    units, aside = propose([{"kind": "search", "target": "remoteok", "label": "B",
+    units, aside = propose([{"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1"},
-                            {"kind": "search", "target": "remoteok", "label": "B",
+                            {"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1", "remove": True}], snap(CONFIG))
     assert len(units) == 1 and "add" in units[0].title
     assert len(aside) == 1 and "already proposes" in aside[0].reason
@@ -207,7 +225,7 @@ def test_a_relative_vault_dir_is_set_aside_and_names_no_vault_for_the_rest(raw):
 
 
 def test_clear_on_a_search_is_set_aside_by_name_not_read_as_an_add():
-    units, aside = propose([{"kind": "search", "target": "remoteok", "label": "Example",
+    units, aside = propose([{"kind": "search", "target": "example-board", "label": "Example",
                              "url": "https://example.invalid/a", "clear": True}], snap(CONFIG))
     assert units == [] and "`remove: true`" in aside[0].reason
 
@@ -224,15 +242,15 @@ _B = ["Second", "https://example.invalid/b"]
 def test_a_search_box_that_could_not_be_written_is_never_shown(change, configured, why):
     """Checked against snap.searches at propose time: before this, each was shown, ticked, and
     only then set aside by build_writes' editor."""
-    units, aside = propose([{"kind": "search", "target": "remoteok", **change}],
-                           snap(CONFIG, searches={"remoteok": configured}))
+    units, aside = propose([{"kind": "search", "target": "example-board", **change}],
+                           snap(CONFIG, searches={"example-board": configured}))
     assert units == [] and why in aside[0].reason
 
 
 def test_removing_one_of_two_configured_searches_is_shown():
-    units, aside = propose([{"kind": "search", "target": "remoteok", "label": _A[0],
+    units, aside = propose([{"kind": "search", "target": "example-board", "label": _A[0],
                              "url": _A[1], "remove": True}],
-                           snap(CONFIG, searches={"remoteok": [_A, _B]}))
+                           snap(CONFIG, searches={"example-board": [_A, _B]}))
     assert aside == [] and len(units) == 1
 
 
@@ -252,3 +270,42 @@ def test_two_spellings_of_one_target_are_one_unit_and_a_duplicate(first, second)
                            snap(CONFIG, {"profile": PROFILE}))
     assert len(units) == 1 and units[0].change.value == "Example one."
     assert len(aside) == 1 and "the same thing" in aside[0].reason
+
+
+def test_a_change_whose_replaced_text_cannot_be_shown_in_full_is_set_aside():
+    """inv-002, owner's ruling: a tick approves deleting what "Replaces:" shows, so a box whose
+    old text does not fit beside the new is SET ASIDE -- never shown with the old text dropped
+    and a pointer to the note, which approved deleting text the user had not seen."""
+    from sluice.core.formfit import FORM_LINES
+    old = "\n".join(f"old line {i}" for i in range(FORM_LINES))
+    tall = review.replace_section(PROFILE, "## Who this candidate is", ["", old, ""])
+    units, aside = propose([{"kind": "profile", "target": "Who this candidate is",
+                             "value": "Short new text."}], snap(CONFIG, {"profile": tall}))
+    assert units == []
+    assert "replace cannot be shown in full" in aside[0].reason
+    assert "Judging Profile note in Obsidian" in aside[0].reason
+    # The control: the same change against a section that fits is shown, with its old text.
+    shown, _ = propose([{"kind": "profile", "target": "Who this candidate is",
+                         "value": "Short new text."}], snap(CONFIG, {"profile": PROFILE}))
+    assert "Replaces:\n" in review.unit_body(shown[0])
+
+
+@pytest.mark.parametrize("env", [False, True], ids=["no-vault-env", "vault-env"])
+def test_a_first_run_shows_old_text_only_from_the_vault_it_will_write(env):
+    """inv-004: with no $VAULT_DIR the snapshot read the cwd-relative default vault, not the one
+    being chosen, so showing its text as "Replaces:" named text nothing would touch. The units
+    then show no old text, as `_note_writes(existing=False)` creates; with $VAULT_DIR the
+    snapshot IS the target, so the old text is shown."""
+    candidate = build_plan({}, candidate_answers={"cv_email": "a@example.invalid"}).candidate_text
+    s = snap(None, {"profile": PROFILE, "candidate": candidate}, env=env)
+    batch = [{"kind": "profile", "target": "Who this candidate is", "value": "Example."},
+             {"kind": "candidate", "target": "cv_email", "value": "b@example.invalid"}]
+    if not env:
+        batch.append({"kind": "config", "target": "vault_dir", "value": "/example/v"})
+    units, aside = propose(batch, s)
+    befores = {u.kind: u.before for u in units}
+    assert set(befores) >= {"profile", "candidate"}, aside
+    if env:
+        assert befores["profile"] and befores["candidate"] == "a@example.invalid"
+    else:
+        assert befores["profile"] is None and befores["candidate"] is None
