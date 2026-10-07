@@ -167,6 +167,15 @@ _PROFILE_PROMPTS = {
 }
 
 
+def profile_section_lines(heading: str, answer: str | None) -> list:
+    """The lines after a Judging Profile heading: the answer, or the neutral default prose and
+    its prompt comment. One source for `init`'s render and in-session setup's section edits."""
+    if answer:
+        return ["", answer.strip(), ""]
+    key, prompt = _PROFILE_PROMPTS[heading]
+    return ["", default_sections()[heading], "", "<!--", prompt, "-->", ""]
+
+
 def _render_profile(profile_answers):
     """Every heading present. An UNANSWERED heading keeps `DEFAULT_CRITERIA`'s own prose.
 
@@ -183,7 +192,6 @@ def _render_profile(profile_answers):
 
     No frontmatter: `_strip_frontmatter` drops a leading `---` block before the judge sees it.
     """
-    sections = default_sections()
     out = ["# Judging Profile", "",
            "The criteria sluice judges every lead against. Edit it in Obsidian whenever your",
            "search changes; the next run picks it up with no code change.",
@@ -193,13 +201,8 @@ def _render_profile(profile_answers):
            "no information. Replace it with your own and the judge starts using yours.",
            ""]
     for heading in PROFILE_HEADINGS:
-        key, prompt = _PROFILE_PROMPTS[heading]
-        answer = (profile_answers or {}).get(key)
-        out += [heading, ""]
-        if answer:
-            out += [answer.strip(), ""]
-        else:
-            out += [sections[heading], "", "<!--", prompt, "-->", ""]
+        out += [heading] + profile_section_lines(
+            heading, (profile_answers or {}).get(_PROFILE_PROMPTS[heading][0]))
     return "\n".join(out).rstrip() + "\n"
 
 
