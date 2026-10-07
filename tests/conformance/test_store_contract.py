@@ -30,6 +30,7 @@ from sluice.core.app import Sluice
 from sluice.core.leads import Lead
 from sluice.core.protocols import (
     CRITERIA_RELPATH, EVIDENCE_KINDS, CandidateProfile, CvLayout, LayoutError, LayoutRole, Store,
+    document_sha,
 )
 from tests.conformance.seeds import seed, witness
 from tests.conftest import LOCATIONS, layout_yaml
@@ -425,6 +426,22 @@ def test_write_document_round_trips(store_name, tmp_path, monkeypatch):
     assert store.write_document("Job Applications/Rejected Leads Audit.md", "# Digest\n")
     store.write_document(CRITERIA_RELPATH, "ROUND TRIP")
     assert store.read_criteria() == "ROUND TRIP", "write_document returned a handle but wrote nothing"
+
+
+def test_read_document_returns_text_or_none_and_creates_nothing(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert store.read_document("Job Applications/Absent.md") is None
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+    store.write_document("Job Applications/Present.md", "line one\r\nline two\r\n")
+    # CRLF survives the read: a default text-mode read would turn it into \n.
+    assert store.read_document("Job Applications/Present.md") == "line one\r\nline two\r\n"
+
+
+def test_read_document_refuses_a_path_outside_the_store(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        store.read_document("../outside.md")
 
 
 def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_path, monkeypatch):
@@ -1798,3 +1815,48 @@ def test_an_experience_entrys_skills_is_read_as_data(store_name, tmp_path, monke
     assert set(by_title) == {"SF1", "SF2"}, "the seeder did not land"
     assert by_title["SF1"]["fields"]["Skills"] == "Examplelang"
     assert by_title["SF2"]["fields"]["Skills"] == ""
+
+
+_DOC = "Job Applications/Example.md"
+
+
+def test_expect_sha_matching_replaces(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.write_document(_DOC, "old\n")
+    assert store.write_document(_DOC, "new\n", expect_sha=document_sha("old\n"))
+    assert store.read_document(_DOC) == "new\n"
+
+
+def test_expect_sha_stale_abstains_and_writes_nothing(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.write_document(_DOC, "edited by hand\n")
+    assert store.write_document(_DOC, "new\n", expect_sha=document_sha("old\n")) == ""
+    assert store.read_document(_DOC) == "edited by hand\n"
+
+
+def test_expect_sha_on_a_missing_document_abstains(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    assert store.write_document(_DOC, "new\n", expect_sha=document_sha("old\n")) == ""
+    assert store.read_document(_DOC) is None
+
+
+def test_expect_sha_and_only_if_absent_together_raise(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        store.write_document(_DOC, "x", only_if_absent=True, expect_sha="0" * 64)
+
+
+def test_an_edit_keeps_a_crlf_note_line_endings(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    old = "# Title\r\n\r\nkeep me\r\n"
+    store.write_document(_DOC, old)
+    new = old.replace("keep me", "changed")
+    assert store.write_document(_DOC, new, expect_sha=document_sha(old))
+    assert store.read_document(_DOC) == new
+
+
+def test_an_abstaining_update_creates_nothing(store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert store.write_document("New Folder/Example.md", "x", expect_sha="0" * 64) == ""
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before

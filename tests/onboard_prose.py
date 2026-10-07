@@ -299,6 +299,7 @@ def shipped_prose(tmp_path=None):
     """
     import sluice.evidence.wizard as wizard_mod
     import sluice.onboard.ask as ask_mod
+    import sluice.onboard.edit as edit_mod
     import sluice.onboard.plan as plan_mod
     from sluice.onboard.questions import catalogue
 
@@ -310,6 +311,8 @@ def shipped_prose(tmp_path=None):
         for attr in ("prompt", "hint", "consequence"):
             out.append((f"catalogue[{q.key}].{attr}", getattr(q, attr)))
     out.append(("plan._HEADER", plan_mod._HEADER))
+    # Written verbatim into a user's config by edit.unset_line, so it is shipped prose.
+    out.append(("edit.UNSET_MARKER", edit_mod.UNSET_MARKER))
     for section, blurb in plan_mod._SECTION_BLURB.items():
         out.append((f"plan._SECTION_BLURB[{section}]", blurb))
     for heading, (_key, prompt) in plan_mod._PROFILE_PROMPTS.items():

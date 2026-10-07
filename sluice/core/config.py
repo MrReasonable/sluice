@@ -5,13 +5,16 @@ sluice.yaml overrides pieces of it; env vars win last so ops and offline tests
 can override without editing files.
 """
 import os
+import stat
+import tempfile
+import threading
 from dataclasses import dataclass, field, fields
 
 from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.language import parse_listing_languages
 from sluice.core.leads import LEAD_LAYOUTS, Lead
 from sluice.core.paths import config_file
-from sluice.core.protocols import CV_LAYOUT_RELPATH
+from sluice.core.protocols import CV_LAYOUT_RELPATH, document_sha
 from sluice.core.urlguard import parse_allow_hosts
 
 try:
@@ -1018,3 +1021,74 @@ def load_config(path: str | None = None) -> Config:
                   dossier_settle_ms=raw_settle,
                   dossier_concurrency=raw_conc,
                   dossier_allow_hosts=allow)
+
+
+# One lock per resolved file: two threads racing an update would otherwise both pass the sha
+# check against the same text and the second replace would clobber the first.
+_config_write_locks: dict[str, threading.Lock] = {}
+_config_write_locks_guard = threading.Lock()
+
+
+def _config_write_lock(real: str) -> threading.Lock:
+    with _config_write_locks_guard:
+        return _config_write_locks.setdefault(real, threading.Lock())
+
+
+def write_config_text(path: str, text: str, *, expect_sha: str | None = None) -> bool:
+    """The config file's one writer (in-session setup). A symlink is resolved and its TARGET
+    replaced in the target's own directory, so a link into a dotfiles repository survives;
+    `core/vault.py::_atomic_write` would replace the link itself, which is why this is not that.
+
+    No `expect_sha`: create exclusively (O_EXCL), parent directory first -- never-clobber is a
+    property of the open. With it: replace only when the current text hashes to it, keeping the
+    file's mode. Returns False whenever it wrote nothing."""
+    real = os.path.realpath(path)
+    with _config_write_lock(real):
+        if expect_sha is None:
+            # Encode BEFORE the exclusive open: an unencodable text (a lone surrogate) must
+            # fail while nothing exists, or the empty file it left would read as "someone else
+            # created it" to every later create and setup could never write a config.
+            data = text.encode("utf-8")
+            parent = os.path.dirname(real)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            try:
+                f = open(real, "xb")
+            except FileExistsError:
+                return False
+            # Our exclusive open made the file, so any failure after it leaves a partial
+            # that is ours to remove -- whatever the exception type.
+            try:
+                try:
+                    f.write(data)
+                finally:
+                    f.close()
+            except BaseException:
+                try:
+                    os.unlink(real)
+                except OSError:
+                    pass
+                raise
+            return True
+        try:
+            with open(real, encoding="utf-8", newline="") as f:
+                current = f.read()
+        except FileNotFoundError:
+            return False
+        if document_sha(current) != expect_sha:
+            return False
+        mode = stat.S_IMODE(os.stat(real).st_mode)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".", prefix=".sluice-config-",
+                                   suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+                f.write(text)
+            os.chmod(tmp, mode)
+            os.replace(tmp, real)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return True

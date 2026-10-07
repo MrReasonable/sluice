@@ -57,6 +57,7 @@ from sluice.core.protocols import (
     MalformedNoteField,
     UpsertResult,
     VaultConflict,
+    document_sha,
 )
 
 try:
@@ -2311,10 +2312,26 @@ class Vault:
                                f"{where} ({type(e).__name__})"]) from e
         return parse_layout(mapping)
 
-    def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
-        """Write a store-managed document (the rejected-leads digest). Returns an opaque
-        handle, or `""` when `only_if_absent` found the document already there. Also
-        formerly an os.path.join onto `vault.dir`.
+    def read_document(self, rel: str) -> str | None:
+        """See Store.read_document. `newline=""` keeps a CRLF note's bytes intact, so the sha a
+        review form records is over what is actually on disk."""
+        root = os.path.realpath(self.dir)
+        path = os.path.realpath(self._doc_path(rel))
+        if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
+            raise ValueError(f"read_document: '{rel}' escapes the store root")
+        try:
+            with open(path, encoding="utf-8", newline="") as f:
+                return f.read()
+        except FileNotFoundError:
+            return None
+
+    def write_document(
+        self, rel: str, text: str, *, only_if_absent: bool = False, expect_sha: str | None = None,
+    ) -> str:
+        """Write a store-managed document and return an opaque handle, or "" when the write
+        abstained. Callers: the rejected-leads digest (a bare replace), `sluice init` (creates),
+        and in-session setup (creates and updates). `expect_sha` replaces only a document whose
+        current text hashes to it (see `Store.write_document`).
 
         `rel` must stay INSIDE the store. An absolute path makes os.path.join discard
         self.dir entirely, and "../" walks out -- either would let the one wholesale-write
@@ -2330,6 +2347,23 @@ class Vault:
         path = os.path.realpath(self._doc_path(rel))
         if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
             raise ValueError(f"write_document: '{rel}' escapes the store root")
+        if only_if_absent and expect_sha is not None:
+            raise ValueError("write_document: only_if_absent and expect_sha cannot be combined")
+        if expect_sha is not None:
+            # Before makedirs: an abstaining update must create nothing, not even the folder.
+            # Under the same per-path lock _cas_write takes (#131), so two in-process writers
+            # cannot both pass the sha check and both replace. newline="" on both the read and
+            # the write keeps a CRLF note CRLF.
+            with _lock_for(path):
+                try:
+                    with open(path, encoding="utf-8", newline="") as f:
+                        current = f.read()
+                except FileNotFoundError:
+                    return ""
+                if document_sha(current) != expect_sha:
+                    return ""
+                _atomic_write(path, text, newline="")
+            return path
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if only_if_absent:
             # O_CREAT|O_EXCL, not exists()-then-write: the check and the write are two syscalls,
@@ -2340,7 +2374,7 @@ class Vault:
             except FileExistsError:
                 return ""
             return path
-        _atomic_write(path, text)
+        _atomic_write(path, text, newline="")
         return path
 
     def preflight(self) -> dict:
@@ -3992,7 +4026,7 @@ def _unlink_reservation(path: str | None, ident) -> None:
         pass
 
 
-def _atomic_write(path: str, text: str) -> None:
+def _atomic_write(path: str, text: str, *, newline: str | None = None) -> None:
     """Replace `path`'s contents atomically: write a temp sibling, then os.replace.
 
     os.replace is atomic (rename(2)) on POSIX and Windows, so a concurrent reader/writer
@@ -4028,7 +4062,8 @@ def _atomic_write(path: str, text: str) -> None:
         mode = None
     fd, tmp = tempfile.mkstemp(dir=d, prefix=".sluice-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
+        # newline="" writes `text` byte-for-byte; the default would translate "\n" on Windows.
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
             f.write(text)
         if mode is not None:
             os.chmod(tmp, mode)
@@ -4704,6 +4739,38 @@ def parse_frontmatter(text: str) -> dict:
     verifies the same bytes it is about to write.
     """
     return _fm_dict(_split_frontmatter(text)[0])
+
+
+class FrontmatterEditRefused(ValueError):
+    """A one-line frontmatter edit this note's current shape cannot take safely. The message
+    says why in words a person can act on; in-session setup sets the change aside with it."""
+
+
+def set_frontmatter_line(text: str, key: str, literal: str) -> str:
+    """Set `key` to `literal` (written verbatim -- the caller quotes it) in a WHOLE note's
+    frontmatter, refusing every shape `update_fields` refuses: a duplicate key (`_set_fm` writes
+    the first copy while `_fm_dict` reads the last, so the edit would be invisible), a stored
+    multi-line value (`_holds_multiline_value`) and a write that would break the note
+    (`_single_line_write_breaks_note`). Public for in-session setup (`onboard/review.py`), which
+    imports exactly this and `parse_frontmatter` from this module. A text helper for the one store
+    whose notes have frontmatter, not a Store member."""
+    if "\r\n" in text:
+        raise FrontmatterEditRefused(
+            "the note uses Windows line endings, which sluice's frontmatter reader cannot read; "
+            "edit the field in Obsidian")
+    inner, body = _split_frontmatter(text)
+    if inner is None:
+        raise FrontmatterEditRefused("the note has no frontmatter block to hold the field")
+    if len(_key_lines(inner, key)) > 1:
+        raise FrontmatterEditRefused(
+            f"`{key}` appears more than once in the note, and sluice reads the last copy while "
+            f"an edit would change the first")
+    if _holds_multiline_value(inner, key):
+        raise FrontmatterEditRefused(
+            f"`{key}` holds a value spread over several lines, which a one-line edit would break")
+    if _single_line_write_breaks_note(inner, key, literal):
+        raise FrontmatterEditRefused(f"writing `{key}` on one line would break the note")
+    return f"---\n{_set_fm(inner, key, literal)}\n---\n{body}"
 
 
 def parse_candidate_profile(text: str) -> CandidateProfile:
