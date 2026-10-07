@@ -590,6 +590,15 @@ _PROVIDER_ENV = {
 }
 
 
+def api_key_env(name) -> str:
+    """The environment variable holding `name`'s API key, or "" for a backend that needs
+    none. Public so the career coach's prompt can state each backend's requirement from this
+    map rather than from a second, hand-written copy (sluice/onboard/coach/__init__.py::_units):
+    eval run 3's coach mapped a user's chat subscription to the per-token `anthropic` backend
+    by brand, which needs a key the subscription does not provide."""
+    return _PROVIDER_ENV.get(name, ("", ""))[0]
+
+
 def _provider_creds(name):
     """(api_key, base_url) for a backend name, from the environment. An unset
     *_BASE_URL yields "", which make_backend reads as "use the provider default"."""

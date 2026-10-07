@@ -114,13 +114,61 @@ def test_each_rubric_check_fails_when_its_rule_is_broken(events, check):
     assert rubric.deterministic(events, max_turns=30)[check][0] is False
 
 
+_SOURCED = {"kind": "brief", "target": "Sources consulted", "value": "example.invalid"}
+_UNSOURCED = {"kind": "brief", "target": "Pay structure", "value": "x"}
+
+
 def test_denied_calls_are_ignored_by_the_checks_that_read_inputs():
     bad = [{"kind": "brief"}]  # would fail schema_valid, and target `verified` below
     events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, bad, denied=True),
-                   _use(rubric.REVIEW, [{"kind": "config", "target": "verified"}], denied=True))
+                   _use(rubric.REVIEW, [{"kind": "config", "target": "verified"}], denied=True),
+                   _use(rubric.REVIEW, [_SOURCED]))
     out = rubric.deterministic(events, max_turns=30)
-    assert out["schema_valid"][0] and out["no_verified"][0]
+    assert out["schema_valid"][0] is True and out["no_verified"][0] is True
     assert out["no_tool_denied"][0] is False
+
+
+def test_a_denied_calls_sources_do_not_count_for_brief_cites_sources():
+    # The denied review's sourced brief would satisfy the check if denied calls counted; the
+    # successful one proposes a brief WITHOUT sources, so the check must fail.
+    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], denied=True),
+                   _use(rubric.REVIEW, [_UNSOURCED]))
+    assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
+
+
+_REVIEW_CHECKS = ("status_before_review", "schema_valid", "brief_cites_sources", "no_verified")
+
+
+@pytest.mark.parametrize("events", [
+    [],
+    _flat(_start(), _use(rubric.STATUS)),
+    # run 2's shape: research done, the session closed, setup_review never called
+    _flat(_start(), _use(rubric.STATUS), _use("WebSearch")),
+    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], denied=True)),
+    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], answered=False)),
+    # a denied review with an UNSOURCED brief: not a failure either, since it never happened
+    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_UNSOURCED], denied=True)),
+])
+def test_review_checks_are_not_exercised_without_a_successful_review(events):
+    out = rubric.deterministic(events, max_turns=30)
+    assert {k: out[k][0] for k in _REVIEW_CHECKS} == dict.fromkeys(
+        _REVIEW_CHECKS, rubric.NOT_EXERCISED)
+    assert [rubric.verdict(out[k][0]) for k in _REVIEW_CHECKS] == ["not exercised"] * 4
+    assert rubric.review_reached(events) is False
+
+
+def test_brief_cites_sources_is_not_exercised_when_no_brief_was_proposed():
+    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [
+        {"kind": "config", "target": "accept_titles", "value": "x"}]))
+    out = rubric.deterministic(events, max_turns=30)
+    assert out["brief_cites_sources"][0] is rubric.NOT_EXERCISED
+    assert all(out[k][0] is True for k in ("status_before_review", "schema_valid", "no_verified"))
+    assert rubric.review_reached(events) is True
+
+
+def test_verdict_spells_each_state():
+    assert [rubric.verdict(v) for v in (True, False, rubric.NOT_EXERCISED)] == [
+        "pass", "fail", "not exercised"]
 
 
 def test_turns_counts_coach_messages_not_assistant_events():
@@ -358,3 +406,271 @@ def test_a_grader_that_does_not_reply_with_json_marks_the_scorecard_failed(
     card = run.run_persona(p, tmp_path)
     assert card["failure"] == "the grader did not reply with JSON"
     assert (tmp_path / f"{p.id}.events.jsonl").exists()
+
+
+@pytest.mark.parametrize("coach_calls,reached,review_result", [
+    ((rubric.STATUS,), False, "not exercised"),
+    ((rubric.STATUS, rubric.REVIEW), True, "pass"),
+])
+def test_the_scorecard_says_whether_setup_review_was_reached(
+        monkeypatch, tmp_path, coach_calls, reached, review_result):
+    from scripts.coach_eval import run
+
+    init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+
+    def reply(cmd, kw):
+        if "--mcp-config" in cmd:
+            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None)
+                                   for n in coach_calls])]
+        if kw["input"].startswith("Grade"):
+            return [{"type": "result", "result": "{}"}]
+        return [{"type": "result", "result": "DONE"}]
+
+    seen = _stub_claude(monkeypatch, reply)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    card = run.run_persona(p, tmp_path)
+    assert card["setup_review_reached"] is reached
+    # the same fact beside the grade, and in the prompt the grader actually received
+    assert card["llm_graded"]["setup_review_reached"] is reached
+    grader_input = next(kw["input"] for _, kw in seen
+                        if (kw.get("input") or "").startswith("Grade"))
+    if reached:
+        assert run.NO_REVIEW_FACT not in grader_input
+        assert "successfully 1 time(s)" in grader_input and "example.invalid" in grader_input
+    else:
+        assert run.NO_REVIEW_FACT in grader_input
+    results = {k: v["result"] for k, v in card["deterministic"].items()}
+    assert {k: results[k] for k in _REVIEW_CHECKS} == dict.fromkeys(_REVIEW_CHECKS, review_result)
+    assert results["no_tool_denied"] == "pass" and results["turns"] == "pass"
+    assert json.loads((tmp_path / f"{p.id}.scorecard.json").read_text()) == card
+
+
+def test_the_grader_prompt_scores_setup_only_from_calls_that_happened():
+    from scripts.coach_eval import run
+
+    for fact in (run.NO_REVIEW_FACT, run.review_fact(_flat(_use(rubric.REVIEW, [_SOURCED])))):
+        text = run.GRADER_PROMPT.format(review_fact=fact, transcript="COACH: hi")
+        assert fact in text and text.endswith("COACH: hi")
+        assert 'write "not exercised" for it' in text
+        assert "ONLY from setup_review calls that actually happened" in text
+    # a DENIED review is not a call that happened
+    assert run.review_fact(_flat(_use(rubric.REVIEW, [_SOURCED], denied=True))) == (
+        run.NO_REVIEW_FACT)
+
+
+def test_a_grader_value_for_setup_review_reached_is_overwritten_by_the_fact(
+        monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+
+    def reply(cmd, kw):
+        if "--mcp-config" in cmd:
+            return [init]
+        if kw["input"].startswith("Grade"):
+            return [{"type": "result", "result": '{"setup_review_reached": true}'}]
+        return [{"type": "result", "result": "DONE"}]
+
+    _stub_claude(monkeypatch, reply)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    assert run.run_persona(p, tmp_path)["llm_graded"]["setup_review_reached"] is False
+
+
+@pytest.mark.parametrize("coach_calls,expected", [
+    ((rubric.STATUS,), "not exercised"),
+    ((rubric.STATUS, rubric.REVIEW), 4),
+])
+def test_asked_before_proposing_is_not_exercised_without_a_review_whatever_the_grader_says(
+        monkeypatch, tmp_path, coach_calls, expected):
+    from scripts.coach_eval import run
+
+    init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+
+    def reply(cmd, kw):
+        if "--mcp-config" in cmd:
+            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None)
+                                   for n in coach_calls])]
+        if kw["input"].startswith("Grade"):
+            return [{"type": "result", "result": json.dumps(
+                {"asked_before_proposing": 4, "role_specific_questions": 3,
+                 "coaching_quality": 3, "notes": "n"})}]
+        return [{"type": "result", "result": "DONE"}]
+
+    _stub_claude(monkeypatch, reply)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    llm = run.run_persona(p, tmp_path)["llm_graded"]
+    assert llm["asked_before_proposing"] == expected
+    assert llm["role_specific_questions"] == 3 and llm["coaching_quality"] == 3
+
+
+# --- regrade: re-grade a saved run with a chosen grader model -------------------------------
+
+_GRADE = {"asked_before_proposing": 4, "role_specific_questions": 3,
+          "coaching_quality": 3, "notes": "n"}
+
+
+def _saved_run(tmp_path, calls, pid="saved-persona"):
+    """A saved run as a live one leaves it: events.jsonl and transcript.txt, built from tools."""
+    events = _flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None) for n in calls])
+    transcript = ["COACH: hello", "USER: hi", "COACH: bye", "USER: DONE"]
+    (tmp_path / f"{pid}.events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    (tmp_path / f"{pid}.transcript.txt").write_text("\n".join(transcript))
+    return pid, events, transcript
+
+
+def _grader_stub(monkeypatch):
+    return _stub_claude(monkeypatch, lambda c, k: [
+        {"type": "result", "result": json.dumps(_GRADE)}])
+
+
+def test_regrade_writes_the_expected_file_and_spends_only_the_grader(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--regrade", str(tmp_path), "--grader-model", "sonnet"])
+    assert len(seen) == 1
+    card = json.loads((tmp_path / f"{pid}.regrade-sonnet.json").read_text())
+    assert card["persona"] == pid and card["grader_model"] == "sonnet"
+    assert card["llm_graded"]["asked_before_proposing"] == 4
+    assert card["llm_graded"]["setup_review_reached"] is True
+
+
+def test_a_regrade_sends_the_prompt_a_live_run_would(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    _, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    seen = _grader_stub(monkeypatch)
+    run.regrade(tmp_path, "haiku")
+    live = run.GRADER_PROMPT.format(review_fact=run.review_fact(events),
+                                    transcript="\n".join(transcript))
+    assert seen[0][1]["input"] == live
+
+
+def test_the_not_exercised_overwrite_applies_in_a_regrade(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS,))
+    _grader_stub(monkeypatch)
+    run.regrade(tmp_path, "haiku")
+    llm = json.loads((tmp_path / f"{pid}.regrade-haiku.json").read_text())["llm_graded"]
+    assert llm["asked_before_proposing"] == "not exercised"
+    assert llm["setup_review_reached"] is False
+
+
+def test_grader_model_reaches_the_argv_and_defaults_to_sonnet(monkeypatch, tmp_path):
+    # Owner's decision (2026-10-07), after regrading runs 2-5 with both: the default grader is
+    # Sonnet. The explicit flag is a DIFFERENT model, so the default is what the second call shows.
+    from scripts.coach_eval import run
+
+    _saved_run(tmp_path, (rubric.STATUS,))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--regrade", str(tmp_path), "--grader-model", "haiku"])
+    run.main(["--regrade", str(tmp_path)])
+    models = [cmd[cmd.index("--model") + 1] for cmd, _ in seen]
+    assert models == ["haiku", "sonnet"] and run.GRADER_MODEL == "sonnet"
+
+
+def test_print_grader_prompt_writes_the_exact_prompt_and_calls_nothing(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    pid, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    _saved_run(tmp_path, (rubric.STATUS,), pid="second")
+    seen = _grader_stub(monkeypatch)
+    run.main(["--print-grader-prompt", str(tmp_path)])
+    assert seen == []  # no claude call of any kind
+    text = (tmp_path / f"{pid}.grade-me.txt").read_text()
+    assert text == run.grader_prompt(events, transcript)
+    assert text.startswith("Grade this") and text.endswith("USER: DONE")
+    assert "successfully 1 time(s)" in text
+    assert run.NO_REVIEW_FACT in (tmp_path / "second.grade-me.txt").read_text()
+
+
+def test_the_printed_prompt_is_the_one_the_grader_is_sent(monkeypatch, tmp_path):
+    # The cross-check is only worth anything if the pasted prompt IS the grader's prompt.
+    from scripts.coach_eval import run
+
+    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--regrade", str(tmp_path)])
+    run.main(["--print-grader-prompt", str(tmp_path)])
+    assert seen[0][1]["input"] == (tmp_path / f"{pid}.grade-me.txt").read_text()
+
+
+def test_print_grader_prompt_refuses_a_directory_with_no_saved_run(tmp_path):
+    from scripts.coach_eval import run
+
+    with pytest.raises(SystemExit, match="no \\*.transcript.txt"):
+        run.main(["--print-grader-prompt", str(tmp_path)])
+
+
+def test_regrade_is_exclusive_with_persona_and_all(tmp_path):
+    from scripts.coach_eval import run
+
+    for other in (["--persona", "x"], ["--all"]):
+        with pytest.raises(SystemExit):
+            run.main(["--regrade", str(tmp_path), *other])
+    for other in (["--persona", "x"], ["--all"], ["--regrade", str(tmp_path)]):
+        with pytest.raises(SystemExit):
+            run.main(["--print-grader-prompt", str(tmp_path), *other])
+
+
+def test_regrade_removes_its_sandbox_and_print_grader_prompt_makes_none(monkeypatch, tmp_path):
+    import tempfile as _tempfile
+    from scripts.coach_eval import run
+
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    _saved_run(runs, (rubric.STATUS,))
+    made = []
+    real_td, real_mk = _tempfile.TemporaryDirectory, _tempfile.mkdtemp
+
+    def td(suffix=None, prefix=None, dir=None, **k):
+        t = real_td(suffix, prefix, dir or tmp_path, **k)
+        made.append(Path(t.name))
+        return t
+
+    def mk(suffix=None, prefix=None, dir=None):
+        d = real_mk(suffix, prefix, dir or tmp_path)
+        made.append(Path(d))
+        return d
+
+    monkeypatch.setattr(_tempfile, "TemporaryDirectory", td)
+    monkeypatch.setattr(_tempfile, "mkdtemp", mk)
+    _grader_stub(monkeypatch)
+    run.main(["--regrade", str(runs)])
+    assert made and not any(p.exists() for p in made)
+    made.clear()
+    run.main(["--print-grader-prompt", str(runs)])
+    assert made == []
+
+
+def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+
+    def reply(cmd, kw):
+        if "--mcp-config" in cmd:
+            return [init]
+        if (kw.get("input") or "").startswith("Grade"):
+            return [{"type": "result", "result": json.dumps(_GRADE)}]
+        return [{"type": "result", "result": "DONE"}]
+
+    seen = _stub_claude(monkeypatch, reply)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    run.main(["--persona", p.id, "--grader-model", "opus", "--out", str(tmp_path / "out")])
+    graders = [cmd for cmd, kw in seen if (kw.get("input") or "").startswith("Grade")]
+    assert len(graders) == 1 and graders[0][graders[0].index("--model") + 1] == "opus"

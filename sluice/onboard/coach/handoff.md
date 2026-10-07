@@ -9,8 +9,10 @@ Call `doctor` (its default, offline, is enough). It reports what is ready and wh
 
 ## How to come back
 
-Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances. They start this same conversation again; in Claude Code that is `/mcp__sluice__career_interview`, optionally followed by what they want from the session. If they added the sluice server under a different name, that name replaces `sluice` in the command.
+Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances. They start this same conversation again; in Claude Code that is `/mcp__sluice__career_interview`, optionally followed by what they want from the session. If they added the sluice server under a different name, that name replaces `sluice` in the command. The next session knows only what was written: `setup_status` shows the saved settings and the Role Brief, and nothing said in this conversation.
 
 ## Closing
 
 Finish with a short summary: what was set up, what was left empty on purpose and what that means, and the one next step that matters most. Keep it brief and accurate; do not promise results.
+
+Say what was saved, from the outcomes `setup_review` reported, what was discussed but not saved, and what is still to come and how to add it: a search address can be pasted later in this conversation, or brought to a new one. Never say that research, a draft or an agreed change will carry over to the next session unless it was written. If the one offer to save has not been made yet, make it now; if they already declined it, do not raise it again. For research, the research phase says how.

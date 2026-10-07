@@ -30,21 +30,41 @@ COACH_EXPECTED_TOOLS = {"WebSearch"} | {f"mcp__sluice__{n}" for n in SETUP_TOOLS
 # A hung client must fail the persona loudly rather than hold the run (and the allowance) open.
 CLAUDE_TIMEOUT_S = 900
 # Owner's budget ruling (2026-10-07): the evals run on the owner's Claude Max allowance. The
-# coach is what is judged, so it gets Sonnet; the simulated user and the grader get Haiku.
-COACH_MODEL, USER_MODEL, GRADER_MODEL = "sonnet", "haiku", "haiku"
+# coach is what is judged, so it gets Sonnet; the simulated user gets Haiku. The grader moved
+# from Haiku to Sonnet the same day, on the owner's decision after regrading runs 2-5 with both
+# and cross-checking against a different model family (README.md, "Cross-checking the grader").
+COACH_MODEL, USER_MODEL, GRADER_MODEL = "sonnet", "haiku", "sonnet"
 USER_PROMPT = ("You are role-playing a person looking for work, talking to a career coach. "
                "Stay in character. Answer only what you are asked, briefly, as this person "
                "would. Never invent preferences beyond your situation; if you have no view, say "
                "so. Reply with your next message only. When the coach says the setup is done, "
                "reply DONE.\n\nYour name: {name}\nWhere you live: {location}\nYour situation: "
                "{situation}\n\nThe conversation so far:\n{transcript}")
+# The grader sees only the conversation, never the tool calls, so it is TOLD what setup_review
+# received. Run 3 never called setup_review and the grader still scored asked_before_proposing
+# 4 ("All setup_review settings were based on user agreement"), reading values the coach
+# merely recited in chat as proposals.
 GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
-                 '{{"asked_before_proposing": 1-5, "role_specific_questions": 1-5, '
-                 '"coaching_quality": 1-5, "notes": "..."}}. asked_before_proposing: every value '
-                 "the coach proposed to setup_review was one the user had agreed to in chat. "
+                 '{{"asked_before_proposing": 1-5 or "not exercised", '
+                 '"role_specific_questions": 1-5, "coaching_quality": 1-5, "notes": "..."}}. '
+                 "asked_before_proposing: every value the coach proposed to setup_review was "
+                 "one the user had agreed to in chat. Score it ONLY from setup_review calls that "
+                 "actually happened, never from values the coach read back or recorded in chat. "
+                 "{review_fact} If there were none, write \"not exercised\" for it. "
                  "role_specific_questions: questions drew on research into the chosen role. "
                  "coaching_quality: would a professional career coach be proud of this.\n\n"
                  "{transcript}")
+NO_REVIEW_FACT = "The coach never called setup_review successfully in this run."
+REVIEW_FACT = ("The coach called setup_review successfully {n} time(s), and the changes it "
+               "sent were: {changes}")
+
+
+def review_fact(events):
+    """What setup_review actually received, from the tool calls, for the grader prompt."""
+    sent = [i.get("changes") for n, i in rubric.tool_calls(events) if n == rubric.REVIEW]
+    if not sent:
+        return NO_REVIEW_FACT
+    return REVIEW_FACT.format(n=len(sent), changes=json.dumps(sent))
 
 
 def coach_args(message, mcp, session=None):
@@ -91,7 +111,82 @@ def _json_object(text):
     return json.loads(text[lo:hi + 1]) if 0 <= lo < hi else json.loads(text)
 
 
-def run_persona(p, out_dir):
+def grader_prompt(events, transcript):
+    """The exact text the grader receives. Shared by `grade` and `--print-grader-prompt`, so a
+    prompt pasted into another model for a cross-check is the one the grader was given."""
+    return GRADER_PROMPT.format(review_fact=review_fact(events),
+                                transcript="\n".join(transcript))
+
+
+def _saved_runs(directory):
+    """(persona id, events, transcript lines) for every saved run in `directory`: each
+    `<id>.transcript.txt` with its `<id>.events.jsonl` beside it. Refuses an empty directory
+    or a transcript whose events are missing, rather than skipping it quietly."""
+    directory = Path(directory)
+    found = sorted(directory.glob("*.transcript.txt"))
+    if not found:
+        raise SystemExit(f"coach_eval: no *.transcript.txt in {directory}")
+    for tpath in found:
+        pid = tpath.name[:-len(".transcript.txt")]
+        epath = directory / f"{pid}.events.jsonl"
+        if not epath.exists():
+            raise SystemExit(f"coach_eval: {epath.name} is missing beside {tpath.name}")
+        events = [json.loads(line) for line in epath.read_text().splitlines() if line.strip()]
+        yield pid, events, tpath.read_text().split("\n")
+
+
+def print_grader_prompts(directory):
+    """Write `<id>.grade-me.txt` beside each saved transcript: the grader's exact prompt, to
+    paste into a model from another family. Spends nothing: no `claude` call at all."""
+    directory = Path(directory)
+    for pid, events, transcript in _saved_runs(directory):
+        out = directory / f"{pid}.grade-me.txt"
+        out.write_text(grader_prompt(events, transcript))
+        print(out)
+
+
+def grade(events, transcript, model, cwd):
+    """Grade one run: build the prompt, call the grader, post-process. Returns (llm, failure).
+
+    The ONE path a live run and a regrade both take, so a regrade cannot grade a prompt a live
+    run would not have sent. `transcript` is the list of "COACH: ..."/"USER: ..." lines."""
+    graded = _claude(["--model", model, "--tools", "", "--output-format",
+                      "stream-json", "--verbose", "-p"], cwd,
+                     prompt=grader_prompt(events, transcript))
+    failure = None
+    try:
+        llm = _json_object(_final_text(graded))
+    except ValueError:
+        llm = {"error": "the grader did not reply with JSON", "raw": _final_text(graded)}
+        failure = "the grader did not reply with JSON"
+    reached = rubric.review_reached(events)
+    # The deterministic fact sits BESIDE the grade, overwriting anything the grader wrote there.
+    # And with no review there was nothing to grade for asked_before_proposing: the prompt says
+    # to write "not exercised", but a grader that returns a number anyway (run 3 scored 4 with
+    # no setup_review call) is overruled here rather than trusted.
+    if isinstance(llm, dict):
+        llm["setup_review_reached"] = reached
+        if not reached:
+            llm["asked_before_proposing"] = rubric.verdict(rubric.NOT_EXERCISED)
+    return llm, failure
+
+
+def regrade(directory, model):
+    """Re-grade every saved run in `directory` with `model`; spends only the grader call."""
+    directory = Path(directory)
+    safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in model)
+    # The grader's empty working directory; removed afterwards, whatever happens.
+    with tempfile.TemporaryDirectory(prefix="coach-eval-regrade-") as sandbox:
+        for pid, events, transcript in _saved_runs(directory):
+            llm, failure = grade(events, transcript, model, Path(sandbox))
+            card = {"persona": pid, "grader_model": model, "llm_graded": llm}
+            if failure:
+                card["failure"] = failure
+            (directory / f"{pid}.regrade-{safe}.json").write_text(json.dumps(card, indent=2))
+            print(json.dumps(card))
+
+
+def run_persona(p, out_dir, grader_model=GRADER_MODEL):
     sandbox = Path(tempfile.mkdtemp(prefix=f"coach-eval-{p.id}-"))
     empty = sandbox / "client-cwd"
     empty.mkdir()
@@ -127,16 +222,14 @@ def run_persona(p, out_dir):
         if message.upper().startswith("DONE"):
             break
     det = rubric.deterministic(events, max_turns=p.max_turns)
-    graded = _claude(["--model", GRADER_MODEL, "--tools", "", "--output-format",
-                      "stream-json", "--verbose", "-p"], empty,
-                     prompt=GRADER_PROMPT.format(transcript="\n".join(transcript)))
-    try:
-        llm = _json_object(_final_text(graded))
-    except ValueError:
-        llm = {"error": "the grader did not reply with JSON", "raw": _final_text(graded)}
-        failure = failure or "the grader did not reply with JSON"
-    card = {"persona": p.id, "deterministic": {k: {"pass": v[0], "check": v[1]}
-                                               for k, v in det.items()},
+    llm, grade_failure = grade(events, transcript, grader_model, empty)
+    failure = failure or grade_failure
+    reached = rubric.review_reached(events)
+    # `result` is a word, never a boolean: a check with nothing to check reads "not exercised",
+    # and `setup_review_reached` says up front whether the review checks had a subject at all.
+    card = {"persona": p.id, "setup_review_reached": reached,
+            "deterministic": {k: {"result": rubric.verdict(v[0]), "check": v[1]}
+                              for k, v in det.items()},
             "llm_graded": llm}
     if failure:
         card["failure"] = failure
@@ -149,10 +242,21 @@ def run_persona(p, out_dir):
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--persona")
-    ap.add_argument("--all", action="store_true")
+    which = ap.add_mutually_exclusive_group()
+    which.add_argument("--persona")
+    which.add_argument("--all", action="store_true")
+    which.add_argument("--regrade", metavar="DIR",
+                       help="re-grade the saved runs in DIR (grader call only)")
+    which.add_argument("--print-grader-prompt", metavar="DIR",
+                       help="write each saved run's grader prompt to <id>.grade-me.txt in DIR, "
+                            "for a cross-check in another model (no call at all)")
+    ap.add_argument("--grader-model", default=GRADER_MODEL)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
+    if args.regrade:
+        return regrade(args.regrade, args.grader_model)
+    if args.print_grader_prompt:
+        return print_grader_prompts(args.print_grader_prompt)
     out = Path(args.out or tempfile.mkdtemp(prefix="coach-eval-out-"))
     if out.resolve().is_relative_to(ROOT):
         raise SystemExit("coach_eval: --out must be outside the repository")
@@ -162,7 +266,7 @@ def main(argv=None):
     if not chosen:
         raise SystemExit("coach_eval: name a --persona or pass --all")
     for p in chosen:
-        print(json.dumps(run_persona(p, out)))
+        print(json.dumps(run_persona(p, out, args.grader_model)))
     print(f"scorecards in {out}")
 
 

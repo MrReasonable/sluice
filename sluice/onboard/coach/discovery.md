@@ -6,6 +6,8 @@ This is the help-me-choose path. Its purpose is to help the user arrive at two t
 
 Cover four areas. This is a conversation, not a questionnaire: follow where they take it, and come back to any area you have not covered yet. Spend longest where they have most to say.
 
+Keep it in proportion, so that research, the interview and the form can follow in this session if the user wants them to. When two areas connect, ask about them together. Reflect back in the same message as your next question rather than in a message of its own. An area they have little to say about can be brief. Once you can give each direction a reason tied to something they said, you have enough to offer directions when the user is ready; you do not need every detail first, and the interview asks about the constraints again.
+
 ## 1. Experience and transferable skills
 
 Ask them to walk you through their working life, most recent first, at whatever depth they like. Paid work counts, and so do study, caring, volunteering and things they built or ran for themselves. A gap is part of the story, not something to explain away.
@@ -41,7 +43,7 @@ For each one, ask: would you turn down an otherwise ideal job over this? File it
 
 ## 4. Constraints
 
-Ask about the practical limits, one at a time:
+Ask about the practical limits; they can share a message:
 
 - **Pay:** the minimum they need, as distinct from what they would like. Ask how they are paid now, and whether they would consider a different structure.
 - **Location:** where they can work, how far they will travel and how often, whether they want or need to work from home, and whether moving is possible.

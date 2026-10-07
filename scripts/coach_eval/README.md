@@ -16,12 +16,47 @@ python -m scripts.coach_eval.run --persona career-changer --out "$(mktemp -d)"
 python -m scripts.coach_eval.run --all --out "$(mktemp -d)"
 ```
 
+Re-grade a SAVED run without re-running the coach, optionally with another grader model:
+
+```bash
+python -m scripts.coach_eval.run --regrade DIR --grader-model haiku
+python -m scripts.coach_eval.run --persona career-changer --grader-model haiku --out "$(mktemp -d)"
+```
+
+`--regrade DIR` takes each `<id>.transcript.txt` + `<id>.events.jsonl` pair in DIR, builds the
+grader prompt through the same function a live run uses (`run.grader_prompt`, called by
+`run.grade`), and writes
+`<id>.regrade-<model>.json` into DIR. It spends only the grader call: no coach, simulated user
+or MCP server runs. `--grader-model` (default `sonnet`) applies to live runs and regrades alike,
+so graders can be compared on identical transcripts. `--regrade` excludes `--persona`/`--all`.
+
 `--out` must be outside the repository (the run refuses otherwise): transcripts carry web
 research and model-played users. Per persona it writes `<id>.transcript.txt` and
 `<id>.scorecard.json`. Each `claude` call has a timeout and a hung one fails the persona loudly; an empty simulated-user reply stops the loop and is recorded as `failure` in the scorecard.
 
-Models (owner's budget ruling, 2026-10-07): coach `sonnet`, simulated user and grader `haiku`.
+Models (owner's budget ruling, 2026-10-07): coach `sonnet`, simulated user `haiku`, grader
+`sonnet`. The grader was `haiku` at first. It moved to `sonnet` the same day, on the owner's
+decision after regrading runs 2-5 with both and cross-checking them in a different model
+family. Haiku had scored `asked_before_proposing` on runs 2 and 3, where `setup_review` was
+never called.
 Personas live in `personas/*.json`; each has a turn cap (`max_turns`, default 12).
+
+## Cross-checking the grader
+
+A grader from the same family as the coach can share its blind spots, so at a milestone (a
+playbook change worth trusting, or before shipping) compare it with a model from another
+family. This is not done for every run. The other model gets exactly the prompt the grader got:
+
+```bash
+python -m scripts.coach_eval.run --print-grader-prompt DIR
+```
+
+For each saved run in DIR (`<id>.transcript.txt` with `<id>.events.jsonl`), this writes
+`<id>.grade-me.txt` beside it, built by `run.grader_prompt`, the same function `run.grade`
+sends to the grader. It makes no call at all. Paste the file into the other model, and compare
+its scores and notes with `<id>.scorecard.json` or a `--regrade` card. The file holds the
+transcript, so it stays outside the repository with the rest of the run. `--print-grader-prompt`
+excludes `--persona`, `--all` and `--regrade`.
 
 ## What is scored
 
@@ -33,8 +68,23 @@ invocation). Every check counts only SUCCESSFUL calls, meaning a `tool_use` whos
 is not `is_error`. Raw events are saved beside the scorecard as `<id>.events.jsonl`.
 A failing deterministic check is an input to playbook work, not a build failure.
 
+Each check's `result` is `pass`, `fail` or `not exercised`. A check whose subject never
+happened is `not exercised`, never `pass`: `status_before_review`, `schema_valid` and
+`no_verified` need at least one successful `setup_review` call, and `brief_cites_sources` needs
+a brief section proposed in one. The scorecard's `setup_review_reached` says whether the review
+was reached at all. It means the tool was called successfully, not that anything was
+written: a form the user declined or cancelled still returns a successful call. Run 2
+(career-changer) ended with no `setup_review` call and its four review
+checks read `pass`, which is indistinguishable from a run whose proposals were all clean.
+
 Graded by the Haiku grader (1-5 each): `asked_before_proposing`, `role_specific_questions`,
-`coaching_quality`, plus free-text notes. These are indicative, not gating. A grader reply that is not JSON marks the scorecard `failure`.
+`coaching_quality`, plus free-text notes. These are indicative, not gating. The grader sees only
+the conversation, so its prompt states what `setup_review` actually received (from the tool
+calls), and `asked_before_proposing` is scored only from those calls: with none, the grader is
+told to write `not exercised`. The deterministic `setup_review_reached` is copied into
+`llm_graded` beside the grades (overwriting anything the grader wrote there), and when it is
+false the harness itself sets `asked_before_proposing` to `not exercised`, whatever the grader
+returned. Run 3 scored `asked_before_proposing` 4 with no `setup_review` call at all. A grader reply that is not JSON marks the scorecard `failure`.
 
 ## Isolation
 
@@ -118,11 +168,21 @@ because they counted the denied calls. `coach_args` now also passes `--allowedTo
 the reply was `OK`. A denial is a `tool_result` with `is_error: true`.
 
 `setup_review` is an input-required elicitation. The first run never reached it (every call was
-denied), so how the headless client handles that form is NOT yet observed; the harness does not
-answer it on the user's behalf, and the next run's `events.jsonl` is where to look.
+denied); the harness does not answer it on the user's behalf. See Measurement 5 for what the
+headless client does with it.
 
 Grader root cause: not reproduced, because only a 23 KB prompt sent on stdin was probed (the
 model returned a codeword placed at its very end, so stdin delivers it intact). The old path put
 the whole transcript in argv beside `-p`, and the reply ("I'm ready.") shows the model saw no
 transcript. The user-simulator and grader prompts now go on stdin, and the reply is read from the
 `result` event.
+
+### Measurement 5: the headless client cancels the form (2.1.292, 2026-10-07)
+
+Eval run 5 (vault-env) was the first to reach `setup_review`. The headless `claude -p` client
+has no UI to show the form, so both calls came back `outcome: cancelled` with `detail: nothing
+was written`: the units the form held read `declined`, the rest of the batch `not_shown`. So under this harness, a run that reaches the
+form can NEVER show a write. The evidence that the form path works is `setup_review_reached`
+(the tool was called successfully) together with `schema_valid` (every batch it sent parses),
+plus `status_before_review`, `brief_cites_sources` and `no_verified` over what it sent. A
+`written` outcome is not scorable here, and its absence is not a failure.

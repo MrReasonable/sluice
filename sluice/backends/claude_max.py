@@ -33,4 +33,13 @@ def _make(model, *, api_key="", base_url="", http=None, runner=None, timeout=Non
                             effort=effort, **extra)
 
 
+# What this backend needs before it can run, in the user's terms. It needs no API key, so the
+# key-derived line every per-token backend gets (core.app.api_key_env) would state nothing; the
+# career coach's prompt reads this attribute instead (sluice/onboard/coach/__init__.py::
+# _backend_requirements), and tests/test_coach_prompt.py fails if a key-less backend lacks one.
+# A requirement that went unstated read as "needs nothing" beside the per-token lines.
+_make.requirement = ("no API key; the `claude` command-line program, installed and signed in "
+                     "on the machine where the sluice server runs, or on the machine a "
+                     "configured claude host names, which sluice reaches over ssh.")
+
 register("claude-max", _make)

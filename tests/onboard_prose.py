@@ -384,8 +384,9 @@ def shipped_prose(tmp_path=None):
         out.append((f"review.ROLE_BRIEF_SECTIONS[{section}]", section))
     out.append(("review.ROLE_BRIEF_INTRO", review_mod.ROLE_BRIEF_INTRO))
     # The coach's module-level text: appended to its prompt on a read-only server, around the
-    # user's focus, and above the list of units it may propose.
-    for name in ("READ_ONLY_NOTE", "FOCUS_NOTE", "UNITS_INTRO"):
+    # user's focus, above the list of units it may propose, and above each backend's requirement.
+    for name in ("READ_ONLY_NOTE", "FOCUS_NOTE", "UNITS_INTRO", "BACKENDS_INTRO",
+                 "NO_REQUIREMENT_STATED"):
         out.append((f"coach.{name}", getattr(coach_mod, name)))
     out.append(("wizard._INTRO", wizard_mod._INTRO))
     out.append(("wizard._CAPTURE_PROMPT", wizard_mod._CAPTURE_PROMPT))
