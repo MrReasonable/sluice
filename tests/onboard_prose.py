@@ -65,6 +65,9 @@ _NOT_PROSE = {
     # it to derive `add`'s per-kind flags; `wizard.py` needs it to loop the capture prompts over
     # every kind), so `vars()` sees it as a local name in each and both tuples are listed here.
     ("sluice.evidence.commands", "EVIDENCE_KINDS"),
+    # An identifier table: the unit kinds a setup change may name, matched as keys and never shown
+    # as guidance. Everything shown from review.py is rostered in shipped_prose() below.
+    ("sluice.onboard.review", "UNIT_KINDS"),
     ("sluice.evidence.wizard", "EVIDENCE_KINDS"),
 }
 
@@ -72,6 +75,11 @@ _NOT_PROSE = {
 # branch of _render_sources rather than only its commented-example branch.
 _SOURCES_FIXTURE = {"example_source": {
     "enabled": True, "searches": [["Example search", "https://example.invalid/jobs"]]}}
+
+
+def _role_brief_text():
+    from sluice.onboard.review import render_role_brief
+    return render_role_brief({})
 
 
 def rendered_artefacts():
@@ -108,7 +116,10 @@ def rendered_artefacts():
             # view's NAME would pass. Measured -- planting a role-and-culture phrase as a tab
             # name left the FULL SUITE green, in bytes `init` writes into a stranger's vault.
             # The taxonomy sweep is the check that reads names.
-            ("rendered:view_text", walked.view_text)]
+            ("rendered:view_text", walked.view_text),
+            # In-session setup's Role Brief, rendered with every section on its placeholder:
+            # bytes written into a stranger's vault, so swept like the other artefacts.
+            ("rendered:role_brief", _role_brief_text())]
 
 
 def terminal_transcript():
@@ -301,6 +312,7 @@ def shipped_prose(tmp_path=None):
     import sluice.onboard.ask as ask_mod
     import sluice.onboard.edit as edit_mod
     import sluice.onboard.plan as plan_mod
+    import sluice.onboard.review as review_mod
     from sluice.onboard.questions import catalogue
 
     out = list(rendered_artefacts()) + list(terminal_transcript()) + list(cli_help_text())
@@ -346,6 +358,17 @@ def shipped_prose(tmp_path=None):
     # module of orchestration strings rather than prompts. It is driven instead -- the patched
     # `confirm` records what it was SHOWN and the sweep runs over that text -- which is the same
     # where-it-runs answer, applied to the operation that grants citability.
+    # In-session setup's review text: set-aside reasons, remedies and the placeholder written into
+    # a Role Brief section. Shown to the user or written into their vault, so swept like the rest.
+    for name in ("NO_VAULT_YET", "DEFAULT_VAULT", "CLEARED", "BRIEF_PLACEHOLDER"):
+        out.append((f"review.{name}", getattr(review_mod, name)))
+    for key, text in review_mod.REMEDY.items():
+        out.append((f"review.REMEDY[{key}]", text))
+    for key, text in review_mod.NOTE_NAMES.items():
+        out.append((f"review.NOTE_NAMES[{key}]", text))
+    for section in review_mod.ROLE_BRIEF_SECTIONS:
+        out.append((f"review.ROLE_BRIEF_SECTIONS[{section}]", section))
+    out.append(("review.ROLE_BRIEF_INTRO", review_mod.ROLE_BRIEF_INTRO))
     out.append(("wizard._INTRO", wizard_mod._INTRO))
     out.append(("wizard._CAPTURE_PROMPT", wizard_mod._CAPTURE_PROMPT))
     out.append(("wizard._NAME_PROMPT", wizard_mod._NAME_PROMPT))

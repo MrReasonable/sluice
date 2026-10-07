@@ -1334,3 +1334,40 @@ class CvLayout:
     education: tuple = ()
     any_role: tuple = ()
     omitted: tuple = ()
+
+
+@dataclass(frozen=True)
+class SetupSnapshot:
+    """What in-session setup reads before proposing or writing (Sluice.setup_snapshot)."""
+    config_text: str | None
+    notes: dict            # artefact -> text | None  (keys: SETUP_NOTES)
+    unreadable: dict       # artefact ("config" included) -> reason, no path
+    vault_from_env: bool   # $VAULT_DIR decides the vault
+    vault_is_default: bool # the store fell back to the cwd-relative default
+    settings: dict         # "block.field" / "field" -> loaded value, from every loader
+    defaults: dict         # the same keys, loaded from an empty config
+    source_ids: tuple
+    searches: dict         # source id -> [[label, url], ...] currently configured
+
+    @property
+    def config_exists(self) -> bool:
+        return self.config_text is not None
+
+    def sha_for(self, artefact: str) -> str | None:
+        text = self.config_text if artefact == "config" else self.notes.get(artefact)
+        return None if text is None else document_sha(text)
+
+
+@dataclass(frozen=True)
+class ArtefactWrite:
+    artefact: str              # "config" or a SETUP_NOTES key
+    text: str
+    expect_sha: str | None     # None: create exclusively
+    settings: tuple = ()       # config only: the settings this write may change
+    expect: tuple = ()         # config only: ((setting, value), ...) each must read afterwards
+
+
+@dataclass(frozen=True)
+class ArtefactOutcome:
+    status: str                # "written" | "conflict" | "failed" | "set_aside"
+    reason: str = ""
