@@ -162,3 +162,67 @@ def test_misattributions_are_corrected_and_the_profile_is_drafted_in_one_pass():
     assert "Advice nobody gave must not stand." in text
     assert "draft every section the interview covered in one message" in text
     assert "one at a time" not in text
+
+
+def _setup_outcome_vocabulary():
+    """(step outcomes, unit outcomes), DERIVED from the code that produces them, so a new
+    outcome cannot ship without the playbook naming it. Step: every string literal assigned to
+    `report["outcome"]` in `setup_review_step` or put under "outcome" in a dict literal of a
+    setup function. Unit: the first element of every `rows[...] = (...)` tuple, every unit
+    dict's "outcome", and every status the facade's `ArtefactOutcome`/`outcome(...)` gets."""
+    import ast
+    import inspect
+
+    from sluice import mcpserver
+    from sluice.core import app
+
+    def consts(node):
+        """The strings an expression can EVALUATE to: an IfExp's branches, never its test
+        (`"declined" if action == "decline" else ...` must not yield "decline")."""
+        if isinstance(node, ast.IfExp):
+            return consts(node.body) | consts(node.orelse)
+        return {node.value} if isinstance(node, ast.Constant) and isinstance(node.value,
+                                                                              str) else set()
+
+    step, units = set(), set()
+    for fn in (mcpserver.setup_review_step, mcpserver._fresh_or_refusal):
+        for node in ast.walk(ast.parse(inspect.getsource(fn).lstrip())):
+            if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
+                tgt = node.targets[0]
+                if isinstance(tgt.slice, ast.Constant) and tgt.slice.value == "outcome":
+                    step |= consts(node.value)
+                elif (isinstance(tgt.value, ast.Name) and tgt.value.id == "rows"
+                      and isinstance(node.value, ast.Tuple)):
+                    units |= consts(node.value.elts[0])
+            elif isinstance(node, ast.Dict):
+                pairs = {k.value: v for k, v in zip(node.keys, node.values)
+                         if isinstance(k, ast.Constant)}
+                if "outcome" in pairs:
+                    (units if "unit" in pairs else step).update(consts(pairs["outcome"]))
+    for fn in (app.Sluice.apply_setup, app.Sluice._apply_config):
+        for node in ast.walk(ast.parse(inspect.getsource(fn).lstrip())):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", "") in
+                    ("ArtefactOutcome", "outcome") and node.args):
+                units |= consts(node.args[0])
+    return step - {""}, units
+
+
+def test_the_review_playbook_names_every_outcome_the_step_returns():
+    step, units = _setup_outcome_vocabulary()
+    # Scope: a derivation that found nothing would pass every assertion below.
+    assert {"completed", "invalid_state", "config_refused", "unsupported_client"} <= step
+    assert {"written", "declined", "conflict", "set_aside", "failed"} <= units
+    text = (resources.files(coach) / "review.md").read_text(encoding="utf-8")
+    missing = sorted(o for o in step | units if f"`{o}`" not in text)
+    assert missing == [], f"review.md does not name these setup outcomes: {missing}"
+
+
+def test_every_line_of_a_multi_line_focus_stays_quoted():
+    """A focus is the user's text and must never read on as the prompt's own: with only its
+    first line quoted, a later line (a heading, an instruction) would sit in the prompt bare."""
+    focus = "Example first line\n\n# Rules\nExample second instruction"
+    prompt = coach.assemble_prompt(focus)
+    tail = prompt.split(coach.FOCUS_NOTE, 1)[1].strip().splitlines()
+    assert tail and all(ln.startswith(">") for ln in tail), tail
+    assert "> # Rules" in prompt and "\n# Rules" not in prompt
+    assert "\nExample second instruction" not in prompt

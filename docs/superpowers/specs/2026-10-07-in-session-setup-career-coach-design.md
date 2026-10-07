@@ -341,7 +341,10 @@ With no config file, `setup_status` says so. The vault is decided as `cmd_init` 
 
 - When `$VAULT_DIR` is set, it IS the `vault_dir` answer (normalised by `parse_path`, as `init`
   normalises its preset). The coach is told so and proposes no `vault_dir` unit.
-- Otherwise a ticked `vault_dir` unit (`parse_path`: absolute) is required. Without one, NO config
+- Otherwise a ticked `vault_dir` unit (`parse_path`: absolute) is required. Its box shows the
+  resolved path. A relative answer is set aside with the reason: it would resolve against the
+  folder the client started the server from, which the user neither chose nor can see, so only
+  an absolute or `~`-anchored answer is taken. Without one, NO config
   is created and every unit is set aside ("choose where your notes live first"). A config with no
   vault would send every later note to `./vault`, relative to wherever the client started the
   server.
@@ -610,8 +613,11 @@ Dev-only: it spends tokens and is not hermetic, so it never gates CI.
 - **Isolation sweep:** walks every `sluice.onboard` module the setup tools reach plus the coach
   package, asserts the walked set, and planted `_atomic_write(...)` and `.write_document(...)`
   calls in `review.py`, and a planted extra import from `sluice.core.vault`, are each reported.
-- **Responses:** no absolute path in any `setup_status` or `setup_review` response (whole
-  serialised result).
+- **Responses:** no absolute path the SERVER discovered (the config file's location, an existing
+  vault, the server's working directory) appears in any `setup_status` or `setup_review` response
+  (whole serialised result), refusals included. The rule does not cover the user's own typed
+  input echoed back to them: a `vault_dir` unit's box shows the resolved path it will write,
+  because a human must see every value before it is written, and the test pins that half too.
 - **No `verified`:** a change targeting `verified` in any kind is set aside.
 - **Role Brief stays unread:** the sweep matches the constant, its local aliases, the literal path
   and the basename, and every `read_document(` call site's argument; its scope assertion requires

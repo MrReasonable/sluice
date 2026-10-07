@@ -61,8 +61,8 @@ excludes `--persona`, `--all` and `--regrade`.
 ## What is scored
 
 Deterministic (`rubric.deterministic`, over the tool calls in the stream): `setup_status`
-called before the first `setup_review`; every `setup_review` input parses; a proposed brief
-records its sources; no change targets `verified`; no tool call was denied or errored
+called before the first `setup_review`; every `setup_review` input parses; every
+`setup_review` call that proposes a Role Brief section also proposes its sources section; no change targets `verified`; no tool call was denied or errored
 (`no_tool_denied`); the coach stays within its cap of coach messages (one per client
 invocation). Every check counts only SUCCESSFUL calls, meaning a `tool_use` whose `tool_result`
 is not `is_error`. Raw events are saved beside the scorecard as `<id>.events.jsonl`.

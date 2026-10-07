@@ -892,7 +892,8 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   review form, each under its own UNTICKED checkbox, and write only the ones you tick.
   `setup_status` (read-only, registered at both levels) reports what can be changed and its
   current value. Changes that cannot be shown or applied come back in `set_aside` with the
-  reason; ones that did not fit the form come back in `not_shown`, to send again. Other
+  reason; ones that did not fit the form come back in `not_shown`, to send again;
+  `artefacts` reports, per file, an outcome that no ticked box accounts for. Other
   outcomes: `config_refused` (the config file does not load; fix it by hand),
   `unsupported_client` (the client cannot show a form; use `job-sluice init`), and
   `restart_needed` (a config was written but the server could not reload it).

@@ -62,7 +62,15 @@ def _has_indented_body(lines, i):
 
 def _block_ranges(lines):
     """{block: (header index, end index)}: a block runs until the next line at column 0 that
-    is neither blank nor a comment."""
+    is neither blank nor a comment.
+
+    A block header that appears twice keeps its LAST range, so every edit lands in the last
+    copy. That relies on PyYAML's loader being last-wins for a repeated key: the last block is
+    the one the loaders read. Do not "fix" this into first-wins -- an edit to the first copy
+    would be written and then overridden. An empty trailing `triage:` is not a range at all (it
+    has no indented body, so it is a root key holding null that replaces the whole block when
+    loaded); an edit then lands in the earlier block, reads back wrong, and the config check
+    in `Sluice.apply_setup` sets it aside rather than writing it."""
     out, i = {}, 0
     while i < len(lines):
         m = _HEADER.match(_bare(lines[i]))
@@ -187,7 +195,13 @@ def _parse_entry(line):
     body = s[2:]
     if not (body.startswith("[") and yaml is not None):
         raise EditRefused("a searches entry is not in flow form (`- [label, url]`)")
-    value = yaml.safe_load(body)
+    try:
+        value = yaml.safe_load(body)
+    except yaml.YAMLError:
+        # One physical line of an entry YAML spreads over several (`- [a,` then the url on the
+        # next line) does not parse alone, and YAMLError is not a ValueError: uncaught, it
+        # escaped every setup caller as an unstructured error after the user had ticked.
+        raise EditRefused("a searches entry is not in flow form (`- [label, url]`)") from None
     if not (isinstance(value, list) and len(value) >= 2):
         raise EditRefused("a searches entry is not in flow form (`- [label, url]`)")
     return value[0], value[1]

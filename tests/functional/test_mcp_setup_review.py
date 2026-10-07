@@ -189,3 +189,144 @@ def test_a_failed_holder_rebuild_keeps_the_outcomes_and_asks_for_a_restart(monke
     assert out["config_written"] is True
     assert {u["outcome"] for u in out["units"]} == {"written"}
     assert out["restart_needed"]
+
+
+def test_the_vault_dir_box_shows_the_path_and_no_response_carries_a_discovered_one(
+        tmp_path, monkeypatch):
+    """Both halves of the path rule. The box ECHOES the user's own answer (resolved), because a
+    human must see every value before it is written; no response carries a path the SERVER
+    discovered -- here the working directory the server was started from, which a relative
+    answer would have resolved against."""
+    monkeypatch.delenv("VAULT_DIR")
+    cwd = tmp_path / "server-cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    vault = tmp_path / "chosen-vault"
+    seen = []
+    out = _call([{"kind": "config", "target": "vault_dir", "value": str(vault)}],
+                lambda p: ("cancel", None), seen=seen)
+    assert f"New:\n\"{vault}\"" in seen[0].requested_schema["properties"]["entry_1"][
+        "description"]
+    assert str(cwd) not in json.dumps(out)
+    assert os.path.realpath(cwd) not in json.dumps(out)
+
+    seen.clear()
+    out = _call([{"kind": "config", "target": "vault_dir", "value": "notes"},
+                 {"kind": "config", "target": "lead_ttl_days", "value": "30"}],
+                _tick_all, seen=seen)
+    assert seen == [], "a relative vault_dir must not reach a form"
+    assert out["outcome"] == "nothing_to_review"
+    reasons = {a["change"]: a["reason"] for a in out["set_aside"]}
+    assert "relative path" in reasons["config: vault_dir"]
+    text = json.dumps(out)
+    assert str(tmp_path) not in text and os.path.realpath(tmp_path) not in text
+    assert not Path(config_file()).exists() and not (cwd / "notes").exists()
+
+
+def test_a_config_created_while_a_first_run_form_is_open_conflicts_and_writes_nothing(
+        tmp_path, monkeypatch):
+    """The notes' shas still match across the race (absent == absent), but the new config names
+    its own vault: writing the ticked note would land it in a vault the user never saw."""
+    from sluice.core.protocols import ROLE_BRIEF_RELPATH
+    monkeypatch.delenv("VAULT_DIR")
+    (tmp_path / "empty").mkdir()
+    monkeypatch.chdir(tmp_path / "empty")
+    chosen, planted = tmp_path / "chosen-vault", tmp_path / "planted-vault"
+    planted_text = build_plan({"vault_dir": str(planted)}).config_text
+
+    def plant_then_tick(params):
+        os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+        Path(config_file()).write_text(planted_text)
+        return "accept", {k: True for k in params.requested_schema["properties"]}
+
+    out = _call([{"kind": "config", "target": "vault_dir", "value": str(chosen)},
+                 {"kind": "brief", "target": "Pay structure", "value": "Example."}],
+                plant_then_tick)
+    assert {u["unit"] for u in out["units"]} == {"config:vault_dir", "brief:## Pay structure"}
+    assert {u["outcome"] for u in out["units"]} == {"conflict"}
+    assert out["config_written"] is False
+    assert Path(config_file()).read_bytes() == planted_text.encode()
+    for vault in (chosen, planted, tmp_path / "empty" / "vault"):
+        assert not (vault / ROLE_BRIEF_RELPATH).exists(), vault
+    assert not chosen.exists() and not planted.exists()
+
+
+def test_a_multi_line_search_entry_is_a_structured_outcome_and_writes_nothing():
+    """The search box is shown (propose does not run the editor for a search) and ticked; the
+    retry must still answer with a structured outcome naming the remedy, never an error."""
+    from tests.test_onboard_edit import MULTILINE_ENTRY
+    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
+    Path(config_file()).write_text(MULTILINE_ENTRY)
+    out = _call([{"kind": "search", "target": "remoteok", "label": "Third",
+                  "url": "https://example.invalid/c"}], _tick_all)
+    assert out["outcome"] == "completed"
+    (row,) = out["units"]
+    assert row["outcome"] == "set_aside" and "flow form" in row["reason"]
+    assert Path(config_file()).read_text() == MULTILINE_ENTRY
+
+
+def test_a_default_first_run_create_that_fails_is_reported_not_silent():
+    """The default Leads view is created on a first run with no box of its own; when that
+    create does not land, `artefacts` and `detail` say so instead of leaving it to doctor."""
+    from sluice.core.protocols import LEADS_VIEW_RELPATH
+    view = Path(os.environ["VAULT_DIR"]) / LEADS_VIEW_RELPATH
+    view.mkdir(parents=True)            # a directory where the view file should go
+    out = _call([{"kind": "config", "target": "lead_ttl_days", "value": "30"}], _tick_all)
+    assert out["config_written"] is True
+    assert out["artefacts"]["profile"]["outcome"] == "written"
+    assert out["artefacts"]["view"]["outcome"] == "conflict"
+    assert "view" in out["detail"]
+    assert {u["unit"] for u in out["units"]} == {"config:lead_ttl_days"}
+
+
+def _no_discovered_path(out, tmp_path):
+    """Whole serialised result: the sandbox root covers the config's directory and the vault."""
+    text = json.dumps(out)
+    assert str(tmp_path) not in text and os.path.realpath(tmp_path) not in text
+
+
+def test_ticked_and_unticked_units_on_one_note_write_only_the_ticked_one(tmp_path):
+    from sluice.core.protocols import ROLE_BRIEF_RELPATH
+    _existing_hunt()
+    out = _call([{"kind": "brief", "target": "Pay structure", "value": "Example ticked."},
+                 {"kind": "brief", "target": "Sources consulted", "value": "Example unticked."}],
+                _tick(1))
+    brief = (Path(os.environ["VAULT_DIR"]) / ROLE_BRIEF_RELPATH).read_text()
+    assert "Example ticked." in brief and "Example unticked." not in brief
+    by = {u["unit"]: u["outcome"] for u in out["units"]}
+    assert by == {"brief:## Pay structure": "written", "brief:## Sources consulted": "declined"}
+    _no_discovered_path(out, tmp_path)
+
+
+def test_cancel_writes_nothing(tmp_path):
+    _existing_hunt()
+    before = Path(config_file()).read_bytes()
+    out = _call([{"kind": "config", "target": "lead_ttl_days", "value": "30"},
+                 {"kind": "brief", "target": "Pay structure", "value": "Example."}],
+                lambda p: ("cancel", None))
+    assert out["outcome"] == "cancelled" and out["config_written"] is False
+    assert {u["outcome"] for u in out["units"]} == {"declined"}
+    assert Path(config_file()).read_bytes() == before
+    assert not (Path(os.environ["VAULT_DIR"]) / "Job Applications").exists()
+    _no_discovered_path(out, tmp_path)
+
+
+def test_a_change_that_did_not_fit_the_form_is_reported_not_shown_and_not_written(tmp_path):
+    """Three tall Role Brief sections cannot share one form; the one left over is `not_shown`
+    and is written by no tick, however the shown boxes are answered. A regression row with no
+    deletion witness: the write list is built only from the shown boxes, so there is no single
+    line whose removal would let an unshown change through."""
+    from sluice.core.protocols import ROLE_BRIEF_RELPATH
+    _existing_hunt()
+    tall = "\n".join(f"Example line {i}." for i in range(12))
+    sections = ["The role, as researched", "Pay structure", "Sources consulted"]
+    seen = []
+    out = _call([{"kind": "brief", "target": s, "value": f"{s} marker.\n{tall}"}
+                 for s in sections], _tick_all, seen=seen)
+    assert len(seen) == 1 and out["not_shown"], "the batch fitted one form; this row is vacuous"
+    left = {k.removeprefix("brief:## ") for k in out["not_shown"]}
+    brief = (Path(os.environ["VAULT_DIR"]) / ROLE_BRIEF_RELPATH).read_text()
+    for s in sections:
+        assert (f"{s} marker." in brief) is (s not in left), s
+    assert {u["unit"] for u in out["units"]}.isdisjoint(out["not_shown"])
+    _no_discovered_path(out, tmp_path)

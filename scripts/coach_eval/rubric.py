@@ -12,6 +12,8 @@ from sluice.onboard import review
 STATUS = "mcp__sluice__setup_status"
 REVIEW = "mcp__sluice__setup_review"
 NOT_EXERCISED = None
+# The Role Brief's sources section, from the tool's own roster rather than a second spelling.
+SOURCES_SECTION = review.ROLE_BRIEF_SECTIONS[-1]
 
 
 def _results(events) -> dict:
@@ -76,11 +78,15 @@ def deterministic(events, *, max_turns) -> dict:
     changes = [c for r in reviews for c in (r.get("changes") or [])]
     status_first = _when(reached, reached and STATUS in names[:names.index(REVIEW)])
     schema_ok = all(not review.parse_changes(r.get("changes"))[1] for r in reviews)
-    briefs = [c for c in changes if c.get("kind") == "brief"]
-    # Its subject is a PROPOSED BRIEF, not merely a review: a review carrying no brief section
-    # has no sources to check either, and used to pass this check vacuously.
-    sources_ok = _when(bool(briefs), any(c.get("target") == "Sources consulted"
-                                         and (c.get("value") or "").strip() for c in briefs))
+    # Its subject is each PROPOSED BRIEF, one per setup_review call carrying a brief section:
+    # a review with no brief section has no sources to check (it used to pass vacuously), and
+    # one sourced brief anywhere in the run used to cover every unsourced one after it.
+    briefs_per_call = [b for b in ([c for c in (r.get("changes") or [])
+                                    if isinstance(c, dict) and c.get("kind") == "brief"]
+                                   for r in reviews) if b]
+    sources_ok = _when(bool(briefs_per_call), all(
+        any(c.get("target") == SOURCES_SECTION and (c.get("value") or "").strip() for c in b)
+        for b in briefs_per_call))
     # One `system/init` event per coach invocation, and each invocation is one message the
     # user sees; counting assistant events instead counted every tool round-trip.
     turns = sum(1 for ev in events if ev.get("subtype") == "init")
@@ -89,7 +95,8 @@ def deterministic(events, *, max_turns) -> dict:
         "status_before_review": (status_first,
                                  "setup_status called before the first setup_review"),
         "schema_valid": (_when(reached, schema_ok), "every setup_review input parses"),
-        "brief_cites_sources": (sources_ok, "a proposed brief records its sources"),
+        "brief_cites_sources": (sources_ok, "every setup_review call proposing a brief "
+                                            "section records its sources"),
         "no_verified": (_when(reached, all((c.get("target") or "").lower() != "verified"
                                            for c in changes)),
                         "no change targets `verified`"),

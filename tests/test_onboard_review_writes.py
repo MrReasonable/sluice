@@ -1,3 +1,5 @@
+import pytest
+
 from sluice.core.protocols import document_sha
 from sluice.onboard import review
 from sluice.onboard.plan import LEADS_VIEW_TEXT, build_plan
@@ -170,3 +172,23 @@ def test_status_view_has_no_absolute_path_and_masks_vault_dir():
 
 def test_nothing_ticked_writes_nothing_even_on_a_first_run():
     assert review.build_writes([], snap(None, env=True), env_vault="/example/ev") == ([], [])
+
+
+@pytest.mark.parametrize("block", ["triage", "cv", "track"])
+def test_a_fan_out_key_breaking_in_any_block_changes_no_byte(block):
+    """Breaking only the FIRST block cannot tell all-or-nothing from mutate-as-you-go (nothing
+    has been edited yet when it fails). Breaking `cv` or `track` can: a fan-out applied block by
+    block would leave `triage.backend` written. The result must equal the text with only the
+    other unit applied, byte for byte."""
+    from sluice.onboard import edit
+    marker = "  # backend:   # <- uncomment and set YOUR OWN"
+    at = CONFIG.index(marker, CONFIG.index(f"\n{block}:\n"))
+    bad = CONFIG[:at] + '  backend:\n    - "x"' + CONFIG[at + len(marker):]
+    writes, aside = write_for([{"kind": "config", "target": "lead_ttl_days", "value": "30"},
+                               {"kind": "config", "target": "backend", "value": "anthropic"}],
+                              snap(bad, settings={"triage.backend": "claude-max",
+                                                  "cv.backend": "claude-max",
+                                                  "track.backend": "claude-max",
+                                                  "lead_ttl_days": 0}))
+    assert writes[0].text == edit.set_key(bad, "lead_ttl_days", "30")
+    assert [a.key for a in aside] == ["config:backend"] and "several lines" in aside[0].reason

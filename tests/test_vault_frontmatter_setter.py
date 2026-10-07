@@ -39,3 +39,12 @@ def test_refuses_a_note_with_no_frontmatter():
 
 def test_refusal_is_a_value_error():
     assert issubclass(FrontmatterEditRefused, ValueError)
+
+
+@pytest.mark.parametrize("literal", ["[unclosed", "a: b"])
+def test_refuses_a_write_that_would_break_the_note(literal):
+    """The stored value is one line and the key appears once, so only
+    `_single_line_write_breaks_note` stands between this literal and a note PyYAML no longer
+    reads: an unclosed flow sequence, and a second `: ` that makes the line an invalid mapping."""
+    with pytest.raises(FrontmatterEditRefused, match="would break the note"):
+        set_frontmatter_line(NOTE, "email", literal)

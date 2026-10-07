@@ -1041,7 +1041,12 @@ def write_config_text(path: str, text: str, *, expect_sha: str | None = None) ->
 
     No `expect_sha`: create exclusively (O_EXCL), parent directory first -- never-clobber is a
     property of the open. With it: replace only when the current text hashes to it, keeping the
-    file's mode. Returns False whenever it wrote nothing."""
+    file's mode. Returns False whenever it wrote nothing.
+
+    The update arm is best-effort, the residual `core/vault.py::_cas_write` states: the lock is
+    in-process only, so an outside editor (a human saving the file by hand) that writes between
+    the sha check and the replace is overwritten. No portable atomic compare-and-replace exists;
+    the window is the read-compare-replace, not the human's review time."""
     real = os.path.realpath(path)
     with _config_write_lock(real):
         if expect_sha is None:

@@ -834,7 +834,9 @@ class Sluice:
         defaults = _config_settings("")
         preflight = getattr(store, "preflight", None)
         is_default = bool(preflight and preflight().get("vault_dir_is_default"))
-        searches = {k.split(".")[1]: v for k, v in settings.items()
+        # Slice the prefix and suffix off rather than split on ".": a source id is not
+        # promised to be dot-free, and split would take only its first segment.
+        searches = {k[len("sources."):-len(".searches")]: v for k, v in settings.items()
                     if k.startswith("sources.") and k.endswith(".searches")}
         return SetupSnapshot(config_text=config_text, notes=notes, unreadable=unreadable,
                              vault_from_env=bool(os.environ.get("VAULT_DIR")),
@@ -845,8 +847,15 @@ class Sluice:
     def apply_setup(self, writes):
         """Write ticked in-session setup changes: the config first, then the notes, each
         artefact isolated. The ONE creator and updater for setup, and the owner of the config
-        check -- a caller cannot reach a config write that skips it. Never raises for a write's
-        own failure: each artefact gets an ArtefactOutcome."""
+        check -- a caller cannot reach a config write that skips it. A write's own OSError, and a
+        refusal raised as ValueError, become that artefact's ArtefactOutcome; anything else
+        propagates (a store that cannot be constructed, `target.store()`, is not caught here).
+
+        Notes still proceed after a config UPDATE that conflicted, failed or was set aside. That
+        is safe because `vault_dir` is never a unit once a config exists
+        (`onboard/review.py::_config_unit`), so no update can move the vault the notes were
+        shown against. A first-run CREATE is different: the notes need the vault it names, so
+        they are set aside when it does not land."""
         from sluice.core.config import write_config_text
         from sluice.core.paths import config_file
         from sluice.core.protocols import SETUP_NOTES, ArtefactOutcome, document_sha

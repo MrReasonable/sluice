@@ -674,3 +674,50 @@ def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_
     run.main(["--persona", p.id, "--grader-model", "opus", "--out", str(tmp_path / "out")])
     graders = [cmd for cmd, kw in seen if (kw.get("input") or "").startswith("Grade")]
     assert len(graders) == 1 and graders[0][graders[0].index("--model") + 1] == "opus"
+
+
+def test_brief_cites_sources_is_checked_per_review_call_carrying_a_brief():
+    """One sourced brief early in the run must not cover an unsourced brief proposed later."""
+    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED]),
+                   _use(rubric.REVIEW, [_UNSOURCED]))
+    assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
+    both = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED]),
+                 _use(rubric.REVIEW, [_UNSOURCED, _SOURCED]))
+    assert rubric.deterministic(both, max_turns=30)["brief_cites_sources"][0] is True
+
+
+def test_the_sources_section_is_the_tools_own_last_brief_section():
+    from sluice.onboard.review import ROLE_BRIEF_SECTIONS
+    assert rubric.SOURCES_SECTION == ROLE_BRIEF_SECTIONS[-1] == _SOURCED["target"]
+
+
+def test_two_persona_seeds_give_two_names():
+    """Comparing one call with itself passes even if the seed is ignored."""
+    import dataclasses
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    other = dataclasses.replace(p, name_seed=p.name_seed + 1)
+    assert personas.persona_name(p) == personas.persona_name(p)
+    assert personas.persona_name(p) != personas.persona_name(other)
+
+
+def test_a_clean_vault_env_server_env_has_no_problems(tmp_path):
+    """The vault-env persona's sandbox SETS VAULT_DIR; without `| {"VAULT_DIR"}` in the
+    must-set roster it would be reported as a variable that must not be set."""
+    env = isolation.server_env({"PATH": "/usr/bin"}, tmp_path, ROOT, vault_env=True)
+    assert env["VAULT_DIR"].startswith(str(tmp_path))
+    assert isolation.isolation_problems(env, tmp_path, ROOT, vault_env=True) == []
+
+
+@pytest.mark.parametrize("var", sorted(set(isolation.SET_VARS) | {"VAULT_DIR"}))
+def test_each_variable_that_must_be_set_is_reported_when_missing(tmp_path, var):
+    env = isolation.server_env({"PATH": "/usr/bin"}, tmp_path, ROOT, vault_env=True)
+    del env[var]
+    assert f"{var} is not set" in isolation.isolation_problems(env, tmp_path, ROOT,
+                                                               vault_env=True)
+
+
+def test_a_vault_env_pointing_outside_the_sandbox_is_reported(tmp_path):
+    env = isolation.server_env({"PATH": "/usr/bin"}, tmp_path / "sb", ROOT, vault_env=True)
+    env["VAULT_DIR"] = str(tmp_path / "elsewhere")
+    assert "VAULT_DIR points outside the sandbox" in isolation.isolation_problems(
+        env, tmp_path / "sb", ROOT, vault_env=True)
