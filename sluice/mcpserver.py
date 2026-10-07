@@ -41,7 +41,12 @@ from sluice.core.leads import (
     slug_matches,
     split_framing,
 )
-from sluice.core.safeout import is_control
+from sluice.core.formfit import DESC_MAX_CHARS as _DESC_MAX_CHARS
+from sluice.core.formfit import FORM_COLS as _FORM_COLS  # noqa: F401 -- tests/test_mcp_verify_helpers.py reads it
+from sluice.core.formfit import FORM_LINES as _FORM_LINES
+from sluice.core.formfit import describe as _describe
+from sluice.core.formfit import entry_lines as _entry_lines
+from sluice.core.formfit import hides_text as _hides_text
 from sluice.core.status import CANONICAL, TRIAGE_OWNED, normalize
 
 # `list_leads`'s company/role/url and `get_lead`'s fm/body are all scraped verbatim
@@ -128,19 +133,6 @@ _LIST_EVIDENCE_CONTENT_WARNING = (
 # helpers are pure so tests drive them without mcp; the tool in build_server only
 # wires them to the protocol.
 
-# How Claude Code 2.1.29x shows an input-required form, measured 2026-10-06 with a probe
-# server: the MESSAGE folds after three lines ("... (+N more lines)") with no way to
-# expand it, while each checkbox DESCRIPTION is shown in full as plain text -- any number
-# of lines, but cut with "..." at about 2,000 characters. And the dialog does not scroll
-# in every terminal (tmux), so a form should fit about one screen. Hence: a one-line
-# message, each entry's text in its own description, a character cap under the cut, and
-# forms packed to a conservative screen estimate (the server cannot know the width).
-# Client facts, not user preferences, so constants rather than config.
-_DESC_MAX_CHARS = 1900   # under the ~2,000-character cut, so nothing is ever hidden
-_FORM_COLS = 80          # assumed terminal width for the wrap estimate
-_DESC_WIDTH = _FORM_COLS - 8  # descriptions are indented under their checkbox
-_FORM_LINES = 30         # display lines of entries per form: about one screen
-
 # SEP-2322 input-required results exist from this protocol on. Claude Code 2.1.291
 # negotiates it, and cannot take a server-PUSHED elicitation at all (NoBackChannelError,
 # measured 2026-10-06), so this is the only mechanism that reaches the user there. An
@@ -159,26 +151,6 @@ def _can_elicit(protocol_version, elicitation) -> bool:
     return form is not None or url is None
 
 
-def _describe(title: str, body: str) -> str:
-    """What sits under an entry's checkbox: its title, then its exact stored text."""
-    return f"{title}\n{body}"
-
-
-# Bidi overrides and isolates reorder how a line DISPLAYS, so the human would read the
-# stored text in a different order. Zero-width characters are deliberately absent: they
-# are common in pasted text and change nothing a reader sees.
-_BIDI_CONTROLS = frozenset("\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
-
-
-def _hides_text(text: str) -> bool:
-    """A character that can make the terminal show something other than the stored
-    bytes -- a carriage return or escape sequence can overwrite what is displayed, a bidi
-    override reorders it. The control class is core/safeout.py's, the one CLI output is
-    escaped against, minus newline and tab, which are ordinary text in an entry."""
-    return any((is_control(ch) and ch not in "\n\t") or ch in _BIDI_CONTROLS
-               for ch in text)
-
-
 def _set_aside_reason(kind: str, text: str) -> str:
     """Why an entry was left out of every form, naming the actual cause."""
     if _hides_text(text):
@@ -190,12 +162,6 @@ def _set_aside_reason(kind: str, text: str) -> str:
     return f"{why} -- run `job-sluice {kind} verify` for this one"
 
 
-def _entry_lines(title: str, body: str) -> int:
-    """Estimated display lines for one checkbox: its label, its wrapped description,
-    and the blank line after it."""
-    wrapped = sum(max(1, -(-len(line) // _DESC_WIDTH))
-                  for line in _describe(title, body).split("\n"))
-    return wrapped + 2
 
 
 def _pack_form(entries):

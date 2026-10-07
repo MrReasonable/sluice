@@ -1741,6 +1741,8 @@ def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
 # IS the protocol stream.
 _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.app", "sluice.core.leads", "sluice.core.safeout", "sluice.core.status",
+    # Pure measurement helpers (how much text a form can show); no write path.
+    "sluice.core.formfit",
 })
 
 # Every WRITE method on the Store protocol (sluice/core/protocols.py), DERIVED off
@@ -1756,7 +1758,7 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
 _STORE_READ_METHODS = frozenset({
     "read_leads", "read_criteria",
     "read_candidate_profile", "read_cv_layout", "read_evidence", "read_pending_evidence",
-    "read_pending_evidence_text",
+    "read_pending_evidence_text", "read_document",
 })
 # Everything NOT in this literal is derived as a WRITE method below, so a read
 # omitted here is swept as a write -- and, far worse, a WRITE added here is

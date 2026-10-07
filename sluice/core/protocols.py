@@ -19,6 +19,7 @@ there, because a second store would ship without them. They are properties of *b
 store*, pinned by the conformance suite, and that is the whole point of writing this
 contract down.
 """
+import hashlib
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -38,6 +39,11 @@ CRITERIA_RELPATH = "Job Applications/Judging Profile.md"
 CANDIDATE_PROFILE_RELPATH = "Job Applications/Candidate Profile.md"
 """The candidate's own identity and application-form data. Like CRITERIA_RELPATH
 this is an opaque DOCUMENT KEY, not a path -- nothing here may assume a filesystem."""
+
+# The coach's researched notes on the role the user chose (in-session setup). Read ONLY by the
+# setup tools and the coach -- never by triage or cv, so model-researched text cannot reach a
+# scoring or composing decision. tests/test_role_brief_unread.py pins that.
+ROLE_BRIEF_RELPATH = "Job Applications/Role Brief.md"
 
 
 LEADS_VIEW_RELPATH = "Job Applications/Job Leads/Job Leads.base"
@@ -70,6 +76,19 @@ That is not the only lever, and the other needs no Bases syntax at all: `triage/
 could stop stamping this key into a note that is not a lead. So this is deferred rather than
 unavailable, and whichever lever is taken, this paragraph is what should stop being true.
 """
+
+# The vault notes in-session setup reads and writes, by artefact name.
+SETUP_NOTES = {"profile": CRITERIA_RELPATH, "candidate": CANDIDATE_PROFILE_RELPATH,
+               "brief": ROLE_BRIEF_RELPATH, "view": LEADS_VIEW_RELPATH}
+
+
+def document_sha(text: str) -> str:
+    """The sha a review form records for a document as shown, and the one
+    `Store.write_document(expect_sha=...)` compares against: SHA-256 over the text encoded as
+    UTF-8. Read with `newline=""`, that is the document's raw bytes, so a CRLF note compares
+    truly."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
 
 
 FLOOR_FIELD_SOURCES = {
@@ -1030,6 +1049,14 @@ class Store(Protocol):
         the user is shown."""
         ...
 
+    def read_document(self, rel: str) -> str | None:
+        """A store-managed document's text, decoded as UTF-8 with line endings untouched, or
+        None when it does not exist. Reading creates nothing. An unreadable or undecodable
+        document RAISES rather than reading as empty: shown as absent, it would be offered a
+        create the exclusive open then refuses -- or, through a store whose create is not
+        exclusive, overwritten. `rel` must stay inside the store, as for `write_document`."""
+        ...
+
     def read_cv_layout(self) -> "CvLayout | None":
         """The user's CV Layout (CV_LAYOUT_RELPATH): which roles a CV shows and how.
 
@@ -1055,9 +1082,19 @@ class Store(Protocol):
         """
         ...
 
-    def write_document(self, rel: str, text: str, *, only_if_absent: bool = False) -> str:
-        """Write a store-managed document (the rejected-leads digest) and return an
-        opaque handle.
+    def write_document(
+        self, rel: str, text: str, *, only_if_absent: bool = False, expect_sha: str | None = None,
+    ) -> str:
+        """Write a store-managed document and return an opaque handle, or "" when the write
+        abstained. Callers: the rejected-leads digest (a bare replace), `sluice init` (creates),
+        and in-session setup (creates and updates).
+
+        `expect_sha=` (in-session setup's update arm): replace the document ONLY when its
+        current text hashes to `expect_sha` (`document_sha`); otherwise -- including when it
+        does not exist -- write nothing and return "". It is the human-was-shown-these-bytes
+        check a review form needs, best-effort under the same compare-then-replace window
+        `core/vault.py::_cas_write` documents, not a lock. The text is written with line
+        endings untouched. Combining it with `only_if_absent` raises ValueError.
 
         `only_if_absent=True` writes NOTHING and returns `""` when the document already
         exists. This is the never-clobber primitive `sluice init` scaffolds the Judging

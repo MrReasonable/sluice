@@ -1,0 +1,50 @@
+import os
+import stat
+
+import pytest
+
+from sluice.core.config import write_config_text
+from sluice.core.protocols import document_sha
+
+
+def test_creates_exclusively_with_its_parent_directory(tmp_path):
+    p = tmp_path / "nested" / "config.yaml"
+    assert write_config_text(str(p), "a: 1\n")
+    assert p.read_text() == "a: 1\n"
+    assert not write_config_text(str(p), "a: 2\n")
+    assert p.read_text() == "a: 1\n"
+
+
+def test_replaces_only_when_the_sha_matches_and_keeps_the_mode(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("a: 1\n")
+    os.chmod(p, 0o640)
+    assert not write_config_text(str(p), "a: 2\n", expect_sha=document_sha("other\n"))
+    assert p.read_text() == "a: 1\n"
+    assert write_config_text(str(p), "a: 2\n", expect_sha=document_sha("a: 1\n"))
+    assert p.read_text() == "a: 2\n"
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+
+def test_writes_through_a_symlink_and_keeps_the_link(tmp_path):
+    target = tmp_path / "dotfiles" / "config.yaml"
+    target.parent.mkdir()
+    target.write_text("a: 1\n")
+    link = tmp_path / "config.yaml"
+    link.symlink_to(target)
+    assert write_config_text(str(link), "a: 2\n", expect_sha=document_sha("a: 1\n"))
+    assert link.is_symlink() and target.read_text() == "a: 2\n"
+
+
+def test_update_of_a_missing_file_abstains(tmp_path):
+    assert not write_config_text(str(tmp_path / "none.yaml"), "a: 1\n", expect_sha="0" * 64)
+
+
+def test_unencodable_text_raises_and_creates_nothing(tmp_path):
+    p = tmp_path / "config.yaml"
+    # Built with chr() so no raw surrogate or escape sequence has to survive an editor.
+    bad = "a: " + chr(0xD800) + "\n"
+    with pytest.raises(UnicodeEncodeError):
+        write_config_text(str(p), bad)
+    assert not p.exists()
+    assert write_config_text(str(p), "a: 1\n")
