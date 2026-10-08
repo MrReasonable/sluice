@@ -40,6 +40,23 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.2.0](https://github.com/MrReasonable/sluice/compare/v4.1.0...v4.2.0) (2026-10-08)
+
+
+### Features
+
+* **mcp:** set up or revise a job hunt from inside Claude Code, guided by a career coach ([#381](https://github.com/MrReasonable/sluice/pull/381), [#384](https://github.com/MrReasonable/sluice/pull/384), [#386](https://github.com/MrReasonable/sluice/pull/386)). Type `/mcp__job-sluice__career_interview` (the middle part is the name you registered the sluice server under). The coach helps you choose a direction or describe the role you want, researches that role on the web, asks questions specific to it, and turns your answers into settings, one group at a time. Before saving it plays back everything it will save, showing any value it would replace, and it saves only when you say yes. It then reports what was saved, walks you through opening your vault in Obsidian ("Open folder as vault"), and invites you to say what looks wrong. Two new tools carry this. `setup_status` (read-only, at every privilege level) reports what can be changed and its current value. `setup_save` (under `job-sluice mcp serve --write`) writes the agreed changes: a config key, a job-board search, a Judging Profile heading, a Candidate Profile field, or a Role Brief section. A list setting such as your titles or locations is saved item by item, so an item containing a comma stays one item. Searches can be added only for a board `ingest run` would actually run. A save writes nothing if you have edited a note or the config since the coach read them. A config edit changes only the line it must; a value written across several lines is left for you to edit by hand.
+* **setup:** every save keeps a copy of whatever it replaces, so earlier wording can be recovered after the chat has ended. A replaced note's copy goes under `Job Applications/_setup_backups/` in your vault; a replaced config's copy goes under `config_backups/` in sluice's state folder, with the config's own file permissions. Copies are never deleted, and if a copy cannot be written, nothing is replaced.
+* **vault:** a new `Job Applications/Role Brief.md` note holds the coach's research on the role you chose, with its sources. No pipeline stage reads it, so saving it changes how nothing is judged.
+* **doctor:** `job-sluice doctor` prints the vault folder it resolved, the folder to open in Obsidian.
+
+No existing config key, default or note changes meaning in this release.
+
+
+### Documentation
+
+* `docs/USAGE.md`, `docs/MCP.md`, `docs/CONFIGURATION.md` and `docs/ARCHITECTURE.md` describe the setup tools, the coach command, the Role Brief and where save copies are kept.
+
 ## [4.1.0](https://github.com/MrReasonable/sluice/compare/v4.0.0...v4.1.0) (2026-10-06)
 
 
