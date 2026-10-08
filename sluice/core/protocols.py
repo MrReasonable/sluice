@@ -21,6 +21,7 @@ contract down.
 """
 import hashlib
 import json
+import dataclasses
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -1355,6 +1356,10 @@ class SetupSnapshot:
     # vault that moved between setup_status and setup_save is caught without any response
     # carrying a discovered path. None for a store with no directory to name.
     vault_digest: str | None = None
+    # Registered sources whose searches would never run, by why: "shipped" (the source module
+    # registers it disabled -- a retired board) or "config" (`sources.<id>.enabled: false`).
+    # Offered for no search (spec 2026-10-08, Retired boards are not offered).
+    disabled_sources: dict = dataclasses.field(default_factory=dict)
 
     @property
     def config_exists(self) -> bool:

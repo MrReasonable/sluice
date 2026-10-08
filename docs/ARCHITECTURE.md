@@ -16,9 +16,9 @@ Shared by every sub-app:
   exclusively, with one it replaces the file only when its current text hashes to it, and a
   symlinked config has its TARGET replaced so a link into a dotfiles repository survives.
 - `formfit.py`: pure measurement of what one checkbox in a client's review form can show in
-  full (`DESC_MAX_CHARS` and how many display lines an entry takes). The evidence-verify form in
-  `mcpserver.py` and the setup form in `onboard/review.py` each import it, so they share one
-  answer about what fits.
+  full (`DESC_MAX_CHARS` and how many display lines an entry takes), for the evidence-verify
+  form in `mcpserver.py`. Its `hides_text` is also in-session setup's control and
+  bidirectional character check in `onboard/review.py`, so the two refuse the same characters.
 - `vault.py`: the lead/experience store. Reads and writes an Obsidian-style
   markdown vault without clobbering status, scores, or notes a human or
   another agent has already set: a fresh scrape touches only a `last_seen`
@@ -1053,10 +1053,11 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   helpers): the in-session setup model. `status_view` turns a
   `Sluice.setup_snapshot()` into what `setup_status` reports; the finish functions turn a
   proposed change into the whole new text of one artefact, the Role Brief note included, and
-  set aside what cannot be shown or applied, with the reason.
+  set aside what cannot be applied, with the reason; `previous` reads what a written change
+  replaced, off the same snapshot.
 - **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
   it (a persona plus one page per phase). It writes nothing; the only route from the coach to
-  a write is the `setup_review` form. Building the prompt imports `core/app.py` and
+  a write is `setup_save`, which the playbooks call only after a playback and the user's yes. Building the prompt imports `core/app.py` and
   `sluice.backends`, inside the function, to list what each backend needs.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
@@ -1184,15 +1185,22 @@ the stale statements and returned three different totals, which is the argument 
 enumerating rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
 assertions pin the roster at both privilege levels; prose cannot.
 
-In-session setup adds `setup_status` (read-only, always registered), `setup_review` (under
+In-session setup adds `setup_status` (read-only, always registered), `setup_save` (under
 `--write`) and the `career_interview` PROMPT (registered at both levels). Unlike the other
 tools, which share the server's one `Sluice` (the holder), the two setup tools build a fresh
 `Sluice` from the config file on every call, because setup edits that file: a config the
-loaders refuse comes back as `config_refused`, and when `setup_review` wrote a config the
+loaders refuse comes back as `config_refused`, and when `setup_save` wrote a config the
 holder is rebuilt so the other tools see it (`restart_needed` if that rebuild fails).
-`setup_review` shows each change under its own unticked checkbox and, on the retry, refuses
-any artefact whose text changed since it was shown and hands only the ticked units to
-`Sluice.apply_setup`, which owns the config check and every write. So the claim above still
+`setup_status` returns a `version`, a digest of the config text, each setup note's text (or
+its absence) and the vault in use (`SetupSnapshot.version`; no path in it). `setup_save` takes
+it back and, when the state it reads now carries another, writes nothing and reports `stale`;
+otherwise it validates every change and hands the finished texts, built against that same
+snapshot, to `Sluice.apply_setup`, which owns the config check and every write. There is no
+form: the user's consent is a yes in chat to the coach's playback, a rule the playbooks state
+and the eval harness scores, which the model can break, unlike `verify_evidence`'s form (owner's
+ruling, `docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md`).
+`kinds.search` offers, and `setup_save` accepts a search for, only a source `ingest run` would
+run: enabled by the config and by its own module. So the claim above still
 holds: it is a thin translation layer over exactly one `Sluice` write method. The isolation
 sweep in `tests/test_mcpserver.py` allows `mcpserver.py` the `onboard.review` and
 `onboard.coach` imports and also walks every `sluice.onboard` module they reach, asserting none

@@ -9,10 +9,12 @@ Call `doctor` (its default, offline, is enough). It reports what is ready and wh
 
 ## How to come back
 
-Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances. They start this same conversation again; in Claude Code that is the `career_interview` prompt, typed as `/mcp__<name>__career_interview` and optionally followed by what they want from the session, where `<name>` is what sluice was registered as. The next session knows only what was written: `setup_status` shows the saved settings and the Role Brief, and nothing said in this conversation.
+Tell them they can return whenever the hunt needs revising: a new direction, a gate that turned out too tight or too loose, a change in circumstances, or something that looked wrong when they read their notes in Obsidian. They start this same conversation again; in Claude Code that is the `career_interview` prompt, typed as `/mcp__<name>__career_interview` and optionally followed by what they want from the session, where `<name>` is what sluice was registered as. The next session knows only what was saved: `setup_status` shows the saved settings, the notes and the Role Brief, and nothing said in this conversation.
 
 ## Closing
 
 Finish with a short summary: what was set up, what was left empty on purpose and what that means, and the one next step that matters most. Keep it brief and accurate; do not promise results.
 
-Say what was saved, from the outcomes `setup_save` reported, what was discussed but not saved, and what is still to come and how to add it: a search address can be pasted later in this conversation, or brought to a new one. Never say that research, a draft or an agreed change will carry over to the next session unless it was written. If the one offer to save has not been made yet, make it now; if they already declined it, do not raise it again. For research, the research phase says how.
+Say what was saved, from the outcomes `setup_save` reported, what was discussed but not saved, and what is still to come and how to add it: a search address can be pasted later in this conversation, or brought to a new one, and saved the same way, with a playback and a yes. Never say that research, a draft or an agreed change will carry over to the next session unless it was saved. If the one offer to save has not been made yet, make it now; if they already declined it, do not raise it again. For research, the research phase says how.
+
+If they have not yet looked at their notes in Obsidian, remind them how, from the review phase, and that what looks wrong there can be corrected in this conversation or a later one.

@@ -37,6 +37,12 @@ DEFAULT_VAULT = ("sluice is using a vault in whatever folder the MCP server was 
                  "so notes written now would land where nothing else reads them; set `vault_dir` "
                  "in your sluice config file by hand, then restart the server")
 CLEARED = "(unset: back to the shipped default)"
+SOURCE_OFF = {
+    "shipped": ("sluice ships this board switched off because it was retired, so a search for "
+                "it would never run; choose a board from setup_status's `kinds`"),
+    "config": ("your sluice config switches this board off (`enabled: false` under it in "
+               "`sources:`), so a search for it would never run; switch it back on there first"),
+}
 HIDDEN_TEXT = ("it contains a control or bidirectional character that could hide or reorder "
                "text when it is read back")
 
@@ -217,6 +223,9 @@ def propose(changes, snap) -> tuple:
             continue
         if key in seen_keys:
             skip("this batch already proposes a change to the same thing; propose one value")
+            continue
+        if c.kind == "search" and c.target in snap.disabled_sources:
+            skip(SOURCE_OFF[snap.disabled_sources[c.target]])
             continue
         problem = _vault_problem(c, snap, changes)
         if problem:
@@ -748,5 +757,6 @@ def status_view(snap) -> dict:
                   for s in ROLE_BRIEF_SECTIONS},
         "kinds": {"config": [q.key for q in qs], "profile": list(_plan.PROFILE_HEADINGS),
                   "candidate": list(_plan._CANDIDATE_KEY_BY_ANSWER),
-                  "brief": list(ROLE_BRIEF_SECTIONS), "search": list(snap.source_ids)},
+                  "brief": list(ROLE_BRIEF_SECTIONS),
+                  "search": [i for i in snap.source_ids if i not in snap.disabled_sources]},
     }

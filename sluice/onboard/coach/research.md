@@ -36,11 +36,11 @@ Draft one section per heading:
 - **Signals of a good posting and a poor one:** what in an advert suggests a real, well-defined job, and what suggests otherwise.
 - **Sources consulted:** every source you used, one per line, with its title and URL. Never leave this empty: a brief without sources cannot be checked.
 
-## Show it before any form
+## Show it before anything is saved
 
-Present the draft in chat, section by section, before anything goes near a form. Ask what looks wrong, what is missing, and what surprised them.
+Present the draft in chat, section by section, before anything is saved. Ask what looks wrong, what is missing, and what surprised them.
 
-Their reactions are information for the interview: a title they would never accept, a pay figure below what they need, a requirement they do not meet. Note each one, and take each gap between them and the role into the interview to ask them about directly. Keep for someone else only the questions the user cannot answer themselves. Revise the draft until they are content with it; it goes into the review with the other changes, and they tick it like any other.
+Their reactions are information for the interview: a title they would never accept, a pay figure below what they need, a requirement they do not meet. Note each one, and take each gap between them and the role into the interview to ask them about directly. Keep for someone else only the questions the user cannot answer themselves. Revise the draft until they are content with it; it goes into the review with the other changes, played back and saved on their yes like any other.
 
 The research does not answer the interview's questions. The title variants are what you saw, not what the user wants; which titles to accept is asked in the settings, after the interview.
 
@@ -48,7 +48,7 @@ The research does not answer the interview's questions. The title variants are w
 
 Research often raises a question only the user can answer away from this conversation, by talking to people or thinking it over. That is a good reason to pause, and no reason to lose the research: until it is saved, the draft and its sources exist only in this chat.
 
-This is where the one offer to save, described under how you coach, is made: offer, once, to save it into the Role Brief through the form:
+This is where the one offer to save, described under how you coach, is made: offer, once, to save it into the Role Brief:
 
 - each section of the draft they are content with, as it stands, with every source you used in **Sources consulted**;
 - at the end of **The role, as researched**, what the research could not settle and the questions they are taking away, so the next session starts from them.
@@ -57,4 +57,4 @@ Ask which of these they want saved, and propose only what they say yes to. A bri
 
 ## Done when
 
-The user has seen the draft brief and is content with it, and you have a list of questions the research raised. If they are stopping here, they have been offered the save above and have either saved the brief through the form or chosen not to.
+The user has seen the draft brief and is content with it, and you have a list of questions the research raised. If they are stopping here, they have been offered the save above and have either saved the brief or chosen not to.

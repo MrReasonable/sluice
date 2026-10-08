@@ -33,7 +33,7 @@ claude mcp add job-sluice -- job-sluice mcp serve --write
 ```
 
 This additionally registers `dismiss_lead`, `apply_record`, `cv_run`, `cv_signoff`,
-`create_lead`, `propose_evidence`, `verify_evidence` and `setup_review`. Each is a thin layer over one facade method rather than a
+`create_lead`, `propose_evidence`, `verify_evidence` and `setup_save`. Each is a thin layer over one facade method rather than a
 raw store write, so every invariant in [`GUARANTEES.md`](GUARANTEES.md) still holds — an agent
 cannot reach past them.
 
@@ -52,10 +52,18 @@ The server also offers a prompt, `career_interview`, at either privilege level. 
 surfaces it as the slash command `/mcp__job-sluice__career_interview` (the middle part is the name you gave
 `claude mcp add`), with one optional argument
 saying what you want from the session. Your client cannot list prompts for you, so start it by
-name. The coach interviews you, can research the role you choose, and proposes setup changes.
-`setup_review` (under `--write`) shows each change under its own unticked checkbox and writes
-only the ones you tick, so the model can open the form but cannot answer it. It needs a client
-that supports form elicitation, as `verify_evidence` does. `scripts/coach_eval/README.md`
+name. The coach interviews you, can research the role you choose, and agrees setup changes with
+you in chat. Before saving it plays back everything the save would write, grouped by where it
+goes and showing any value it replaces, and it calls `setup_save` (under `--write`) only after
+you say yes. That yes is in chat, not in a form: unlike `verify_evidence`, nothing stops the
+model from saving without it, so the rule lives in the coach's instructions and the playback is
+your check (owner's ruling, 2026-10-08, after a real session in which the per-change form could
+not hold a normal Role Brief section). `setup_save` takes the `version` `setup_status` returned
+and writes nothing, reporting `stale`, when the config, a setup note or the vault changed in
+between, say because you edited a note in Obsidian. Each change it wrote that replaced a value
+of yours comes back with `previous`, which the coach can send back to undo it. After saving, the
+coach walks you through opening your vault in Obsidian, and `job-sluice doctor` prints the
+folder to open. `scripts/coach_eval/README.md`
 describes the developer-only harness that scores the coach; it never runs in CI.
 
 ## What no tool can do for you

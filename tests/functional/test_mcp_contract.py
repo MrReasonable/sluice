@@ -630,7 +630,7 @@ def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
     `prompts/list` and `prompts/get` through the real SDK. Registered at the DEFAULT
     privilege level (write=False), because a read-only server's coach can still interview
     and research -- the prompt itself tells the user to restart with `--write` before the
-    review step. Exact-set `==` so a second prompt cannot arrive unreviewed."""
+    save. Exact-set `==` so a second prompt cannot arrive unreviewed."""
     async def _run():
         from mcp import Client
         server = build_server(Config())

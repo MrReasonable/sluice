@@ -128,12 +128,62 @@ def test_the_interview_comes_before_the_settings():
     assert text.index("## Part 1: The interview") < text.index("## Part 2: The settings")
 
 
-def test_the_form_is_never_held_for_a_change_still_to_come():
-    # Eval run 4: every value was agreed by coach message 10, then the coach held the whole form
-    # for search addresses the user had yet to fetch and the cap ran out with nothing sent.
-    assert "Never hold the form for a change that is optional" in coach.read_playbook("interview")
-    assert "Do not wait for a change that is optional" in coach.read_playbook("review")
+def test_the_save_is_never_held_for_a_change_still_to_come():
+    # Eval run 4: every value was agreed by coach message 10, then the coach held everything
+    # for search addresses the user had yet to fetch and the cap ran out with nothing saved.
+    assert "Never hold the save for a change that is optional" in coach.read_playbook("interview")
+    assert "Do not hold the save for a change that is optional" in coach.read_playbook("review")
     assert "what is still to come and how to add it" in coach.read_playbook("handoff")
+
+
+def test_the_review_plays_back_everything_and_saves_only_on_an_explicit_yes():
+    # Spec 2026-10-08, The flow: a complete playback grouped by destination, replaced values
+    # shown, and a save only on an explicit yes; a change asked for afterwards is played back
+    # again.
+    text = coach.read_playbook("review")
+    for group in ("Your sluice settings", "The Judging Profile", "The Candidate Profile",
+                  "The Role Brief", "Searches"):
+        assert f"**{group}.**" in text, group
+    assert "show both: what is there now" in text
+    assert "what leaving it empty means" in text
+    assert "Save only when they say yes to that playback." in text
+    assert 'A shrug, a maybe, "you decide" or silence is not a yes' in text
+    assert "play back again what changed before saving" in text
+    assert "**Save only on their explicit yes.**" in coach.read_playbook("persona")
+
+
+def test_the_review_walks_the_user_through_obsidian_and_invites_corrections():
+    text = coach.read_playbook("review")
+    steps = ["Install Obsidian", '"Open folder as vault"', "`job-sluice doctor`",
+             "`Job Applications/`"]
+    at = [text.index(s) for s in steps]
+    assert at == sorted(at), "the walkthrough's steps are out of order"
+    assert "Invite corrections now and in any later session." in text
+    assert "send its `previous` as the new value" in text
+    assert "`clear: true`" in text and "Do this only when they ask." in text
+
+
+def test_a_stale_save_is_reread_and_played_back_before_saving_again():
+    text = coach.read_playbook("review")
+    assert "Call `setup_status` again, play back anything that differs" in text
+    assert "keep the `version` it returns" in text
+
+
+def test_no_playbook_mentions_the_retired_form():
+    """The per-change setup form is gone (spec 2026-10-08). The one form left is
+    verify_evidence's, which the hand-off names for evidence only."""
+    import re
+    seen = 0
+    for name in coach.PLAYBOOKS:
+        low = coach.read_playbook(name).lower()
+        for word in ("tick", "checkbox", "not_shown", "review form", "unticked"):
+            assert word not in low, (name, word)
+        forms = [m.start() for m in re.finditer(r"\bforms?\b", low)]
+        seen += len(forms)
+        assert all("evidence" in low[max(0, i - 200):i] for i in forms), (name, forms)
+    # Scope: the hand-off's evidence form is the one mention that must be there, so a matcher
+    # that found nothing at all would be the broken one, not a clean sweep.
+    assert seen >= 1
 
 
 def test_the_interview_probes_gaps_names_tensions_and_does_not_push():
@@ -148,10 +198,10 @@ def test_the_interview_probes_gaps_names_tensions_and_does_not_push():
 
 def test_the_review_playbook_keeps_the_approved_text_and_the_users_requests():
     text = coach.read_playbook("review")
-    # Run 6: approved Role Brief text was rewritten unseen, and a requested smaller form was not
-    # sent; both are now stated rules.
-    assert "Send exactly the text the user approved." in text
-    assert "Do what the user asks about the form, and what you told them you would do." in text
+    # Run 6: approved Role Brief text was rewritten unseen, and a requested ordering was not
+    # followed; both are stated rules.
+    assert "Play back exactly the text you will save." in text
+    assert "Do what the user asks about the save, and what you told them you would do." in text
 
 
 def test_misattributions_are_corrected_and_the_profile_is_drafted_in_one_pass():

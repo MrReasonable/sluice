@@ -1221,7 +1221,7 @@ def build_server(config, write: bool = False):
 
     # A PROMPT, registered at every privilege level: a read-only server's coach can still
     # interview and research, and the assembled text tells the user to restart with `--write`
-    # before the review step. The text names no role, sector, seniority or employer
+    # before saving. The text names no role, sector, seniority or employer
     # (tests/test_coach_prompt.py sweeps it and this description).
     @mcp_server.prompt(name="career_interview")
     def career_interview_prompt(focus: str = "") -> str:

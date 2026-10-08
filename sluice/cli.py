@@ -2658,7 +2658,8 @@ def cmd_doctor(args, config) -> int:
     # "I asked for something that does not exist" from "the thing I asked for is down".
     required = _doctor_required(args.require)
 
-    report = Sluice(config).doctor(offline=args.offline)
+    sluice = Sluice(config)
+    report = sluice.doctor(offline=args.offline)
     # Computed ONCE and handed to the printer, never derived a second time there. The
     # verdict's closing line is a statement about the exit code, and two derivations of
     # one fact drift: the first cut of this recomputed nothing and simply keyed the line
@@ -2671,6 +2672,17 @@ def cmd_doctor(args, config) -> int:
     else:
         _print_doctor_verdict(report, offline=args.offline, strict=args.strict,
                               exit_code=rc)
+    # The folder a user opens in Obsidian ("Open folder as vault"); the career coach sends them
+    # here for it, so both views print it. Only the CLI does: the MCP doctor tool's report
+    # carries no path. A store with no directory (not the vault) prints nothing, and so does a
+    # store that cannot be built: the report above already names that as its own row, and this
+    # line must never turn a printed report into a traceback.
+    try:
+        vault = getattr(sluice.store(), "dir", None)
+    except Exception:  # noqa: BLE001 -- reported by the doctor rows above, not here
+        vault = None
+    if vault:
+        print(f"\nVault folder: {os.path.realpath(vault)}")
     # AFTER the report, and outside the verbose/default branch, because the answer to
     # `--require` is the thing the caller ran for: it must print whichever view they chose.
     unmet = [(name, report.verdict().buckets[name]) for name in required

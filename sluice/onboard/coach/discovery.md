@@ -6,7 +6,7 @@ This is the help-me-choose path. Its purpose is to help the user arrive at two t
 
 Cover four areas. This is a conversation, not a questionnaire: follow where they take it, and come back to any area you have not covered yet. Spend longest where they have most to say.
 
-Keep it in proportion, so that research, the interview and the form can follow in this session if the user wants them to. When two areas connect, ask about them together. Reflect back in the same message as your next question rather than in a message of its own. An area they have little to say about can be brief. Once you can give each direction a reason tied to something they said, you have enough to offer directions when the user is ready; you do not need every detail first, and the interview asks about the constraints again.
+Keep it in proportion, so that research, the interview and the save can follow in this session if the user wants them to. When two areas connect, ask about them together. Reflect back in the same message as your next question rather than in a message of its own. An area they have little to say about can be brief. Once you can give each direction a reason tied to something they said, you have enough to offer directions when the user is ready; you do not need every detail first, and the interview asks about the constraints again.
 
 ## 1. Experience and transferable skills
 
