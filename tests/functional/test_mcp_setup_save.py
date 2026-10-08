@@ -136,13 +136,53 @@ def test_sending_previous_back_restores_what_was_replaced():
     assert load_config(config_file()).lead_ttl_days == 14
 
 
-def test_a_list_value_no_restore_could_reproduce_comes_back_not_restorable():
-    """inv-001 through the real tool: a list item holding a comma would come back split in
-    two, so the row carries `not_restorable` naming the key, and no `previous` the coach could
-    send back to write a broader filter."""
+_ITEMS = ["Example, Inc.", 'Say "hi"', "a: b", "x # y", "Remote, Example"]
+
+
+def _loaded_reject_companies():
+    from sluice.triage.config import load_triage_config
+    return load_triage_config(config_file()).reject_companies
+
+
+def test_a_list_value_is_written_and_loads_back_item_for_item():
+    """The eval's bug: a location holding a comma, sent comma-joined, became several. Sent as a
+    list through the real tool, every item stays whole in the file the loaders read."""
+    _existing_hunt()
+    out = _save([{"kind": "config", "target": "reject_companies", "value": _ITEMS}])
+    assert [r["outcome"] for r in out["changes"]] == ["written"], out
+    assert _loaded_reject_companies() == _ITEMS
+
+
+def test_a_list_for_a_scalar_setting_is_set_aside_through_the_tool():
+    _existing_hunt()
+    row = _rows(_save([{"kind": "config", "target": "lead_ttl_days",
+                        "value": ["30"]}]))["config:lead_ttl_days"]
+    assert row["outcome"] == "set_aside" and "not a list" in row["reason"]
+
+
+def test_previous_of_a_list_setting_is_a_list_that_restores_it_exactly():
+    """inv-001 through the real tool: an item holding a comma once came back as two, so a
+    restore wrote a broader filter. `previous` is now the list, and sending it back puts the
+    config's loaded value back exactly."""
     _existing_hunt()
     Path(config_file()).write_text(Path(config_file()).read_text().replace(
         "  # reject_companies:", '  reject_companies: ["Example, Inc.", "Other Co"]  #'))
+    row = _rows(_save([{"kind": "config", "target": "reject_companies",
+                        "value": "Example Three"}]))["config:reject_companies"]
+    assert row["outcome"] == "written" and "not_restorable" not in row
+    assert row["previous"] == ["Example, Inc.", "Other Co"]
+    assert _loaded_reject_companies() == ["Example Three"]
+    back = _save([{"kind": "config", "target": "reject_companies", "value": row["previous"]}])
+    assert [r["outcome"] for r in back["changes"]] == ["written"], back
+    assert _loaded_reject_companies() == ["Example, Inc.", "Other Co"]
+
+
+def test_a_hand_typed_list_no_value_could_reproduce_comes_back_not_restorable():
+    """What remains of `not_restorable`: an item `parse_items` would not take back verbatim (a
+    surrounding space here). The row names the key, and carries no `previous` to send back."""
+    _existing_hunt()
+    Path(config_file()).write_text(Path(config_file()).read_text().replace(
+        "  # reject_companies:", '  reject_companies: [" Example Inc"]  #'))
     row = _rows(_save([{"kind": "config", "target": "reject_companies",
                         "value": "Example Three"}]))["config:reject_companies"]
     assert row["outcome"] == "written" and "previous" not in row

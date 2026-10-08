@@ -137,6 +137,10 @@ class TtyAsker:
                 # common path was the unprotected one.
                 return q.parse(q.default) if q.default is not None else None
             try:
+                # A list setting's answer is one typed line split on every comma
+                # (`questions.py::parse_csv`), so an item holding a comma cannot be typed here.
+                # The workaround is to edit that key in the config file by hand, or to set it
+                # through the career coach, whose `setup_save` takes a list as a list.
                 return q.parse(raw)
             except BadAnswer as e:
                 self._say(f"  {e}")

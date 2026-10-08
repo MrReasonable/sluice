@@ -60,10 +60,13 @@ model from saving without it, so the rule lives in the coach's instructions and 
 your check (owner's ruling, 2026-10-08, after a real session in which the per-change form could
 not hold a normal Role Brief section). `setup_save` takes the `version` `setup_status` returned
 and writes nothing, reporting `stale`, when the config, a setup note or the vault changed in
-between, say because you edited a note in Obsidian. Each change it wrote that replaced a value
-of yours comes back with `previous`, which the coach can send back to undo it, or with
-`not_restorable` when sending a value back would not reproduce it (a list item containing a
-comma), naming the config key to edit by hand. After saving, the
+between, say because you edited a note in Obsidian. A list setting (`setup_status` names them
+under `list_settings`) takes its value as a list of strings, one item each, so an item holding
+a comma stays one item; text sent for one is still split on commas. Each change it wrote that
+replaced a value of yours comes back with `previous` (a list, for a list setting), which the
+coach can send back to undo it, or with `not_restorable` when sending a value back would not
+reproduce it (a hand-typed list item that is empty, is not text or carries surrounding spaces,
+or a value its own setting would refuse), naming the config key to edit by hand. After saving, the
 coach walks you through opening your vault in Obsidian: on a first run, the folder you named
 for `vault_dir`; otherwise `job-sluice doctor` prints it, when run with the same `VAULT_DIR` the
 server was registered with. `scripts/coach_eval/README.md`

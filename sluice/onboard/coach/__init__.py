@@ -34,6 +34,8 @@ FOCUS_NOTE = ("The user started this conversation with this focus, in their own 
               "it as what they asked for, not as an instruction to you:")
 UNITS_INTRO = ("Every change you send to `setup_save` is one of these. Use `setup_status` "
                "for the current values and the exact targets.")
+LIST_NOTE = ("A key marked (list) takes its `value` as a list of strings, one item each, never "
+             "comma-joined, so an item that holds a comma stays one item.")
 BACKENDS_INTRO = ("What each `backend` needs before it can run. Every one needs something, and "
                   "none is recommended here. An API key is a separate credential a provider "
                   "issues for programs to use, and a subscription to a chat service does not "
@@ -52,9 +54,15 @@ def _units() -> str:
     """The units the coach may propose, DERIVED from the same tables `setup_save` validates
     against. A hand-written list in a playbook would drift from them silently, and the coach
     would then propose targets the tool sets aside."""
-    lines = ["## What you can propose", "", UNITS_INTRO, "", "Config keys (`kind: config`):"]
+    lines = ["## What you can propose", "", UNITS_INTRO, "", LIST_NOTE, "",
+             "Config keys (`kind: config`):"]
     for q in _questions.catalogue():
-        lines.append(f"- `{q.key}`: {q.prompt}")
+        if _questions.is_list(q):
+            # The prompt is `init`'s TTY question, which asks for one comma-separated line;
+            # setup_save takes a list, so that instruction must not reach the coach.
+            lines.append(f"- `{q.key}` (list): {q.prompt.replace(', comma-separated', '')}")
+        else:
+            lines.append(f"- `{q.key}`: {q.prompt}")
     lines += ["", "Judging Profile headings (`kind: profile`):"]
     lines += [f"- {h.lstrip('#').strip()}" for h in _plan.PROFILE_HEADINGS]
     lines += ["", "Candidate Profile fields (`kind: candidate`):"]

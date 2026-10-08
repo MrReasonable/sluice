@@ -161,6 +161,25 @@ def test_config_edits_carry_their_settings_and_expected_values():
     assert ("cv.backend", "anthropic") in w.expect and w.expect_sha == document_sha(CONFIG)
 
 
+LIST_ITEMS = ["Example, Inc.", 'Say "hi"', "a: b", "x # y", "back\\slash", "Remote, Example"]
+
+
+@pytest.mark.parametrize("first_run", [False, True])
+def test_a_list_value_is_written_so_each_item_reads_back_whole(first_run):
+    """The config check compares the loaded setting with `expect`; both must be the list as
+    sent, item for item, commas, quotes, colons and `#` included. Loaded with the real parser,
+    never inspected as a string."""
+    import yaml
+    changes = [{"kind": "config", "target": "reject_companies", "value": LIST_ITEMS}]
+    if first_run:
+        changes.append({"kind": "config", "target": "vault_dir", "value": "/example/v"})
+    writes, aside = write_for(changes, snap(None if first_run else CONFIG))
+    assert aside == []
+    cfg = next(w for w in writes if w.artefact == "config")
+    assert yaml.safe_load(cfg.text)["triage"]["reject_companies"] == LIST_ITEMS
+    assert ("triage.reject_companies", LIST_ITEMS) in cfg.expect
+
+
 def test_a_first_brief_is_rendered_with_placeholders_for_the_rest():
     writes, _ = write_for([{"kind": "brief", "target": "Pay structure", "value": "Day rate."}],
                           snap(CONFIG))

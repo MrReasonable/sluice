@@ -426,6 +426,10 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
         items = schema["$defs"][items["$ref"].rsplit("/", 1)[-1]]
     assert set(items.get("properties", {})) == {
         "kind", "target", "value", "clear", "label", "url", "remove"}
+    # A list setting's value travels as a list of strings, so an item holding a comma stays one
+    # item; text stays accepted for every setting.
+    assert sorted(items["properties"]["value"]["anyOf"], key=str) == sorted(
+        [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], key=str)
     # Minor #9 (final whole-branch review): `backend` was an unconstrained str,
     # so an invalid value surfaced only as a runtime BackendError -- typing it
     # Literal[...] puts the constraint into the client-facing schema as a genuine
@@ -659,6 +663,8 @@ def test_setup_save_registered_description_states_the_save_rules():
     desc = " ".join(tool.description.split())
     for phrase in ("playing every change back to the user in chat",
                    "hearing an explicit yes", '"stale"', "setup_status's `kinds`",
-                   "`previous`", "`not_restorable`", "written, set_aside or failed"):
+                   "`previous`", "`not_restorable`", "written, set_aside or failed",
+                   "A list setting's `value` is a list of strings, one item each, never "
+                   "comma-joined", "a list, for a list setting"):
         assert phrase in desc, phrase
     assert "form" not in desc and "tick" not in desc

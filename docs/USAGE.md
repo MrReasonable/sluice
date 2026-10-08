@@ -892,12 +892,16 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   Brief section). The career coach plays every change back to you, grouped by where it goes
   and showing any value it replaces, and calls this only after you say yes. `setup_status`
   (read-only, registered at both levels) reports what can be changed, its current value, and
-  a `version` token for exactly what it read; `setup_save` must be handed that token. The
+  a `version` token for exactly what it read; `setup_save` must be handed that token. A list
+  setting (named under `setup_status`'s `list_settings`) takes its `value` as a list of
+  strings, one item each, so an item holding a comma stays one item; text for one is still
+  split on commas, and a list for any other setting is set aside. The
   result's `outcome` is one of: `completed` (`changes` gives each change's own outcome --
   `written`, `set_aside` with the reason, or `failed` with the reason -- and a written change
-  that replaced a value or text of yours carries `previous`, which puts it back when sent
-  again as the value, or `not_restorable` instead when no value sent back would reproduce it:
-  a list setting with a comma inside one of its items, which comes back split in two, is
+  that replaced a value or text of yours carries `previous` -- a list for a list setting --
+  which puts it back when sent again as the value, or `not_restorable` instead when no value
+  sent back would reproduce it: a value typed by hand that its own setting would not read back
+  unchanged, such as a list item that is empty, is not text or carries surrounding spaces, is
   edited by hand in the config key it names), `stale` (the config file, a setup note or the vault changed after
   `setup_status` read them, say because you edited a note in Obsidian; nothing was written,
   so read `setup_status` again), `config_refused` (the config file does not load; fix it by

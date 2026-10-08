@@ -52,7 +52,9 @@ class ChangeIn(TypedDict, total=False):
     """One agreed change, as the setup_save tool receives it."""
     kind: str
     target: str
-    value: str
+    # A list setting (`questions.is_list`) also takes a list of strings, one item each, so an
+    # item holding a comma stays one item; text for a list setting is still split on commas.
+    value: str | list[str]
     clear: bool
     label: str
     url: str
@@ -63,7 +65,7 @@ class ChangeIn(TypedDict, total=False):
 class Change:
     kind: str
     target: str
-    value: str | None = None
+    value: str | list | None = None    # a list only for a list setting's items
     clear: bool = False
     label: str | None = None
     url: str | None = None
@@ -155,6 +157,29 @@ def _render(value):
     return flow_list(value) if isinstance(value, list) else scalar(value)
 
 
+def _is_items(value) -> bool:
+    return isinstance(value, list)
+
+
+LIST_FOR_TEXT = "it takes text, not a list"
+
+
+def _list_for_scalar(q) -> str:
+    return f"`{q.key}` takes one value, not a list; send it as text"
+
+
+def parse_value(q, value):
+    """A config change's value through ITS question: a list through the question's `items`
+    reader (each item verbatim, never split), text through `parse`. Every reader of a config
+    change's value goes through here -- the rehearsal, the write, the expected setting the
+    config check compares and `previous` -- so the value written is the value checked."""
+    if _is_items(value):
+        if not _questions.is_list(q):
+            raise ValueError(_list_for_scalar(q))
+        return q.parse.items(value)
+    return q.parse(value or "")
+
+
 def prose_problem(text) -> str | None:
     if not text or not text.strip():
         return "it is empty"
@@ -180,6 +205,8 @@ def vault_path_problem(raw) -> str | None:
     EXPANDED text, as `core/paths.py` expands at ingress: `expanduser` leaves a `~user` it cannot
     resolve unchanged, and `parse_path` would then anchor `~nosuchuser/notes` at that same
     folder, so a prefix check on the raw text would wave it through."""
+    if _is_items(raw):
+        return "a vault path is one path, not a list"
     text = os.path.expanduser((raw or "").strip())
     if os.path.isabs(text):
         return None
@@ -232,6 +259,10 @@ def propose(changes, snap) -> tuple:
         if problem:
             skip(problem)
             continue
+        if c.kind != "config" and _is_items(c.value):
+            # Only a list setting takes a list; every other kind reads `value` as text.
+            skip(f"{LIST_FOR_TEXT} -- {REMEDY[c.kind]}")
+            continue
         artefact = "config" if c.kind in ("config", "search") else c.kind
         if artefact in snap.unreadable:
             skip(f"{NOTE_NAMES[artefact]} could not be read ({snap.unreadable[artefact]})")
@@ -278,7 +309,7 @@ def _config_unit(c, snap, qs):
                 for d in q.writes_to):
             raise ValueError("a stage names its own model, which would no longer match a new "
                              "backend")
-    value = None if c.clear else q.parse(c.value or "")
+    value = None if c.clear else parse_value(q, c.value)
     if snap.config_text:
         # Rehearse the edit NOW so a key this editor cannot place (a value spread over several
         # lines, a duplicate) is set aside with the editor's own reason, before any write.
@@ -468,8 +499,8 @@ def _first_run_answers(units):
     answers, sources = {}, {}
     for u in units:
         if u.kind == "config" and not u.change.clear:
-            answers[u.change.target] = _questions_by_key()[u.change.target].parse(
-                u.change.value or "")
+            answers[u.change.target] = parse_value(_questions_by_key()[u.change.target],
+                                                   u.change.value)
         elif u.kind == "search" and not u.change.remove:
             src = sources.setdefault(u.change.target, {"enabled": True, "searches": []})
             src["searches"].append([u.change.label, u.change.url])
@@ -566,7 +597,7 @@ def _candidate_write(units, text, sha):
 def _expected(q, change, snap):
     if change.clear:
         return [(d, snap.defaults.get(d)) for d in q.writes_to]
-    value = q.parse(change.value or "")
+    value = parse_value(q, change.value)
     return [(d, value) for d in q.writes_to]
 
 
@@ -616,7 +647,7 @@ def _config_update(units, snap):
                 for d in q.writes_to:
                     candidate = (_edit.clear_key(candidate, d) if c.clear
                                  else _edit.set_key(candidate, d,
-                                                    _render(q.parse(c.value or ""))))
+                                                    _render(parse_value(q, c.value))))
                 settings += list(q.writes_to)
                 expect += _expected(q, c, snap)
             text, applied = candidate, True
@@ -663,14 +694,6 @@ def _first_run_writes(units, by_art, snap, env_vault):
     return writes + w, a
 
 
-def _answer_text(value) -> str:
-    """A loaded setting as the raw answer its question's `parse` reads back: a list setting is
-    comma-separated, as `questions.parse_csv` splits it."""
-    if isinstance(value, list):
-        return ", ".join(str(v) for v in value)
-    return str(value)
-
-
 def _default_text(unit) -> str:
     """What a section reads as after `clear` -- the text that is not the user's own, so
     replacing it replaces nothing worth restoring."""
@@ -682,9 +705,12 @@ def _default_text(unit) -> str:
 @dataclass(frozen=True)
 class NotRestorable:
     """`previous`'s answer for a written change that DID replace something of the user's, but
-    whose old value no `value` sent back through setup_save would reproduce. Distinct from None
-    on purpose: the coach reads None as "replaced nothing" and restores it with `clear: true`,
-    which would lose the value outright. `reason` names the key to edit by hand."""
+    whose old value no `value` sent back through setup_save would reproduce: a value typed by
+    hand that the setting's own reader would not read back unchanged -- a list item that is not
+    text, is empty or carries surrounding whitespace (`questions.parse_items` takes none of
+    them verbatim), or a scalar its question refuses or rewrites. Distinct from None on purpose:
+    the coach reads None as "replaced nothing" and restores it with `clear: true`, which would
+    lose the value outright. `reason` names the key to edit by hand."""
     reason: str
 
 
@@ -694,18 +720,19 @@ def _not_restorable(q) -> NotRestorable:
                          f"{keys} in your sluice config file by hand")
 
 
-def previous(unit, snap) -> "str | NotRestorable | None":
+def previous(unit, snap) -> "str | list | NotRestorable | None":
     """What a WRITTEN change replaced, as a `value` setup_save can be handed back to restore it,
     or None when it replaced nothing of the user's: a key that was not set in the config, a
     section still holding its default text, a field that was blank, a search (the change itself
     names the search, so restoring it is the opposite `remove`). The coach restores a change
     with no `previous` by sending it again with `clear: true`.
 
-    A config value is offered back only when its question's own `parse` reads the text back to
-    exactly the loaded value. A list setting is written comma-separated, and `parse_csv` splits
-    on EVERY comma, so a hand-typed item holding one would come back as two items -- a
-    restored `reject_companies` entry naming an employer with a comma in its name would then
-    reject every company matching either half. Such a value is `NotRestorable`, never None.
+    A config value is offered back only when its question reads it back to exactly the loaded
+    value. A list setting's is a LIST, read back item by item (`questions.parse_items`), never
+    comma-joined text: `parse_csv` splits on EVERY comma, so an item holding one would come back
+    as two -- a restored `reject_companies` entry naming an employer with a comma in its name
+    would then reject every company matching either half. A value no reader reproduces is
+    `NotRestorable` (see there for which remain), never None.
 
     Read off the SAME snapshot the save was checked against, so it is exactly what the write
     replaced. A section's text is returned whole, `init`'s prompt comment included when the
@@ -719,13 +746,13 @@ def previous(unit, snap) -> "str | NotRestorable | None":
                 or not _edit.is_active(snap.config_text, dotted)):
             return None
         old = snap.settings.get(dotted)
-        new = None if c.clear else q.parse(c.value or "")
+        new = None if c.clear else parse_value(q, c.value)
         if old == new:
             return None
-        text = _answer_text(old)
+        back = list(old) if _questions.is_list(q) and isinstance(old, list) else str(old)
         try:
-            if q.parse(text) == old:
-                return text
+            if parse_value(q, back) == old:
+                return back
         except ValueError:          # BadAnswer: a hand-typed value its own question refuses
             pass
         return _not_restorable(q)
@@ -766,6 +793,8 @@ def status_view(snap) -> dict:
         "artefacts": {a: present(a) for a in ("config", "profile", "candidate", "brief")},
         "unreadable": dict(snap.unreadable),
         "config": config,
+        # The config keys whose value setup_save takes as a list, one item each.
+        "list_settings": [q.key for q in qs if _questions.is_list(q)],
         "searches": {sid: list(v) for sid, v in snap.searches.items() if v},
         "profile": {h: (section_text(profile, h) if profile else None)
                     for h in _plan.PROFILE_HEADINGS},
