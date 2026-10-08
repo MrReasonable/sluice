@@ -32,7 +32,7 @@ Ask about the headings in conversation rather than as a list. Then draft every s
 
 ## Part 2: The settings, in a few groups
 
-Ask the settings in a few grouped messages, not one setting per message. Open each group with one short explanation of what its settings do to a lead and what leaving them empty does, and say more only if the user asks: some settings discard leads before anything else sees them, and a lead discarded there never appears anywhere for the user to notice. That is the cost of a gate set too tight, and they should know it before they answer.
+Ask the settings in a few grouped messages, not one setting per message: one group per message, in the order below, and wait for the user's answer before you open the next. The numbers below are for you; never show them to the user, and introduce each group by what it is about. Open each group with one short explanation of what its settings do to a lead and what leaving them empty does, and say more only if the user asks: some settings discard leads before anything else sees them, and a lead discarded there never appears anywhere for the user to notice. That is the cost of a gate set too tight, and they should know it before they answer.
 
 Where the conversation already gave a value, read it back, one line per setting, and ask them to confirm each, rather than asking afresh. A general yes to the whole group confirms nothing on its own: propose a value only when they confirm that value or give it, and a suggestion from your research still needs its own yes. A value they pass over in a group reply is unanswered, and proposes nothing.
 
