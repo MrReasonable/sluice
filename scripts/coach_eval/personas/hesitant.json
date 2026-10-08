@@ -1,0 +1,9 @@
+{
+ "id": "hesitant",
+ "name_seed": 107,
+ "location": "Charlie",
+ "situation": "Knows roughly the kind of work wanted, and answers the coach's questions plainly. Is slow to commit to anything being written down.",
+ "focus": "taking it slowly",
+ "scenario": "hesitant",
+ "max_turns": 20
+}

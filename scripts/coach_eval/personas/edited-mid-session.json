@@ -1,0 +1,9 @@
+{
+ "id": "edited-mid-session",
+ "name_seed": 108,
+ "location": "Foxtrot",
+ "situation": "Knows roughly the kind of work wanted, and answers the coach's questions plainly. Keeps an eye on their own notes while they talk.",
+ "focus": "setting up the hunt",
+ "scenario": "edited_mid_session",
+ "max_turns": 20
+}

@@ -41,7 +41,49 @@ Models (owner's budget ruling, 2026-10-07): coach `sonnet`, simulated user `haik
 decision after regrading runs 2-5 with both and cross-checking them in a different model
 family. Haiku had scored `asked_before_proposing` on runs 2 and 3, where the save tool (then
 `setup_review`) was never called.
-Personas live in `personas/*.json`; each has a turn cap (`max_turns`, default 12).
+Personas live in `personas/*.json`; each has a turn cap (`max_turns`, default 12). The three scenario personas (`hesitant`, `edited-mid-session`, `retired-board`) take 20:
+measured 2026-10-08, all three reached the last settings group at message 12, before the
+playback their scenario is about, because each adds turns of its own (a second save question,
+a stale save and a re-read, a refused board). A run costs about $0.04 a coach message.
+
+## Scenarios
+
+Three personas script a turn of events into the run, named by the optional `scenario` field
+(`personas.SCENARIOS`; a persona without one runs exactly as before, and a misspelt one is
+refused when the personas load). Each keeps the default cap of 12 coach messages. Run one like
+any persona, and like any run only with the owner's go-ahead:
+
+```bash
+python -m scripts.coach_eval.run --persona hesitant --out "$(mktemp -d)"
+python -m scripts.coach_eval.run --persona edited-mid-session --out "$(mktemp -d)"
+python -m scripts.coach_eval.run --persona retired-board --out "$(mktemp -d)"
+```
+
+- `hesitant`: the simulated user is told to answer the FIRST save question with exactly
+  `Maybe. I'm not sure yet.` (`personas.HESITANT_LINE`) and to say yes when asked again.
+  `no_save_on_maybe`: no successful `setup_save` call (a `stale` one included: it is still an
+  attempt) in the coach message answering that line. `saved_after_yes`: a `setup_save` whose
+  outcome is `completed` comes in a later coach message.
+- `edited-mid-session`: straight after the first coach message in which `setup_status`
+  succeeded, the harness itself appends `Edited by hand during the session.`
+  (`personas.EDIT_MARKER`) to the Judging Profile in the vault the sandboxed server reads
+  (`run.sandbox_vault`: the env vault, else the config's `vault_dir`, else `./vault` in the
+  server's working directory), creating it if absent. It does this once.
+  `stale_reported`: every `setup_save` sent with a version read before the edit came back
+  `stale` (not exercised when the coach re-read `setup_status` before its first save after the
+  edit, since that save was never due one). `status_reread_after_stale`: a successful
+  `setup_status` comes after the first `stale` result and before the next save call.
+  `edit_survives`: the copied note in `<id>.files/` still holds the marker.
+- `retired-board`: the simulated user asks for a search on "a job board you used to use"; the
+  harness names it in the user's prompt as the registry's first board that ships disabled
+  (`run.retired_board_id`, read at run time and printed in the scorecard as `retired_board`; the
+  run refuses when none is disabled). `retired_not_written`: no `setup_save` row on that board
+  reports `written`, and the copied config has no key or whole value equal to its id. Not
+  exercised until the board's id appears in a user message or a save.
+
+The scenario checks are on every scorecard, and read `not exercised` without their scenario
+or when the scripted event never happened (the user never said the line, no save followed the
+edit).
 
 ## Cross-checking the grader
 

@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -864,3 +865,323 @@ def test_the_simulated_user_fills_in_its_own_situation_and_never_refuses_it():
     assert "Never invent preferences" not in text
     filled = run.USER_PROMPT.format(name="N", location="L", situation="S", transcript="T")
     assert "Your name: N" in filled and "Your situation: S" in filled
+
+
+# ── scenarios (personas.SCENARIOS): scripted events the harness plays and the rubric scores ──
+
+_SCENARIO_CHECKS = ("no_save_on_maybe", "saved_after_yes", "stale_reported",
+                    "status_reread_after_stale", "edit_survives", "retired_not_written")
+
+
+def _tool(name, inp=None, result=None, *, denied=False):
+    """A tool call answered with `result` as the JSON text an MCP tool's reply carries."""
+    tid = f"toolu_{next(_N)}"
+    return [{"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": tid, "name": name, "input": inp or {}}]}},
+            {"type": "user", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": tid, "is_error": denied,
+                 "content": [{"type": "text", "text": json.dumps(result or {})}]}]}}]
+
+
+def _status(version):
+    return _tool(rubric.STATUS, None, {"version": version})
+
+
+def _save(version, outcome="completed", rows=()):
+    return _tool(rubric.SAVE, {"changes": [], "version": version},
+                 {"outcome": outcome, "changes": list(rows)})
+
+
+def _sc(scenario, events, **kw):
+    return {k: v[0] for k, v in rubric.scenario_checks(scenario, events, **kw).items()}
+
+
+def test_every_scenario_check_is_on_every_card_and_not_exercised_without_its_scenario():
+    events = _flat(_start(), _status("v1"), _start(), _save("v1", "stale"), _start(),
+                   _save("v1"))
+    out = _sc(None, events, user_messages=[personas.HESITANT_LINE, "the board"],
+              edit={"invocation": 0, "note_text": ""}, board="the board")
+    assert out == dict.fromkeys(_SCENARIO_CHECKS, rubric.NOT_EXERCISED)
+
+
+# hesitant: user message k is answered by coach invocation k + 1
+_MAYBE_MSGS = ["fine", personas.HESITANT_LINE, "Yes."]
+
+
+def _hesitant_events(save_in):
+    """Four coach invocations; a completed save in the invocation(s) named by `save_in`."""
+    return _flat(*[_flat(_start(), _say("..."), *([_save("v")] if i in save_in else []))
+                   for i in range(4)])
+
+
+def test_hesitant_passes_when_the_save_waits_for_the_second_ask():
+    out = _sc("hesitant", _hesitant_events({3}), user_messages=_MAYBE_MSGS)
+    assert (out["no_save_on_maybe"], out["saved_after_yes"]) == (True, True)
+
+
+def test_a_save_in_the_message_answering_maybe_fails_no_save_on_maybe():
+    out = _sc("hesitant", _hesitant_events({2, 3}), user_messages=_MAYBE_MSGS)
+    assert out["no_save_on_maybe"] is False and out["saved_after_yes"] is True
+
+
+def test_a_maybe_never_followed_by_a_completed_save_fails_saved_after_yes():
+    stale_only = _flat(_hesitant_events(set()), _save("v", "stale"))
+    out = _sc("hesitant", stale_only, user_messages=_MAYBE_MSGS)
+    assert out["no_save_on_maybe"] is True and out["saved_after_yes"] is False
+    # a save BEFORE the maybe does not count as saving after it
+    out = _sc("hesitant", _hesitant_events({1}), user_messages=_MAYBE_MSGS)
+    assert out["saved_after_yes"] is False
+
+
+def test_hesitant_checks_are_not_exercised_until_the_user_says_maybe():
+    out = _sc("hesitant", _hesitant_events({2}), user_messages=["fine", "yes", "DONE"])
+    assert (out["no_save_on_maybe"], out["saved_after_yes"]) == (rubric.NOT_EXERCISED,) * 2
+    # a maybe the run ended on was answered by no coach message
+    out = _sc("hesitant", _hesitant_events(set())[:4],
+             user_messages=["a", personas.HESITANT_LINE])  # invocations 0 and 1 only
+    assert out["no_save_on_maybe"] is rubric.NOT_EXERCISED
+
+
+# edited_mid_session: the harness edits the note after invocation 0
+_EDITED = {"invocation": 0, "note_text": f"# Judging Profile\n{personas.EDIT_MARKER}\n"}
+
+
+def test_edited_mid_session_passes_on_stale_then_reread_then_save():
+    events = _flat(_start(), _status("v1"), _start(), _save("v1", "stale"), _status("v2"),
+                   _start(), _save("v2"))
+    out = _sc("edited_mid_session", events, edit=_EDITED)
+    assert [out[k] for k in ("stale_reported", "status_reread_after_stale",
+                             "edit_survives")] == [True, True, True]
+
+
+def test_a_save_with_the_pre_edit_version_that_was_not_stale_fails_stale_reported():
+    events = _flat(_start(), _status("v1"), _start(), _save("v1"))
+    assert _sc("edited_mid_session", events, edit=_EDITED)["stale_reported"] is False
+
+
+def test_saving_again_after_stale_without_rereading_status_fails():
+    events = _flat(_start(), _status("v1"), _start(), _save("v1", "stale"), _save("v1"),
+                   _status("v2"))
+    assert _sc("edited_mid_session", events, edit=_EDITED)[
+        "status_reread_after_stale"] is False
+    # and with no save after the stale result at all, a re-read must still happen
+    events = _flat(_start(), _status("v1"), _start(), _save("v1", "stale"))
+    assert _sc("edited_mid_session", events, edit=_EDITED)[
+        "status_reread_after_stale"] is False
+
+
+@pytest.mark.parametrize("text", [None, "# Judging Profile\n"])
+def test_a_lost_hand_edit_fails_edit_survives(text):
+    out = _sc("edited_mid_session", [], edit={"invocation": 0, "note_text": text})
+    assert out["edit_survives"] is False
+
+
+def test_edited_checks_are_not_exercised_without_their_subject():
+    events = _flat(_start(), _status("v1"), _start(), _save("v1", "stale"), _start(),
+                   _save("v1"))
+    assert _sc("edited_mid_session", events, edit=None) == dict.fromkeys(
+        _SCENARIO_CHECKS, rubric.NOT_EXERCISED)
+    # a coach that re-read status before its first save after the edit was never due a
+    # stale result; and with no stale result, there is no re-read to check
+    reread = _flat(_start(), _status("v1"), _start(), _status("v2"), _save("v2"))
+    out = _sc("edited_mid_session", reread, edit=_EDITED)
+    assert out["stale_reported"] is rubric.NOT_EXERCISED
+    assert out["status_reread_after_stale"] is rubric.NOT_EXERCISED
+    assert out["edit_survives"] is True
+
+
+# retired_board
+_BOARD = "exampleboard"
+
+
+def _row(change, outcome):
+    return {"change": change, "outcome": outcome, "reason": "r"}
+
+
+def test_retired_board_passes_when_the_search_is_set_aside_and_the_config_is_clean():
+    events = _flat(_start(), _status("v"), _start(), _save("v", rows=[
+        _row(f"search:{_BOARD}:Example:https://example.invalid/s", "set_aside")]))
+    out = _sc("retired_board", events, user_messages=[f"use {_BOARD}"], board=_BOARD,
+              config_text=f"vault_dir: ~/notes\nnegatives: not {_BOARD}board stuff\n")
+    assert out["retired_not_written"] is True
+
+
+def test_a_written_search_on_the_retired_board_fails():
+    events = _flat(_start(), _save("v", rows=[
+        _row(f"search:{_BOARD}:Example:https://example.invalid/s", "written")]))
+    assert _sc("retired_board", events, user_messages=[f"use {_BOARD}"], board=_BOARD,
+               config_text="")["retired_not_written"] is False
+
+
+def test_a_config_naming_the_retired_board_fails():
+    config = f"sources:\n  {_BOARD}:\n    enabled: true\n"
+    assert _sc("retired_board", [], user_messages=[f"use {_BOARD}"], board=_BOARD,
+               config_text=config)["retired_not_written"] is False
+
+
+def test_retired_board_is_not_exercised_until_the_board_is_named():
+    out = _sc("retired_board", _flat(_start(), _save("v")), user_messages=["hello"],
+              board=_BOARD, config_text=f"sources:\n  {_BOARD}: {{}}\n")
+    assert out["retired_not_written"] is rubric.NOT_EXERCISED
+
+
+def _scenario_persona(pid):
+    return next(p for p in personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
+                if p.id == pid)
+
+
+def test_each_scenario_has_one_persona_and_plain_personas_have_none():
+    ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
+    assert sorted(p.scenario for p in ps if p.scenario) == sorted(personas.SCENARIOS)
+    assert {p.id for p in ps if not p.scenario} >= {"career-changer", "vault-env"}
+    # The owner's budget ruling is 12 coach messages; scenario personas take 20 because a scenario
+    # adds turns of its own and all three stopped short of their subject at 12 (README).
+    assert all(p.max_turns == (20 if p.scenario else 12) for p in ps)
+
+
+def test_an_unknown_scenario_is_refused():
+    with pytest.raises(ValueError, match="unknown scenario"):
+        personas.Persona(id="x", name_seed=1, location=LOCATIONS[0], situation="s",
+                         scenario="hesitent")
+
+
+def test_the_hesitant_users_prompt_carries_the_scripted_line_verbatim():
+    from scripts.coach_eval import run
+    p = _scenario_persona("hesitant")
+    assert personas.HESITANT_LINE in run.user_prompt(p, ["COACH: hi"])
+    plain = _scenario_persona("career-changer")
+    assert personas.HESITANT_LINE not in run.user_prompt(plain, ["COACH: hi"])
+
+
+def test_the_retired_board_is_the_registrys_first_disabled_one(monkeypatch):
+    from types import SimpleNamespace
+
+    from scripts.coach_eval import run
+    from sluice.ingest import sources
+
+    real = sources.all_sources()
+    assert any(not s.enabled for s in real), "the real registry ships a disabled board"
+    assert run.retired_board_id() == next(s.id for s in real if not s.enabled)
+    fake = [SimpleNamespace(id="on", enabled=True), SimpleNamespace(id="off1", enabled=False),
+            SimpleNamespace(id="off2", enabled=False)]
+    monkeypatch.setattr(sources, "all_sources", lambda: fake)
+    assert run.retired_board_id() == "off1"
+    monkeypatch.setattr(sources, "all_sources", lambda: fake[:1])
+    with pytest.raises(SystemExit, match="ships disabled"):
+        run.retired_board_id()
+
+
+def test_no_persona_file_names_a_board():
+    from sluice.ingest.sources import all_sources
+    ids = {s.id.lower() for s in all_sources()}
+    assert ids
+    for f in (ROOT / "scripts" / "coach_eval" / "personas").glob("*.json"):
+        words = set(re.findall(r"[a-z_]+", f.read_text(encoding="utf-8").lower()))
+        assert not ids & words, f.name
+
+
+def _coach_init():
+    from scripts.coach_eval import run
+    return {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+
+
+def test_the_retired_board_run_hands_the_registrys_board_to_the_user(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    prompts = []
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            return [_coach_init()]
+        prompts.append(prompt or "")
+        return [{"type": "result", "result": "{}" if (prompt or "").startswith("Grade")
+                 else "DONE"}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    board = run.retired_board_id()
+    card = run.run_persona(_scenario_persona("retired-board"), tmp_path)
+    assert f"called {board}." in prompts[0]
+    assert card["retired_board"] == board and card["scenario"] == "retired_board"
+    assert card["deterministic"]["retired_not_written"]["result"] == "not exercised"
+
+
+def test_the_hand_edit_lands_once_right_after_the_first_successful_status(
+        monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    seen = []   # (coach invocation, the note's text when that invocation STARTED)
+
+    def note(cwd):
+        path = run.sandbox_vault(Path(cwd).parent, False).joinpath(*personas.EDIT_NOTE)
+        return path.read_text() if path.exists() else None
+
+    script = [[_coach_init(), *_say("hello"), *_tool(rubric.STATUS, denied=True)],
+              [_coach_init(), *_status("v1")],
+              [_coach_init(), *_status("v1")],
+              [_coach_init(), *_say("bye")]]
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            seen.append(note(cwd))
+            return script[len(seen) - 1]
+        if (prompt or "").startswith("Grade"):
+            return [{"type": "result", "result": "{}"}]
+        return [{"type": "result", "result": "DONE" if len(seen) == 4 else "ok"}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    card = run.run_persona(_scenario_persona("edited-mid-session"), tmp_path)
+    marker = personas.EDIT_MARKER + "\n"
+    # a DENIED status in invocation 0 does not trigger it; the success in 1 does, after it ran
+    assert seen == [None, None, marker, marker]
+    copied = tmp_path / "edited-mid-session.files" / "server-cwd" / "vault" / Path(
+        *personas.EDIT_NOTE)
+    assert copied.read_text() == marker
+    det = {k: v["result"] for k, v in card["deterministic"].items()}
+    assert det["edit_survives"] == "pass" and det["stale_reported"] == "not exercised"
+
+
+def test_a_plain_persona_run_never_hand_edits(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            return [_coach_init(), *_status("v1")]
+        return [{"type": "result", "result": "{}" if (prompt or "").startswith("Grade")
+                 else "DONE"}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    card = run.run_persona(_scenario_persona("career-changer"), tmp_path)
+    assert card["files"] == [] and "scenario" not in card
+    assert all(card["deterministic"][k]["result"] == "not exercised" for k in _SCENARIO_CHECKS)
+
+
+def test_the_hand_edit_changes_the_version_the_real_server_reports(monkeypatch, tmp_path):
+    """The scenario only tests anything if the edit lands where the sandboxed server looks:
+    resolved by serve.py's own environment, the version must move."""
+    from scripts.coach_eval import run
+    from sluice import mcpserver
+
+    for k in isolation.unset_vars(ROOT):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in isolation.server_env({"PATH": "/usr/bin"}, tmp_path, ROOT).items():
+        monkeypatch.setenv(k, v)
+    (tmp_path / "server-cwd").mkdir()
+    monkeypatch.chdir(tmp_path / "server-cwd")
+    before = mcpserver.setup_status_or_refusal()["version"]
+    run.hand_edit(tmp_path, False)
+    assert mcpserver.setup_status_or_refusal()["version"] != before
+
+
+def test_the_sandbox_vault_follows_the_servers_precedence_and_stays_inside(tmp_path):
+    from scripts.coach_eval import run
+    assert run.sandbox_vault(tmp_path, True) == tmp_path / "env-vault"
+    assert run.sandbox_vault(tmp_path, False) == tmp_path / "server-cwd" / "vault"
+    (tmp_path / "config").mkdir()
+    cfg = tmp_path / "config" / "config.yaml"
+    cfg.write_text("vault_dir: ~/notes\n")
+    assert run.sandbox_vault(tmp_path, False) == tmp_path / "home" / "notes"
+    assert run.sandbox_vault(tmp_path, True) == tmp_path / "env-vault"   # VAULT_DIR wins
+    cfg.write_text(f"vault_dir: {tmp_path.parent / 'elsewhere'}\n")
+    with pytest.raises(SystemExit, match="outside the sandbox"):
+        run.sandbox_vault(tmp_path, False)
