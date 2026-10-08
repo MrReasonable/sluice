@@ -47,7 +47,10 @@ def test_the_sweep_reports_a_planted_role_word():
 
 def test_the_prompt_states_the_rules_and_names_every_unit_kind():
     text = coach.assemble_prompt()
-    for phrase in ("never the answers", "ticks it", "setup_status", "setup_review"):
+    # The two settings-pacing phrases: a real session showed the coach asking two groups in one
+    # message and labelling them with the playbook's own numbers ("settings 3 and 4").
+    for phrase in ("never the answers", "ticks it", "setup_status", "setup_review",
+                   "one group per message", "never show them to the user"):
         assert phrase in text
     from sluice.onboard.review import ROLE_BRIEF_SECTIONS
     from sluice.onboard.plan import PROFILE_HEADINGS
