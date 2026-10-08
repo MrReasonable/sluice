@@ -851,16 +851,20 @@ class Sluice:
         # promised to be dot-free, and split would take only its first segment.
         searches = {k[len("sources."):-len(".searches")]: v for k, v in settings.items()
                     if k.startswith("sources.") and k.endswith(".searches")}
-        # Enabled exactly as `ingest run` decides it (cli.py::_is_enabled, less the CLI's own
-        # `ingest disable` overlay): the config's `enabled` AND the source's shipped one. A
-        # config cannot switch a source on that its module ships off, so `enabled: true` for
-        # a retired board still runs nothing and is not offered either.
+        # Enabled exactly as `ingest run` decides it, through the one predicate
+        # (ingest/enabled.py::off_reason): the source's shipped flag, the config's `enabled`
+        # and the `ingest disable` overlay. A config cannot switch a source on that its module
+        # ships off, so `enabled: true` for a retired board still runs nothing and is not
+        # offered either. The overlay is read through the WARNING loader: setup only offers
+        # or refuses a search, and an unreadable overlay must not stop the rest of setup.
+        from sluice.ingest import enabled as _enabled
+        overlay = _enabled.disabled_or_warn()
         disabled = {}
         for src in registry.all_sources():
-            if not getattr(src, "enabled", True):
-                disabled[src.id] = "shipped"
-            elif not settings.get(f"sources.{src.id}.enabled", True):
-                disabled[src.id] = "config"
+            why = _enabled.off_reason(
+                src, settings.get(f"sources.{src.id}.enabled", True), overlay)
+            if why:
+                disabled[src.id] = why
         vault_dir = getattr(store, "dir", None)
         vault_digest = (hashlib.sha256(os.path.realpath(vault_dir).encode("utf-8", "surrogatepass"))
                         .hexdigest() if vault_dir else None)
@@ -945,6 +949,13 @@ class Sluice:
                 return outcome("conflict", "the config file is gone")
             except (OSError, ValueError) as exc:
                 return outcome("failed", _reason(exc))
+            # Not the only guard: `write` re-checks `expect_sha` against the file it replaces.
+            # Without this check nothing is written either way (measured): the config check
+            # below, comparing the stale text with the current file, sets the change aside
+            # when they differ in a setting it does not declare, and otherwise `write` refuses
+            # it as the conflict below. So no test can tell this check is gone; it is here to
+            # report the save as stale, rather than as a set-aside naming a setting the user
+            # never asked about.
             if sha(old) != w.expect_sha:
                 return outcome("conflict", "the config file changed after setup_status read it")
         try:

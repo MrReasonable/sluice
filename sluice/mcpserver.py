@@ -1073,8 +1073,9 @@ def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict
 
     Each change comes back `written`, `set_aside` or `failed` with its reason, and a written
     change that replaced something of the user's carries `previous` (review.previous), so the
-    coach can restore it. Rows name a change by its unit key, never by a value, so no path --
-    not even a resolved `vault_dir` -- appears in the response."""
+    coach can restore it, or `not_restorable` naming the key to edit by hand when sending a
+    value back would not reproduce what was there. Rows name a change by its unit key, never by
+    a value, so no path -- not even a resolved `vault_dir` -- appears in the response."""
     report = {"outcome": "", "changes": [], "artefacts": {}, "config_written": False,
               "restart_needed": "", "detail": ""}
     snap = sluice.setup_snapshot()
@@ -1099,7 +1100,11 @@ def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict
         row = {"change": u.key, "outcome": status, "reason": reason}
         if status == "written":
             prev = _review.previous(u, snap)
-            if prev is not None:
+            if isinstance(prev, _review.NotRestorable):
+                # Never `previous`, and never left out: a row with no `previous` tells the
+                # coach the change replaced nothing, which it undoes with `clear`.
+                row["not_restorable"] = prev.reason
+            elif prev is not None:
                 row["previous"] = prev
         rows.append(row)
     report["changes"] = rows
@@ -1398,7 +1403,8 @@ def build_server(config, write: bool = False):
             "Brief section (see setup_status's `kinds`). `clear: true` returns a setting or "
             "section to its default. Each change comes back written, set_aside or failed, with "
             "its reason; a written change that replaced something carries `previous`, which "
-            "restores it when sent back as the value.")
+            "restores it when sent back as the value, or `not_restorable` when no value sent "
+            "back would restore it, naming what to edit by hand instead.")
         mcp_server.tool(name="setup_save")(setup_save_tool)
 
     return mcp_server

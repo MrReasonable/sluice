@@ -659,6 +659,6 @@ def test_setup_save_registered_description_states_the_save_rules():
     desc = " ".join(tool.description.split())
     for phrase in ("playing every change back to the user in chat",
                    "hearing an explicit yes", '"stale"', "setup_status's `kinds`",
-                   "`previous`", "written, set_aside or failed"):
+                   "`previous`", "`not_restorable`", "written, set_aside or failed"):
         assert phrase in desc, phrase
     assert "form" not in desc and "tick" not in desc

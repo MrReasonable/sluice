@@ -112,6 +112,22 @@ def test_a_stale_config_is_a_conflict():
     assert out["config"].status == "conflict"
 
 
+def test_a_config_removed_after_the_version_check_is_a_conflict():
+    """te-001: setup_save's version check catches a config removed before it, so this arm is
+    reached only in the window between that check and the write. A conflict, never `failed`,
+    and nothing is created in the file's place."""
+    old = build_plan({}).config_text
+    _cfg(old)
+    s = Sluice.from_config_file()
+    os.remove(config_file())
+    new = old.replace("# lead_ttl_days:", "lead_ttl_days: 9  #")
+    out = s.apply_setup([ArtefactWrite("config", new, document_sha(old), ("lead_ttl_days",),
+                                       (("lead_ttl_days", 9),))])
+    assert (out["config"].status, out["config"].reason) == ("conflict",
+                                                            "the config file is gone")
+    assert not os.path.exists(config_file())
+
+
 def test_a_first_run_creates_config_then_notes_in_the_new_vault(tmp_path, monkeypatch):
     monkeypatch.delenv("VAULT_DIR")
     (tmp_path / "empty").mkdir()

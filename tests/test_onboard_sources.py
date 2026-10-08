@@ -61,13 +61,13 @@ def test_the_board_prompt_promises_only_what_the_config_encodes(tmp_path):
     defaults an unlisted source to enabled. Measured -- picking 1 of 22 left all 22 enabled, so a
     user who declined 21 boards still had a live browser driven against every one of them.
 
-    Asserted through `cli._is_enabled`, the predicate `ingest run` actually consults, so this pins
+    Asserted through `ingest/enabled.py::is_enabled`, the predicate `ingest run` actually consults, so this pins
     what the user GETS rather than what the YAML happens to say. The fix is the wording: writing
     `enabled: false` for the 21 would encode preferences nobody stated, and a board registered
     later would fall outside the list."""
     import io
 
-    from sluice.cli import _is_enabled
+    from sluice.ingest.enabled import is_enabled
     from sluice.ingest import sources as registry
     from sluice.onboard.ask import TtyAsker, collect_sources
 
@@ -83,7 +83,7 @@ def test_the_board_prompt_promises_only_what_the_config_encodes(tmp_path):
         p = tmp_path / f"c{len(str(sources))}.yaml"
         p.write_text(_text(sources), encoding="utf-8")
         cfg = load_config(str(p))
-        return [s.id for s in registry.all_sources() if _is_enabled(s, cfg, set())]
+        return [s.id for s in registry.all_sources() if is_enabled(s, cfg, set())]
 
     baseline = enabled_under(None)
     assert baseline, "precondition: some board is enabled with no config at all"

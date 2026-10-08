@@ -46,6 +46,7 @@ Report the result to the user in plain words, never as raw field names: what was
 Beside `outcome`:
 
 - `previous`, on a written change: the value or text it replaced. Keep it; it is how a change is undone.
+- `not_restorable`, on a written change: it replaced a value of theirs that cannot be put back through `setup_save`. Keep what it says; it names the setting to edit by hand.
 - `artefacts`: what a first run created that no change stands for, the default Judging Profile and the Leads view. When one is not `written`, tell the user which and why.
 - `restart_needed`: empty unless the config was saved but the server could not reload it. When it is set, ask the user to restart the sluice server before anything else is saved.
 
@@ -57,14 +58,14 @@ The user's notes live in a folder on their computer, their vault, and Obsidian i
 
 1. Install Obsidian, if they do not have it, from its own website.
 2. In Obsidian, choose "Open folder as vault".
-3. Pick the folder they chose for their vault. If they are not sure where it is, `job-sluice doctor` in a terminal prints it.
+3. Pick the folder their vault is in. On a first run where they named it in this conversation, it is the `vault_dir` they agreed to: say it back to them exactly as they typed it. Otherwise, `job-sluice doctor` in a terminal prints it, but only when that terminal uses the same `VAULT_DIR` the sluice server was registered with; a different one, or none, can print another folder, so check with them which one the server uses.
 4. Open the notes under `Job Applications/`: the Judging Profile, the Candidate Profile and the Role Brief.
 
 Ask them to read each note and say what looks wrong or missing.
 
 ## Corrections
 
-Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value; a change that came back with no `previous` replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
+Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value. A change that came back with `not_restorable` cannot be put back through `setup_save`: tell them what it says, the setting to edit by hand in their sluice config file, and send nothing. A change that came back with neither replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
 
 They can also edit any note in Obsidian themselves at any time. If they do so during this conversation, the next save comes back `stale`; read `setup_status` again and play back what changed.
 

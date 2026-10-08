@@ -122,8 +122,8 @@ def _opens_multiline(lines, i):
     if value and not value.startswith("#"):
         # A flow sequence or quoted scalar that closes on a LATER line (`[a,` then `b]`) does not
         # parse on its own line. Replacing only its first line leaves the continuation behind
-        # as a stray fragment the loaders reject -- after the user has ticked -- so an unparseable
-        # single line is treated as the opening of a multi-line value and refused.
+        # as a stray fragment the loaders reject -- after the user agreed in chat -- so an
+        # unparseable single line is treated as the opening of a multi-line value and refused.
         if yaml is not None:
             try:
                 yaml.safe_load(value)
@@ -221,7 +221,7 @@ def _parse_entry(line):
     except yaml.YAMLError:
         # One physical line of an entry YAML spreads over several (`- [a,` then the url on the
         # next line) does not parse alone, and YAMLError is not a ValueError: uncaught, it
-        # escaped every setup caller as an unstructured error after the user had ticked.
+        # escaped every setup caller as an unstructured error after the user had agreed in chat.
         raise EditRefused("a searches entry is not in flow form (`- [label, url]`)") from None
     if not (isinstance(value, list) and len(value) >= 2):
         raise EditRefused("a searches entry is not in flow form (`- [label, url]`)")

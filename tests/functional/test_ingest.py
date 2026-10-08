@@ -52,7 +52,7 @@ def test_list_sources_health_flag(cli):
 def test_ingest_run_no_enabled_sources_returns_1(cli):
     # cmd_run refuses (rc 1) when the selection is empty, BEFORE touching the browser
     # -- an offline branch nothing witnessed at HEAD. Disabling the one source we then
-    # ask for empties the selection via _is_enabled without an unknown-id KeyError.
+    # ask for empties the selection via ingest/enabled.py::is_enabled without an unknown-id KeyError.
     _h, run = cli()
     assert run(["ingest", "disable", "cord"])[0] == 0
     rc, _out, _err = run(["ingest", "run", "--source", "cord"])

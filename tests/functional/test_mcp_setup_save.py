@@ -136,6 +136,19 @@ def test_sending_previous_back_restores_what_was_replaced():
     assert load_config(config_file()).lead_ttl_days == 14
 
 
+def test_a_list_value_no_restore_could_reproduce_comes_back_not_restorable():
+    """inv-001 through the real tool: a list item holding a comma would come back split in
+    two, so the row carries `not_restorable` naming the key, and no `previous` the coach could
+    send back to write a broader filter."""
+    _existing_hunt()
+    Path(config_file()).write_text(Path(config_file()).read_text().replace(
+        "  # reject_companies:", '  reject_companies: ["Example, Inc.", "Other Co"]  #'))
+    row = _rows(_save([{"kind": "config", "target": "reject_companies",
+                        "value": "Example Three"}]))["config:reject_companies"]
+    assert row["outcome"] == "written" and "previous" not in row
+    assert "`triage.reject_companies`" in row["not_restorable"]
+
+
 def test_a_section_longer_than_one_screen_is_written_in_full():
     """The case the per-change form could never take: a Role Brief section taller than one
     screen (a normal "Sources consulted"). No form, so nothing caps it."""

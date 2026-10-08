@@ -43,6 +43,7 @@ from sluice.core.protocols import ALL_CAPABILITIES, EVIDENCE_KINDS
 from sluice.core.roletype import ACCEPTED_ROLE_TYPES, fold_role_type
 from sluice.ingest import base as base_mod   # Search/searches_for; stdlib-only, no browser
 from sluice.ingest import sources as registry
+from sluice.ingest import enabled as _enabled   # the run predicate + overlay loader
 
 _log = get_logger("cli")
 
@@ -57,87 +58,14 @@ _log = get_logger("cli")
 _ARGPARSE_COLOR = {"color": False} if sys.version_info >= (3, 14) else {}
 
 
-# Resolve the disabled-overlay path lazily (each call) so env overrides - and tests'
-# monkeypatch - win; an import-time snapshot would be unpatchable. The health path's
-# equivalent resolution lives solely in HealthStore.__init__ (sluice/core/health.py) --
-# see cmd_health/cmd_list_sources.
-def _disabled_path() -> str:
-    return resolve(env_var="SLUICE_DISABLED", config_value="", kind="state",
-                   name="sluice_disabled.json")
-
-
 # ── operator on/off overlay ──────────────────────────────────────────────────
-def _load_disabled() -> set:
-    """The operator's disabled-source ids. RAISES if the overlay exists but is unusable.
-
-    MISSING -> nothing disabled, the ordinary state. `lexists`, not `exists`: a DANGLING
-    SYMLINK is not an absent file, and treating it as one sends `_save_disabled` writing
-    through the link.
-
-    Anything else raises, and the raise is the point. THE CRITERION IS WHAT THE CALLER
-    DOES WITH THE ANSWER, not whether it writes this file back: a caller that only
-    REPORTS the answer takes `_disabled_or_warn`; one that ACTS on it or WRITES it back
-    takes this function. Writing back is the worst case -- a swallowed read there rebuilds
-    the overlay from an empty set and destroys every decision the operator made, reporting
-    success -- and it is also the only one of the three a guard can enumerate, which
-    `test_every_overlay_writer_reads_through_the_raising_loader` does.
-
-    The shape is validated for the reason `_merge_denylist` exists in track/config.py:
-    `set(json.load(f))` over a dict yields its KEYS and over a string yields its
-    CHARACTERS, so a malformed overlay would silently become a nonsense set of source ids
-    rather than an error.
-    """
-    path = _disabled_path()
-    if not os.path.lexists(path):
-        return set()
-    if not os.path.exists(path):
-        # Present as a link, absent as a file. Saying so beats the bare
-        # "No such file or directory" the open would raise for a path we just proved
-        # exists -- the sibling in seendb.py words it the same way.
-        raise OSError(
-            f"the disabled-sources overlay at {path} is a symlink to something that does "
-            f"not exist. Fix or remove the link; removing it re-enables every source you "
-            f"had turned off.")
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, list):
-        bad = f"got {type(data).__name__}"
-    else:
-        # Name the ELEMENT's type, not the container's: reporting "got list" for
-        # `["reed", 1]` describes the thing that was RIGHT and hides the thing that
-        # was wrong.
-        offenders = [x for x in data if not isinstance(x, str)]
-        bad = (f"got a list containing {type(offenders[0]).__name__}" if offenders
-               else "")
-    if bad:
-        raise ValueError(
-            f"the disabled-sources overlay at {path} must be a JSON list of source ids, "
-            f"{bad}. Fix or delete it; deleting it re-enables every source you had "
-            f"turned off.")
-    return set(data)
-
-
-def _disabled_or_warn() -> set:
-    """`_load_disabled` for callers that only REPORT the answer: warn, and treat nothing
-    as disabled.
-
-    See `_load_disabled` for the criterion. #80 newly made this reachable:
-    the file used to sit in the cwd and now resolves per-system, so an upgrader's overlay
-    is at the old location. `paths.resolve` warns about the move, but that notice names
-    the file and not the consequence -- and this is the consequence.
-
-    Warn rather than refuse, deliberately: a re-enabled source costs a wasted scrape and
-    is fixed by disabling it again, a different order of harm from the dedup stores
-    (a duplicate application, irreversible). It must not be SILENT, though.
-    """
-    try:
-        return _load_disabled()
-    except (OSError, ValueError) as e:
-        _log.warning(
-            "could not read the disabled-sources overlay at %s (%s): treating every "
-            "source as ENABLED for this run. Any source you disabled will be scraped.",
-            _disabled_path(), e)
-        return set()
+# The loader and the run predicate live in `sluice/ingest/enabled.py`, beside each other, so
+# `Sluice.setup_snapshot` decides which boards to offer with the same predicate `ingest run`
+# uses. Bound here under the names this module's callers and the writer guard in
+# tests/test_state_file_tiers.py read; only the WRITER stays here.
+_disabled_path = _enabled.disabled_path
+_load_disabled = _enabled.load_disabled
+_disabled_or_warn = _enabled.disabled_or_warn
 
 
 def _save_disabled(ids: set) -> None:
@@ -145,14 +73,6 @@ def _save_disabled(ids: set) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(sorted(ids), f)
-
-
-def _is_enabled(src, config, disabled: set) -> bool:
-    return (
-        config.source(src.id).enabled
-        and getattr(src, "enabled", True)
-        and src.id not in disabled
-    )
 
 
 def _require_known_source_ids(ids) -> None:
@@ -184,7 +104,7 @@ def _selected(args, config, disabled) -> list:
         chosen = [registry.get(sid) for sid in args.source]
     else:  # --all or default: every registered source
         chosen = registry.all_sources()
-    return [s for s in chosen if _is_enabled(s, config, disabled)]
+    return [s for s in chosen if _enabled.is_enabled(s, config, disabled)]
 
 
 # ── commands ─────────────────────────────────────────────────────────────────
@@ -192,7 +112,7 @@ def cmd_list_sources(args, config) -> int:
     disabled = _disabled_or_warn()   # read-only: never writes the overlay back
     health = HealthStore() if getattr(args, "health", False) else None
     for src in sorted(registry.all_sources(), key=lambda s: s.id):
-        state = "enabled" if _is_enabled(src, config, disabled) else "disabled"
+        state = "enabled" if _enabled.is_enabled(src, config, disabled) else "disabled"
         line = f"{src.id:16} {src.kind:9} {state}"
         if health is not None:
             line += f"  baseline={health.baseline(src.id):.0f}"

@@ -65,7 +65,8 @@ The same real session showed `setup_status`'s `kinds.search` listing every regis
 including the retired ones a source module ships disabled (each carries a `reprobed` date). A search
 added to a disabled source never runs. `kinds.search` lists, and `setup_save` accepts a search for,
 only a source that `ingest run` would actually run: one its module ships enabled AND the user's
-config does not disable (`sources.<id>.enabled: false`). Config cannot bring back a board its module
+config does not disable (`sources.<id>.enabled: false`) AND `job-sluice ingest disable` has not
+switched off -- the one predicate `ingest run` itself uses, `ingest/enabled.py::off_reason`. Config cannot bring back a board its module
 ships disabled -- ingest requires both -- so a retired board is never offered, whatever the config
 says (corrected during implementation: the first draft of this section assumed config could).
 

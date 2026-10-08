@@ -1054,7 +1054,8 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   `Sluice.setup_snapshot()` into what `setup_status` reports; the finish functions turn a
   proposed change into the whole new text of one artefact, the Role Brief note included, and
   set aside what cannot be applied, with the reason; `previous` reads what a written change
-  replaced, off the same snapshot.
+  replaced, off the same snapshot, as a value its own question parses back to exactly that,
+  or `NotRestorable` naming the key to edit by hand when none does.
 - **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
   it (a persona plus one page per phase). It writes nothing; the only route from the coach to
   a write is `setup_save`, which the playbooks call only after a playback and the user's yes. Building the prompt imports `core/app.py` and
@@ -1200,7 +1201,8 @@ form: the user's consent is a yes in chat to the coach's playback, a rule the pl
 and the eval harness scores, which the model can break, unlike `verify_evidence`'s form (owner's
 ruling, `docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md`).
 `kinds.search` offers, and `setup_save` accepts a search for, only a source `ingest run` would
-run: enabled by the config and by its own module. So the claim above still
+run: enabled by its own module, by the config and by the `ingest disable` overlay, decided by
+the same predicate `ingest run` selects with (`ingest/enabled.py::off_reason`). So the claim above still
 holds: it is a thin translation layer over exactly one `Sluice` write method. The isolation
 sweep in `tests/test_mcpserver.py` allows `mcpserver.py` the `onboard.review` and
 `onboard.coach` imports and also walks every `sluice.onboard` module they reach, asserting none
