@@ -150,6 +150,12 @@ claude --restricted --strict-mcp-config --tools "" -p 'Reply OK.' \
 Re-run the probe, update the roster in `run.py` and add the new version with its date to
 `isolation.MEASURED_VERSIONS` whenever Claude Code is upgraded.
 
+### Measurement 2: Claude Code 2.1.294, 2026-10-08
+
+The re-measurement probe above, unchanged in shape from 2.1.292: the server connects, `--tools
+WebSearch` narrows only the built-in tools (every `mcp__sluice__*` tool is still listed, now with
+`setup_save` in place of `setup_review`), and `--tools ""` lists no tools.
+
 ### Measurement 3: `--disallowedTools` narrows MCP tools (2.1.292, 2026-10-07)
 
 `--disallowedTools` removes tools from availability (`--allowedTools` only pre-approves). The
