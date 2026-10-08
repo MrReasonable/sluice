@@ -1239,7 +1239,8 @@ def build_server(config, write: bool = False):
     def setup_status_tool() -> dict:
         """The current state of the job hunt's setup: every value the career interview can
         change, which notes exist, and whether a vault is chosen. Read-only. Call it before
-        proposing setup changes, and use its `kinds` for valid targets."""
+        proposing setup changes, and use its `kinds` for valid targets; `list_settings`
+        names the config keys whose value setup_save takes as a list, one item each."""
         return setup_status_or_refusal()
 
     # The two evidence tools' descriptions are DERIVED, so each docstring is assigned
@@ -1400,11 +1401,14 @@ def build_server(config, write: bool = False):
             "returned: if the config, a setup note or the vault changed since, nothing is "
             'written and the outcome is "stale". Each change is one of: a config key, a search '
             "to add or remove, a Judging Profile heading, a Candidate Profile field, or a Role "
-            "Brief section (see setup_status's `kinds`). `clear: true` returns a setting or "
+            "Brief section (see setup_status's `kinds`). A list setting's `value` is a list of "
+            "strings, one item each, never comma-joined: each item is kept whole, commas "
+            "included, and only a list setting takes a list. `clear: true` returns a setting or "
             "section to its default. Each change comes back written, set_aside or failed, with "
-            "its reason; a written change that replaced something carries `previous`, which "
-            "restores it when sent back as the value, or `not_restorable` when no value sent "
-            "back would restore it, naming what to edit by hand instead.")
+            "its reason; a written change that replaced something carries `previous` (a list, "
+            "for a list setting), which restores it when sent back as the value, or "
+            "`not_restorable` when no value sent back would restore it, naming what to edit by "
+            "hand instead.")
         mcp_server.tool(name="setup_save")(setup_save_tool)
 
     return mcp_server

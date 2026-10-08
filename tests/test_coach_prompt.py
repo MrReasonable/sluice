@@ -297,3 +297,33 @@ def test_usage_names_every_outcome_setup_save_returns():
     missing = sorted(o for o in step | changes if f"`{o}`" not in entry)
     assert missing == [], f"USAGE.md's setup_save entry does not name: {missing}"
     assert "`restart_needed` is a FIELD" in entry
+
+
+def test_a_list_setting_is_sent_as_a_list_and_played_back_one_item_per_line():
+    """The eval's bug: the coach sent a list setting comma-joined, and an item holding a comma
+    became several. The playbooks say to send a list, and to play each item back on its own
+    line, so the user agrees to the items as they will be saved."""
+    review = coach.read_playbook("review")
+    assert ("takes its `value` as a JSON list of strings, one item each, never comma-joined"
+            in review)
+    assert "Play back a list setting's items one per line" in review
+    assert "a list for a list setting" in review and "a list stays a list" in review
+    assert "comma-separated" not in review
+    assert "a list setting's items one line per item" in coach.read_playbook("interview")
+
+
+def test_the_units_mark_every_list_setting_and_never_ask_for_commas():
+    """The units list is derived from the catalogue, whose prompts are `init`'s TTY questions
+    asking for one comma-separated line. Shown to the coach that would contradict setup_save,
+    so every list setting is marked and the comma instruction is dropped."""
+    from sluice.onboard import questions
+    full = coach.assemble_prompt()
+    units = full[full.index("## What you can propose"):]
+    assert coach.LIST_NOTE in units and "comma-separated" not in units
+    lists = [q.key for q in questions.catalogue() if questions.is_list(q)]
+    assert lists
+    for key in lists:
+        assert f"- `{key}` (list): " in units, key
+    for q in questions.catalogue():
+        if q.key not in lists:
+            assert f"- `{q.key}` (list)" not in units, q.key

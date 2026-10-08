@@ -307,14 +307,14 @@ def test_previous_is_the_config_answer_a_set_key_held():
     assert review.previous(cleared, s) == "14"
 
 
-def test_previous_of_a_list_setting_reads_back_through_its_own_parser():
+def test_previous_of_a_list_setting_is_the_list_itself():
     from sluice.onboard.questions import catalogue
     q = next(q for q in catalogue() if q.key == "accept_titles")
     old = ["Example one", "Example two"]
     cfg = CONFIG + '\ntriage:\n  accept_titles: ["Example one", "Example two"]\n'
     s = snap(cfg, settings={**_SETTINGS, q.writes_to[0]: old})
     u = _one({"kind": "config", "target": "accept_titles", "value": "Example three"}, s)
-    assert q.parse(review.previous(u, s)) == old
+    assert review.previous(u, s) == old
 
 
 def _list_previous(old, flow):
@@ -327,19 +327,104 @@ def _list_previous(old, flow):
     return q, review.previous(u, s)
 
 
-def test_a_list_item_holding_a_comma_is_not_restorable_and_never_none():
-    """inv-001: joined with ", " and split again on every comma, an item holding a comma comes
-    back as two items, so a restore would write a broader filter than the user had. It is
-    reported as not restorable, naming the key, and never as None, which the coach would
-    answer with `clear`."""
+def test_a_list_item_holding_a_comma_comes_back_whole_in_previous():
+    """inv-001: joined with ", " and split again on every comma, an item holding a comma came
+    back as two items, so a restore would have written a broader filter than the user had.
+    `previous` is the list itself, item by item, so sending it back restores it exactly."""
     q, prev = _list_previous(["Example, Inc.", "Other Co"], '["Example, Inc.", "Other Co"]')
+    assert prev == ["Example, Inc.", "Other Co"]
+    assert review.parse_value(q, prev) == ["Example, Inc.", "Other Co"]
+
+
+@pytest.mark.parametrize("old,flow", [
+    ([" Example Inc"], '[" Example Inc"]'),       # surrounding whitespace: stripped on the way in
+    (["Example Inc", ""], '["Example Inc", ""]'),  # an empty item: refused on the way in
+    ([2024], "[2024]"),                            # not text: refused on the way in
+])
+def test_a_hand_typed_list_no_list_could_reproduce_is_not_restorable_and_never_none(old, flow):
+    """What remains of `not_restorable` for a list setting: a hand-typed item `parse_items`
+    would not take back verbatim. Never None, which the coach would answer with `clear`."""
+    q, prev = _list_previous(old, flow)
     assert isinstance(prev, review.NotRestorable)
     assert f"`{q.writes_to[0]}`" in prev.reason and "by hand" in prev.reason
 
 
-def test_a_plain_list_item_round_trips_as_previous():
-    q, prev = _list_previous(["Example Inc", "Other Co"], '["Example Inc", "Other Co"]')
-    assert prev == "Example Inc, Other Co" and q.parse(prev) == ["Example Inc", "Other Co"]
+# ── a list setting's value as a list ─────────────────────────────────────────
+
+def _list_keys():
+    from sluice.onboard import questions
+    return [q.key for q in questions.catalogue() if questions.is_list(q)]
+
+
+def test_the_list_settings_are_derived_from_the_catalogue_parsers():
+    """`is_list` keys on the parser, so this pins the derivation against what each parser
+    RETURNS, not against a hand-kept roster: a question whose answer parses to a list is a list
+    setting, and no other is."""
+    from sluice.onboard import questions
+    for q in questions.catalogue():
+        sample = {"listing_languages": "en, de"}.get(q.key, "/example/a, b")
+        try:
+            parsed = q.parse(getattr(q.parse, "allowed", (sample,))[0])
+        except questions.BadAnswer:
+            parsed = None
+        assert questions.is_list(q) == isinstance(parsed, list), q.key
+    assert "reject_companies" in _list_keys() and "listing_languages" in _list_keys()
+    assert "lead_ttl_days" not in _list_keys()
+
+
+def test_status_view_names_the_list_settings():
+    assert review.status_view(snap(CONFIG))["list_settings"] == _list_keys()
+
+
+ITEMS = ["Example, Inc.", 'Say "hi"', "a: b", "x # y", "Remote, Example"]
+
+
+@pytest.mark.parametrize("key", _list_keys())
+def test_a_list_value_keeps_each_item_whole(key):
+    from sluice.onboard.questions import catalogue
+    q = next(q for q in catalogue() if q.key == key)
+    items = ["en", "de"] if key == "listing_languages" else ITEMS
+    u = _one({"kind": "config", "target": key, "value": [f"  {i} " for i in items]},
+             snap(CONFIG))
+    assert review.parse_value(q, u.change.value) == items
+
+
+def test_a_string_value_for_a_list_setting_is_still_split_on_commas():
+    from sluice.onboard.questions import catalogue
+    q = next(q for q in catalogue() if q.key == "target_locations")
+    u = _one({"kind": "config", "target": "target_locations", "value": "Remote, Example, UK"},
+             snap(CONFIG))
+    assert review.parse_value(q, u.change.value) == ["Remote", "Example", "UK"]
+
+
+def test_a_list_for_a_scalar_setting_is_set_aside_by_name():
+    units, aside = propose([{"kind": "config", "target": "lead_ttl_days", "value": ["30"]}],
+                           snap(CONFIG))
+    assert units == [] and "`lead_ttl_days` takes one value, not a list" in aside[0].reason
+
+
+def test_a_list_for_vault_dir_is_set_aside_on_a_first_run_without_crashing():
+    units, aside = propose([{"kind": "config", "target": "vault_dir", "value": ["/example/v"]}],
+                           snap(None))
+    assert units == [] and len(aside) == 1
+
+
+@pytest.mark.parametrize("kind,target", [("profile", "Who this candidate is"),
+                                         ("candidate", "cv_email"),
+                                         ("brief", "Pay structure")])
+def test_a_list_for_a_text_kind_is_set_aside(kind, target):
+    units, aside = propose([{"kind": kind, "target": target, "value": ["Example."]}],
+                           snap(CONFIG, {"profile": PROFILE}, env=True))
+    assert units == [] and review.LIST_FOR_TEXT in aside[0].reason
+
+
+@pytest.mark.parametrize("bad,why", [(["Example", "  "], "empty"), (["Example", 7], "text"),
+                                     (["Example", "a\nb"], "line break"),
+                                     (["Example", "a" + chr(27) + "b"], "control character")])
+def test_an_empty_or_non_text_item_is_set_aside(bad, why):
+    units, aside = propose([{"kind": "config", "target": "accept_titles", "value": bad}],
+                           snap(CONFIG))
+    assert units == [] and why in aside[0].reason
 
 
 def test_no_previous_for_a_key_that_was_not_set_or_did_not_change():

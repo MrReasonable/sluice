@@ -1054,8 +1054,12 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   `Sluice.setup_snapshot()` into what `setup_status` reports; the finish functions turn a
   proposed change into the whole new text of one artefact, the Role Brief note included, and
   set aside what cannot be applied, with the reason; `previous` reads what a written change
-  replaced, off the same snapshot, as a value its own question parses back to exactly that,
-  or `NotRestorable` naming the key to edit by hand when none does.
+  replaced, off the same snapshot, as a value its own question parses back to exactly that
+  (a list setting's as the list itself, so an item holding a comma is never split), or
+  `NotRestorable` naming the key to edit by hand when none does. A config change's value goes
+  through `parse_value`: a list only for a list setting (`questions.py::is_list`, keyed on the
+  parser's `items` reader), each item kept whole; text through the question's `parse`, which
+  for a list setting still splits on commas, as `init`'s TTY prompt does.
 - **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
   it (a persona plus one page per phase). It writes nothing; the only route from the coach to
   a write is `setup_save`, which the playbooks call only after a playback and the user's yes. Building the prompt imports `core/app.py` and

@@ -8,7 +8,7 @@ Before anything is saved, call `setup_status` again, so you play back against wh
 
 Then play back everything you are about to save, in plain words, in one message, grouped by where it goes:
 
-- **Your sluice settings.** Each setting with its value, and for each one you are leaving empty, what leaving it empty means: an empty gate passes every lead.
+- **Your sluice settings.** Each setting with its value, and for each one you are leaving empty, what leaving it empty means: an empty gate passes every lead. Play back a list setting's items one per line, so the user sees each item exactly as it will be saved.
 - **The Judging Profile.** Each section, in full, in the user's words.
 - **The Candidate Profile.** Each field, as it will appear on a CV.
 - **The Role Brief.** Each section, in full, with every source under "Sources consulted".
@@ -32,7 +32,7 @@ When they are stopping after the research and agreed to save it, the playback is
 
 ## Saving
 
-Call `setup_save` once with the agreed changes and the `version` from your last `setup_status`. Each change is one unit: its `kind`, its `target` from `setup_status`'s `kinds`, and its `value`, or `clear: true` to return it to its default. A search also carries `label` and `url`, and `remove: true` to remove it. A list setting takes its items comma-separated in `value`. Send only what the user said yes to: nothing they declined, nothing they left unanswered, nothing you would have chosen for them.
+Call `setup_save` once with the agreed changes and the `version` from your last `setup_status`. Each change is one unit: its `kind`, its `target` from `setup_status`'s `kinds`, and its `value`, or `clear: true` to return it to its default. A search also carries `label` and `url`, and `remove: true` to remove it. A list setting, one `setup_status` names under `list_settings`, takes its `value` as a JSON list of strings, one item each, never comma-joined: an item that holds a comma stays one item. Send only what the user said yes to: nothing they declined, nothing they left unanswered, nothing you would have chosen for them.
 
 ## Reporting what happened
 
@@ -45,7 +45,7 @@ Report the result to the user in plain words, never as raw field names: what was
 
 Beside `outcome`:
 
-- `previous`, on a written change: the value or text it replaced. Keep it; it is how a change is undone.
+- `previous`, on a written change: the value or text it replaced, a list for a list setting. Keep it exactly as it came back; it is how a change is undone.
 - `not_restorable`, on a written change: it replaced a value of theirs that cannot be put back through `setup_save`. Keep what it says; it names the setting to edit by hand.
 - `artefacts`: what a first run created that no change stands for, the default Judging Profile and the Leads view. When one is not `written`, tell the user which and why.
 - `restart_needed`: empty unless the config was saved but the server could not reload it. When it is set, ask the user to restart the sluice server before anything else is saved.
@@ -65,7 +65,7 @@ Ask them to read each note and say what looks wrong or missing.
 
 ## Corrections
 
-Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value. A change that came back with `not_restorable` cannot be put back through `setup_save`: tell them what it says, the setting to edit by hand in their sluice config file, and send nothing. A change that came back with neither replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
+Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value, exactly as it came back: a list stays a list. A change that came back with `not_restorable` cannot be put back through `setup_save`: tell them what it says, the setting to edit by hand in their sluice config file, and send nothing. A change that came back with neither replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
 
 They can also edit any note in Obsidian themselves at any time. If they do so during this conversation, the next save comes back `stale`; read `setup_status` again and play back what changed.
 

@@ -15,6 +15,8 @@ import urllib.parse
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from sluice.core.safeout import is_control
+
 
 class BadAnswer(ValueError):
     """An answer that cannot be used. On a TTY the asker re-asks; unreachable under `--no-input`,
@@ -48,17 +50,63 @@ def expresses_a_preference(text: str) -> list:
 
 
 def parse_csv(raw: str) -> list:
+    """A list answer typed as ONE line, split on every comma. So an item that itself holds a
+    comma cannot be typed here: `init`'s TTY prompt (`ask.py::TtyAsker.ask`) has no other shape
+    to offer. The workarounds are to edit the key in the config file by hand, or to set it
+    through the career coach, whose `setup_save` takes a list setting as a list
+    (`parse_items`)."""
     return [s.strip() for s in raw.split(",") if s.strip()]
+
+
+def parse_items(items) -> list:
+    """A list answer given AS a list (in-session setup's `setup_save`): each item is taken
+    verbatim, stripped of surrounding whitespace and never split, so an item holding a comma
+    stays one item. An empty item or one that is not text is refused rather than dropped:
+    dropping it would write a different list from the one the user agreed to."""
+    out = []
+    for item in items:
+        if not isinstance(item, str):
+            raise BadAnswer("every item in a list must be text.")
+        text = item.strip()
+        if not text:
+            raise BadAnswer("an item in the list is empty; leave it out, or give its text.")
+        # A line break or other control character inside an item matches no title, location or
+        # word on a board, so a list holding one silently filters wrongly: as the only
+        # `relevance_keep` word it would drop every lead at ingest. The prose kinds refuse the
+        # same characters (review.py::prose_problem).
+        if any(is_control(ch) for ch in text):
+            raise BadAnswer("an item in the list holds a line break or another control "
+                            "character; give each item on its own.")
+        out.append(text)
+    return out
+
+
+# A list setting is one whose parser can also take its answer as a list: `items` reads that
+# shape, as `parse_choice`'s closures expose `.allowed`. `is_list` keys on the attribute, so a
+# new list question is a list setting by choosing a list parser, never by a hand-kept roster.
+parse_csv.items = parse_items
+
+
+def is_list(q) -> bool:
+    """Whether `q` is a list setting: its value may be sent as a list (`q.parse.items`)."""
+    return callable(getattr(q.parse, "items", None))
 
 
 def parse_languages(raw: str) -> list:
     """Comma-separated ISO 639-1 codes, checked by the SAME function the config loader uses, so
     `init` cannot write a `listing_languages` the loader then refuses (#312)."""
+    return _languages(parse_csv(raw))
+
+
+def _languages(codes: list) -> list:
     from sluice.core.language import parse_listing_languages
     try:
-        return parse_listing_languages(parse_csv(raw))
+        return parse_listing_languages(codes)
     except ValueError as e:
         raise BadAnswer(str(e)) from None
+
+
+parse_languages.items = lambda items: _languages(parse_items(items))
 
 
 def parse_int(raw: str) -> int:
