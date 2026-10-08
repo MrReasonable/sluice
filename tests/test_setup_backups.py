@@ -4,7 +4,8 @@
 gone, while the coach invites the user to come back later if something looks wrong. So before
 `Sluice.apply_setup` replaces a setup note or the config, it keeps the artefact's prior bytes:
 a note's under the vault's `_setup_backups/` folder (`core/vault.py::SETUP_BACKUP_RELDIR`), the
-config's beside the resolved config file. Every row reads the result back from disk."""
+config's in sluice's XDG state folder (`core/config.py::config_copy_dir`), never beside the
+config file. Every row reads the result back from disk."""
 import os
 import stat
 import sys
@@ -15,6 +16,7 @@ import pytest
 
 from sluice.core import backup
 from sluice.core.app import Sluice
+from sluice.core.config import config_copy_dir
 from sluice.core.paths import config_file
 from sluice.core.protocols import (CANDIDATE_PROFILE_RELPATH, CRITERIA_RELPATH,
                                    ArtefactWrite, document_sha)
@@ -56,7 +58,10 @@ def _ttl_write(old, sha, ttl=30):
     return ArtefactWrite("config", new, sha, ("lead_ttl_days",), (("lead_ttl_days", ttl),))
 
 
-def _config_copies(directory) -> list[str]:
+def _config_copies(directory=None) -> list[str]:
+    directory = config_copy_dir() if directory is None else directory
+    if not os.path.isdir(directory):
+        return []
     return sorted(n for n in os.listdir(directory) if n.endswith(".bak"))
 
 
@@ -96,6 +101,35 @@ def test_a_note_whose_copy_cannot_be_written_is_not_replaced(monkeypatch):
     assert (_vault() / CRITERIA_RELPATH).read_bytes() == OLD_NOTE
     assert "copy" in out["profile"].reason
     assert str(_vault()) not in out["profile"].reason
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows does not fsync a directory")
+def test_a_copy_syncs_its_folder_and_the_folders_parent(tmp_path, monkeypatch):
+    """The file's fsync covers its bytes, not the directory entry naming it; the folder is synced,
+    and its parent, since the folder may have been created for this copy."""
+    folder = tmp_path / "copies"
+    folder.mkdir()
+    synced = []
+    real_fsync = os.fsync
+
+    def record(fd):
+        synced.append(os.fstat(fd).st_ino)
+        real_fsync(fd)
+    monkeypatch.setattr(os, "fsync", record)
+    backup.write_copy(str(folder), "Example ", ".md", b"old")
+    assert {os.stat(folder).st_ino, os.stat(tmp_path).st_ino} <= set(synced)
+
+
+def test_a_note_whose_copy_folder_cannot_be_synced_is_not_replaced(monkeypatch):
+    sha = _seed_note()
+
+    def refuse(_directory):
+        raise OSError(5, "Input/output error")
+    monkeypatch.setattr(backup, "_fsync_dir", refuse)
+    out = Sluice.from_config_file().apply_setup(
+        [ArtefactWrite("profile", "# Judging Profile\n\nNew words.\n", sha)])
+    assert out["profile"].status == "failed", out
+    assert (_vault() / CRITERIA_RELPATH).read_bytes() == OLD_NOTE
 
 
 @pytest.mark.skipif(sys.platform == "win32" or os.geteuid() == 0,
@@ -170,6 +204,45 @@ def test_the_backup_folder_is_never_read_as_a_lead_or_a_setup_note():
     assert snap.notes["candidate"] == "# Candidate Profile\n"
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+def test_a_backup_folder_linked_into_job_leads_is_refused_and_no_copy_becomes_a_lead():
+    """`_setup_backups -> Job Leads` resolves INSIDE the vault, so a resolve-and-contain check
+    let it through and the copy of a lead-shaped note was then read as a lead. A symlinked
+    component is refused before anything is created, the note keeps its text, and the report
+    says why in fixed words rather than a bare exception name."""
+    from sluice.core.app import _COPY_REFUSED
+    lead_shaped = (b"---\ncompany: Example Co\nrole: Example Role\nstatus: new\n"
+                   b"base: \"[[Job Leads.base]]\"\n---\n\nbody\n")
+    sha = _seed_note(data=lead_shaped)
+    leads = _vault() / "Job Applications" / "Job Leads"
+    leads.mkdir(parents=True, exist_ok=True)
+    os.symlink(leads, _backups())
+    s = Sluice.from_config_file()
+    before = s.store().read_leads()
+    out = s.apply_setup([ArtefactWrite("profile", "# Judging Profile\n\nNew words.\n", sha)])
+    assert out["profile"].status == "failed", out
+    assert (_vault() / CRITERIA_RELPATH).read_bytes() == lead_shaped
+    assert s.store().read_leads() == before
+    assert list(leads.iterdir()) == []
+    assert out["profile"].reason.endswith(f"({_COPY_REFUSED})"), out["profile"].reason
+    assert str(_vault()) not in out["profile"].reason
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs POSIX symlinks")
+def test_a_symlinked_job_applications_folder_is_refused_for_a_copy():
+    """Every component is checked, the outer `Job Applications/` too, as `_evidence_dir`
+    checks one -- not only the `_setup_backups` folder itself."""
+    real = _vault() / "Elsewhere"
+    real.mkdir(parents=True)
+    os.symlink(real, _vault() / "Job Applications")
+    sha = _seed_note()
+    out = Sluice.from_config_file().apply_setup(
+        [ArtefactWrite("profile", "# Judging Profile\n\nNew words.\n", sha)])
+    assert out["profile"].status == "failed", out
+    assert (real / "Judging Profile.md").read_bytes() == OLD_NOTE
+    assert not (real / "_setup_backups").exists()
+
+
 # ── config ───────────────────────────────────────────────────────────────────
 
 def test_a_replaced_config_leaves_an_exact_copy_with_the_configs_mode():
@@ -183,17 +256,37 @@ def test_a_replaced_config_leaves_an_exact_copy_with_the_configs_mode():
         os.umask(prior)
     assert out["config"].status == "written", out
     assert "lead_ttl_days: 30" in Path(config_file()).read_text()
-    d = os.path.dirname(config_file())
-    copies = _config_copies(d)
+    d = config_copy_dir()
+    copies = _config_copies()
     assert len(copies) == 1
     copy = os.path.join(d, copies[0])
     assert Path(copy).read_bytes() == old.encode("utf-8")
     assert stat.S_IMODE(os.stat(copy).st_mode) == 0o640
     assert out["config"].kept == copies[0]
     assert copies[0].startswith(os.path.basename(config_file()) + ".")
+    # Nothing beside the config: it may sit in a dotfiles repository a commit would publish.
+    assert _config_copies(os.path.dirname(config_file())) == []
 
 
-def test_a_symlinked_config_is_copied_beside_its_real_file(tmp_path):
+def test_the_config_copy_folder_is_sluices_state_folder():
+    """Resolved through `core/paths.py` like every other state path: under XDG_STATE_HOME
+    (which the suite sandboxes), never under the config's own XDG directory."""
+    state = os.environ["XDG_STATE_HOME"]
+    assert config_copy_dir() == os.path.join(state, "sluice", "config_backups")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX modes")
+def test_a_created_config_copy_folder_is_private_to_the_user():
+    old, sha = _seed_config()
+    out = Sluice.from_config_file().apply_setup([_ttl_write(old, sha)])
+    assert out["config"].status == "written", out
+    assert stat.S_IMODE(os.stat(config_copy_dir()).st_mode) == 0o700
+
+
+def test_a_symlinked_configs_copy_goes_to_the_state_folder_not_its_dotfiles_repo(tmp_path):
+    """The case the state folder exists for: a config linked into a dotfiles repository. The
+    copy holds the REAL file's bytes and mode, and lands in neither the repo nor beside the
+    link."""
     real = str(tmp_path / "dotfiles" / "sluice.yaml")
     old, sha = _seed_config(mode=0o600, at=real)
     os.makedirs(os.path.dirname(config_file()), exist_ok=True)
@@ -201,10 +294,12 @@ def test_a_symlinked_config_is_copied_beside_its_real_file(tmp_path):
     out = Sluice.from_config_file().apply_setup([_ttl_write(old, sha)])
     assert out["config"].status == "written", out
     assert os.path.islink(config_file())
-    copies = _config_copies(os.path.dirname(real))
+    copies = _config_copies()
     assert len(copies) == 1 and copies[0].startswith("sluice.yaml.")
-    assert Path(os.path.dirname(real), copies[0]).read_bytes() == old.encode("utf-8")
-    assert stat.S_IMODE(os.stat(os.path.join(os.path.dirname(real), copies[0])).st_mode) == 0o600
+    copy = os.path.join(config_copy_dir(), copies[0])
+    assert Path(copy).read_bytes() == old.encode("utf-8")
+    assert stat.S_IMODE(os.stat(copy).st_mode) == 0o600
+    assert sorted(os.listdir(os.path.dirname(real))) == ["sluice.yaml"]
     assert _config_copies(os.path.dirname(config_file())) == []
 
 
@@ -226,6 +321,7 @@ def test_a_first_run_config_create_keeps_no_copy():
     out = Sluice.from_config_file().apply_setup([ArtefactWrite("config", text, None)])
     assert out["config"].status == "written", out
     assert out["config"].kept == ""
+    assert _config_copies() == []
     assert _config_copies(os.path.dirname(config_file())) == []
 
 
@@ -239,5 +335,5 @@ def test_two_config_saves_in_the_same_instant_keep_two_copies(monkeypatch):
     second = ArtefactWrite("config", first.text.replace("lead_ttl_days: 30", "lead_ttl_days: 9"),
                            document_sha(first.text), ("lead_ttl_days",), (("lead_ttl_days", 9),))
     assert s.apply_setup([second])["config"].status == "written"
-    d = os.path.dirname(config_file())
-    assert {Path(d, c).read_text() for c in _config_copies(d)} == {old, first.text}
+    d = config_copy_dir()
+    assert {Path(d, c).read_text() for c in _config_copies()} == {old, first.text}

@@ -2389,10 +2389,14 @@ class Vault:
         named after the document with the time it was taken (`core/backup.py`), holding the
         document's exact bytes and carrying its mode.
 
-        Both the document and the folder must resolve inside the vault, for the reason
-        write_document gives: a symlinked folder would otherwise carry the user's text out of
-        the vault they named. Under the same per-path lock write_document's update arm takes,
-        so the sha check here and the bytes copied are one read."""
+        The document must resolve inside the vault, for the reason write_document gives. The
+        folder must be a REAL folder on every component below the vault root -- `Job
+        Applications/` and `_setup_backups/` alike -- refused through `_walk_refusing_symlinks`
+        before anything is created, as `_evidence_dir` refuses one. Resolving it and checking
+        the result lands inside the vault is not enough: measured, `_setup_backups -> Job
+        Leads` resolved inside the vault, and the copy was then read by `read_leads` as a
+        lead. Under the same per-path lock write_document's update arm takes, so the sha check
+        here and the bytes copied are one read."""
         from sluice.core import backup
         root = os.path.realpath(self.dir)
         path = os.path.realpath(self._doc_path(rel))
@@ -2406,14 +2410,13 @@ class Vault:
                 return ""
             if document_sha(data.decode("utf-8")) != expect_sha:
                 return ""
-            folder = self._doc_path(SETUP_BACKUP_RELDIR)
+            folder = self._walk_refusing_symlinks(
+                SETUP_BACKUP_RELDIR.split("/"),
+                "setup copies folder {path!r} is a symlink; refusing to keep a copy through "
+                "it -- make it a real folder in the vault")
             os.makedirs(folder, exist_ok=True)
-            real = os.path.realpath(folder)
-            if os.path.commonpath([root, real]) != root:
-                raise ValueError("keep_document_copy: the backup folder resolves outside the "
-                                 "vault")
             stem, ext = os.path.splitext(rel.split("/")[-1])
-            name = backup.write_copy(real, stem + " ", ext, data,
+            name = backup.write_copy(folder, stem + " ", ext, data,
                                      stat.S_IMODE(os.stat(path).st_mode))
         return f"{SETUP_BACKUP_RELDIR}/{name}"
 

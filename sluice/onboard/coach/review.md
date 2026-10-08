@@ -47,7 +47,7 @@ Beside `outcome`:
 
 - `previous`, on a written change: the value or text it replaced, a list for a list setting. Keep it exactly as it came back; it is how a change is undone.
 - `not_restorable`, on a written change: it replaced a value of theirs that cannot be put back through `setup_save`. Keep what it says; it names the setting to edit by hand.
-- `copies_kept`: for each note or config file the save replaced, where a copy of it as it was before the save is kept. Tell the user every replaced note and setting is kept this way: a note's copy in the `_setup_backups` folder inside their vault's Job Applications folder, the config file's copy in the same folder as their sluice config file, named after it with the date and time. Every copy is kept; nothing removes them.
+- `copies_kept`: for each note or config file the save replaced, where a copy of it as it was before the save is kept. Tell the user every replaced note and setting is kept this way: a note's copy in the `_setup_backups` folder inside their vault's Job Applications folder, the config file's copy in the `config_backups` folder of sluice's state folder (`~/.local/state/sluice/` unless they set `XDG_STATE_HOME`), named after it with the date and time. Every copy is kept; nothing removes them.
 - `artefacts`: what a first run created that no change stands for, the default Judging Profile and the Leads view. When one is not `written`, tell the user which and why.
 - `restart_needed`: empty unless the config was saved but the server could not reload it. When it is set, ask the user to restart the sluice server before anything else is saved.
 
@@ -68,7 +68,7 @@ Ask them to read each note and say what looks wrong or missing.
 
 Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value, exactly as it came back: a list stays a list. A change that came back with `not_restorable` cannot be put back through `setup_save`: tell them what it says, the setting to edit by hand in their sluice config file, and send nothing. A change that came back with neither replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
 
-`previous` lasts only as long as this conversation. After it, the copies are how something is put back: the user opens the copy in `_setup_backups` in Obsidian and tells you the text to restore, or copies it back into the note themselves; a setting's earlier value is in the config file's copy beside it. A restore you save is played back and agreed like any other change, and it keeps a copy of what it replaces in turn.
+`previous` lasts only as long as this conversation. After it, the copies are how something is put back: the user opens the copy in `_setup_backups` in Obsidian and tells you the text to restore, or copies it back into the note themselves; a setting's earlier value is in the config file's copy in the `config_backups` folder of sluice's state folder. A restore you save is played back and agreed like any other change, and it keeps a copy of what it replaces in turn.
 
 They can also edit any note in Obsidian themselves at any time. If they do so during this conversation, the next save comes back `stale`; read `setup_status` again and play back what changed.
 

@@ -112,7 +112,8 @@ def test_an_update_writes_and_reports_what_each_change_replaced(tmp_path):
     assert "New profile words." in (_vault() / CRITERIA_RELPATH).read_text()
     assert "New pay words." in (_vault() / ROLE_BRIEF_RELPATH).read_text()
     # Every replaced artefact was kept as a copy, and the report says where in words the
-    # user can follow: inside the vault for a note, beside the config file for the config.
+    # user can follow: inside the vault for a note, the state folder's config_backups for the
+    # config -- never beside the config file.
     kept = out["copies_kept"]
     assert set(kept) == {"config", "profile", "candidate", "brief"}, kept
     from sluice.core.vault import SETUP_BACKUP_RELDIR
@@ -121,9 +122,12 @@ def test_an_update_writes_and_reports_what_each_change_replaced(tmp_path):
         assert "vault" in kept[art], kept[art]
         named = [n for n in names if f"{SETUP_BACKUP_RELDIR}/{n}" in kept[art]]
         assert len(named) == 1, (art, kept[art], names)
-    assert "beside the config file" in kept["config"]
-    copies = [n for n in os.listdir(os.path.dirname(config_file())) if n.endswith(".bak")]
+    from sluice.core.config import config_copy_dir
+    # The words name the folder config_copy_dir() really resolves to.
+    assert f"{os.path.basename(config_copy_dir())} folder of sluice's state folder" in kept["config"]
+    copies = [n for n in os.listdir(config_copy_dir()) if n.endswith(".bak")]
     assert len(copies) == 1 and copies[0] in kept["config"]
+    assert [n for n in os.listdir(os.path.dirname(config_file())) if n.endswith(".bak")] == []
     assert len(list((_vault() / SETUP_BACKUP_RELDIR).iterdir())) == 3
     _no_discovered_path(out, tmp_path)
 

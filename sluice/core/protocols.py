@@ -1135,8 +1135,10 @@ class Store(Protocol):
 
         Every copy is NEW: a second copy of the same document gets a different key and never
         overwrites an earlier one, and none is pruned. A copy must never be read back as the
-        document it copies, nor as a lead. A copy that cannot be kept RAISES (OSError), and the
-        caller then does not replace the document: setup never replaces without a copy.
+        document it copies, nor as a lead. A copy that cannot be kept RAISES -- OSError/ValueError
+        (a symlinked folder on the way to the copy, a permission error, a `rel` outside the
+        store) -- and the caller then does not replace the document: setup never replaces
+        without a copy.
 
         The returned key is store-relative, never a filesystem path, because it is shown to
         the user (the setup_save report names where the copy went). `rel` must stay inside the
@@ -1421,6 +1423,6 @@ class ArtefactOutcome:
     status: str                # "written" | "conflict" | "failed" | "set_aside"
     reason: str = ""
     # A "written" REPLACE only: where the prior text was kept, relative to the store (a note,
-    # Store.keep_document_copy's key) or the copy's name beside the config file. "" for a
-    # create, which replaced nothing.
+    # Store.keep_document_copy's key) or the config copy's file name in sluice's state folder
+    # (`core/config.py::config_copy_dir`). "" for a create, which replaced nothing.
     kept: str = ""
