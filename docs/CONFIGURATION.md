@@ -198,6 +198,20 @@ compute it. See `apply prep` in `docs/USAGE.md` for how the packet renders them,
 (same doc) for how a blank name/contact — or a legacy `cv.name`/`cv.contact` left in
 `sluice.yaml` from before this note existed — is reported.
 
+## Copies kept by setup (vault folder and config directory)
+
+When the career coach's `setup_save` replaces a setup note (the Judging Profile, the Candidate
+Profile or the Role Brief) or the config file, it first keeps a copy of that file exactly as
+it was. A note's copy goes in `Job Applications/_setup_backups/` in the vault, named after the
+note with the UTC date and time of the save and a short random suffix, so copies of one note
+sort in the order they were taken and two saves in the same instant never collide. The
+config's copy goes beside the config file -- beside its real location when the config is a
+symlink -- with the config's own file mode, named after it the same way and ending `.bak`.
+Nothing reads the copies: the folder is outside `Job Applications/Job Leads/`, so no copy is
+ever read as a lead, and each setup note is read from its own fixed name. **Every copy is
+kept**; sluice never prunes them, so delete any you no longer want. There is no setting for
+this, and a copy that cannot be written stops that file being replaced.
+
 ## Role Brief (vault note)
 
 `Job Applications/Role Brief.md` records what the career coach found when it researched the

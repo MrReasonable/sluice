@@ -87,6 +87,14 @@ INBOX_SUBDIR = "_inbox"
 Store contract: a SQLite store would use a column, and no consumer outside this
 module needs the name."""
 
+SETUP_BACKUP_RELDIR = "Job Applications/_setup_backups"
+"""Where `keep_document_copy` keeps a setup note's prior text before in-session setup replaces
+it, as a store-relative key. The vault's own mechanism, NOT on the Store contract (a SQLite
+store would keep a row). It sits beside the setup notes, OUTSIDE leads_dir, so the lead walk
+(`_walk`) never reaches it and needs no `_PRIVATE_SUBDIRS` entry: a copy of a note can never
+be read as a lead. No setup note is read from it either, since each is read by its own fixed
+key (`SETUP_NOTES`). Every copy is kept; none is pruned."""
+
 VERIFIED_KEY = "verified"
 """The frontmatter key that makes an entry citable by the hard fabrication gate.
 Store-managed: `propose_evidence` never writes it and `EvidenceKind.fields` never
@@ -2375,6 +2383,39 @@ class Vault:
             return path
         _atomic_write(path, text, newline="")
         return path
+
+    def keep_document_copy(self, rel: str, expect_sha: str) -> str:
+        """See Store.keep_document_copy. The copy is a new file under SETUP_BACKUP_RELDIR,
+        named after the document with the time it was taken (`core/backup.py`), holding the
+        document's exact bytes and carrying its mode.
+
+        Both the document and the folder must resolve inside the vault, for the reason
+        write_document gives: a symlinked folder would otherwise carry the user's text out of
+        the vault they named. Under the same per-path lock write_document's update arm takes,
+        so the sha check here and the bytes copied are one read."""
+        from sluice.core import backup
+        root = os.path.realpath(self.dir)
+        path = os.path.realpath(self._doc_path(rel))
+        if os.path.isabs(rel) or os.path.commonpath([root, path]) != root:
+            raise ValueError(f"keep_document_copy: '{rel}' escapes the store root")
+        with _lock_for(path):
+            try:
+                with open(path, "rb") as f:
+                    data = f.read()
+            except FileNotFoundError:
+                return ""
+            if document_sha(data.decode("utf-8")) != expect_sha:
+                return ""
+            folder = self._doc_path(SETUP_BACKUP_RELDIR)
+            os.makedirs(folder, exist_ok=True)
+            real = os.path.realpath(folder)
+            if os.path.commonpath([root, real]) != root:
+                raise ValueError("keep_document_copy: the backup folder resolves outside the "
+                                 "vault")
+            stem, ext = os.path.splitext(rel.split("/")[-1])
+            name = backup.write_copy(real, stem + " ", ext, data,
+                                     stat.S_IMODE(os.stat(path).st_mode))
+        return f"{SETUP_BACKUP_RELDIR}/{name}"
 
     def preflight(self) -> dict:
         """`sluice doctor`'s optional Store hook (see core/protocols.py's `Store`

@@ -1200,7 +1200,15 @@ holder is rebuilt so the other tools see it (`restart_needed` if that rebuild fa
 its absence) and the vault in use (`SetupSnapshot.version`; no path in it). `setup_save` takes
 it back and, when the state it reads now carries another, writes nothing and reports `stale`;
 otherwise it validates every change and hands the finished texts, built against that same
-snapshot, to `Sluice.apply_setup`, which owns the config check and every write. There is no
+snapshot, to `Sluice.apply_setup`, which owns the config check and every write. Before any write that
+REPLACES an artefact it keeps a durable copy of the prior bytes -- a note's through
+`Store.keep_document_copy` (the vault puts it under `Job Applications/_setup_backups/`, outside
+`leads_dir`, so the lead walk never reaches it and `_PRIVATE_SUBDIRS` needs no entry), the
+config's through `core/config.py::keep_config_copy`, beside the symlink-resolved file with its
+mode -- both written exclusively by `core/backup.py::write_copy` under a time-sortable name with
+a random suffix. A copy that abstains (the artefact no longer holds what was read) or fails
+stops the replace: setup never replaces without a copy. Every copy is kept, and the report's
+`copies_kept` names each in words relative to the vault or the config file. There is no
 form: the user's consent is a yes in chat to the coach's playback, a rule the playbooks state
 and the eval harness scores, which the model can break, unlike `verify_evidence`'s form (owner's
 ruling, `docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md`).

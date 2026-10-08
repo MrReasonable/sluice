@@ -77,6 +77,7 @@ def test_a_first_run_with_vault_dir_env_writes_config_and_notes_into_that_vault(
     assert (_vault() / CRITERIA_RELPATH).exists()
     assert "Example pay text." in (_vault() / ROLE_BRIEF_RELPATH).read_text()
     assert not any("previous" in r for r in out["changes"]), "a first run replaced nothing"
+    assert out["copies_kept"] == {}, "a first run replaced nothing, so nothing was copied"
     _no_discovered_path(out, tmp_path)
 
 
@@ -110,6 +111,20 @@ def test_an_update_writes_and_reports_what_each_change_replaced(tmp_path):
     assert "lead_ttl_days: 30" in Path(config_file()).read_text()
     assert "New profile words." in (_vault() / CRITERIA_RELPATH).read_text()
     assert "New pay words." in (_vault() / ROLE_BRIEF_RELPATH).read_text()
+    # Every replaced artefact was kept as a copy, and the report says where in words the
+    # user can follow: inside the vault for a note, beside the config file for the config.
+    kept = out["copies_kept"]
+    assert set(kept) == {"config", "profile", "candidate", "brief"}, kept
+    from sluice.core.vault import SETUP_BACKUP_RELDIR
+    names = [c.name for c in (_vault() / SETUP_BACKUP_RELDIR).iterdir()]
+    for art in ("profile", "candidate", "brief"):
+        assert "vault" in kept[art], kept[art]
+        named = [n for n in names if f"{SETUP_BACKUP_RELDIR}/{n}" in kept[art]]
+        assert len(named) == 1, (art, kept[art], names)
+    assert "beside the config file" in kept["config"]
+    copies = [n for n in os.listdir(os.path.dirname(config_file())) if n.endswith(".bak")]
+    assert len(copies) == 1 and copies[0] in kept["config"]
+    assert len(list((_vault() / SETUP_BACKUP_RELDIR).iterdir())) == 3
     _no_discovered_path(out, tmp_path)
 
 
