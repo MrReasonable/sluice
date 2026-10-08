@@ -1034,6 +1034,31 @@ def _config_write_lock(real: str) -> threading.Lock:
         return _config_write_locks.setdefault(real, threading.Lock())
 
 
+def keep_config_copy(path: str, expect_sha: str) -> str:
+    """Keep a copy of the config file's current bytes beside it, before in-session setup
+    replaces it (`core/backup.py`). Returns the copy's file NAME, or "" -- keeping nothing --
+    when the file is gone or no longer hashes to `expect_sha`: the copy stands for the text the
+    user was shown being replaced. Raises OSError when the copy cannot be written, and the
+    caller then does not replace the config: never a replace without a copy.
+
+    The symlink is resolved exactly as `write_config_text` resolves it, so the copy lands
+    beside the REAL file, not the link, and carries its mode, which matters
+    because a config may hold a credential."""
+    from sluice.core import backup
+    real = os.path.realpath(path)
+    with _config_write_lock(real):
+        try:
+            with open(real, "rb") as f:
+                data = f.read()
+        except FileNotFoundError:
+            return ""
+        if document_sha(data.decode("utf-8")) != expect_sha:
+            return ""
+        mode = stat.S_IMODE(os.stat(real).st_mode)
+        return backup.write_copy(os.path.dirname(real) or ".", os.path.basename(real) + ".",
+                                 ".bak", data, mode)
+
+
 def write_config_text(path: str, text: str, *, expect_sha: str | None = None) -> bool:
     """The config file's one writer (in-session setup). A symlink is resolved and its TARGET
     replaced in the target's own directory, so a link into a dotfiles repository survives;

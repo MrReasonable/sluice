@@ -485,6 +485,13 @@ user said yes to, else nothing is written, and a create through that path is exc
 (`only_if_absent`); a bare `write_document` is still a plain atomic replace. `setup_save` also
 refuses a whole save as `stale` when `setup_status`'s `version` (a digest of the config, every
 setup note and the vault in use) no longer matches, before any of those per-artefact checks run.
+Every REPLACE through setup is preceded by a durable copy of the prior bytes, and no copy means no
+replace: `Store.keep_document_copy` (the vault keeps it under `Job Applications/_setup_backups/`,
+OUTSIDE `leads_dir`, which is why the lead walk never reaches it and `_PRIVATE_SUBDIRS` does not
+name it -- move that folder under `leads_dir` and it needs the prune) and
+`core/config.py::keep_config_copy` (beside the symlink-resolved config, with its mode). Copies
+are never pruned; `setup_save` reports each under `copies_kept` relative to the vault or the
+config file, never as a path.
 That consent is a yes in CHAT, by the owner's ruling (2026-10-08): no form stands between the
 model and `setup_save`, so do not describe it as a guard the model cannot cross --
 `verify_evidence`'s form is the one place that holds. The config file's own writer is `core/config.py::write_config_text`, which

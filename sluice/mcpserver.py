@@ -1060,6 +1060,16 @@ _STALE = ("the config file or a setup note changed, appeared or went away, or th
           "play back anything that changed before saving")
 
 
+def _copy_words(artefact: str, kept: str) -> str:
+    """Where a replaced artefact's copy went, for the user. `kept` is the store's key for a
+    note's copy (relative to the vault) or the file name of the config's copy -- neither is a
+    path on this machine, so neither discloses where the vault or the config lives."""
+    if artefact == "config":
+        return (f"the config file as it was before this save is kept beside the config file, "
+                f"named {kept}")
+    return f"the note as it was before this save is kept in your vault at {kept}"
+
+
 def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict:
     """Write the agreed setup changes, protocol stripped off so tests reach it without mcp.
 
@@ -1076,8 +1086,8 @@ def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict
     coach can restore it, or `not_restorable` naming the key to edit by hand when sending a
     value back would not reproduce what was there. Rows name a change by its unit key, never by
     a value, so no path -- not even a resolved `vault_dir` -- appears in the response."""
-    report = {"outcome": "", "changes": [], "artefacts": {}, "config_written": False,
-              "restart_needed": "", "detail": ""}
+    report = {"outcome": "", "changes": [], "artefacts": {}, "copies_kept": {},
+              "config_written": False, "restart_needed": "", "detail": ""}
     snap = sluice.setup_snapshot()
     if version != snap.version:
         report["outcome"] = "stale"
@@ -1114,6 +1124,12 @@ def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict
     backed = {u.artefact for u in units}
     report["artefacts"] = {a: {"outcome": _SAVE_OUTCOME[o.status], "reason": o.reason}
                            for a, o in outcomes.items() if a not in backed}
+    # Every artefact this save REPLACED was copied first (Sluice.apply_setup), and the report
+    # says where in words relative to the vault or the config file, never as a path: the
+    # coach tells the user, who can restore from the copy in a later session, when `previous`
+    # is gone with the chat.
+    report["copies_kept"] = {a: _copy_words(a, o.kept) for a, o in outcomes.items()
+                             if o.status == "written" and o.kept}
     unwritten = sorted(a for a, o in report["artefacts"].items() if o["outcome"] != "written")
     report["config_written"] = getattr(outcomes.get("config"), "status", "") == "written"
     report["outcome"] = "completed"
@@ -1408,7 +1424,11 @@ def build_server(config, write: bool = False):
             "its reason; a written change that replaced something carries `previous` (a list, "
             "for a list setting), which restores it when sent back as the value, or "
             "`not_restorable` when no value sent back would restore it, naming what to edit by "
-            "hand instead.")
+            "hand instead. Before replacing a setup note or the config, the save keeps a copy "
+            "of it as it was: `copies_kept` says, per replaced artefact, where (a note's copy in "
+            "the vault's Job Applications/_setup_backups folder, the config's beside the config "
+            "file). Every copy is kept; a change whose copy could not be kept is failed and "
+            "nothing of it is written.")
         mcp_server.tool(name="setup_save")(setup_save_tool)
 
     return mcp_server

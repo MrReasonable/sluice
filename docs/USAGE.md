@@ -911,6 +911,17 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   not an outcome: it is non-empty beside a `completed` outcome when a config was written but
   the server could not reload it, and says to restart the server.
 
+  Before replacing a setup note or the config file, `setup_save` keeps a copy of it exactly as
+  it was, and `copies_kept` says, per replaced file, where: a note's copy is a new note in
+  `Job Applications/_setup_backups/` in your vault, named after the note with the UTC date and
+  time of the save; the config's copy sits beside the config file (beside its real location,
+  when the config is a symlink), with the config's own file mode, named
+  `<config file name>.<UTC date and time>-<suffix>.bak`. A copy is never overwritten and never
+  removed: every save that replaces something adds one, and they are kept until you delete
+  them. If a copy cannot be written, that file is not replaced and its change comes back
+  `failed`. A first-run create replaces nothing, so it keeps no copy. `previous` puts a value
+  back within the chat; the copies are how you get older wording back in a later session.
+
 - `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
   -> applied).

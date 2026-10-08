@@ -462,6 +462,40 @@ def test_write_document_only_if_absent_creates_then_abstains(store_name, tmp_pat
     assert store.read_criteria() == "first"
 
 
+def test_keep_document_copy_keeps_the_prior_text_readable_by_its_returned_key(
+        store_name, tmp_path, monkeypatch):
+    """In-session setup keeps a copy of every setup note it replaces, so a later session can
+    restore it. The contract: the returned key reads back the exact prior text through
+    read_document, and a second copy of the same document gets a DIFFERENT key, so nothing
+    an earlier copy holds is ever overwritten. Asserted through read_document, never a path."""
+    from sluice.core.protocols import CRITERIA_RELPATH, document_sha
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.write_document(CRITERIA_RELPATH, "first\r\n")
+    key = store.keep_document_copy(CRITERIA_RELPATH, document_sha("first\r\n"))
+    assert isinstance(key, str) and key and not os.path.isabs(key)
+    assert store.read_document(key) == "first\r\n"
+    again = store.keep_document_copy(CRITERIA_RELPATH, document_sha("first\r\n"))
+    assert again and again != key and store.read_document(key) == "first\r\n"
+    # A copy is not a setup note, and the note itself is untouched by being copied.
+    assert store.read_document(CRITERIA_RELPATH) == "first\r\n"
+
+
+def test_keep_document_copy_abstains_on_a_changed_or_absent_document(
+        store_name, tmp_path, monkeypatch):
+    """"" and nothing kept when the document no longer hashes to what was read, or is gone:
+    the copy stands for the text the user was shown being replaced, not for whatever is
+    there now."""
+    from sluice.core.protocols import CRITERIA_RELPATH, document_sha
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert store.keep_document_copy(CRITERIA_RELPATH, document_sha("x")) == ""
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+    store.write_document(CRITERIA_RELPATH, "now")
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    assert store.keep_document_copy(CRITERIA_RELPATH, document_sha("then")) == ""
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+
+
 def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
         store_name, tmp_path, monkeypatch):
     """`protocols.py` requires never-clobber be a property of the CREATE ITSELF -- an exclusive

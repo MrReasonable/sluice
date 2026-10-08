@@ -887,7 +887,7 @@ class Sluice:
         (`onboard/review.py::_config_unit`), so no update can move the vault the notes were
         shown against. A first-run CREATE is different: the notes need the vault it names, so
         they are set aside when it does not land."""
-        from sluice.core.config import write_config_text
+        from sluice.core.config import keep_config_copy, write_config_text
         from sluice.core.paths import config_file
         from sluice.core.protocols import SETUP_NOTES, ArtefactOutcome, document_sha
         out = {}
@@ -896,7 +896,7 @@ class Sluice:
         first_run = cfg is not None and cfg.expect_sha is None
         if cfg is not None:
             out["config"] = self._apply_config(cfg, config_file(), write_config_text,
-                                               ArtefactOutcome, document_sha)
+                                               ArtefactOutcome, document_sha, keep_config_copy)
             if out["config"].status == "written":
                 try:
                     target = Sluice.from_config_file()
@@ -920,6 +920,25 @@ class Sluice:
         for w in writes:
             if w.artefact == "config":
                 continue
+            kept = ""
+            if w.expect_sha is not None:
+                # The copy BEFORE the replace, and no replace without one: once the chat ends,
+                # this copy is the only place the user's old wording survives. A copy that
+                # abstains means the note no longer holds what was played back -- the conflict
+                # the replace below would report, reported without writing anything.
+                try:
+                    kept = store.keep_document_copy(SETUP_NOTES[w.artefact], w.expect_sha)
+                except (OSError, ValueError) as exc:
+                    out[w.artefact] = ArtefactOutcome(
+                        "failed", f"the note was left as it is, because a copy of it could not "
+                                  f"be kept first ({_reason(exc)})")
+                    continue
+                # Not redundant with the replace's own check: a note edited away and back in
+                # the instant between the two would pass it and be replaced with no copy kept.
+                if not kept:
+                    out[w.artefact] = ArtefactOutcome(
+                        "conflict", "it changed after setup_status read it")
+                    continue
             try:
                 if w.expect_sha is None:
                     handle = store.write_document(SETUP_NOTES[w.artefact], w.text,
@@ -933,13 +952,15 @@ class Sluice:
             # An abstained CREATE means the note is already there: on a first run setup_status
             # could not read the vault being chosen, so no old text was played back, and saying
             # the note "changed after it was read" would describe something the user never saw.
-            out[w.artefact] = (ArtefactOutcome("written") if handle else ArtefactOutcome(
+            # An abstained REPLACE after a kept copy (the note edited in the instant between the
+            # two) leaves a copy of exactly the text that was played back: harmless, and kept.
+            out[w.artefact] = (ArtefactOutcome("written", kept=kept) if handle else ArtefactOutcome(
                 "conflict", ("the note already exists in the chosen vault, so it was left as "
                              "it is" if w.expect_sha is None
                              else "it changed after setup_status read it")))
         return out
 
-    def _apply_config(self, w, path, write, outcome, sha):
+    def _apply_config(self, w, path, write, outcome, sha, keep_copy):
         old = ""
         if w.expect_sha is not None:
             try:
@@ -964,11 +985,21 @@ class Sluice:
             return outcome("failed", f"a config loader refused the result: {exc}")
         if problems:
             return outcome("set_aside", "; ".join(problems))
+        kept = ""
+        if w.expect_sha is not None:
+            # As for a note (apply_setup): the copy first, and no replace without one.
+            try:
+                kept = keep_copy(path, w.expect_sha)
+            except (OSError, ValueError) as exc:
+                return outcome("failed", f"the config was left as it is, because a copy of it "
+                                         f"could not be kept first ({_reason(exc)})")
+            if not kept:  # never a replace without a copy, as for a note
+                return outcome("conflict", "the config file changed after setup_status read it")
         try:
             ok = write(path, w.text, expect_sha=w.expect_sha)
         except OSError as exc:
             return outcome("failed", _reason(exc))
-        return outcome("written") if ok else outcome(
+        return outcome("written", kept=kept) if ok else outcome(
             "conflict", "the config file changed, or appeared, after setup_status read it")
 
     def store(self):

@@ -1126,6 +1126,23 @@ class Store(Protocol):
         alone)" for a file it had just written."""
         ...
 
+    def keep_document_copy(self, rel: str, expect_sha: str) -> str:
+        """Keep a durable copy of a store-managed document's current text, before in-session
+        setup replaces it, and return the copy's own document key -- which `read_document`
+        reads back as the exact prior text -- or "" when the document is absent or no longer
+        hashes to `expect_sha` (`document_sha`), keeping nothing. The copy stands for the text
+        the user was shown being replaced, so a document edited since is not copied.
+
+        Every copy is NEW: a second copy of the same document gets a different key and never
+        overwrites an earlier one, and none is pruned. A copy must never be read back as the
+        document it copies, nor as a lead. A copy that cannot be kept RAISES (OSError), and the
+        caller then does not replace the document: setup never replaces without a copy.
+
+        The returned key is store-relative, never a filesystem path, because it is shown to
+        the user (the setup_save report names where the copy went). `rel` must stay inside the
+        store, as for `write_document`."""
+        ...
+
     def normalize_all_statuses(self, dry_run: bool = False) -> dict:
         """Canonicalize every note's status vocabulary; return a `changed`/`unchanged`/
         `unknown`/`conflicts` summary. A note whose duplicate status lines disagree, or
@@ -1403,3 +1420,7 @@ class ArtefactWrite:
 class ArtefactOutcome:
     status: str                # "written" | "conflict" | "failed" | "set_aside"
     reason: str = ""
+    # A "written" REPLACE only: where the prior text was kept, relative to the store (a note,
+    # Store.keep_document_copy's key) or the copy's name beside the config file. "" for a
+    # create, which replaced nothing.
+    kept: str = ""

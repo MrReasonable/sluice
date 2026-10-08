@@ -76,6 +76,10 @@ _EXPECTED = {
     # leads_dir, for the identical reason as the inbox entry above: an evidence store's own
     # kind directory is never part of the lead scan set, verified or not.
     "verify_evidence:dest_dir": "evidence kind directory, outside leads_dir -- not a lead-scan concern",
+    # In-session setup's copies of the setup notes it replaces -- SETUP_BACKUP_RELDIR, beside
+    # the setup notes and outside leads_dir, so the lead scan never reaches it and it needs no
+    # _PRIVATE_SUBDIRS entry. test_setup_backups.py's never-read-as-a-lead row pins that.
+    "keep_document_copy:folder": "setup note copies, outside leads_dir -- not a lead-scan concern",
 }
 
 
@@ -268,7 +272,7 @@ def test_the_bare_local_name_set_is_derived_and_current():
     assert set(_BARE_LOCAL_KEYS) == {
         "upsert:write_dir", "reconcile_layout:dest_dir",
         "merge_cluster:merged_dir", "propose_evidence:inbox",
-        "verify_evidence:dest_dir",
+        "verify_evidence:dest_dir", "keep_document_copy:folder",
     }
 
 
