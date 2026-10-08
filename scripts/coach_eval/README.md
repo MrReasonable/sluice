@@ -50,7 +50,7 @@ a stale save and a re-read, a refused board). A run costs about $0.04 a coach me
 
 Three personas script a turn of events into the run, named by the optional `scenario` field
 (`personas.SCENARIOS`; a persona without one runs exactly as before, and a misspelt one is
-refused when the personas load). Each keeps the default cap of 12 coach messages. Run one like
+refused when the personas load). Each takes 20 coach messages, not the default 12 (see above). Run one like
 any persona, and like any run only with the owner's go-ahead:
 
 ```bash
@@ -197,6 +197,11 @@ Re-run the probe, update the roster in `run.py` and add the new version with its
 The re-measurement probe above, unchanged in shape from 2.1.292: the server connects, `--tools
 WebSearch` narrows only the built-in tools (every `mcp__sluice__*` tool is still listed, now with
 `setup_save` in place of `setup_review`), and `--tools ""` lists no tools.
+
+### Measurement 2b: Claude Code 2.1.295, 2026-10-08
+
+The same probe, the same shape: the server connects, `--tools WebSearch` narrows only the
+built-in tools, and `--tools ""` lists none.
 
 ### Measurement 3: `--disallowedTools` narrows MCP tools (2.1.292, 2026-10-07)
 
