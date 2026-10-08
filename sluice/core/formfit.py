@@ -1,8 +1,9 @@
 """How much text one checkbox in a client's review form can show in full.
 
-Measured on Claude Code 2.1.29x (see the comment above DESC_MAX_CHARS). Shared by every
-review form -- evidence verify (`sluice/mcpserver.py`) and in-session setup
-(`sluice/onboard/review.py`) -- so the two cannot disagree about what fits. Pure: no I/O.
+Measured on Claude Code 2.1.29x (see the comment above DESC_MAX_CHARS). The sizes serve the
+one review form left, evidence verify (`sluice/mcpserver.py`). `hides_text` is also in-session
+setup's control and bidirectional character check (`sluice/onboard/review.py`), so the two
+refuse the same characters. Pure: no I/O.
 """
 from sluice.core.safeout import is_control
 

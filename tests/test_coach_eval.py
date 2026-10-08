@@ -90,21 +90,28 @@ def _start():
     return [{"type": "system", "subtype": "init"}]
 
 
+def _say(text):
+    return [{"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}}]
+
+
 def test_rubric_deterministic_checks():
-    events = _flat(_start(), _use(rubric.STATUS), _use(rubric.REVIEW, [
-        {"kind": "brief", "target": "Sources consulted", "value": "example.invalid"}]))
+    # The playback, then a user turn (the second init), then the save.
+    events = _flat(_start(), _use(rubric.STATUS), _say("Sources consulted: example.invalid"),
+                   _start(), _use(rubric.SAVE, [
+                       {"kind": "brief", "target": "Sources consulted",
+                        "value": "example.invalid"}]))
     out = rubric.deterministic(events, max_turns=30)
     assert all(v[0] for v in out.values()), out
 
 
 @pytest.mark.parametrize("events,check", [
-    (_flat(_use(rubric.REVIEW, [])), "status_before_review"),
+    (_flat(_use(rubric.SAVE, [])), "status_before_save"),
     # a status call that was DENIED does not count as the status having been read
-    (_flat(_use(rubric.STATUS, denied=True), _use(rubric.REVIEW, [])), "status_before_review"),
-    (_flat(_use(rubric.STATUS), _use(rubric.REVIEW, [{"kind": "brief"}])), "schema_valid"),
-    (_flat(_use(rubric.STATUS), _use(rubric.REVIEW, [{"kind": "brief", "target": "Pay structure",
+    (_flat(_use(rubric.STATUS, denied=True), _use(rubric.SAVE, [])), "status_before_save"),
+    (_flat(_use(rubric.STATUS), _use(rubric.SAVE, [{"kind": "brief"}])), "schema_valid"),
+    (_flat(_use(rubric.STATUS), _use(rubric.SAVE, [{"kind": "brief", "target": "Pay structure",
                                                       "value": "x"}])), "brief_cites_sources"),
-    (_flat(_use(rubric.STATUS), _use(rubric.REVIEW, [{"kind": "config", "target": "verified",
+    (_flat(_use(rubric.STATUS), _use(rubric.SAVE, [{"kind": "config", "target": "verified",
                                                       "value": "x"}])), "no_verified"),
     (_flat(*[_start() for _ in range(31)]), "turns"),
     (_flat(_use(rubric.STATUS, denied=True)), "no_tool_denied"),
@@ -120,50 +127,50 @@ _UNSOURCED = {"kind": "brief", "target": "Pay structure", "value": "x"}
 
 def test_denied_calls_are_ignored_by_the_checks_that_read_inputs():
     bad = [{"kind": "brief"}]  # would fail schema_valid, and target `verified` below
-    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, bad, denied=True),
-                   _use(rubric.REVIEW, [{"kind": "config", "target": "verified"}], denied=True),
-                   _use(rubric.REVIEW, [_SOURCED]))
+    events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, bad, denied=True),
+                   _use(rubric.SAVE, [{"kind": "config", "target": "verified"}], denied=True),
+                   _use(rubric.SAVE, [_SOURCED]))
     out = rubric.deterministic(events, max_turns=30)
     assert out["schema_valid"][0] is True and out["no_verified"][0] is True
     assert out["no_tool_denied"][0] is False
 
 
 def test_a_denied_calls_sources_do_not_count_for_brief_cites_sources():
-    # The denied review's sourced brief would satisfy the check if denied calls counted; the
+    # The denied save's sourced brief would satisfy the check if denied calls counted; the
     # successful one proposes a brief WITHOUT sources, so the check must fail.
-    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], denied=True),
-                   _use(rubric.REVIEW, [_UNSOURCED]))
+    events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED], denied=True),
+                   _use(rubric.SAVE, [_UNSOURCED]))
     assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
 
 
-_REVIEW_CHECKS = ("status_before_review", "schema_valid", "brief_cites_sources", "no_verified")
+_SAVE_CHECKS = ("status_before_save", "schema_valid", "brief_cites_sources", "no_verified")
 
 
 @pytest.mark.parametrize("events", [
     [],
     _flat(_start(), _use(rubric.STATUS)),
-    # run 2's shape: research done, the session closed, setup_review never called
+    # run 2's shape: research done, the session closed, setup_save never called
     _flat(_start(), _use(rubric.STATUS), _use("WebSearch")),
-    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], denied=True)),
-    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED], answered=False)),
-    # a denied review with an UNSOURCED brief: not a failure either, since it never happened
-    _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_UNSOURCED], denied=True)),
+    _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED], denied=True)),
+    _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED], answered=False)),
+    # a denied save with an UNSOURCED brief: not a failure either, since it never happened
+    _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_UNSOURCED], denied=True)),
 ])
-def test_review_checks_are_not_exercised_without_a_successful_review(events):
+def test_save_checks_are_not_exercised_without_a_successful_save(events):
     out = rubric.deterministic(events, max_turns=30)
-    assert {k: out[k][0] for k in _REVIEW_CHECKS} == dict.fromkeys(
-        _REVIEW_CHECKS, rubric.NOT_EXERCISED)
-    assert [rubric.verdict(out[k][0]) for k in _REVIEW_CHECKS] == ["not exercised"] * 4
-    assert rubric.review_reached(events) is False
+    assert {k: out[k][0] for k in _SAVE_CHECKS} == dict.fromkeys(
+        _SAVE_CHECKS, rubric.NOT_EXERCISED)
+    assert [rubric.verdict(out[k][0]) for k in _SAVE_CHECKS] == ["not exercised"] * 4
+    assert rubric.save_reached(events) is False
 
 
 def test_brief_cites_sources_is_not_exercised_when_no_brief_was_proposed():
-    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [
+    events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [
         {"kind": "config", "target": "accept_titles", "value": "x"}]))
     out = rubric.deterministic(events, max_turns=30)
     assert out["brief_cites_sources"][0] is rubric.NOT_EXERCISED
-    assert all(out[k][0] is True for k in ("status_before_review", "schema_valid", "no_verified"))
-    assert rubric.review_reached(events) is True
+    assert all(out[k][0] is True for k in ("status_before_save", "schema_valid", "no_verified"))
+    assert rubric.save_reached(events) is True
 
 
 def test_verdict_spells_each_state():
@@ -410,12 +417,12 @@ def test_a_grader_that_does_not_reply_with_json_marks_the_scorecard_failed(
     assert (tmp_path / f"{p.id}.events.jsonl").exists()
 
 
-@pytest.mark.parametrize("coach_calls,reached,review_result", [
+@pytest.mark.parametrize("coach_calls,reached,save_result", [
     ((rubric.STATUS,), False, "not exercised"),
-    ((rubric.STATUS, rubric.REVIEW), True, "pass"),
+    ((rubric.STATUS, rubric.SAVE), True, "pass"),
 ])
-def test_the_scorecard_says_whether_setup_review_was_reached(
-        monkeypatch, tmp_path, coach_calls, reached, review_result):
+def test_the_scorecard_says_whether_setup_save_was_reached(
+        monkeypatch, tmp_path, coach_calls, reached, save_result):
     from scripts.coach_eval import run
 
     init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
@@ -425,7 +432,7 @@ def test_the_scorecard_says_whether_setup_review_was_reached(
 
     def reply(cmd, kw):
         if "--mcp-config" in cmd:
-            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None)
+            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.SAVE else None)
                                    for n in coach_calls])]
         if kw["input"].startswith("Grade"):
             return [{"type": "result", "result": "{}"}]
@@ -434,18 +441,18 @@ def test_the_scorecard_says_whether_setup_review_was_reached(
     seen = _stub_claude(monkeypatch, reply)
     p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
     card = run.run_persona(p, tmp_path)
-    assert card["setup_review_reached"] is reached
+    assert card["setup_save_reached"] is reached
     # the same fact beside the grade, and in the prompt the grader actually received
-    assert card["llm_graded"]["setup_review_reached"] is reached
+    assert card["llm_graded"]["setup_save_reached"] is reached
     grader_input = next(kw["input"] for _, kw in seen
                         if (kw.get("input") or "").startswith("Grade"))
     if reached:
-        assert run.NO_REVIEW_FACT not in grader_input
+        assert run.NO_SAVE_FACT not in grader_input
         assert "successfully 1 time(s)" in grader_input and "example.invalid" in grader_input
     else:
-        assert run.NO_REVIEW_FACT in grader_input
+        assert run.NO_SAVE_FACT in grader_input
     results = {k: v["result"] for k, v in card["deterministic"].items()}
-    assert {k: results[k] for k in _REVIEW_CHECKS} == dict.fromkeys(_REVIEW_CHECKS, review_result)
+    assert {k: results[k] for k in _SAVE_CHECKS} == dict.fromkeys(_SAVE_CHECKS, save_result)
     assert results["no_tool_denied"] == "pass" and results["turns"] == "pass"
     assert json.loads((tmp_path / f"{p.id}.scorecard.json").read_text()) == card
 
@@ -453,17 +460,17 @@ def test_the_scorecard_says_whether_setup_review_was_reached(
 def test_the_grader_prompt_scores_setup_only_from_calls_that_happened():
     from scripts.coach_eval import run
 
-    for fact in (run.NO_REVIEW_FACT, run.review_fact(_flat(_use(rubric.REVIEW, [_SOURCED])))):
-        text = run.GRADER_PROMPT.format(review_fact=fact, transcript="COACH: hi")
+    for fact in (run.NO_SAVE_FACT, run.save_fact(_flat(_use(rubric.SAVE, [_SOURCED])))):
+        text = run.GRADER_PROMPT.format(save_fact=fact, transcript="COACH: hi")
         assert fact in text and text.endswith("COACH: hi")
         assert 'write "not exercised" for it' in text
-        assert "ONLY from setup_review calls that actually happened" in text
-    # a DENIED review is not a call that happened
-    assert run.review_fact(_flat(_use(rubric.REVIEW, [_SOURCED], denied=True))) == (
-        run.NO_REVIEW_FACT)
+        assert "ONLY from setup_save calls that actually happened" in text
+    # a DENIED save is not a call that happened
+    assert run.save_fact(_flat(_use(rubric.SAVE, [_SOURCED], denied=True))) == (
+        run.NO_SAVE_FACT)
 
 
-def test_a_grader_value_for_setup_review_reached_is_overwritten_by_the_fact(
+def test_a_grader_value_for_setup_save_reached_is_overwritten_by_the_fact(
         monkeypatch, tmp_path):
     from scripts.coach_eval import run
 
@@ -476,19 +483,19 @@ def test_a_grader_value_for_setup_review_reached_is_overwritten_by_the_fact(
         if "--mcp-config" in cmd:
             return [init]
         if kw["input"].startswith("Grade"):
-            return [{"type": "result", "result": '{"setup_review_reached": true}'}]
+            return [{"type": "result", "result": '{"setup_save_reached": true}'}]
         return [{"type": "result", "result": "DONE"}]
 
     _stub_claude(monkeypatch, reply)
     p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
-    assert run.run_persona(p, tmp_path)["llm_graded"]["setup_review_reached"] is False
+    assert run.run_persona(p, tmp_path)["llm_graded"]["setup_save_reached"] is False
 
 
 @pytest.mark.parametrize("coach_calls,expected", [
     ((rubric.STATUS,), "not exercised"),
-    ((rubric.STATUS, rubric.REVIEW), 4),
+    ((rubric.STATUS, rubric.SAVE), 4),
 ])
-def test_asked_before_proposing_is_not_exercised_without_a_review_whatever_the_grader_says(
+def test_asked_before_proposing_is_not_exercised_without_a_save_whatever_the_grader_says(
         monkeypatch, tmp_path, coach_calls, expected):
     from scripts.coach_eval import run
 
@@ -499,7 +506,7 @@ def test_asked_before_proposing_is_not_exercised_without_a_review_whatever_the_g
 
     def reply(cmd, kw):
         if "--mcp-config" in cmd:
-            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None)
+            return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.SAVE else None)
                                    for n in coach_calls])]
         if kw["input"].startswith("Grade"):
             return [{"type": "result", "result": json.dumps(
@@ -522,7 +529,7 @@ _GRADE = {"asked_before_proposing": 4, "role_specific_questions": 3,
 
 def _saved_run(tmp_path, calls, pid="saved-persona"):
     """A saved run as a live one leaves it: events.jsonl and transcript.txt, built from tools."""
-    events = _flat(*[_use(n, [_SOURCED] if n == rubric.REVIEW else None) for n in calls])
+    events = _flat(*[_use(n, [_SOURCED] if n == rubric.SAVE else None) for n in calls])
     transcript = ["COACH: hello", "USER: hi", "COACH: bye", "USER: DONE"]
     (tmp_path / f"{pid}.events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
     (tmp_path / f"{pid}.transcript.txt").write_text("\n".join(transcript))
@@ -537,23 +544,23 @@ def _grader_stub(monkeypatch):
 def test_regrade_writes_the_expected_file_and_spends_only_the_grader(monkeypatch, tmp_path):
     from scripts.coach_eval import run
 
-    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.SAVE))
     seen = _grader_stub(monkeypatch)
     run.main(["--regrade", str(tmp_path), "--grader-model", "sonnet"])
     assert len(seen) == 1
     card = json.loads((tmp_path / f"{pid}.regrade-sonnet.json").read_text())
     assert card["persona"] == pid and card["grader_model"] == "sonnet"
     assert card["llm_graded"]["asked_before_proposing"] == 4
-    assert card["llm_graded"]["setup_review_reached"] is True
+    assert card["llm_graded"]["setup_save_reached"] is True
 
 
 def test_a_regrade_sends_the_prompt_a_live_run_would(monkeypatch, tmp_path):
     from scripts.coach_eval import run
 
-    _, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    _, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.SAVE))
     seen = _grader_stub(monkeypatch)
     run.regrade(tmp_path, "haiku")
-    live = run.GRADER_PROMPT.format(review_fact=run.review_fact(events),
+    live = run.GRADER_PROMPT.format(save_fact=run.save_fact(events),
                                     transcript="\n".join(transcript))
     assert seen[0][1]["input"] == live
 
@@ -566,7 +573,7 @@ def test_the_not_exercised_overwrite_applies_in_a_regrade(monkeypatch, tmp_path)
     run.regrade(tmp_path, "haiku")
     llm = json.loads((tmp_path / f"{pid}.regrade-haiku.json").read_text())["llm_graded"]
     assert llm["asked_before_proposing"] == "not exercised"
-    assert llm["setup_review_reached"] is False
+    assert llm["setup_save_reached"] is False
 
 
 def test_grader_model_reaches_the_argv_and_defaults_to_sonnet(monkeypatch, tmp_path):
@@ -585,7 +592,7 @@ def test_grader_model_reaches_the_argv_and_defaults_to_sonnet(monkeypatch, tmp_p
 def test_print_grader_prompt_writes_the_exact_prompt_and_calls_nothing(monkeypatch, tmp_path):
     from scripts.coach_eval import run
 
-    pid, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    pid, events, transcript = _saved_run(tmp_path, (rubric.STATUS, rubric.SAVE))
     _saved_run(tmp_path, (rubric.STATUS,), pid="second")
     seen = _grader_stub(monkeypatch)
     run.main(["--print-grader-prompt", str(tmp_path)])
@@ -594,14 +601,14 @@ def test_print_grader_prompt_writes_the_exact_prompt_and_calls_nothing(monkeypat
     assert text == run.grader_prompt(events, transcript)
     assert text.startswith("Grade this") and text.endswith("USER: DONE")
     assert "successfully 1 time(s)" in text
-    assert run.NO_REVIEW_FACT in (tmp_path / "second.grade-me.txt").read_text()
+    assert run.NO_SAVE_FACT in (tmp_path / "second.grade-me.txt").read_text()
 
 
 def test_the_printed_prompt_is_the_one_the_grader_is_sent(monkeypatch, tmp_path):
     # The cross-check is only worth anything if the pasted prompt IS the grader's prompt.
     from scripts.coach_eval import run
 
-    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.REVIEW))
+    pid, _, _ = _saved_run(tmp_path, (rubric.STATUS, rubric.SAVE))
     seen = _grader_stub(monkeypatch)
     run.main(["--regrade", str(tmp_path)])
     run.main(["--print-grader-prompt", str(tmp_path)])
@@ -678,13 +685,13 @@ def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_
     assert len(graders) == 1 and graders[0][graders[0].index("--model") + 1] == "opus"
 
 
-def test_brief_cites_sources_is_checked_per_review_call_carrying_a_brief():
+def test_brief_cites_sources_is_checked_per_save_call_carrying_a_brief():
     """One sourced brief early in the run must not cover an unsourced brief proposed later."""
-    events = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED]),
-                   _use(rubric.REVIEW, [_UNSOURCED]))
+    events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED]),
+                   _use(rubric.SAVE, [_UNSOURCED]))
     assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
-    both = _flat(_use(rubric.STATUS), _use(rubric.REVIEW, [_SOURCED]),
-                 _use(rubric.REVIEW, [_UNSOURCED, _SOURCED]))
+    both = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED]),
+                 _use(rubric.SAVE, [_UNSOURCED, _SOURCED]))
     assert rubric.deterministic(both, max_turns=30)["brief_cites_sources"][0] is True
 
 
@@ -769,3 +776,71 @@ def test_the_persona_sandbox_is_removed_when_the_isolation_check_fails(monkeypat
     with pytest.raises(SystemExit, match="isolation check failed"):
         run.run_persona(p, tmp_path)
     assert seen and not seen[0].exists()
+
+
+# ── the chat-yes rule (spec 2026-10-08): a save answers a user turn, after a playback ──
+
+_SAVED = [{"kind": "config", "target": "lead_ttl_days", "value": "30"},
+          {"kind": "search", "target": "example-board", "label": "Example",
+           "url": "https://example.invalid/s"},
+          {"kind": "profile", "target": "Who this candidate is", "clear": True}]
+_PLAYBACK = ("Config: lead_ttl_days 30. Search on example-board: https://example.invalid/s. "
+             "Who this candidate is: back to the default. Shall I save?")
+
+
+def _chat_yes(events):
+    out = rubric.deterministic(events, max_turns=40)
+    return out["save_after_user_turn"][0], out["saves_played_back"][0]
+
+
+def test_a_save_after_a_playback_and_a_user_turn_passes_both_checks():
+    events = _flat(_start(), _use(rubric.STATUS), _say(_PLAYBACK),
+                   _start(), _use(rubric.SAVE, _SAVED))
+    assert _chat_yes(events) == (True, True)
+
+
+def test_a_save_in_the_coachs_first_message_has_no_user_turn_before_it():
+    events = _flat(_start(), _say(_PLAYBACK), _use(rubric.SAVE, _SAVED))
+    assert _chat_yes(events) == (False, False)
+
+
+def test_a_save_made_in_the_same_message_as_its_playback_was_not_played_back_first():
+    """The user cannot have said yes to text that arrives in the same message as the save."""
+    events = _flat(_start(), _say("Tell me about the role."),
+                   _start(), _say(_PLAYBACK), _use(rubric.SAVE, _SAVED))
+    assert _chat_yes(events) == (True, False)
+    assert rubric.unplayed_changes(events) == _SAVED
+
+
+def test_one_value_missing_from_the_playback_is_named():
+    events = _flat(_start(), _say(_PLAYBACK.replace("30", "thirty")),
+                   _start(), _use(rubric.SAVE, _SAVED))
+    assert rubric.unplayed_changes(events) == [_SAVED[0]]
+
+
+def test_the_chat_yes_checks_are_not_exercised_without_a_successful_save():
+    events = _flat(_start(), _say(_PLAYBACK), _use(rubric.SAVE, _SAVED, denied=True))
+    assert _chat_yes(events) == (rubric.NOT_EXERCISED, rubric.NOT_EXERCISED)
+
+
+def test_the_files_a_run_left_are_copied_with_their_paths(tmp_path):
+    from scripts.coach_eval import run
+    sandbox, dest = tmp_path / "sandbox", tmp_path / "out"
+    for rel, text in (("home/vault/Job Applications/Role Brief.md", "brief"),
+                      ("config/sluice/config.yaml", "lead_ttl_days: 30\n"),
+                      ("client-cwd/stray.md", "not the run's"),
+                      ("state/sluice/seen.db", "binary")):
+        (sandbox / rel).parent.mkdir(parents=True, exist_ok=True)
+        (sandbox / rel).write_text(text)
+    copied = run.copy_setup_files(sandbox, dest)
+    assert copied == ["config/sluice/config.yaml", "home/vault/Job Applications/Role Brief.md"]
+    assert (dest / "home/vault/Job Applications/Role Brief.md").read_text() == "brief"
+    assert not (dest / "client-cwd").exists() and not (dest / "state").exists()
+
+
+def test_a_denied_save_does_not_count_against_the_chat_yes_checks():
+    """A save the client denied never happened: here one in the coach's first message, before
+    any playback, would fail both checks if it were counted beside the real save that follows."""
+    events = _flat(_start(), _use(rubric.SAVE, _SAVED, denied=True), _say(_PLAYBACK),
+                   _start(), _use(rubric.SAVE, _SAVED))
+    assert _chat_yes(events) == (True, True)

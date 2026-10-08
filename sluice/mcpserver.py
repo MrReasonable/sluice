@@ -2,8 +2,8 @@
 `Sluice`, exposing the read-only tools (list_leads, get_lead, doctor, health,
 list_evidence) to an MCP client (e.g. Claude Code) over stdio (#105), plus the
 write-capable tools (dismiss_lead, apply_record, cv_run, cv_signoff, create_lead --
-#131 -- propose_evidence, #175, and verify_evidence) registered only when `build_server`/`serve` is
-called with write=True -- i.e. `job-sluice mcp serve --write`.
+#131 -- propose_evidence, #175, verify_evidence, and setup_save) registered only when
+`build_server`/`serve` is called with write=True -- i.e. `job-sluice mcp serve --write`.
 
 Deliberately no COUNT of the write tools stated anywhere in this module. "Five" was
 written in this docstring, in `build_server`, in `cli.py`'s `--write` help, in
@@ -1046,173 +1046,78 @@ def _holder_sluice():
     return Sluice.from_config_file()
 
 
-def _render_setup_form(count: int) -> str:
-    """ONE line, for the reason _render_form gives."""
-    return (f"Tick each of these {count} setup changes you have read and want; only ticked "
-            f"changes are written.")
+# apply_setup's per-artefact statuses, as a setup_save change reports them. A `conflict` there
+# is an artefact that changed in the instant between the version check and the write, or a
+# first-run note that already exists in the chosen vault: either way nothing was written for
+# it, and the reason says why, so it reads as `set_aside` (the spec's three per-change
+# outcomes). Indexed, never `.get`: a status added to apply_setup without a row here raises,
+# and the tool reports that as `failed` rather than inventing an outcome.
+_SAVE_OUTCOME = {"written": "written", "failed": "failed", "set_aside": "set_aside",
+                 "conflict": "set_aside"}
+
+_STALE = ("the config file or a setup note changed, appeared or went away, or the vault moved, "
+          "after setup_status read it; nothing was written -- call setup_status again and "
+          "play back anything that changed before saving")
 
 
-def _is_str_list(value) -> bool:
-    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+def setup_save_step(sluice: Sluice, *, changes, version, env_vault=None) -> dict:
+    """Write the agreed setup changes, protocol stripped off so tests reach it without mcp.
 
+    `version` is the token setup_status returned. When the state read now carries another one
+    -- a note or the config edited, a config created or removed, the vault moved -- NOTHING is
+    written and the outcome is `stale`: the user agreed to changes played back against a state
+    that is no longer there. Otherwise every change is validated (review.propose), the finished
+    texts are built against the SAME snapshot the token was checked on, and Sluice.apply_setup
+    writes them, config first behind the config check, each note compare-and-set against that
+    snapshot's text and each create exclusive.
 
-def _decode_setup_state(state):
-    """The first leg's state, every field checked for the shape the retry relies on, or None.
-    Explicit checks rather than `assert`, which `python -O` strips: a garbled state must be
-    `invalid_state`, never an exception the client sees as an opaque error, and never a
-    `shown` pair or `shas` map read in a shape the retry then misreads."""
-    try:
-        data = json.loads(state) if state else None
-    except ValueError:
-        return None
-    if not isinstance(data, dict) or data.get("kind") != "setup":
-        return None
-    changes, shown, shas = data.get("changes"), data.get("shown"), data.get("shas")
-    set_aside, rest = data.get("set_aside", []), data.get("rest", [])
-    if not (isinstance(changes, list) and all(
-            isinstance(c, dict) and all(v is None or isinstance(v, (str, bool))
-                                        for v in c.values()) for c in changes)):
-        return None
-    if not (isinstance(shown, list)
-            and all(_is_str_list(p) and len(p) == 2 for p in shown)):
-        return None
-    if not (isinstance(shas, dict) and all(v is None or isinstance(v, str)
-                                           for v in shas.values())):
-        return None
-    if not isinstance(data.get("config_existed"), bool):
-        return None
-    if not (data.get("vault") is None or isinstance(data.get("vault"), str)):
-        return None
-    if not (_is_str_list(rest) and isinstance(set_aside, list)
-            and all(isinstance(a, dict) for a in set_aside)):
-        return None
-    try:
-        parsed = [_review.Change(**c) for c in changes]
-    except TypeError:          # a missing or unknown field
-        return None
-    return {"parsed": parsed, "shown": [tuple(p) for p in shown], "shas": shas,
-            "config_existed": data["config_existed"], "vault": data.get("vault"),
-            "set_aside": set_aside, "rest": rest}
-
-
-def _setup_ground_moved(data, snap) -> str:
-    """Why the retry is no longer writing to what the form was shown against, or ""."""
-    if data["config_existed"] != snap.config_exists:
-        return ("a sluice config was created while the form was open" if snap.config_exists
-                else "the sluice config was removed while the form was open")
-    if data["vault"] != snap.vault_digest:
-        return "the vault sluice writes to changed while the form was open"
-    return ""
-
-
-def setup_review_step(sluice: Sluice, *, changes, protocol_version, elicitation, responses,
-                      state, env_vault=None) -> dict:
-    """One leg of the setup review loop, protocol stripped off (as verify_evidence_step).
-    First leg: validate, set aside what cannot be shown or applied, return {"ask": ...}.
-    Retry: re-read the snapshot, refuse any artefact whose text changed since it was shown,
-    and hand the ticked units' finished texts to Sluice.apply_setup -- which runs the config
-    check and every write. Only ticked boxes are written."""
-    report = {"outcome": "", "units": [], "set_aside": [], "not_shown": [], "artefacts": {},
-              "config_written": False, "restart_needed": "", "detail": ""}
-    if not _can_elicit(protocol_version, elicitation):
-        report["outcome"] = "unsupported_client"
-        report["detail"] = ("this client cannot show a review form -- run `job-sluice init`, "
-                            "or edit the notes and config file by hand")
-        return report
+    Each change comes back `written`, `set_aside` or `failed` with its reason, and a written
+    change that replaced something of the user's carries `previous` (review.previous), so the
+    coach can restore it. Rows name a change by its unit key, never by a value, so no path --
+    not even a resolved `vault_dir` -- appears in the response."""
+    report = {"outcome": "", "changes": [], "artefacts": {}, "config_written": False,
+              "restart_needed": "", "detail": ""}
     snap = sluice.setup_snapshot()
-    if responses is None:
-        parsed, bad = _review.parse_changes(changes)
-        units, aside = _review.propose(parsed, snap)
-        report["set_aside"] = [{"change": a.label, "reason": a.reason} for a in bad + aside]
-        by_title = {u.title: u for u in units}
-        shown, rest, oversize = _pack_form([(u.title, _review.unit_body(u)) for u in units])
-        report["set_aside"] += [{"change": t, "reason": _review.set_aside_reason(by_title[t])}
-                                for t in oversize]
-        if not shown:
-            report["outcome"] = "nothing_to_review"
-            report["detail"] = "no change could be shown -- see set_aside"
-            return report
-        shown_units = [by_title[t] for t, _ in shown]
-        return {"ask": {"message": _render_setup_form(len(shown_units)),
-                        "schema": _form_schema(shown),
-                        "state": json.dumps({
-                            "kind": "setup",
-                            "changes": [dataclasses.asdict(c) for c in parsed],
-                            "shown": [[f"entry_{i}", u.key] for i, u in
-                                      enumerate(shown_units, 1)],
-                            "shas": {u.artefact: snap.sha_for(u.artefact) for u in shown_units},
-                            "config_existed": snap.config_exists,
-                            "vault": snap.vault_digest,
-                            "rest": [by_title[t].key for t in rest],
-                            "set_aside": report["set_aside"]})}}
-    data = _decode_setup_state(state)
-    if data is None:
-        report["outcome"] = "invalid_state"
-        report["detail"] = "the review form's state did not come back intact; nothing was written"
+    if version != snap.version:
+        report["outcome"] = "stale"
+        report["detail"] = _STALE
         return report
-    parsed, shown = data["parsed"], data["shown"]
-    report["set_aside"] = data["set_aside"]
-    report["not_shown"] = data["rest"]
-    action = getattr(responses, "action", None)
-    if action != "accept":
-        report["outcome"] = "declined" if action == "decline" else "cancelled"
-        report["units"] = [{"unit": k, "outcome": "declined", "reason": ""} for _, k in shown]
-        report["detail"] = "nothing was written"
-        return report
-    moved = _setup_ground_moved(data, snap)
-    if moved:
-        # The form was shown against one config and one vault. A config that appeared (`init`,
-        # a hand edit, a second session) or vanished, or a vault that resolves elsewhere now,
-        # means the boxes describe writes to a place other than where they would land -- and
-        # the notes' shas cannot see it (absent == absent across two vaults). So nothing is
-        # written, and every shown box says why.
-        report["outcome"] = "completed"
-        report["units"] = [{"unit": k, "outcome": "conflict", "reason": moved}
-                           for _, k in shown]
-        report["detail"] = (f"{len(shown)} conflict; nothing was written -- call setup_status "
-                            f"and propose again")
-        return report
-    ticked = _approved_keys(getattr(responses, "content", None))
+    parsed, bad = _review.parse_changes(changes)
     units, aside = _review.propose(parsed, snap)
-    fresh = {u.key: u for u in units}
-    why = {a.key: a.reason for a in aside if a.key}
-    chosen, rows = [], {}
-    for entry, key in shown:
-        unit = fresh.get(key)
-        if entry not in ticked:
-            rows[key] = ("declined", "")
-        elif unit is None:
-            rows[key] = ("set_aside", why.get(key, "it no longer applies"))
-        elif snap.sha_for(unit.artefact) != data["shas"].get(unit.artefact):
-            rows[key] = ("conflict", "it changed after the form was shown")
-        else:
-            chosen.append(unit)
-    writes, aside2 = _review.build_writes(chosen, snap, env_vault=env_vault)
-    for a in aside2:
-        if a.key:
-            rows[a.key] = ("set_aside", a.reason)
+    rows = [{"change": a.key or a.label, "outcome": "set_aside", "reason": a.reason}
+            for a in bad + aside]
+    writes, aside2 = _review.build_writes(units, snap, env_vault=env_vault)
+    why = {a.key: a.reason for a in aside2 if a.key}
     outcomes = sluice.apply_setup(writes) if writes else {}
-    for u in chosen:
-        if u.key not in rows:
-            o = outcomes.get(u.artefact)
-            rows[u.key] = (o.status, o.reason) if o else ("set_aside", "nothing to write")
-    report["units"] = [{"unit": k, "outcome": s, "reason": r} for k, (s, r) in rows.items()]
-    # A first run also creates artefacts no box stands for -- the default Judging Profile and
-    # the Leads view, as `init` does. Their outcomes are reported here, or a failed or
-    # conflicting default create would be silent until `doctor`.
-    backed = {u.artefact for u in chosen}
-    report["artefacts"] = {a: {"outcome": o.status, "reason": o.reason}
+    for u in units:
+        if u.key in why:
+            rows.append({"change": u.key, "outcome": "set_aside", "reason": why[u.key]})
+            continue
+        o = outcomes.get(u.artefact)
+        status, reason = (_SAVE_OUTCOME[o.status], o.reason) if o else ("set_aside",
+                                                                      "nothing to write")
+        row = {"change": u.key, "outcome": status, "reason": reason}
+        if status == "written":
+            prev = _review.previous(u, snap)
+            if prev is not None:
+                row["previous"] = prev
+        rows.append(row)
+    report["changes"] = rows
+    # A first run also creates artefacts no change stands for -- the default Judging Profile
+    # and the Leads view, as `init` does. Their outcomes are reported here, or a failed or
+    # abstained default create would be silent until `doctor`.
+    backed = {u.artefact for u in units}
+    report["artefacts"] = {a: {"outcome": _SAVE_OUTCOME[o.status], "reason": o.reason}
                            for a, o in outcomes.items() if a not in backed}
     unwritten = sorted(a for a, o in report["artefacts"].items() if o["outcome"] != "written")
     report["config_written"] = getattr(outcomes.get("config"), "status", "") == "written"
     report["outcome"] = "completed"
     counts = {}
-    for _, (s, _r) in rows.items():
-        counts[s] = counts.get(s, 0) + 1
-    report["detail"] = ", ".join(f"{n} {s}" for s, n in sorted(counts.items())) + (
-        f"; {len(report['not_shown'])} more were not shown -- send them again"
-        if report["not_shown"] else "") + (
-        f"; not written, with no box of their own: {', '.join(unwritten)} -- see artefacts"
+    for r in rows:
+        counts[r["outcome"]] = counts.get(r["outcome"], 0) + 1
+    report["detail"] = (", ".join(f"{n} {s}" for s, n in sorted(counts.items()))
+                        or "no changes were sent") + (
+        f"; not written, with no change of their own: {', '.join(unwritten)} -- see artefacts"
         if unwritten else "")
     return report
 
@@ -1229,7 +1134,7 @@ def build_server(config, write: bool = False):
     config, and an in-flight call may finish on the previous one), register the read tools
     (list_leads, get_lead, doctor, health, list_evidence, setup_status) always plus, when
     write=True, the write-capable tools -- dismiss_lead, apply_record, cv_run, cv_signoff,
-    create_lead (#131), propose_evidence (#175), verify_evidence and setup_review -- and
+    create_lead (#131), propose_evidence (#175), verify_evidence and setup_save -- and
     return the constructed (NOT yet running) MCPServer. `mcp` is imported HERE and nowhere else -- see the module docstring,
     which also says why no COUNT of those tools appears in this file.
 
@@ -1321,8 +1226,8 @@ def build_server(config, write: bool = False):
     @mcp_server.prompt(name="career_interview")
     def career_interview_prompt(focus: str = "") -> str:
         """A career coach that interviews you, researches the role you choose, and sets up
-        your job hunt through review forms. Optional `focus`: what you want from this session,
-        in your own words."""
+        your job hunt with the changes you agree to in chat. Optional `focus`: what you want
+        from this session, in your own words."""
         return coach.assemble_prompt(focus, write=write)
 
     @mcp_server.tool(name="setup_status")
@@ -1445,32 +1350,24 @@ def build_server(config, write: bool = False):
             f'outcome="unsupported_client". {evidence_verify_effects()}')
         mcp_server.tool(name="verify_evidence")(verify_evidence_tool)
 
-        # The second InputRequiredResult tool. The config is applied before the notes, and a
-        # written config means the shared Sluice is stale, so the holder is rebuilt in the
-        # `finally` (also when the step raised: a half-applied config must not stay unseen).
-        def setup_review_tool(changes: list[_review.ChangeIn],
-                              ctx: Context = None) -> CallToolResult | InputRequiredResult:
-            responses = ctx.input_responses
-            caps = ctx.session.client_capabilities
+        # The config is applied before the notes, and a written config means the shared Sluice
+        # is stale, so the holder is rebuilt in the `finally` (also when the step raised: a
+        # half-applied config must not stay unseen).
+        def setup_save_tool(changes: list[_review.ChangeIn], version: str) -> dict:
             fresh, refusal = _fresh_or_refusal()
             if refusal:
-                return CallToolResult(content=[TextContent(type="text",
-                                                           text=json.dumps(refusal))])
+                return refusal
             out, crashed, restart_needed = None, None, ""
             try:
-                out = setup_review_step(
-                    fresh, changes=changes,
-                    protocol_version=ctx.protocol_version,
-                    elicitation=getattr(caps, "elicitation", None),
-                    responses=None if responses is None else responses.get("setup"),
-                    state=ctx.request_state, env_vault=os.environ.get("VAULT_DIR") or None)
+                out = setup_save_step(fresh, changes=changes, version=version,
+                                      env_vault=os.environ.get("VAULT_DIR") or None)
             except Exception as exc:  # noqa: BLE001 -- mcp discards a tool exception's message,
                 # so an escaped error reaches the client as an opaque failure that cannot say
                 # whether the config landed. Report it as a structured `failed` outcome instead:
                 # the traceback goes to the server's stderr log, the response carries the error's
                 # kind only (`_reason`, never a path), and the holder is still rebuilt below.
                 from sluice.core.log import get_logger
-                get_logger("sluice.mcp").exception("setup_review failed unexpectedly")
+                get_logger("sluice.mcp").exception("setup_save failed unexpectedly")
                 crashed = exc
             finally:
                 if out is None or out.get("config_written"):
@@ -1485,29 +1382,24 @@ def build_server(config, write: bool = False):
                                           f"to load the new config")
             if crashed is not None:
                 out = {"outcome": "failed",
-                       "reason": (f"{_reason(crashed)}: setup_review stopped before it could "
+                       "reason": (f"{_reason(crashed)}: setup_save stopped before it could "
                                   f"report; call setup_status to see what was written")}
             if restart_needed:
                 out["restart_needed"] = restart_needed
-            if "ask" in out:
-                ask = out["ask"]
-                return InputRequiredResult(
-                    input_requests={"setup": ElicitRequest(params=ElicitRequestFormParams(
-                        mode="form", message=ask["message"],
-                        requested_schema=ask["schema"]))},
-                    request_state=ask["state"])
-            return CallToolResult(content=[TextContent(type="text", text=json.dumps(out))])
+            return out
 
-        setup_review_tool.__doc__ = (
-            "Show proposed job-hunt setup changes to the human in a review form, each under its "
-            "own unticked box, and write only the ones they tick. Each change is one of: a "
-            "config key, a search to add or remove, a Judging Profile heading, a Candidate "
-            "Profile field, or a Role Brief section (see setup_status's `kinds`). `clear: true` "
-            "returns a setting or section to its default. Changes that cannot be shown or "
-            "applied come back in `set_aside` with the reason. No argument approves anything on "
-            "the human's behalf; clients that cannot show a form get "
-            'outcome="unsupported_client".')
-        mcp_server.tool(name="setup_review")(setup_review_tool)
+        setup_save_tool.__doc__ = (
+            "Write job-hunt setup changes the user has agreed to. Call it only after playing "
+            "every change back to the user in chat, grouped by where it goes and with any value "
+            "it replaces, and hearing an explicit yes. `version` is the one setup_status "
+            "returned: if the config, a setup note or the vault changed since, nothing is "
+            'written and the outcome is "stale". Each change is one of: a config key, a search '
+            "to add or remove, a Judging Profile heading, a Candidate Profile field, or a Role "
+            "Brief section (see setup_status's `kinds`). `clear: true` returns a setting or "
+            "section to its default. Each change comes back written, set_aside or failed, with "
+            "its reason; a written change that replaced something carries `previous`, which "
+            "restores it when sent back as the value.")
+        mcp_server.tool(name="setup_save")(setup_save_tool)
 
     return mcp_server
 

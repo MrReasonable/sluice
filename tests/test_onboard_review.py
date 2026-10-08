@@ -70,25 +70,22 @@ def test_an_existing_hunt_on_the_default_vault_sets_note_units_aside():
 @pytest.mark.parametrize("value,why", [("# a heading", "heading"), ("---", "break the note"),
                                        ("a <!-- b", "comment marker"),
                                        ("b --> c", "comment marker"),
-                                       ("a\rb", "control character"), ("", "empty")])
+                                       ("a\rb", "control or bidirectional character"),
+                                       ("a" + chr(0x202e) + "b", "bidirectional"),
+                                       ("", "empty")])
 def test_the_prose_rule_sets_aside_with_its_own_reason(value, why):
     _, aside = propose([{"kind": "profile", "target": "## Who this candidate is",
                          "value": value}], snap(CONFIG, {"profile": PROFILE}))
     assert len(aside) == 1 and why in aside[0].reason
 
 
-def test_a_value_one_line_taller_than_the_form_is_set_aside_and_one_line_shorter_is_not():
-    from sluice.core.formfit import FORM_LINES, entry_lines
-    def value(n):
-        return "\n".join(["x"] * n)
-    n = 1
-    while entry_lines("Role Brief: Pay structure", "New:\n" + value(n + 1)) <= FORM_LINES:
-        n += 1
-    fits, _ = propose([{"kind": "brief", "target": "Pay structure", "value": value(n)}],
-                      snap(CONFIG))
-    over, aside = propose([{"kind": "brief", "target": "Pay structure",
-                            "value": value(n + 1)}], snap(CONFIG))
-    assert len(fits) == 1 and over == [] and "does not fit" in aside[0].reason
+def test_a_value_of_any_height_or_length_is_taken_there_is_no_form_to_fit():
+    """The per-change form capped a value at about one screen; setup_save shows nothing in a
+    form, so a long section is a unit like any other (spec 2026-10-08, setup_save)."""
+    tall = "\n".join(f"Example line {i}." for i in range(200))
+    units, aside = propose([{"kind": "brief", "target": "Sources consulted", "value": tall}],
+                           snap(CONFIG))
+    assert aside == [] and [u.after for u in units] == [tall]
 
 
 def test_a_second_change_to_the_same_unit_is_set_aside_not_merged():
@@ -101,7 +98,7 @@ def test_a_second_change_to_the_same_unit_is_set_aside_not_merged():
 def test_an_add_and_a_remove_of_one_search_share_a_key_so_the_second_is_set_aside():
     """The one case the key check holds alone: the key leaves the verb out, the title keeps it,
     so an add and a remove of one search are two titles but one key. Without the key check both
-    boxes would be shown -- two contradictory writes to one search behind two ticks."""
+    units would pass -- two contradictory writes to one search in one save."""
     search = {"kind": "search", "target": "example-board", "label": "A",
               "url": "https://example.invalid/1"}
     # No search configured yet: the add is valid, so the remove reaches the duplicate check
@@ -140,9 +137,9 @@ def test_every_set_aside_carries_its_own_units_key():
     assert {a.key for a in aside} == {"config:lead_ttl_days", "config:min_jd_chars"}
 
 
-def test_a_key_the_editor_cannot_place_is_set_aside_before_the_form_not_shown():
+def test_a_key_the_editor_cannot_place_is_set_aside_at_propose_time():
     """The edit is rehearsed at propose time: a value continuing past its line would otherwise
-    get a box, be ticked, and be reported failed by the config check."""
+    pass propose and only be reported failed by the config check."""
     cfg = CONFIG + '\ntriage:\n  accept_titles: [a,\n    b]\n'
     units, aside = propose([{"kind": "config", "target": "accept_titles", "value": "x"}],
                            snap(cfg))
@@ -150,7 +147,7 @@ def test_a_key_the_editor_cannot_place_is_set_aside_before_the_form_not_shown():
     assert "several lines" in aside[0].reason
 
 
-def test_a_plain_value_continuing_on_a_deeper_line_is_set_aside_before_the_form():
+def test_a_plain_value_continuing_on_a_deeper_line_is_set_aside_at_propose_time():
     cfg = CONFIG + '\ntriage:\n  accept_titles: foo\n    bar\n'
     units, aside = propose([{"kind": "config", "target": "accept_titles", "value": "x"}],
                            snap(cfg))
@@ -182,7 +179,7 @@ def test_units_carry_before_and_after_for_an_update():
     assert units[0].before == "0" and units[0].after == "30"
 
 
-def test_label_spacing_does_not_make_a_second_box_for_one_search():
+def test_label_spacing_does_not_make_a_second_unit_for_one_search():
     units, aside = propose([{"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1"},
                             {"kind": "search", "target": "example-board", "label": "B ",
@@ -191,7 +188,7 @@ def test_label_spacing_does_not_make_a_second_box_for_one_search():
     assert aside[0].key == units[0].key
 
 
-def test_an_add_and_a_remove_of_one_search_are_one_box_not_two():
+def test_an_add_and_a_remove_of_one_search_are_one_unit_not_two():
     units, aside = propose([{"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1"},
                             {"kind": "search", "target": "example-board", "label": "B",
@@ -201,20 +198,19 @@ def test_an_add_and_a_remove_of_one_search_are_one_box_not_two():
 
 
 @pytest.mark.parametrize("raw", ["/example/chosen-vault", "~/example-vault"])
-def test_the_vault_dir_box_shows_the_resolved_path_it_approves(raw):
-    """The user must see every value before it is written, and this one decides where every
-    note goes: the box carries the path parse_path will write, never a placeholder."""
+def test_the_vault_dir_unit_carries_the_resolved_path_it_writes(raw):
+    """The unit's value is the path parse_path will write, never a placeholder."""
     from sluice.onboard.questions import parse_path
     units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw}], snap(None))
     assert aside == [] and len(units) == 1
-    assert review.unit_body(units[0]) == f"New:\n{review.scalar(parse_path(raw))}"
+    assert units[0].after == review.scalar(parse_path(raw))
 
 
 @pytest.mark.parametrize("raw", ["notes", "./notes", "../notes", "", "~nosuchuser-sluice-test/notes"])
 def test_a_relative_vault_dir_is_set_aside_and_names_no_vault_for_the_rest(raw):
     """A relative answer would resolve against the folder the server was started from. It is
-    set aside, and it does not count as naming the vault, so the batch's other boxes are not
-    shown only to be set aside on retry."""
+    set aside, and it does not count as naming the vault, so the batch's other changes are set
+    aside at propose time rather than when the writes are built."""
     units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw},
                             {"kind": "config", "target": "lead_ttl_days", "value": "30"}],
                            snap(None))
@@ -239,15 +235,15 @@ _B = ["Second", "https://example.invalid/b"]
     ({"label": _B[0], "url": _B[1], "remove": True}, [_A], "not configured"),
     ({"label": _A[0], "url": _A[1], "remove": True}, [_A], "last search"),
 ])
-def test_a_search_box_that_could_not_be_written_is_never_shown(change, configured, why):
-    """Checked against snap.searches at propose time: before this, each was shown, ticked, and
+def test_a_search_that_could_not_be_written_is_set_aside_by_name(change, configured, why):
+    """Checked against snap.searches at propose time: before this, each passed propose and
     only then set aside by build_writes' editor."""
     units, aside = propose([{"kind": "search", "target": "example-board", **change}],
                            snap(CONFIG, searches={"example-board": configured}))
     assert units == [] and why in aside[0].reason
 
 
-def test_removing_one_of_two_configured_searches_is_shown():
+def test_removing_one_of_two_configured_searches_is_a_unit():
     units, aside = propose([{"kind": "search", "target": "example-board", "label": _A[0],
                              "url": _A[1], "remove": True}],
                            snap(CONFIG, searches={"example-board": [_A, _B]}))
@@ -272,31 +268,14 @@ def test_two_spellings_of_one_target_are_one_unit_and_a_duplicate(first, second)
     assert len(aside) == 1 and "the same thing" in aside[0].reason
 
 
-def test_a_change_whose_replaced_text_cannot_be_shown_in_full_is_set_aside():
-    """inv-002, owner's ruling: a tick approves deleting what "Replaces:" shows, so a box whose
-    old text does not fit beside the new is SET ASIDE -- never shown with the old text dropped
-    and a pointer to the note, which approved deleting text the user had not seen."""
-    from sluice.core.formfit import FORM_LINES
-    old = "\n".join(f"old line {i}" for i in range(FORM_LINES))
-    tall = review.replace_section(PROFILE, "## Who this candidate is", ["", old, ""])
-    units, aside = propose([{"kind": "profile", "target": "Who this candidate is",
-                             "value": "Short new text."}], snap(CONFIG, {"profile": tall}))
-    assert units == []
-    assert "replace cannot be shown in full" in aside[0].reason
-    assert "Judging Profile note in Obsidian" in aside[0].reason
-    # The control: the same change against a section that fits is shown, with its old text.
-    shown, _ = propose([{"kind": "profile", "target": "Who this candidate is",
-                         "value": "Short new text."}], snap(CONFIG, {"profile": PROFILE}))
-    assert "Replaces:\n" in review.unit_body(shown[0])
-
-
 @pytest.mark.parametrize("env", [False, True], ids=["no-vault-env", "vault-env"])
-def test_a_first_run_shows_old_text_only_from_the_vault_it_will_write(env):
+def test_a_first_run_records_old_text_only_from_the_vault_it_will_write(env):
     """inv-004: with no $VAULT_DIR the snapshot read the cwd-relative default vault, not the one
-    being chosen, so showing its text as "Replaces:" named text nothing would touch. The units
-    then show no old text, as `_note_writes(existing=False)` creates; with $VAULT_DIR the
-    snapshot IS the target, so the old text is shown."""
-    candidate = build_plan({}, candidate_answers={"cv_email": "a@example.invalid"}).candidate_text
+    being chosen, so its text is not what a write would replace (and must never come back as
+    `previous`). The units then record no old text, as `_note_writes(existing=False)` creates;
+    with $VAULT_DIR the
+    snapshot IS the target, so the old text is recorded."""
+    candidate = build_plan({}, candidate_answers={"cv_email": "ada@example.invalid"}).candidate_text
     s = snap(None, {"profile": PROFILE, "candidate": candidate}, env=env)
     batch = [{"kind": "profile", "target": "Who this candidate is", "value": "Example."},
              {"kind": "candidate", "target": "cv_email", "value": "b@example.invalid"}]
@@ -306,6 +285,76 @@ def test_a_first_run_shows_old_text_only_from_the_vault_it_will_write(env):
     befores = {u.kind: u.before for u in units}
     assert set(befores) >= {"profile", "candidate"}, aside
     if env:
-        assert befores["profile"] and befores["candidate"] == "a@example.invalid"
+        assert befores["profile"] and befores["candidate"] == "ada@example.invalid"
     else:
         assert befores["profile"] is None and befores["candidate"] is None
+
+
+# ── previous: what a written change replaced ─────────────────────────────────
+
+def _one(change, s):
+    units, aside = propose([change], s)
+    assert aside == [] and len(units) == 1, aside
+    return units[0]
+
+
+def test_previous_is_the_config_answer_a_set_key_held():
+    cfg = CONFIG.replace("# lead_ttl_days:", "lead_ttl_days: 14  #")
+    s = snap(cfg, settings={**_SETTINGS, "lead_ttl_days": 14})
+    u = _one({"kind": "config", "target": "lead_ttl_days", "value": "30"}, s)
+    assert review.previous(u, s) == "14"
+    cleared = _one({"kind": "config", "target": "lead_ttl_days", "clear": True}, s)
+    assert review.previous(cleared, s) == "14"
+
+
+def test_previous_of_a_list_setting_reads_back_through_its_own_parser():
+    from sluice.onboard.questions import catalogue
+    q = next(q for q in catalogue() if q.key == "accept_titles")
+    old = ["Example one", "Example two"]
+    cfg = CONFIG + '\ntriage:\n  accept_titles: ["Example one", "Example two"]\n'
+    s = snap(cfg, settings={**_SETTINGS, q.writes_to[0]: old})
+    u = _one({"kind": "config", "target": "accept_titles", "value": "Example three"}, s)
+    assert q.parse(review.previous(u, s)) == old
+
+
+def test_no_previous_for_a_key_that_was_not_set_or_did_not_change():
+    s = snap(CONFIG)        # init's file: lead_ttl_days is commented, its default in force
+    assert review.previous(_one({"kind": "config", "target": "lead_ttl_days", "value": "30"},
+                                s), s) is None
+    cfg = CONFIG.replace("# lead_ttl_days:", "lead_ttl_days: 30  #")
+    s = snap(cfg, settings={**_SETTINGS, "lead_ttl_days": 30})
+    assert review.previous(_one({"kind": "config", "target": "lead_ttl_days", "value": "30"},
+                                s), s) is None
+
+
+def test_previous_of_a_section_is_the_users_text_and_never_the_default():
+    target = {"kind": "profile", "target": "Who this candidate is", "value": "New words."}
+    mine = review.replace_section(PROFILE, "## Who this candidate is", ["", "Old words.", ""])
+    s = snap(CONFIG, {"profile": mine})
+    assert review.previous(_one(target, s), s) == "Old words."
+    s = snap(CONFIG, {"profile": PROFILE})     # init's neutral default under the heading
+    assert review.previous(_one(target, s), s) is None
+    brief = review.render_role_brief({})       # every section holds the placeholder
+    s = snap(CONFIG, {"brief": brief})
+    assert review.previous(_one({"kind": "brief", "target": "Pay structure",
+                                 "value": "New."}, s), s) is None
+
+
+def test_previous_of_a_candidate_field_is_its_old_value_only_when_it_had_one():
+    filled = build_plan({}, candidate_answers={
+        "cv_email": "ada@example.invalid"}).candidate_text
+    s = snap(CONFIG, {"candidate": filled})
+    u = _one({"kind": "candidate", "target": "cv_email",
+              "value": "example.person@example.invalid"}, s)
+    assert review.previous(u, s) == "ada@example.invalid"
+    blank = build_plan({}).candidate_text
+    s = snap(CONFIG, {"candidate": blank})
+    assert review.previous(_one({"kind": "candidate", "target": "cv_email",
+                                 "value": "ada@example.invalid"}, s), s) is None
+
+
+def test_a_search_carries_no_previous():
+    s = snap(CONFIG)
+    u = _one({"kind": "search", "target": "example-board", "label": "A",
+              "url": "https://example.invalid/1"}, s)
+    assert review.previous(u, s) is None

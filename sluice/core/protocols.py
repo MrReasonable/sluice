@@ -20,6 +20,7 @@ store*, pinned by the conformance suite, and that is the whole point of writing 
 contract down.
 """
 import hashlib
+import json
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -1350,15 +1351,33 @@ class SetupSnapshot:
     # A newly created source block's settings other than its searches ("enabled", "tuning")
     # at their loaded defaults: a search that creates the block declares them (the config check).
     source_defaults: dict
-    # A digest of the vault the store resolved, never the path: setup_review records it in the
-    # form's state (which travels through the client) and compares it on the retry, so a vault
-    # that moved while the form was open is caught without the response carrying a discovered
-    # path. None for a store with no directory to name.
+    # A digest of the vault the store resolved, never the path: it goes into `version`, so a
+    # vault that moved between setup_status and setup_save is caught without any response
+    # carrying a discovered path. None for a store with no directory to name.
     vault_digest: str | None = None
 
     @property
     def config_exists(self) -> bool:
         return self.config_text is not None
+
+    @property
+    def version(self) -> str:
+        """One token for the exact state read: the config text or its absence, each setup
+        note's text or its absence, and which vault is in use. setup_status returns it and
+        setup_save refuses a save whose token no longer matches (spec 2026-10-08, The tools).
+
+        An UNREADABLE artefact is its own state, never "absent": a note that could not be read
+        and then became readable has changed under the coach just as an edit would. Hashed, so
+        no text and no path travels in it."""
+        def part(art, text):
+            # Both halves, never one for the other: a config whose text was read but which a
+            # loader refused is unreadable AND has text, and two different refused texts must
+            # not share a token.
+            return [None if text is None else document_sha(text), self.unreadable.get(art)]
+        state = {"config": part("config", self.config_text),
+                 "notes": {art: part(art, self.notes.get(art)) for art in sorted(self.notes)},
+                 "vault": self.vault_digest}
+        return hashlib.sha256(json.dumps(state, sort_keys=True).encode("utf-8")).hexdigest()
 
     def sha_for(self, artefact: str) -> str | None:
         text = self.config_text if artefact == "config" else self.notes.get(artefact)

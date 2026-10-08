@@ -862,7 +862,7 @@ class Sluice:
                              vault_digest=vault_digest)
 
     def apply_setup(self, writes):
-        """Write ticked in-session setup changes: the config first, then the notes, each
+        """Write agreed in-session setup changes: the config first, then the notes, each
         artefact isolated. The ONE creator and updater for setup, and the owner of the config
         check -- a caller cannot reach a config write that skips it. A write's own OSError, and a
         refusal raised as ValueError, become that artefact's ArtefactOutcome; anything else
@@ -916,13 +916,13 @@ class Sluice:
             except (OSError, ValueError) as exc:
                 out[w.artefact] = ArtefactOutcome("failed", _reason(exc))
                 continue
-            # An abstained CREATE means the note is already there: on a first run the form
-            # could not read the vault being chosen, so it showed no old text, and saying the
-            # note "changed after the form" would describe something the user never saw.
+            # An abstained CREATE means the note is already there: on a first run setup_status
+            # could not read the vault being chosen, so no old text was played back, and saying
+            # the note "changed after it was read" would describe something the user never saw.
             out[w.artefact] = (ArtefactOutcome("written") if handle else ArtefactOutcome(
                 "conflict", ("the note already exists in the chosen vault, so it was left as "
                              "it is" if w.expect_sha is None
-                             else "it changed after the form was shown")))
+                             else "it changed after setup_status read it")))
         return out
 
     def _apply_config(self, w, path, write, outcome, sha):
@@ -936,7 +936,7 @@ class Sluice:
             except (OSError, ValueError) as exc:
                 return outcome("failed", _reason(exc))
             if sha(old) != w.expect_sha:
-                return outcome("conflict", "the config file changed after the form was shown")
+                return outcome("conflict", "the config file changed after setup_status read it")
         try:
             problems = _config_change_problems(old, w.text, w.settings, w.expect)
         except ValueError as exc:
@@ -948,7 +948,7 @@ class Sluice:
         except OSError as exc:
             return outcome("failed", _reason(exc))
         return outcome("written") if ok else outcome(
-            "conflict", "the config file changed, or appeared, after the form was shown")
+            "conflict", "the config file changed, or appeared, after setup_status read it")
 
     def store(self):
         """The configured Store. Defaults to `vault`, today's only implementation."""

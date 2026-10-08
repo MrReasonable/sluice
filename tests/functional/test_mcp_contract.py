@@ -403,7 +403,7 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert set(by_name) == {
         "list_leads", "get_lead", "doctor", "health", "list_evidence", "setup_status",
         "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
-        "propose_evidence", "verify_evidence", "setup_review",
+        "propose_evidence", "verify_evidence", "setup_save",
     }
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
@@ -415,8 +415,12 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
     assert set(by_name["verify_evidence"].input_schema["properties"]) == {"kind", "names"}, (
         "verify_evidence must take no argument that could approve on the human's behalf")
-    # setup_review takes only the proposed changes -- no argument that could tick a box.
-    schema = by_name["setup_review"].input_schema
+    # setup_save takes the agreed changes and the version setup_status returned, both required:
+    # a save with no version would have nothing to be refused as stale against.
+    schema = by_name["setup_save"].input_schema
+    assert set(schema["properties"]) == {"changes", "version"}
+    assert set(schema.get("required", [])) == {"changes", "version"}
+    assert schema["properties"]["version"]["type"] == "string"
     items = schema["properties"]["changes"]["items"]
     if "$ref" in items:   # pydantic emits the TypedDict as a $defs entry, not inline
         items = schema["$defs"][items["$ref"].rsplit("/", 1)[-1]]
@@ -640,3 +644,21 @@ def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
     assert [(a.name, bool(a.required)) for a in (prompt.arguments or [])] == [("focus", False)]
     text = "".join(m.content.text for m in got.messages)
     assert "setup_status" in text
+
+
+def test_setup_save_registered_description_states_the_save_rules():
+    """A tool has two docstrings, and the client reads only the REGISTERED one: the rules the
+    coach must keep before calling setup_save live there, read through the real SDK."""
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(), write=True)
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.list_tools()
+
+    (tool,) = [t for t in asyncio.run(_run()).tools if t.name == "setup_save"]
+    desc = " ".join(tool.description.split())
+    for phrase in ("playing every change back to the user in chat",
+                   "hearing an explicit yes", '"stale"', "setup_status's `kinds`",
+                   "`previous`", "written, set_aside or failed"):
+        assert phrase in desc, phrase
+    assert "form" not in desc and "tick" not in desc

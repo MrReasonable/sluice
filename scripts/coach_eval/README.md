@@ -32,13 +32,15 @@ so graders can be compared on identical transcripts. `--regrade` excludes `--per
 
 `--out` must be outside the repository (the run refuses otherwise): transcripts carry web
 research and model-played users. Per persona it writes `<id>.transcript.txt` and
-`<id>.scorecard.json`. Each `claude` call has a timeout and a hung one fails the persona loudly; an empty simulated-user reply stops the loop and is recorded as `failure` in the scorecard.
+`<id>.scorecard.json`, and copies every note and config file the run left in its sandbox into
+`<id>.files/` (listed under `files` in the scorecard): with no form to cancel, a run's saves
+really land, and those files are the result to open in Obsidian. Each `claude` call has a timeout and a hung one fails the persona loudly; an empty simulated-user reply stops the loop and is recorded as `failure` in the scorecard.
 
 Models (owner's budget ruling, 2026-10-07): coach `sonnet`, simulated user `haiku`, grader
 `sonnet`. The grader was `haiku` at first. It moved to `sonnet` the same day, on the owner's
 decision after regrading runs 2-5 with both and cross-checking them in a different model
-family. Haiku had scored `asked_before_proposing` on runs 2 and 3, where `setup_review` was
-never called.
+family. Haiku had scored `asked_before_proposing` on runs 2 and 3, where the save tool (then
+`setup_review`) was never called.
 Personas live in `personas/*.json`; each has a turn cap (`max_turns`, default 12).
 
 ## Cross-checking the grader
@@ -61,30 +63,37 @@ excludes `--persona`, `--all` and `--regrade`.
 ## What is scored
 
 Deterministic (`rubric.deterministic`, over the tool calls in the stream): `setup_status`
-called before the first `setup_review`; every `setup_review` input parses; every
-`setup_review` call that proposes a Role Brief section also proposes its sources section; no change targets `verified`; no tool call was denied or errored
-(`no_tool_denied`); the coach stays within its cap of coach messages (one per client
-invocation). Every check counts only SUCCESSFUL calls, meaning a `tool_use` whose `tool_result`
-is not `is_error`. Raw events are saved beside the scorecard as `<id>.events.jsonl`.
-A failing deterministic check is an input to playbook work, not a build failure.
+called before the first `setup_save`; every `setup_save` input parses; every `setup_save`
+call that sends a Role Brief section also sends its sources section; no change targets
+`verified`; every `setup_save` came after a user turn (`save_after_user_turn`: never in the
+coach's first message, which answers the opening slash command); every saved value was played
+back in an EARLIER coach message (`saves_played_back`: a value, a search's url, or for a clear
+its target, found in what the coach said before the message that saved it); no tool call was
+denied or errored (`no_tool_denied`); the coach stays within its cap of coach messages (one per
+client invocation). Every check counts only SUCCESSFUL calls, meaning a `tool_use` whose
+`tool_result` is not `is_error`. Raw events are saved beside the scorecard as
+`<id>.events.jsonl`. A failing deterministic check is an input to playbook work, not a build
+failure. `saves_played_back` matches text, so a coach that reformats a long section for chat
+fails it while having played it back: read the transcript before acting on that one.
 
 Each check's `result` is `pass`, `fail` or `not exercised`. A check whose subject never
-happened is `not exercised`, never `pass`: `status_before_review`, `schema_valid` and
-`no_verified` need at least one successful `setup_review` call, and `brief_cites_sources` needs
-a brief section proposed in one. The scorecard's `setup_review_reached` says whether the review
-was reached at all. It means the tool was called successfully, not that anything was
-written: a form the user declined or cancelled still returns a successful call. Run 2
-(career-changer) ended with no `setup_review` call and its four review
-checks read `pass`, which is indistinguishable from a run whose proposals were all clean.
+happened is `not exercised`, never `pass`: `status_before_save`, `schema_valid`,
+`no_verified`, `save_after_user_turn` and `saves_played_back` need at least one successful
+`setup_save` call, and `brief_cites_sources` needs a brief section sent in one. The scorecard's
+`setup_save_reached` says whether a save was reached at all. Run 2 (career-changer) ended with
+no call to the save tool (then `setup_review`) and its four checks read `pass`, which is
+indistinguishable from a run whose proposals were all clean.
 
 Graded by the grader (sonnet by default) (1-5 each): `asked_before_proposing`, `role_specific_questions`,
 `coaching_quality`, plus free-text notes. These are indicative, not gating. The grader sees only
-the conversation, so its prompt states what `setup_review` actually received (from the tool
-calls), and `asked_before_proposing` is scored only from those calls: with none, the grader is
-told to write `not exercised`. The deterministic `setup_review_reached` is copied into
-`llm_graded` beside the grades (overwriting anything the grader wrote there), and when it is
-false the harness itself sets `asked_before_proposing` to `not exercised`, whatever the grader
-returned. Run 3 scored `asked_before_proposing` 4 with no `setup_review` call at all. A grader reply that is not JSON marks the scorecard `failure`.
+the conversation, so its prompt states what `setup_save` actually received (from the tool
+calls), and `asked_before_proposing` (was every saved value played back and given an explicit
+yes) is scored only from those calls: with none, the grader is told to write `not exercised`.
+The deterministic `setup_save_reached` is copied into `llm_graded` beside the grades
+(overwriting anything the grader wrote there), and when it is false the harness itself sets
+`asked_before_proposing` to `not exercised`, whatever the grader returned. Run 3 scored
+`asked_before_proposing` 4 with no call to the save tool at all. A grader reply that is not
+JSON marks the scorecard `failure`.
 
 ## Isolation
 
@@ -129,7 +138,8 @@ claude --restricted --strict-mcp-config --tools "" -p 'Reply OK.' \
 1. With `--tools WebSearch`, the init event listed `WebSearch` AND every tool the connected
    server exposes: `mcp__sluice__apply_record`, `create_lead`, `cv_run`, `cv_signoff`,
    `dismiss_lead`, `doctor`, `get_lead`, `health`, `list_evidence`, `list_leads`,
-   `propose_evidence`, `setup_review`, `setup_status`, `verify_evidence`. The server
+   `propose_evidence`, `setup_review` (the save tool's name then), `setup_status`,
+   `verify_evidence`. The server
    showed `status: connected`. So `--tools` restricts only the built-in tools; it does not
    narrow an MCP server's. Left like that the coach could call `cv_run` and the other backend
    callers, which default to the claude-max backend and would shell out to `claude` on the
@@ -143,7 +153,8 @@ Re-run the probe, update the roster in `run.py` and add the new version with its
 ### Measurement 3: `--disallowedTools` narrows MCP tools (2.1.292, 2026-10-07)
 
 `--disallowedTools` removes tools from availability (`--allowedTools` only pre-approves). The
-coach keeps `setup_status`, `setup_review` and `doctor` (the hand-off playbook calls `doctor`
+coach keeps `setup_status`, the save tool (`setup_save`; `setup_review` when this was measured)
+and `doctor` (the hand-off playbook calls `doctor`
 with its offline default; a coach passing `offline=False` would make live backend calls, which
 is the one residual spend path and the reason the playbook says to use the default). Probe, with
 `--disallowedTools` naming `mcp__sluice__` + each of apply_record, create_lead, cv_run,
@@ -167,9 +178,9 @@ because they counted the denied calls. `coach_args` now also passes `--allowedTo
 `setup_status` once): the `tool_result` carried the status JSON (`config_exists: false`, ...) and
 the reply was `OK`. A denial is a `tool_result` with `is_error: true`.
 
-`setup_review` is an input-required elicitation. The first run never reached it (every call was
-denied); the harness does not answer it on the user's behalf. See Measurement 5 for what the
-headless client does with it.
+`setup_review` was then an input-required elicitation. The first run never reached it (every
+call was denied); the harness does not answer it on the user's behalf. See Measurement 5 for
+what the headless client did with it.
 
 Grader root cause: not reproduced, because only a 23 KB prompt sent on stdin was probed (the
 model returned a codeword placed at its very end, so stdin delivers it intact). The old path put
@@ -186,3 +197,9 @@ form can NEVER show a write. The evidence that the form path works is `setup_rev
 (the tool was called successfully) together with `schema_valid` (every batch it sent parses),
 plus `status_before_review`, `brief_cites_sources` and `no_verified` over what it sent. A
 `written` outcome is not scorable here, and its absence is not a failure.
+
+Superseded 2026-10-08: setup is now saved by `setup_save` on a yes in chat, with no form
+(docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md), so a run's saves land in
+its sandbox and `save_after_user_turn`, `saves_played_back` and the copied files score them.
+The tool roster in Measurement 3 was taken under the old name; `COACH_EXPECTED_TOOLS` is derived
+from the live server, so re-run that probe before the next eval.

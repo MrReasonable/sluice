@@ -696,7 +696,7 @@ _EXPANDUSER_SITES = {
     "core/app.py": ("$VAULT_DIR or the config file's vault_dir, both unexpanded, re-read for "
                     "#223's re-verdict scope when a store has no dir"),
     "onboard/questions.py": "an answer typed at the wizard prompt",
-    "onboard/review.py": ("a vault_dir answer proposed in an MCP setup_review batch, judged "
+    "onboard/review.py": ("a vault_dir answer sent in an MCP setup_save batch, judged "
                           "absolute only after ~ is expanded"),
     "cli.py": "--vault against $VAULT_DIR, and the preset handed to `sluice init`",
     "renderers/template.py": "cv.template, read from YAML where no shell expanded it",

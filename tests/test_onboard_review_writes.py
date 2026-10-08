@@ -6,16 +6,16 @@ from sluice.onboard.plan import LEADS_VIEW_TEXT, build_plan
 from tests.test_onboard_review import CONFIG, PROFILE, snap
 
 
-def write_for(changes, s, tick=None, env_vault=None, proposed_on=None):
+def write_for(changes, s, only=None, env_vault=None, proposed_on=None):
     """`proposed_on` proposes against that config text instead of the snapshot's, so `propose`
     cannot set aside an edit the file refuses: it reaches `build_writes` with the file as it
-    stands, the case where the file changed between the form and the write."""
+    stands, the case where the file changed between the read and the write."""
     import dataclasses
     parsed, _ = review.parse_changes(changes)
     units, _ = review.propose(parsed, s if proposed_on is None
                               else dataclasses.replace(s, config_text=proposed_on))
-    ticked = [u for u in units if tick is None or u.key in tick]
-    return review.build_writes(ticked, s, env_vault=env_vault)
+    chosen = [u for u in units if only is None or u.key in only]
+    return review.build_writes(chosen, s, env_vault=env_vault)
 
 
 def test_first_run_config_equals_inits_for_the_same_answers():
@@ -107,10 +107,10 @@ def test_a_fan_out_key_that_fails_part_way_leaves_the_text_untouched():
     assert "anthropic" not in writes[0].text and "several lines" in aside[0].reason
 
 
-def test_an_unticked_vault_unit_writes_nothing_on_a_first_run():
+def test_a_first_run_without_its_vault_unit_writes_nothing():
     writes, aside = write_for([{"kind": "config", "target": "vault_dir", "value": "/example/v"},
                                {"kind": "config", "target": "lead_ttl_days", "value": "30"}],
-                              snap(None), tick={"config:lead_ttl_days"})
+                              snap(None), only={"config:lead_ttl_days"})
     assert writes == [] and aside
 
 
@@ -176,7 +176,7 @@ def test_status_view_has_no_absolute_path_and_masks_vault_dir():
     assert "/example/vault" not in repr(view)
 
 
-def test_nothing_ticked_writes_nothing_even_on_a_first_run():
+def test_no_units_write_nothing_even_on_a_first_run():
     assert review.build_writes([], snap(None, env=True), env_vault="/example/ev") == ([], [])
 
 

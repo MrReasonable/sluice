@@ -131,7 +131,7 @@ def test_a_first_run_creates_config_then_notes_in_the_new_vault(tmp_path, monkey
 
 def test_notes_are_withheld_when_a_first_run_config_is_not_created(tmp_path, monkeypatch):
     planted = "lead_ttl_days: 7\n"
-    _cfg(planted)     # appeared between form and retry
+    _cfg(planted)     # appeared between the read and the write
     plan = build_plan({"vault_dir": str(tmp_path / "v")})
     out = Sluice.from_config_file().apply_setup([
         ArtefactWrite("config", plan.config_text, None, ("vault_dir",), ()),
@@ -213,11 +213,11 @@ def test_a_note_whose_store_write_abstains_is_a_conflict_and_is_untouched():
     note.write_text("# Judging Profile\n\nedited in Obsidian\n")
     out = s.apply_setup([ArtefactWrite("profile", "# new\n", document_sha("# shown\n"))])
     assert out["profile"].status == "conflict"
-    assert "changed after the form" in out["profile"].reason
+    assert "changed after setup_status read it" in out["profile"].reason
     out = s.apply_setup([ArtefactWrite("profile", "# new\n", None)])
     assert out["profile"].status == "conflict"
     # inv-004: an abstained CREATE says the note is already there, never that it "changed
-    # after the form" -- on a first run the form showed no old text to have changed.
+    # after setup_status read it" -- on a first run no old text was read to have changed.
     assert "already exists in the chosen vault" in out["profile"].reason
     assert note.read_text() == "# Judging Profile\n\nedited in Obsidian\n"
 

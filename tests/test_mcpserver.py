@@ -17,7 +17,6 @@ import dataclasses
 import json
 import os
 import pathlib
-import types
 
 import pytest
 
@@ -1743,10 +1742,11 @@ def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
 # IS the protocol stream.
 _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.app", "sluice.core.leads", "sluice.core.safeout", "sluice.core.status",
-    # The escaping logger (a stderr StreamHandler; no file, no store): setup_review records an
+    # The escaping logger (a stderr StreamHandler; no file, no store): setup_save records an
     # unexpected step error's traceback there before reporting it as a structured outcome.
     "sluice.core.log",
-    # Pure measurement helpers (how much text a form can show); no write path.
+    # Pure measurement helpers (how much text verify_evidence's form can show, and the
+    # control/bidi check setup_save's validation shares); no write path.
     "sluice.core.formfit",
     # Pure view of a setup snapshot; no write path (a later task makes the sweep prove it).
     "sluice.onboard.review",
@@ -2219,58 +2219,3 @@ def test_setup_status_reports_a_config_the_loaders_refuse(tmp_path):
     assert str(tmp_path) not in text
     assert os.path.realpath(os.path.dirname(config_file())) not in text
     assert os.path.dirname(config_file()) not in text
-
-
-def _setup_state(**over):
-    state = {"kind": "setup", "changes": [{"kind": "config", "target": "lead_ttl_days",
-                                           "value": "30"}],
-             "shown": [["entry_1", "config:lead_ttl_days"]], "shas": {"config": None},
-             "config_existed": True, "rest": [], "set_aside": []}
-    state.update(over)
-    return json.dumps(state)
-
-
-@pytest.mark.parametrize("state", [
-    "not json", json.dumps(["a list"]), _setup_state(kind="verify"),
-    _setup_state(shown=[["entry_1"]]), _setup_state(shown=[["entry_1", 7]]),
-    _setup_state(shown="entry_1"), _setup_state(shas="x"), _setup_state(shas={"config": 7}),
-    _setup_state(config_existed="yes"), _setup_state(changes=[{"kind": "config"}]),
-    _setup_state(changes=[{"kind": "config", "target": ["x"], "value": "30"}]),
-    _setup_state(changes=[{"kind": "config", "target": "x", "bogus": "y"}]),
-    _setup_state(rest=[1]), _setup_state(set_aside=["x"]), _setup_state(vault=7),
-])
-def test_a_garbled_setup_state_is_invalid_state_and_writes_nothing(state):
-    """Explicit shape checks, not an `assert` that `python -O` strips: every garbled field the
-    retry reads is `invalid_state`, never an exception."""
-    from sluice.core.paths import config_file
-    from sluice.mcpserver import setup_review_step
-    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
-    before = "lead_ttl_days: 0\n"
-    pathlib.Path(config_file()).write_text(before)
-    responses = types.SimpleNamespace(action="accept", content={"entry_1": True})
-    out = setup_review_step(Sluice.from_config_file(), changes=[],
-                            protocol_version="2026-07-28",
-                            elicitation=types.SimpleNamespace(form={}, url=None),
-                            responses=responses, state=state)
-    assert out["outcome"] == "invalid_state" and out["units"] == []
-    assert pathlib.Path(config_file()).read_text() == before
-
-
-def test_an_intact_setup_state_is_not_invalid_state():
-    """The control for the row above: the same builder, unmutated, reaches a write."""
-    from sluice.core.paths import config_file
-    from sluice.mcpserver import setup_review_step
-    os.makedirs(os.path.dirname(config_file()), exist_ok=True)
-    pathlib.Path(config_file()).write_text("lead_ttl_days: 0\n")
-    from sluice.core.protocols import document_sha
-    out = setup_review_step(Sluice.from_config_file(), changes=[],
-                            protocol_version="2026-07-28",
-                            elicitation=types.SimpleNamespace(form={}, url=None),
-                            responses=types.SimpleNamespace(action="accept",
-                                                            content={"entry_1": True}),
-                            state=_setup_state(shas={"config": document_sha(
-                                "lead_ttl_days: 0\n")}, vault=Sluice.from_config_file()
-                                .setup_snapshot().vault_digest))
-    assert out["outcome"] == "completed", out
-    assert out["units"] == [{"unit": "config:lead_ttl_days", "outcome": "written",
-                             "reason": ""}]

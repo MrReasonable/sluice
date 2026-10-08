@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent / "sluice"
 # (relative file, enclosing function or None for module level) where the note may be named.
 _ALLOWED = {("core/protocols.py", None), ("core/app.py", "setup_snapshot"),
             ("core/app.py", "apply_setup"), ("mcpserver.py", "setup_status"),
-            ("mcpserver.py", "setup_review_step")}
-# Where only the NAME may appear, in prose a client reads: setup_review's registered
+            ("mcpserver.py", "setup_save_step")}
+# Where only the NAME may appear, in prose a client reads: setup_save's registered
 # description lives inside build_server. A read or the constant there would still fail.
 _ALLOWED_LITERAL = {("mcpserver.py", "build_server")}
 _ALLOWED_FILES = {"onboard/review.py"}

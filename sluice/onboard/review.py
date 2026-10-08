@@ -1,10 +1,10 @@
-"""In-session setup, pure: proposed changes in, checkbox units and finished artefact texts
-out. No I/O -- `Sluice.setup_snapshot` reads, `Sluice.apply_setup` checks and writes.
+"""In-session setup, pure: proposed changes in, units and finished artefact texts out. No I/O
+-- `Sluice.setup_snapshot` reads, `Sluice.apply_setup` checks and writes.
 
-A UNIT is what one checkbox approves: one Judging Profile heading, one Candidate Profile
-field, one config key, one search, one Role Brief section. Every change that cannot be shown
-in full or applied safely is SET ASIDE here, with a reason naming a remedy that exists for
-that unit, before any form is built.
+A UNIT is the smallest thing the user agrees to in chat and `setup_save` writes: one Judging
+Profile heading, one Candidate Profile field, one config key, one search, one Role Brief
+section. Every change that cannot be applied safely is SET ASIDE here, with a reason naming a
+remedy that exists for that unit, before anything is written.
 """
 import dataclasses
 import os
@@ -37,10 +37,12 @@ DEFAULT_VAULT = ("sluice is using a vault in whatever folder the MCP server was 
                  "so notes written now would land where nothing else reads them; set `vault_dir` "
                  "in your sluice config file by hand, then restart the server")
 CLEARED = "(unset: back to the shipped default)"
+HIDDEN_TEXT = ("it contains a control or bidirectional character that could hide or reorder "
+               "text when it is read back")
 
 
 class ChangeIn(TypedDict, total=False):
-    """One proposed change, as the setup_review tool receives it."""
+    """One agreed change, as the setup_save tool receives it."""
     kind: str
     target: str
     value: str
@@ -65,7 +67,7 @@ class Change:
 class SetAside:
     label: str
     reason: str
-    key: str | None = None   # the unit key it would have had, so a reason maps to ITS box
+    key: str | None = None   # the unit key it would have had, so a reason maps to ITS change
 
 
 @dataclass(frozen=True)
@@ -73,7 +75,7 @@ class Unit:
     key: str          # stable id, e.g. "config:lead_ttl_days"
     kind: str
     artefact: str     # "config", "profile", "candidate", "brief"
-    title: str        # the checkbox label
+    title: str        # a readable label for the change
     before: str | None
     after: str
     change: Change
@@ -89,7 +91,7 @@ def _search_label(c):
 
 def _search_url(c):
     """The url as the unit will write it. Falls back to the stripped raw string when parse_url
-    refuses, so a bad url still gets the stable key its set-aside needs to match its box."""
+    refuses, so a bad url still gets the stable key its set-aside needs to match its change."""
     raw = c.url or ""
     try:
         return _questions.parse_url(raw)
@@ -98,8 +100,8 @@ def _search_url(c):
 
 
 def unit_key(c) -> str:
-    """The stable id of the unit a change targets: two changes with one key would be two boxes
-    writing one thing, so propose keeps the first and sets the rest aside."""
+    """The stable id of the unit a change targets: two changes with one key would be two writes
+    to one thing, so propose keeps the first and sets the rest aside."""
     if c.kind == "search":
         # No verb in the key: an add and a remove of one search are contradictory writes to one
         # thing, so the second must be set aside as a duplicate (the verb stays in the title).
@@ -152,7 +154,7 @@ def prose_problem(text) -> str | None:
     if not text or not text.strip():
         return "it is empty"
     if formfit.hides_text(text):
-        return "it contains a control character that could change what the form displays"
+        return HIDDEN_TEXT
     for line in text.splitlines():
         s = line.lstrip(" ")
         if s.startswith("#"):
@@ -162,32 +164,6 @@ def prose_problem(text) -> str | None:
         if "<!--" in s or "-->" in s:
             return "it contains a comment marker that could hide the text after it"
     return None
-
-
-def _fits(title, body):
-    return (len(formfit.describe(title, body)) <= formfit.DESC_MAX_CHARS
-            and formfit.entry_lines(title, body) <= formfit.FORM_LINES
-            and not formfit.hides_text(formfit.describe(title, body)))
-
-
-def _replaces(unit) -> bool:
-    return unit.before is not None and unit.before != unit.after
-
-
-def unit_body(unit) -> str:
-    """What one box shows: the new text, and in full the text it replaces. There is no
-    shortened form -- a tick approves deleting what "Replaces:" shows, so a box that could not
-    show it would approve deleting text the user never saw; `propose` sets such a unit aside."""
-    if _replaces(unit):
-        return f"New:\n{unit.after}\n\nReplaces:\n{unit.before}"
-    return f"New:\n{unit.after}"
-
-
-def set_aside_reason(unit) -> str:
-    if _replaces(unit) and _fits(unit.title, f"New:\n{unit.after}"):
-        return (f"the text it would replace cannot be shown in full beside it in the review "
-                f"form -- {REMEDY[unit.kind]}")
-    return f"it does not fit the review form in full -- {REMEDY[unit.kind]}"
 
 
 def vault_path_problem(raw) -> str | None:
@@ -210,8 +186,9 @@ def vault_path_problem(raw) -> str | None:
 def _vault_problem(c, snap, batch):
     """A reason no vault unit (or, on a first run, no unit at all) can be written now. Only a
     `vault_dir` change that will itself be accepted counts as naming the vault: counting a
-    refused one would show the other boxes, only for every tick to be set aside on retry. A
-    refused `vault_dir` change itself falls through, so `_config_unit` names its own reason."""
+    refused one would let the other changes through, only for every one to be set aside when
+    the writes are built. A refused `vault_dir` change itself falls through, so `_config_unit`
+    names its own reason."""
     names_vault = c.kind == "config" and c.target == "vault_dir" and not c.clear
     if not names_vault and not snap.config_exists and not snap.vault_from_env and not any(
             b.kind == "config" and b.target == "vault_dir" and not b.clear
@@ -224,7 +201,7 @@ def _vault_problem(c, snap, batch):
 
 
 def propose(changes, snap) -> tuple:
-    units, aside, seen_keys, seen_titles = [], [], set(), set()
+    units, aside, seen_keys = [], [], set()
     qs = _questions_by_key()
     for c in changes:
         key = unit_key(c)
@@ -254,14 +231,7 @@ def propose(changes, snap) -> tuple:
         except ValueError as exc:      # BadAnswer, EditRefused, FrontmatterEditRefused
             skip(f"{exc} -- {REMEDY[c.kind]}")
             continue
-        if not _fits(unit.title, unit_body(unit)):
-            skip(set_aside_reason(unit))
-            continue
-        if unit.title in seen_titles:      # titles key the form; never two boxes, one title
-            skip("this batch already proposes a change with the same title")
-            continue
         seen_keys.add(key)
-        seen_titles.add(unit.title)
         units.append(unit)
     return units, aside
 
@@ -301,8 +271,7 @@ def _config_unit(c, snap, qs):
     value = None if c.clear else q.parse(c.value or "")
     if snap.config_text:
         # Rehearse the edit NOW so a key this editor cannot place (a value spread over several
-        # lines, a duplicate) is set aside before the form; found only at write time it would
-        # be reported `failed` after the user had ticked the box.
+        # lines, a duplicate) is set aside with the editor's own reason, before any write.
         for d in q.writes_to:
             if c.clear:
                 _edit.clear_key(snap.config_text, d)
@@ -310,13 +279,8 @@ def _config_unit(c, snap, qs):
                 _edit.set_key(snap.config_text, d, _render(value))
     before = snap.settings.get(q.writes_to[0])
     if q.key == "vault_dir":
-        # The RESOLVED path, in full: the user must see every value before it is written, and
-        # this one decides where every note goes. Showing it is no disclosure. The "no
-        # absolute path in a response" rule covers paths the SERVER discovers (the config's
-        # location, an existing vault -- which setup_status still masks as set/unset), not the
-        # user's own typed answer echoed back to them; the form's state carries it anyway.
-        # A leading `~` is shown expanded, so the home folder the server resolved it to is
-        # the one part of the box the user did not type -- and the part they most need to check.
+        # The RESOLVED path: what will be written. It never appears in a setup_save response
+        # (rows name the change by key), so no path the server resolved reaches the client.
         before, after = None, _display(value)
     else:
         before, after = _display(before), _display(value)
@@ -336,8 +300,8 @@ def _search_unit(c, snap):
     url = _questions.parse_url(c.url or "")
     verb = "remove" if c.remove else "add"
     c = dataclasses.replace(c, label=label, url=url)
-    # Checked against what is configured NOW, so the user is never shown a box that cannot be
-    # written (build_writes' editor would refuse the same three cases after the tick).
+    # Checked against what is configured NOW, with a reason naming the case (build_writes'
+    # editor would refuse the same three, less clearly).
     current = [list(e) for e in snap.searches.get(c.target, [])]
     if not c.remove and [label, url] in current:
         raise ValueError("that search is already configured")
@@ -355,7 +319,7 @@ def _search_unit(c, snap):
 def _snapshot_notes_are_the_target(snap) -> bool:
     """False on a first run with no $VAULT_DIR: the snapshot then read the cwd-relative default
     vault, not the one being chosen, so its notes say nothing about what a write will replace.
-    A unit shows no "Replaces:" then -- as `_note_writes(existing=False)` creates rather than
+    A unit records no `before` then -- as `_note_writes(existing=False)` creates rather than
     edits -- and a note that does exist in the chosen vault abstains in the store."""
     return snap.config_exists or snap.vault_from_env
 
@@ -387,8 +351,7 @@ def _candidate_unit(c, snap):
         raise ValueError(f"`{c.target}` is not a Candidate Profile field the interview sets")
     value = "" if c.clear else (c.value or "").strip()
     if formfit.hides_text(value):
-        raise ValueError("it contains a control character that could change what the form "
-                         "displays")
+        raise ValueError(HIDDEN_TEXT)
     literal = scalar(value)
     if parse_frontmatter(f"---\n{field}: {literal}\n---\n").get(field, "") != value:
         raise ValueError("that value does not survive sluice's frontmatter reader unchanged "
@@ -405,22 +368,23 @@ BRIEF_PLACEHOLDER = "Not researched yet."
 
 # A CommonMark ATX heading: up to three spaces, one to six `#`, then a space, a tab or the end of
 # the line. Nothing else ends a section -- an Obsidian tag line (`#remote`) or `#hashtag` prose is
-# BODY, so the form's "Replaces:" shows it and the write removes it with the rest. Cutting at any
-# leading `#` made the preview stop at a tag while the old text below it survived the write.
+# BODY, so `previous` carries it and the write removes it with the rest. Cutting at any leading
+# `#` made the old text stop at a tag while the text below it survived the write.
 _ATX_HEADING = re.compile(r" {0,3}#{1,6}(?:[ \t]|$)")
 
 
 def is_heading(line) -> bool:
     """The one section boundary `section_text`, `replace_section` and `headings` share, so the
-    text the form shows, the text the write replaces and the headings check cannot disagree."""
+    text reported as replaced, the text the write replaces and the headings check cannot
+    disagree."""
     return _ATX_HEADING.match(line.rstrip("\r\n")) is not None
 
 
 def section_text(text, heading):
     """EVERYTHING a section edit would replace -- every line after the heading up to the next
     heading, blank edges trimmed, `init`'s prompt comment included -- or None when the heading
-    is absent. Never cut at a comment: the "Replaces:" preview must show all the text the write
-    deletes, including any the user typed below `init`'s prompt."""
+    is absent. Never cut at a comment: `previous` must carry all the text the write deletes,
+    including any the user typed below `init`'s prompt."""
     lines = text.splitlines()
     try:
         i = [ln.rstrip("\r") for ln in lines].index(heading)
@@ -515,10 +479,10 @@ def _first_run_answers(units):
 
 
 def build_writes(units, snap, *, env_vault=None) -> tuple:
-    """Finished artefact texts for the ticked units. `env_vault` is $VAULT_DIR as the caller
+    """Finished artefact texts for the agreed units. `env_vault` is $VAULT_DIR as the caller
     read it: on a first run it IS the vault answer, as cmd_init uses it (review.py reads no
     environment itself). Every SetAside carries its unit's key."""
-    if not units:    # nothing ticked means nothing written, even on a first run
+    if not units:    # nothing to write means nothing written, even on a first run
         return [], []
     by_art = {}
     for u in units:
@@ -701,6 +665,53 @@ def _first_run_writes(units, by_art, snap, env_vault):
     return writes + w, a
 
 
+def _answer_text(value) -> str:
+    """A loaded setting as the raw answer its question's `parse` reads back: a list setting is
+    comma-separated, as `questions.parse_csv` splits it."""
+    if isinstance(value, list):
+        return ", ".join(str(v) for v in value)
+    return str(value)
+
+
+def _default_text(unit) -> str:
+    """What a section reads as after `clear` -- the text that is not the user's own, so
+    replacing it replaces nothing worth restoring."""
+    heading, body = _section_lines(dataclasses.replace(
+        unit, change=dataclasses.replace(unit.change, clear=True)))
+    return "\n".join(body).strip()
+
+
+def previous(unit, snap) -> str | None:
+    """What a WRITTEN change replaced, as a `value` setup_save can be handed back to restore it,
+    or None when it replaced nothing of the user's: a key that was not set in the config, a
+    section still holding its default text, a field that was blank, a search (the change itself
+    names the search, so restoring it is the opposite `remove`). The coach restores a change
+    with no `previous` by sending it again with `clear: true`.
+
+    Read off the SAME snapshot the save was checked against, so it is exactly what the write
+    replaced. A section's text is returned whole, `init`'s prompt comment included when the
+    user typed beside it: the prose rule then sets a restore aside naming the note to edit,
+    which is truer than a `previous` that silently dropped part of what was there."""
+    c = unit.change
+    if unit.kind == "config":
+        q = _questions_by_key()[c.target]
+        dotted = q.writes_to[0]
+        if (q.key == "vault_dir" or not snap.config_text
+                or not _edit.is_active(snap.config_text, dotted)):
+            return None
+        old = snap.settings.get(dotted)
+        new = None if c.clear else q.parse(c.value or "")
+        return None if old == new else _answer_text(old)
+    if unit.kind in ("profile", "brief"):
+        if unit.before is None or unit.before == unit.after or unit.before == _default_text(unit):
+            return None
+        return unit.before
+    if unit.kind == "candidate":
+        new = "" if c.clear else (c.value or "").strip()
+        return unit.before if unit.before and unit.before != new else None
+    return None
+
+
 def status_view(snap) -> dict:
     qs = _questions.catalogue()
     config = {}
@@ -720,6 +731,8 @@ def status_view(snap) -> dict:
     brief = snap.notes.get("brief")
     candidate = snap.notes.get("candidate")
     return {
+        # What setup_save must be handed back: it refuses a save made against any other state.
+        "version": snap.version,
         "config_exists": snap.config_exists,
         "vault": {"decided_by_env": snap.vault_from_env,
                   "is_default": snap.vault_is_default and not snap.vault_from_env},
