@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # `list_tools()` and requires KEPT + DISALLOWED to equal it, so a tool added to the server
 # fails the build until it is placed on one side.
 COACH_TOOLS = "WebSearch"
-SETUP_TOOLS = ("setup_status", "setup_review", "doctor")
+SETUP_TOOLS = ("setup_status", "setup_save", "doctor")
 DISALLOWED_SLUICE_TOOLS = (
     "apply_record", "create_lead", "cv_run", "cv_signoff", "dismiss_lead", "get_lead",
     "health", "list_evidence", "list_leads", "propose_evidence", "verify_evidence")
@@ -40,31 +40,32 @@ USER_PROMPT = ("You are role-playing a person looking for work, talking to a car
                "so. Reply with your next message only. When the coach says the setup is done, "
                "reply DONE.\n\nYour name: {name}\nWhere you live: {location}\nYour situation: "
                "{situation}\n\nThe conversation so far:\n{transcript}")
-# The grader sees only the conversation, never the tool calls, so it is TOLD what setup_review
-# received. Run 3 never called setup_review and the grader still scored asked_before_proposing
-# 4 ("All setup_review settings were based on user agreement"), reading values the coach
-# merely recited in chat as proposals.
+# The grader sees only the conversation, never the tool calls, so it is TOLD what setup_save
+# received. Run 3 never called the save tool (then `setup_review`) and the grader still scored
+# asked_before_proposing 4 ("All setup_review settings were based on user agreement"), reading
+# values the coach merely recited in chat as proposals.
 GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
                  '{{"asked_before_proposing": 1-5 or "not exercised", '
                  '"role_specific_questions": 1-5, "coaching_quality": 1-5, "notes": "..."}}. '
-                 "asked_before_proposing: every value the coach proposed to setup_review was "
-                 "one the user had agreed to in chat. Score it ONLY from setup_review calls that "
+                 "asked_before_proposing: every value the coach sent to setup_save had been "
+                 "played back to the user, and the user said an explicit yes to it in chat "
+                 "before the save. Score it ONLY from setup_save calls that "
                  "actually happened, never from values the coach read back or recorded in chat. "
-                 "{review_fact} If there were none, write \"not exercised\" for it. "
+                 "{save_fact} If there were none, write \"not exercised\" for it. "
                  "role_specific_questions: questions drew on research into the chosen role. "
                  "coaching_quality: would a professional career coach be proud of this.\n\n"
                  "{transcript}")
-NO_REVIEW_FACT = "The coach never called setup_review successfully in this run."
-REVIEW_FACT = ("The coach called setup_review successfully {n} time(s), and the changes it "
-               "sent were: {changes}")
+NO_SAVE_FACT = "The coach never called setup_save successfully in this run."
+SAVE_FACT = ("The coach called setup_save successfully {n} time(s), and the changes it "
+             "sent were: {changes}")
 
 
-def review_fact(events):
-    """What setup_review actually received, from the tool calls, for the grader prompt."""
-    sent = [i.get("changes") for n, i in rubric.tool_calls(events) if n == rubric.REVIEW]
+def save_fact(events):
+    """What setup_save actually received, from the tool calls, for the grader prompt."""
+    sent = [i.get("changes") for n, i in rubric.tool_calls(events) if n == rubric.SAVE]
     if not sent:
-        return NO_REVIEW_FACT
-    return REVIEW_FACT.format(n=len(sent), changes=json.dumps(sent))
+        return NO_SAVE_FACT
+    return SAVE_FACT.format(n=len(sent), changes=json.dumps(sent))
 
 
 def coach_args(message, mcp, session=None):
@@ -114,7 +115,7 @@ def _json_object(text):
 def grader_prompt(events, transcript):
     """The exact text the grader receives. Shared by `grade` and `--print-grader-prompt`, so a
     prompt pasted into another model for a cross-check is the one the grader was given."""
-    return GRADER_PROMPT.format(review_fact=review_fact(events),
+    return GRADER_PROMPT.format(save_fact=save_fact(events),
                                 transcript="\n".join(transcript))
 
 
@@ -159,13 +160,13 @@ def grade(events, transcript, model, cwd):
     except ValueError:
         llm = {"error": "the grader did not reply with JSON", "raw": _final_text(graded)}
         failure = "the grader did not reply with JSON"
-    reached = rubric.review_reached(events)
+    reached = rubric.save_reached(events)
     # The deterministic fact sits BESIDE the grade, overwriting anything the grader wrote there.
-    # And with no review there was nothing to grade for asked_before_proposing: the prompt says
+    # And with no save there was nothing to grade for asked_before_proposing: the prompt says
     # to write "not exercised", but a grader that returns a number anyway (run 3 scored 4 with
-    # no setup_review call) is overruled here rather than trusted.
+    # no save call) is overruled here rather than trusted.
     if isinstance(llm, dict):
-        llm["setup_review_reached"] = reached
+        llm["setup_save_reached"] = reached
         if not reached:
             llm["asked_before_proposing"] = rubric.verdict(rubric.NOT_EXERCISED)
     return llm, failure
@@ -230,10 +231,11 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     det = rubric.deterministic(events, max_turns=p.max_turns)
     llm, grade_failure = grade(events, transcript, grader_model, empty)
     failure = failure or grade_failure
-    reached = rubric.review_reached(events)
+    reached = rubric.save_reached(events)
     # `result` is a word, never a boolean: a check with nothing to check reads "not exercised",
-    # and `setup_review_reached` says up front whether the review checks had a subject at all.
-    card = {"persona": p.id, "setup_review_reached": reached,
+    # and `setup_save_reached` says up front whether the save checks had a subject at all.
+    files = copy_setup_files(sandbox, out_dir / f"{p.id}.files")
+    card = {"persona": p.id, "setup_save_reached": reached, "files": files,
             "deterministic": {k: {"result": rubric.verdict(v[0]), "check": v[1]}
                               for k, v in det.items()},
             "llm_graded": llm}
@@ -244,6 +246,25 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     (out_dir / f"{p.id}.transcript.txt").write_text("\n".join(transcript))
     (out_dir / f"{p.id}.scorecard.json").write_text(json.dumps(card, indent=2))
     return card
+
+
+def copy_setup_files(sandbox, dest) -> list:
+    """Copy what the run left in the sandbox -- every note (`*.md`) and the config file
+    (`*.yaml`) -- into `dest`, keeping their paths relative to the sandbox, and return those
+    paths. With no form to cancel, a run's saves really land, and the files are the result to
+    read in Obsidian, as the user would (spec 2026-10-08, Testing). The client's own empty
+    working directory is skipped."""
+    sandbox, dest = Path(sandbox), Path(dest)
+    copied = []
+    for path in sorted(sandbox.rglob("*")):
+        rel = path.relative_to(sandbox)
+        if not path.is_file() or rel.parts[0] == "client-cwd" or path.suffix not in (
+                ".md", ".yaml"):
+            continue
+        (dest / rel).parent.mkdir(parents=True, exist_ok=True)
+        (dest / rel).write_bytes(path.read_bytes())
+        copied.append(str(rel))
+    return copied
 
 
 def _outside_repo(directory, flag):

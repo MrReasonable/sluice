@@ -49,7 +49,7 @@ def test_the_prompt_states_the_rules_and_names_every_unit_kind():
     text = coach.assemble_prompt()
     # The two settings-pacing phrases: a real session showed the coach asking two groups in one
     # message and labelling them with the playbook's own numbers ("settings 3 and 4").
-    for phrase in ("never the answers", "ticks it", "setup_status", "setup_review",
+    for phrase in ("never the answers", "setup_status", "setup_save",
                    "one group per message", "never show them to the user"):
         assert phrase in text
     from sluice.onboard.review import ROLE_BRIEF_SECTIONS
@@ -146,11 +146,8 @@ def test_the_interview_probes_gaps_names_tensions_and_does_not_push():
     assert "Match the research to what the user described" in rs
 
 
-def test_the_review_playbook_describes_how_a_form_is_filled():
-    # Run 5's forms showed 3 of 17 changes; the rest came back not_shown.
+def test_the_review_playbook_keeps_the_approved_text_and_the_users_requests():
     text = coach.read_playbook("review")
-    assert "in the order the user asked for them" in text and "`not_shown`" in text
-    assert "A `not_shown` change is not a declined one" in text
     # Run 6: approved Role Brief text was rewritten unseen, and a requested smaller form was not
     # sent; both are now stated rules.
     assert "Send exactly the text the user approved." in text
@@ -168,11 +165,13 @@ def test_misattributions_are_corrected_and_the_profile_is_drafted_in_one_pass():
 
 
 def _setup_outcome_vocabulary():
-    """(step outcomes, unit outcomes), DERIVED from the code that produces them, so a new
-    outcome cannot ship without the playbook naming it. Step: every string literal assigned to
-    `report["outcome"]` in `setup_review_step` or put under "outcome" in a dict literal of a
-    setup function. Unit: the first element of every `rows[...] = (...)` tuple, every unit
-    dict's "outcome", and every status the facade's `ArtefactOutcome`/`outcome(...)` gets."""
+    """(save outcomes, per-change outcomes), DERIVED from the code that produces them, so a new
+    outcome cannot ship without the playbook naming it. Save: every string literal assigned to
+    `report["outcome"]` in `setup_save_step` or `_fresh_or_refusal`, or put under "outcome" in
+    one of their dict literals that is not a per-change row. Per change: every "outcome" of a
+    row literal (a dict carrying "change") and every value `_SAVE_OUTCOME` maps apply_setup's
+    statuses to -- and every status apply_setup can produce must be one of its keys, or a new
+    one would reach the save as a KeyError rather than a named outcome."""
     import ast
     import inspect
 
@@ -180,43 +179,41 @@ def _setup_outcome_vocabulary():
     from sluice.core import app
 
     def consts(node):
-        """The strings an expression can EVALUATE to: an IfExp's branches, never its test
-        (`"declined" if action == "decline" else ...` must not yield "decline")."""
+        """The strings an expression can EVALUATE to: an IfExp's branches, never its test."""
         if isinstance(node, ast.IfExp):
             return consts(node.body) | consts(node.orelse)
         return {node.value} if isinstance(node, ast.Constant) and isinstance(node.value,
                                                                               str) else set()
 
-    step, units = set(), set()
-    for fn in (mcpserver.setup_review_step, mcpserver._fresh_or_refusal):
+    step, changes = set(), set(mcpserver._SAVE_OUTCOME.values())
+    for fn in (mcpserver.setup_save_step, mcpserver._fresh_or_refusal):
         for node in ast.walk(ast.parse(inspect.getsource(fn).lstrip())):
             if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
                 tgt = node.targets[0]
                 if isinstance(tgt.slice, ast.Constant) and tgt.slice.value == "outcome":
                     step |= consts(node.value)
-                elif (isinstance(tgt.value, ast.Name) and tgt.value.id == "rows"
-                      and isinstance(node.value, ast.Tuple)):
-                    units |= consts(node.value.elts[0])
             elif isinstance(node, ast.Dict):
                 pairs = {k.value: v for k, v in zip(node.keys, node.values)
                          if isinstance(k, ast.Constant)}
                 if "outcome" in pairs:
-                    (units if "unit" in pairs else step).update(consts(pairs["outcome"]))
+                    (changes if "change" in pairs else step).update(consts(pairs["outcome"]))
+    statuses = set()
     for fn in (app.Sluice.apply_setup, app.Sluice._apply_config):
         for node in ast.walk(ast.parse(inspect.getsource(fn).lstrip())):
             if (isinstance(node, ast.Call) and getattr(node.func, "id", "") in
                     ("ArtefactOutcome", "outcome") and node.args):
-                units |= consts(node.args[0])
-    return step - {""}, units
+                statuses |= consts(node.args[0])
+    assert statuses and statuses <= set(mcpserver._SAVE_OUTCOME), statuses
+    return step - {""}, changes
 
 
-def test_the_review_playbook_names_every_outcome_the_step_returns():
-    step, units = _setup_outcome_vocabulary()
+def test_the_review_playbook_names_every_outcome_the_save_returns():
+    step, changes = _setup_outcome_vocabulary()
     # Scope: a derivation that found nothing would pass every assertion below.
-    assert {"completed", "invalid_state", "config_refused", "unsupported_client"} <= step
-    assert {"written", "declined", "conflict", "set_aside", "failed"} <= units
+    assert {"completed", "stale", "config_refused"} <= step
+    assert changes == {"written", "set_aside", "failed"}
     text = (resources.files(coach) / "review.md").read_text(encoding="utf-8")
-    missing = sorted(o for o in step | units if f"`{o}`" not in text)
+    missing = sorted(o for o in step | changes if f"`{o}`" not in text)
     assert missing == [], f"review.md does not name these setup outcomes: {missing}"
 
 
@@ -231,17 +228,17 @@ def test_every_line_of_a_multi_line_focus_stays_quoted():
     assert "\nExample second instruction" not in prompt
 
 
-def test_usage_names_every_outcome_setup_review_returns():
-    """docs/USAGE.md's setup_review entry listed `restart_needed` -- a report FIELD -- as an
+def test_usage_names_every_outcome_setup_save_returns():
+    """docs/USAGE.md's setup entry once listed `restart_needed` -- a report FIELD -- as an
     outcome, and left out outcomes the step really returns. Derived from the same vocabulary
     the playbook row above reads, and scoped to that one entry, so another tool's outcome
     named elsewhere in the file cannot satisfy it."""
     import pathlib
-    step, _ = _setup_outcome_vocabulary()
+    step, changes = _setup_outcome_vocabulary()
     usage = (pathlib.Path(__file__).resolve().parent.parent / "docs" / "USAGE.md").read_text(
         encoding="utf-8")
-    start = usage.index("- `setup_review(changes)`")
+    start = usage.index("- `setup_save(changes, version)`")
     entry = usage[start:usage.index("\n\n- ", start)]
-    missing = sorted(o for o in step if f"`{o}`" not in entry)
-    assert missing == [], f"USAGE.md's setup_review entry does not name: {missing}"
+    missing = sorted(o for o in step | changes if f"`{o}`" not in entry)
+    assert missing == [], f"USAGE.md's setup_save entry does not name: {missing}"
     assert "`restart_needed` is a FIELD" in entry

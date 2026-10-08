@@ -887,22 +887,23 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
 
 **With `--write`**, these further tools are registered:
 
-- `setup_review(changes)` -- show proposed setup changes (a config key, a search to add or
-  remove, a Judging Profile heading, a Candidate Profile field, a Role Brief section) in a
-  review form, each under its own UNTICKED checkbox, and write only the ones you tick.
-  `setup_status` (read-only, registered at both levels) reports what can be changed and its
-  current value. Changes that cannot be shown or applied come back in `set_aside` with the
-  reason; ones that did not fit the form come back in `not_shown`, to send again;
-  `artefacts` reports, per file, an outcome that no ticked box accounts for. The result's
-  `outcome` is one of: `completed` (the form was answered; `units` gives each box's own
-  outcome -- `written`, `declined`, `conflict`, `set_aside` or `failed`), `declined` or
-  `cancelled` (the whole form was turned down; nothing was written), `nothing_to_review`
-  (every change was set aside), `invalid_state` (the form's answer did not come back
-  intact; nothing was written), `config_refused` (the config file does not load; fix it
-  by hand) and `unsupported_client` (the client cannot show a form; use `job-sluice
-  init`). `restart_needed` is a FIELD, not an outcome: it is non-empty beside a
-  `completed` outcome when a config was written but the server could not reload it, and
-  says to restart the server.
+- `setup_save(changes, version)` -- write setup changes you agreed to in chat (a config key,
+  a search to add or remove, a Judging Profile heading, a Candidate Profile field, a Role
+  Brief section). The career coach plays every change back to you, grouped by where it goes
+  and showing any value it replaces, and calls this only after you say yes. `setup_status`
+  (read-only, registered at both levels) reports what can be changed, its current value, and
+  a `version` token for exactly what it read; `setup_save` must be handed that token. The
+  result's `outcome` is one of: `completed` (`changes` gives each change's own outcome --
+  `written`, `set_aside` with the reason, or `failed` with the reason -- and a written change
+  that replaced a value or text of yours carries `previous`, which puts it back when sent
+  again as the value), `stale` (the config file, a setup note or the vault changed after
+  `setup_status` read them, say because you edited a note in Obsidian; nothing was written,
+  so read `setup_status` again), `config_refused` (the config file does not load; fix it by
+  hand) and `failed` (an unexpected error stopped the save; call `setup_status` to see what
+  was written). `artefacts` reports, per file, an outcome that no change accounts for (the
+  default Judging Profile and Leads view a first run creates). `restart_needed` is a FIELD,
+  not an outcome: it is non-empty beside a `completed` outcome when a config was written but
+  the server could not reload it, and says to restart the server.
 
 - `dismiss_lead(lead, reason)` -- dismiss one lead by EXACT slug, recording `reason`.
 - `apply_record(lead, ats=None, url=None)` -- record a sent application (shortlist
@@ -976,10 +977,11 @@ genuinely omits every write tool, not merely refusing them at call time.
 **The career coach.** In Claude Code, type `/mcp__job-sluice__career_interview` (optionally
 followed by what you want from the session; the middle part is whatever name you registered
 the server under, `job-sluice` in `claude mcp add job-sluice -- job-sluice mcp serve`). The coach interviews you, can research the role
-you choose, and proposes setup changes that you approve one by one in a review form; only the
-boxes you tick are written. Your client cannot list this prompt for you, so start it by name.
-The prompt is available on a read-only server too, but the review step needs `--write`; the
-coach says so. What the research produces is kept in the `Job Applications/Role Brief.md`
+you choose, then plays back every setup change it would save, grouped by where it goes, and
+saves only after you say yes in chat. Afterwards it walks you through opening your vault in
+Obsidian to check the result, and fixes anything you say looks wrong the same way. Your client
+cannot list this prompt for you, so start it by name. The prompt is available on a read-only
+server too, but saving needs `--write`; the coach says so. What the research produces is kept in the `Job Applications/Role Brief.md`
 note, which no pipeline stage reads (see `docs/CONFIGURATION.md`). The coach's evaluation
 harness is a developer tool and never runs in CI: `scripts/coach_eval/README.md`.
 

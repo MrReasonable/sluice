@@ -2,7 +2,7 @@
 
 This is the help-me-choose path. Its purpose is to help the user arrive at two to four directions worth researching, built from evidence about themselves rather than from what is fashionable or what they assume they should want.
 
-**Nothing is proposed in this phase.** Do not call `setup_review` and do not draft any setting. Constraints the user mentions here are noted and asked about again, explicitly, in the interview.
+**Nothing is proposed in this phase.** Do not call `setup_save` and do not draft any setting. Constraints the user mentions here are noted and asked about again, explicitly, in the interview.
 
 Cover four areas. This is a conversation, not a questionnaire: follow where they take it, and come back to any area you have not covered yet. Spend longest where they have most to say.
 

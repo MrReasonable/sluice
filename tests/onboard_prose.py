@@ -374,7 +374,7 @@ def shipped_prose(tmp_path=None):
     # where-it-runs answer, applied to the operation that grants citability.
     # In-session setup's review text: set-aside reasons, remedies and the placeholder written into
     # a Role Brief section. Shown to the user or written into their vault, so swept like the rest.
-    for name in ("NO_VAULT_YET", "DEFAULT_VAULT", "CLEARED", "BRIEF_PLACEHOLDER"):
+    for name in ("NO_VAULT_YET", "DEFAULT_VAULT", "CLEARED", "BRIEF_PLACEHOLDER", "HIDDEN_TEXT"):
         out.append((f"review.{name}", getattr(review_mod, name)))
     for key, text in review_mod.REMEDY.items():
         out.append((f"review.REMEDY[{key}]", text))

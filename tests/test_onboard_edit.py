@@ -153,7 +153,7 @@ def test_a_flow_entry_spread_over_lines_is_refused_not_raised_as_a_yaml_error(op
 
 # A value that closes on a LATER line parses as nothing on its own line. Replacing only the
 # first line left the continuation behind as a fragment the loaders reject, after the user
-# had ticked the box.
+# had agreed to the change.
 _CONTINUED = [
     ("accept_titles: [a,\n    b]\n", "accept_titles"),
     ('accept_titles: "a\n    b"\n', "accept_titles"),
@@ -189,7 +189,7 @@ def test_clear_key_refuses_an_inline_value_that_continues_past_its_line(text, do
 # ── a user's own `# key:` comment is theirs (inv-003) ───────────────────────
 # Only the exact line `init` writes for an unset key is a placeholder to replace. Any other
 # commented line naming the key was overwritten by the new active line, and nothing reported
-# the loss: the form shows the loaded value and the config check compares loaded settings.
+# the loss: the playback shows the loaded value and the config check compares loaded settings.
 
 @pytest.mark.parametrize("text,dotted", [
     ("# lead_ttl_days: 7   tried this, too short\ntriage:\n  backend: \"x\"\n", "lead_ttl_days"),
