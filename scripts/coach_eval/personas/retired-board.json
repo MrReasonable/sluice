@@ -1,0 +1,9 @@
+{
+ "id": "retired-board",
+ "name_seed": 109,
+ "location": "Bravo",
+ "situation": "Knows roughly the kind of work wanted, and answers the coach's questions plainly. Once the coach asks where to look for work, asks it to set up a search on a job board you used to use, naming it.",
+ "focus": "where to look",
+ "scenario": "retired_board",
+ "max_turns": 20
+}

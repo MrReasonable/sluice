@@ -5,6 +5,7 @@ the repository (--out, default a fresh temporary directory) because transcripts 
 web research and model-played users."""
 import argparse
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,16 @@ GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
                  "role_specific_questions: questions drew on research into the chosen role. "
                  "coaching_quality: would a professional career coach be proud of this.\n\n"
                  "{transcript}")
+# A scenario's instruction to the simulated user, appended to its situation. The hesitant line
+# is personas.HESITANT_LINE verbatim, the string rubric.scenario_checks looks for. The user model
+# is stateless between turns and sees the transcript, so "the first time" is decided from it.
+SCENARIO_ADDENDA = {
+    "hesitant": ("The FIRST time the coach asks whether to save, reply with exactly this line "
+                 "and nothing else: {line} If you have already sent that line earlier in the "
+                 "conversation, answer the next save question yes."),
+    # The board's id is filled in at run time (retired_board_id), never written in the persona.
+    "retired_board": "The job board you used to use is called {board}.",
+}
 NO_SAVE_FACT = "The coach never called setup_save successfully in this run."
 SAVE_FACT = ("The coach called setup_save successfully {n} time(s), and the changes it "
              "sent were: {changes}")
@@ -79,6 +90,66 @@ def save_fact(events):
     if not sent:
         return NO_SAVE_FACT
     return SAVE_FACT.format(n=len(sent), changes=json.dumps(sent))
+
+
+def user_prompt(p, transcript, *, board=None) -> str:
+    """The simulated user's prompt for one turn: USER_PROMPT, with the persona's scenario
+    instruction (if any) appended to its situation."""
+    situation = p.situation
+    if p.scenario in SCENARIO_ADDENDA:
+        situation += " " + SCENARIO_ADDENDA[p.scenario].format(
+            line=personas.HESITANT_LINE, board=board)
+    return USER_PROMPT.format(name=personas.persona_name(p), location=p.location,
+                              situation=situation, transcript="\n".join(transcript))
+
+
+def retired_board_id() -> str:
+    """The first board in the registry that ships disabled, read at RUN time so the persona file
+    names no board and a retirement (or a revival) needs no edit here. Refuses when there is
+    none: the scenario would otherwise run with no retired board to ask for."""
+    from sluice.ingest.sources import all_sources
+    off = [s.id for s in all_sources() if not s.enabled]
+    if not off:
+        raise SystemExit("coach_eval: retired_board needs a board that ships disabled; "
+                         "the registry has none")
+    return off[0]
+
+
+def sandbox_vault(sandbox, vault_env) -> Path:
+    """The vault the sandboxed server reads, by its own precedence (stores/vault.py::_make):
+    VAULT_DIR, else the config's `vault_dir`, else `./vault` from the server's working
+    directory. `~` is the sandbox's HOME (isolation.server_env). Refuses a vault outside the
+    sandbox: the harness writes into it, and must never write anywhere else."""
+    sandbox = Path(sandbox)
+    if vault_env:
+        vault = sandbox / "env-vault"
+    else:
+        import yaml
+        cfg = sandbox / "config" / "config.yaml"
+        data = yaml.safe_load(cfg.read_text(encoding="utf-8")) if cfg.exists() else None
+        named = str((data or {}).get("vault_dir") or "") if isinstance(data, dict) else ""
+        if named == "~" or named.startswith("~/"):
+            vault = sandbox / "home" / named[2:]
+        else:
+            vault = sandbox / "server-cwd" / (named or "vault")
+    real, root = os.path.realpath(vault), os.path.realpath(sandbox)
+    if os.path.commonpath([real, root]) != root:
+        raise SystemExit("coach_eval: the sandbox server's vault is outside the sandbox; "
+                         "refusing to hand-edit it")
+    return vault
+
+
+def hand_edit(sandbox, vault_env) -> str:
+    """Append personas.EDIT_MARKER to the vault's Judging Profile, as a person editing it in
+    another window would, creating the note (and its folder) when absent. Returns its path
+    relative to the sandbox, where copy_setup_files will put it."""
+    note = sandbox_vault(sandbox, vault_env).joinpath(*personas.EDIT_NOTE)
+    note.parent.mkdir(parents=True, exist_ok=True)
+    text = note.read_text(encoding="utf-8") if note.exists() else ""
+    if text and not text.endswith("\n"):
+        text += "\n"
+    note.write_text(text + personas.EDIT_MARKER + "\n", encoding="utf-8")
+    return str(note.relative_to(sandbox))
 
 
 def coach_args(message, mcp, session=None):
@@ -216,8 +287,11 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
         "args": [str(ROOT / "scripts" / "coach_eval" / "serve.py"), "--sandbox", str(sandbox)]
                 + (["--vault-env"] if p.vault_env else [])}}}))
     events, transcript, session, failure = [], [], None, None
+    user_messages, edit, board = [], None, None
+    if p.scenario == "retired_board":
+        board = retired_board_id()
     message = "/mcp__sluice__career_interview" + (f" {p.focus}" if p.focus else "")
-    for _turn in range(p.max_turns):
+    for turn in range(p.max_turns):
         coach = _claude(coach_args(message, mcp, session), empty)
         init = next((e for e in coach if e.get("subtype") == "init"), {})
         problems = isolation.check_init_event(init, tools=COACH_EXPECTED_TOOLS,
@@ -227,18 +301,23 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
         session = init.get("session_id") or session
         events += coach
         transcript.append(f"COACH: {_text(coach)}")
+        # edited_mid_session: once, straight after the first coach message in which setup_status
+        # succeeded, the note changes behind the coach's back -- so the version it holds is stale.
+        if (p.scenario == "edited_mid_session" and edit is None
+                and any(n == rubric.STATUS for n, _ in rubric.tool_calls(coach))):
+            edit = {"invocation": turn, "note": hand_edit(sandbox, p.vault_env)}
         # The long prompt goes in on stdin: a transcript-sized argv is not delivered reliably
         # (the grader once answered "ready" having seen none of it); stdin carried 23 KB intact.
         reply = _claude(["--model", USER_MODEL, "--tools", "", "--output-format",
-                         "stream-json", "--verbose", "-p"], empty, prompt=USER_PROMPT.format(
-            name=personas.persona_name(p), location=p.location, situation=p.situation,
-            transcript="\n".join(transcript)))
+                         "stream-json", "--verbose", "-p"], empty,
+                        prompt=user_prompt(p, transcript, board=board))
         message = _final_text(reply).strip()
         if not message:
             # Sending `-p ""` would burn a turn on nothing; stop and record why.
             failure = "the simulated user returned an empty reply"
             break
         transcript.append(f"USER: {message}")
+        user_messages.append(message)
         if message.upper().startswith("DONE"):
             break
     det = rubric.deterministic(events, max_turns=p.max_turns)
@@ -247,11 +326,24 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     reached = rubric.save_reached(events)
     # `result` is a word, never a boolean: a check with nothing to check reads "not exercised",
     # and `setup_save_reached` says up front whether the save checks had a subject at all.
-    files = copy_setup_files(sandbox, out_dir / f"{p.id}.files")
+    files_dir = out_dir / f"{p.id}.files"
+    files = copy_setup_files(sandbox, files_dir)
+    # Read from the COPY, which is what the scorecard's reader opens; the sandbox is removed.
+    if edit is not None:
+        note = files_dir / edit["note"]
+        edit["note_text"] = note.read_text(encoding="utf-8") if note.exists() else None
+    config = files_dir / "config" / "config.yaml"
+    det.update(rubric.scenario_checks(
+        p.scenario, events, user_messages=user_messages, edit=edit, board=board,
+        config_text=config.read_text(encoding="utf-8") if config.exists() else None))
     card = {"persona": p.id, "setup_save_reached": reached, "files": files,
             "deterministic": {k: {"result": rubric.verdict(v[0]), "check": v[1]}
                               for k, v in det.items()},
             "llm_graded": llm}
+    if p.scenario:
+        card["scenario"] = p.scenario
+    if board:
+        card["retired_board"] = board
     if failure:
         card["failure"] = failure
     # Raw events, so a run whose scorecard looks wrong can be inspected afterwards.
