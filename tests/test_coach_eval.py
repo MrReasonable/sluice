@@ -819,6 +819,42 @@ def test_one_value_missing_from_the_playback_is_named():
     assert rubric.unplayed_changes(events) == [_SAVED[0]]
 
 
+_SECTION = [{"kind": "profile", "target": "Win patterns and anti-patterns",
+             "value": "Clear yes: a role with a salary band shown.\nClear no: a role with none."}]
+
+
+def test_a_multi_line_value_played_back_as_a_quote_counts_as_played_back():
+    """The coach quotes a multi-line section as a Markdown blockquote, one `> ` per line; the
+    markers are not part of the value and must not break the match."""
+    quoted = "Here it is:\n> Clear yes: a role with a salary band shown.\n> Clear no: a role with none."
+    events = _flat(_start(), _say(quoted), _start(), _use(rubric.SAVE, _SECTION))
+    assert rubric.unplayed_changes(events) == []
+
+
+def test_a_quoted_section_whose_words_changed_is_still_not_played_back():
+    quoted = "> Clear yes: a role with a pay band shown.\n> Clear no: a role with none."
+    events = _flat(_start(), _say(quoted), _start(), _use(rubric.SAVE, _SECTION))
+    assert rubric.unplayed_changes(events) == _SECTION
+
+
+_LIST = [{"kind": "config", "target": "target_locations",
+          "value": ["Example Town", "Remote, Example Region"]}]
+
+
+def test_a_list_value_played_back_item_by_item_counts_as_played_back():
+    """A list setting is sent as a JSON list; the coach plays back each item, never the Python
+    repr of the list, so each item is what must appear."""
+    played = "Locations:\n- Example Town\n- Remote, Example Region\nShall I save?"
+    events = _flat(_start(), _say(played), _start(), _use(rubric.SAVE, _LIST))
+    assert rubric.unplayed_changes(events) == []
+
+
+def test_a_list_value_with_one_item_left_out_of_the_playback_is_not_played_back():
+    played = "Locations:\n- Example Town\nShall I save?"
+    events = _flat(_start(), _say(played), _start(), _use(rubric.SAVE, _LIST))
+    assert rubric.unplayed_changes(events) == _LIST
+
+
 def test_the_chat_yes_checks_are_not_exercised_without_a_successful_save():
     events = _flat(_start(), _say(_PLAYBACK), _use(rubric.SAVE, _SAVED, denied=True))
     assert _chat_yes(events) == (rubric.NOT_EXERCISED, rubric.NOT_EXERCISED)
@@ -860,7 +896,8 @@ def test_the_simulated_user_fills_in_its_own_situation_and_never_refuses_it():
                    "Never refuse to answer about your own situation.",
                    "On a preference you have no view on, you may say so.",
                    "answer yes or no as this person would; that question is not the end.",
-                   "Reply DONE only after the coach has told you what was saved"):
+                   "Reply DONE only after the coach has told you what was saved",
+                   "name a real country of your choice and keep to it"):
         assert phrase in text, phrase
     assert "Never invent preferences" not in text
     filled = run.USER_PROMPT.format(name="N", location="L", situation="S", transcript="T")
@@ -1185,3 +1222,33 @@ def test_the_sandbox_vault_follows_the_servers_precedence_and_stays_inside(tmp_p
     cfg.write_text(f"vault_dir: {tmp_path.parent / 'elsewhere'}\n")
     with pytest.raises(SystemExit, match="outside the sandbox"):
         run.sandbox_vault(tmp_path, False)
+
+
+def test_the_simulated_user_and_the_grader_replace_claude_codes_agent_prompt(monkeypatch, tmp_path):
+    """With Claude Code's own agent system prompt, the simulated user drifted into replying as a
+    coding assistant and the job seeker vanished. Both non-coach roles pass `--system-prompt` (which
+    REPLACES that prompt); the coach does not, since a real user's coach runs with it."""
+    from scripts.coach_eval import run
+
+    init = {"subtype": "init", "session_id": "s", "claude_code_version":
+            next(iter(isolation.MEASURED_VERSIONS)), "plugins": [],
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+    calls = []
+
+    def fake(args, cwd, prompt=None):
+        calls.append(args)
+        if "--mcp-config" in args:
+            return [init]
+        return []
+
+    monkeypatch.setattr(run, "_claude", fake)
+    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+    run.run_persona(p, tmp_path)
+    coach, user, grader = calls
+
+    def system(args):
+        return args[args.index("--system-prompt") + 1] if "--system-prompt" in args else None
+
+    assert system(coach) is None
+    assert system(user) == run.USER_SYSTEM and system(grader) == run.GRADER_SYSTEM

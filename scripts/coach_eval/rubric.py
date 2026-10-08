@@ -9,6 +9,7 @@ save checks all read "pass" on calls that were never made, which looks exactly l
 proposals were clean. None is falsy on purpose, so a consumer that only asks "did it pass?"
 cannot read a check that never ran as one that did."""
 import json
+import re
 
 import yaml
 
@@ -80,7 +81,18 @@ def _said_by_invocation(events) -> dict:
         for b in (ev.get("message") or {}).get("content") or []:
             if b.get("type") == "text":
                 out[i] = out.get(i, "") + " " + b.get("text", "")
-    return {i: " ".join(t.split()) for i, t in out.items()}
+    return {i: " ".join(_unquote(t).split()) for i, t in out.items()}
+
+
+# A Markdown blockquote prefixes every line with "> ", so a multi-line value the coach plays back
+# quoted reads "line one > line two" once whitespace is collapsed, and the value no longer matches
+# (2026-10-08, retired-board: four values played back verbatim as quotes, all reported unplayed).
+# The marker is stripped at line starts only; any other change to the text still fails the match.
+_QUOTE_MARK = re.compile(r"^[ \t]*(?:>[ \t]?)+", re.MULTILINE)
+
+
+def _unquote(text: str) -> str:
+    return _QUOTE_MARK.sub("", text)
 
 
 def saves_by_invocation(events) -> list:
@@ -93,18 +105,23 @@ def saves_by_invocation(events) -> list:
             and results.get(b.get("id")) is False]
 
 
-def played_back_text(change) -> str:
-    """What the playback must have shown for one change: its value, a search's url, or for a
-    clear the target it returns to the default. Whitespace collapsed, as the coach's text is."""
+def played_back_texts(change) -> list:
+    """What the playback must have shown for one change, each text whitespace-collapsed as the
+    coach's is: its value, a search's url, or for a clear the target it returns to the default.
+    A list setting's value is a JSON list sent item by item, and EACH item must have been played
+    back: `str()` of the list (`['a', 'b']`) is never what a coach writes, so matching it would
+    report every list value unplayed, and joining the items would let one missing item pass."""
     if not isinstance(change, dict):
-        return ""
+        return []
     if change.get("kind") == "search":
-        text = change.get("url") or ""
+        texts = [change.get("url") or ""]
     elif change.get("clear"):
-        text = (change.get("target") or "").lstrip("#")
+        texts = [(change.get("target") or "").lstrip("#")]
+    elif isinstance(change.get("value"), list):
+        texts = [str(item) for item in change["value"]]
     else:
-        text = change.get("value") or ""
-    return " ".join(str(text).split())
+        texts = [change.get("value") or ""]
+    return [t for t in (" ".join(str(x).split()) for x in texts) if t]
 
 
 def unplayed_changes(events) -> list:
@@ -117,7 +134,7 @@ def unplayed_changes(events) -> list:
     for k, inp in saves_by_invocation(events):
         before = " ".join(said.get(i, "") for i in range(k))
         missing += [c for c in inp.get("changes") or []
-                    if played_back_text(c) and played_back_text(c) not in before]
+                    if any(t not in before for t in played_back_texts(c))]
     return missing
 
 

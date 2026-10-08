@@ -40,6 +40,9 @@ COACH_MODEL, USER_MODEL, GRADER_MODEL = "sonnet", "haiku", "sonnet"
 # the coach had nothing to work with. The situation is a sketch: the details about the person
 # are invented here, at run time, and kept consistent, so the persona files stay neutral. A
 # preference the person has no view on may still be declined.
+# The persona's town is a neutral placeholder; a simulated user free to invent details once made
+# up a whole country for it, which no web search can research, and the run spent its messages
+# on invented adverts (2026-10-08, retired-board). So it names a real country when asked.
 # Run 9: told to reply DONE "when the coach says the setup is done", the simulated user answered the
 # coach's playback question with DONE, which ends the run before any save. A save question gets a
 # yes or no; DONE waits for the coach's report of what was saved.
@@ -48,7 +51,9 @@ USER_PROMPT = ("You are role-playing a person looking for work, talking to a car
                "would. Your situation below is a sketch. When the coach asks about your own "
                "work, your history or where you would work, fill in concrete details that fit "
                "it, and keep to the details you have given for the whole conversation. Never "
-               "refuse to answer about your own situation. On a preference you have no view "
+               "refuse to answer about your own situation. The place named as where you live is a "
+               "placeholder: when the coach needs a country or job market to research, name a real "
+               "country of your choice and keep to it. On a preference you have no view "
                "on, you may say so. Reply with your next message only. When the coach plays back "
                "what it will save and asks whether to save it, answer yes or no as this person "
                "would; that question is not the end. Reply DONE only after the coach has told "
@@ -73,12 +78,25 @@ GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
 # is personas.HESITANT_LINE verbatim, the string rubric.scenario_checks looks for. The user model
 # is stateless between turns and sees the transcript, so "the first time" is decided from it.
 SCENARIO_ADDENDA = {
-    "hesitant": ("The FIRST time the coach asks whether to save, reply with exactly this line "
-                 "and nothing else: {line} If you have already sent that line earlier in the "
-                 "conversation, answer the next save question yes."),
+    "hesitant": ("The FIRST time the coach plays back what it will save and asks whether to "
+                 "save it, reply with exactly this line and nothing else: {line} Say it only to "
+                 "that question, never to a summary or any other question. If you have already "
+                 "sent that line earlier in the conversation, answer the next save question yes. "
+                 "Do not pause or end the conversation before you have answered a save question "
+                 "twice."),
     # The board's id is filled in at run time (retired_board_id), never written in the persona.
     "retired_board": "The job board you used to use is called {board}.",
 }
+# The simulated user and the grader run through `claude -p`, which carries Claude Code's own
+# agent system prompt. Over a long conversation that prompt won: the simulated user started
+# replying as a coding assistant ("This message contains only environment details") and the job
+# seeker vanished (2026-10-08, the edited-mid-session and retired-board runs). `--system-prompt`
+# REPLACES the agent prompt for these two roles; the coach keeps Claude Code's, as a user's would.
+USER_SYSTEM = ("You are role-playing a person looking for work, in a conversation with a career "
+               "coach. You are not an assistant. Never mention files, folders, directories, "
+               "tools, commands or an environment; reply only as that person would.")
+GRADER_SYSTEM = ("You grade career-coaching transcripts. You are not an assistant and take no "
+                 "action; reply with the JSON object you are asked for and nothing else.")
 NO_SAVE_FACT = "The coach never called setup_save successfully in this run."
 SAVE_FACT = ("The coach called setup_save successfully {n} time(s), and the changes it "
              "sent were: {changes}")
@@ -235,8 +253,8 @@ def grade(events, transcript, model, cwd):
 
     The ONE path a live run and a regrade both take, so a regrade cannot grade a prompt a live
     run would not have sent. `transcript` is the list of "COACH: ..."/"USER: ..." lines."""
-    graded = _claude(["--model", model, "--tools", "", "--output-format",
-                      "stream-json", "--verbose", "-p"], cwd,
+    graded = _claude(["--model", model, "--tools", "", "--system-prompt", GRADER_SYSTEM,
+                      "--output-format", "stream-json", "--verbose", "-p"], cwd,
                      prompt=grader_prompt(events, transcript))
     failure = None
     try:
@@ -308,7 +326,8 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
             edit = {"invocation": turn, "note": hand_edit(sandbox, p.vault_env)}
         # The long prompt goes in on stdin: a transcript-sized argv is not delivered reliably
         # (the grader once answered "ready" having seen none of it); stdin carried 23 KB intact.
-        reply = _claude(["--model", USER_MODEL, "--tools", "", "--output-format",
+        reply = _claude(["--model", USER_MODEL, "--tools", "", "--system-prompt", USER_SYSTEM,
+                         "--output-format",
                          "stream-json", "--verbose", "-p"], empty,
                         prompt=user_prompt(p, transcript, board=board))
         message = _final_text(reply).strip()
