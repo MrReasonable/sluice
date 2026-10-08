@@ -1357,7 +1357,8 @@ class SetupSnapshot:
     # carrying a discovered path. None for a store with no directory to name.
     vault_digest: str | None = None
     # Registered sources whose searches would never run, by why: "shipped" (the source module
-    # registers it disabled -- a retired board) or "config" (`sources.<id>.enabled: false`).
+    # registers it disabled -- a retired board), "config" (`sources.<id>.enabled: false`) or
+    # "overlay" (`job-sluice ingest disable`): ingest/enabled.py::off_reason's answer.
     # Offered for no search (spec 2026-10-08, Retired boards are not offered).
     disabled_sources: dict = dataclasses.field(default_factory=dict)
 

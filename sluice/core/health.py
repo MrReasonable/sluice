@@ -11,7 +11,7 @@ Two things to understand about `should_retire` before changing it:
 
 WHAT RETIREMENT ACTUALLY DOES. `ingest/engine.py` sets `source.enabled = False` on the
 in-memory registry, and that is never persisted -- `cli._save_disabled` is reached only from
-`ingest enable`/`disable`, and `_is_enabled` re-reads `getattr(src, "enabled", True)`, which
+`ingest enable`/`disable`, and `ingest/enabled.py::off_reason` re-reads `getattr(src, "enabled", True)`, which
 is True again in the next process. So retirement does NOT stop a source running tomorrow. Its
 real value is as the only CUMULATIVE, DURABLE signal the system has: the `RETIRE` flag in
 `ingest list-sources --health`. Anything that suppresses retirement must therefore replace

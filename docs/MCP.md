@@ -61,9 +61,12 @@ your check (owner's ruling, 2026-10-08, after a real session in which the per-ch
 not hold a normal Role Brief section). `setup_save` takes the `version` `setup_status` returned
 and writes nothing, reporting `stale`, when the config, a setup note or the vault changed in
 between, say because you edited a note in Obsidian. Each change it wrote that replaced a value
-of yours comes back with `previous`, which the coach can send back to undo it. After saving, the
-coach walks you through opening your vault in Obsidian, and `job-sluice doctor` prints the
-folder to open. `scripts/coach_eval/README.md`
+of yours comes back with `previous`, which the coach can send back to undo it, or with
+`not_restorable` when sending a value back would not reproduce it (a list item containing a
+comma), naming the config key to edit by hand. After saving, the
+coach walks you through opening your vault in Obsidian: on a first run, the folder you named
+for `vault_dir`; otherwise `job-sluice doctor` prints it, when run with the same `VAULT_DIR` the
+server was registered with. `scripts/coach_eval/README.md`
 describes the developer-only harness that scores the coach; it never runs in CI.
 
 ## What no tool can do for you

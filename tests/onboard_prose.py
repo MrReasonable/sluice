@@ -374,8 +374,13 @@ def shipped_prose(tmp_path=None):
     # where-it-runs answer, applied to the operation that grants citability.
     # In-session setup's review text: set-aside reasons, remedies and the placeholder written into
     # a Role Brief section. Shown to the user or written into their vault, so swept like the rest.
-    for name in ("NO_VAULT_YET", "DEFAULT_VAULT", "CLEARED", "BRIEF_PLACEHOLDER", "HIDDEN_TEXT"):
+    for name in ("NO_VAULT_YET", "DEFAULT_VAULT", "BRIEF_PLACEHOLDER", "HIDDEN_TEXT"):
         out.append((f"review.{name}", getattr(review_mod, name)))
+    # The `not_restorable` text setup_save returns, rendered for every question so the
+    # interpolated key names are swept along with the words around them.
+    from sluice.onboard.questions import catalogue
+    for q in catalogue():
+        out.append((f"review._not_restorable[{q.key}]", review_mod._not_restorable(q).reason))
     for key, text in review_mod.REMEDY.items():
         out.append((f"review.REMEDY[{key}]", text))
     for key, text in review_mod.SOURCE_OFF.items():

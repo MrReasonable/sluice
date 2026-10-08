@@ -92,28 +92,31 @@ def test_a_second_change_to_the_same_unit_is_set_aside_not_merged():
     units, aside = propose([{"kind": "config", "target": "lead_ttl_days", "value": "30"},
                             {"kind": "config", "target": "lead_ttl_days", "value": "60"}],
                            snap(CONFIG))
-    assert [u.after for u in units] == ["30"] and "same thing" in aside[0].reason
+    assert [u.key for u in units] == ["config:lead_ttl_days"] and "same thing" in aside[0].reason
+    assert units[0].change.value == "30"
 
 
 def test_an_add_and_a_remove_of_one_search_share_a_key_so_the_second_is_set_aside():
-    """The one case the key check holds alone: the key leaves the verb out, the title keeps it,
-    so an add and a remove of one search are two titles but one key. Without the key check both
+    """The one case the key check holds alone: the key leaves the verb out, so an add and a
+    remove of one search are one key. Without the key check both
     units would pass -- two contradictory writes to one search in one save."""
     search = {"kind": "search", "target": "example-board", "label": "A",
               "url": "https://example.invalid/1"}
     # No search configured yet: the add is valid, so the remove reaches the duplicate check
     # rather than its own "not configured" refusal.
     units, aside = propose([search, {**search, "remove": True}], snap(CONFIG))
-    assert [u.title for u in units] == ["Search on example-board: add A (https://example.invalid/1)"]
+    assert [u.key for u in units] == ["search:example-board:A:https://example.invalid/1"]
+    assert units[0].change.remove is False
     assert len(aside) == 1 and "same thing" in aside[0].reason
 
 
-def test_two_searches_with_one_label_but_different_urls_are_two_units_with_two_titles():
+def test_two_searches_with_one_label_but_different_urls_are_two_units():
     units, _ = propose([{"kind": "search", "target": "example-board", "label": "A",
                          "url": "https://example.invalid/1"},
                         {"kind": "search", "target": "example-board", "label": "A",
                          "url": "https://example.invalid/2"}], snap(CONFIG))
-    assert len({u.key for u in units}) == 2 and len({u.title for u in units}) == 2
+    assert [u.key for u in units] == ["search:example-board:A:https://example.invalid/1",
+                                      "search:example-board:A:https://example.invalid/2"]
 
 
 def test_every_set_aside_reason_names_no_preference():
@@ -173,12 +176,6 @@ def test_a_candidate_value_that_cannot_round_trip_is_set_aside():
     assert len(aside) == 1
 
 
-def test_units_carry_before_and_after_for_an_update():
-    units, _ = propose([{"kind": "config", "target": "lead_ttl_days", "value": "30"}],
-                       snap(CONFIG))
-    assert units[0].before == "0" and units[0].after == "30"
-
-
 def test_label_spacing_does_not_make_a_second_unit_for_one_search():
     units, aside = propose([{"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1"},
@@ -193,17 +190,20 @@ def test_an_add_and_a_remove_of_one_search_are_one_unit_not_two():
                              "url": "https://example.invalid/1"},
                             {"kind": "search", "target": "example-board", "label": "B",
                              "url": "https://example.invalid/1", "remove": True}], snap(CONFIG))
-    assert len(units) == 1 and "add" in units[0].title
+    assert len(units) == 1 and units[0].change.remove is False
     assert len(aside) == 1 and "already proposes" in aside[0].reason
 
 
 @pytest.mark.parametrize("raw", ["/example/chosen-vault", "~/example-vault"])
-def test_the_vault_dir_unit_carries_the_resolved_path_it_writes(raw):
-    """The unit's value is the path parse_path will write, never a placeholder."""
+def test_the_vault_dir_unit_writes_the_resolved_path(raw):
+    """The config the unit writes names the path parse_path resolves, never a placeholder."""
     from sluice.onboard.questions import parse_path
-    units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw}], snap(None))
-    assert aside == [] and len(units) == 1
-    assert units[0].after == review.scalar(parse_path(raw))
+    s = snap(None)
+    units, aside = propose([{"kind": "config", "target": "vault_dir", "value": raw}], s)
+    assert aside == [] and [u.key for u in units] == ["config:vault_dir"]
+    writes, aside = review.build_writes(units, s)
+    (config,) = [w for w in writes if w.artefact == "config"]
+    assert aside == [] and f"vault_dir: {review.scalar(parse_path(raw))}" in config.text
 
 
 @pytest.mark.parametrize("raw", ["notes", "./notes", "../notes", "", "~nosuchuser-sluice-test/notes"])
@@ -315,6 +315,31 @@ def test_previous_of_a_list_setting_reads_back_through_its_own_parser():
     s = snap(cfg, settings={**_SETTINGS, q.writes_to[0]: old})
     u = _one({"kind": "config", "target": "accept_titles", "value": "Example three"}, s)
     assert q.parse(review.previous(u, s)) == old
+
+
+def _list_previous(old, flow):
+    from sluice.onboard.questions import catalogue
+    q = next(q for q in catalogue() if q.key == "reject_companies")
+    cfg = CONFIG.replace("  # reject_companies:", f"  reject_companies: {flow}  #")
+    assert cfg != CONFIG
+    s = snap(cfg, settings={**_SETTINGS, q.writes_to[0]: old})
+    u = _one({"kind": "config", "target": "reject_companies", "value": "Example Three"}, s)
+    return q, review.previous(u, s)
+
+
+def test_a_list_item_holding_a_comma_is_not_restorable_and_never_none():
+    """inv-001: joined with ", " and split again on every comma, an item holding a comma comes
+    back as two items, so a restore would write a broader filter than the user had. It is
+    reported as not restorable, naming the key, and never as None, which the coach would
+    answer with `clear`."""
+    q, prev = _list_previous(["Example, Inc.", "Other Co"], '["Example, Inc.", "Other Co"]')
+    assert isinstance(prev, review.NotRestorable)
+    assert f"`{q.writes_to[0]}`" in prev.reason and "by hand" in prev.reason
+
+
+def test_a_plain_list_item_round_trips_as_previous():
+    q, prev = _list_previous(["Example Inc", "Other Co"], '["Example Inc", "Other Co"]')
+    assert prev == "Example Inc, Other Co" and q.parse(prev) == ["Example Inc", "Other Co"]
 
 
 def test_no_previous_for_a_key_that_was_not_set_or_did_not_change():

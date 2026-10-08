@@ -896,7 +896,9 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   result's `outcome` is one of: `completed` (`changes` gives each change's own outcome --
   `written`, `set_aside` with the reason, or `failed` with the reason -- and a written change
   that replaced a value or text of yours carries `previous`, which puts it back when sent
-  again as the value), `stale` (the config file, a setup note or the vault changed after
+  again as the value, or `not_restorable` instead when no value sent back would reproduce it:
+  a list setting with a comma inside one of its items, which comes back split in two, is
+  edited by hand in the config key it names), `stale` (the config file, a setup note or the vault changed after
   `setup_status` read them, say because you edited a note in Obsidian; nothing was written,
   so read `setup_status` again), `config_refused` (the config file does not load; fix it by
   hand) and `failed` (an unexpected error stopped the save; call `setup_status` to see what
@@ -1032,8 +1034,13 @@ config is its own DEAD `cv-config` row rather than a traceback — see
 does are ready, which are waiting on something you have not supplied, and which are broken —
 followed by the remedy for each row in the last two groups, verbatim from the check that knows
 it. `--verbose` prints the full table instead, which is what you want once something *is*
-broken. Both views end with a `Vault folder:` line naming the folder your notes live in, the one
-to pick in Obsidian's "Open folder as vault". The MCP `doctor` tool's report does not carry it.
+broken. Both views print a `Vault folder:` line (only `--require`'s not-ready lines follow it)
+naming the vault folder THIS terminal resolves: from its own `VAULT_DIR`, else its config, else a
+`vault` folder inside the folder it runs in. That is the folder your
+notes live in, the one to pick in Obsidian's "Open folder as vault", only when the terminal
+resolves the vault the way the sluice MCP server does: a server registered with its own
+`VAULT_DIR` writes to that folder, which `doctor` prints only when run with the same
+`VAULT_DIR`. The MCP `doctor` tool's report does not carry it.
 
 Five classification states per row: `ok`, `degraded`, `dead`, `setup`, and `notice`. `notice`
 and `setup` never affect the exit code, even under `--strict`. The `--verbose` output is two

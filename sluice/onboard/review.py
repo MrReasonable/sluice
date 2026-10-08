@@ -36,12 +36,13 @@ NO_VAULT_YET = ("choose where your notes live first: propose a `vault_dir` confi
 DEFAULT_VAULT = ("sluice is using a vault in whatever folder the MCP server was started from, "
                  "so notes written now would land where nothing else reads them; set `vault_dir` "
                  "in your sluice config file by hand, then restart the server")
-CLEARED = "(unset: back to the shipped default)"
 SOURCE_OFF = {
     "shipped": ("sluice ships this board switched off because it was retired, so a search for "
                 "it would never run; choose a board from setup_status's `kinds`"),
     "config": ("your sluice config switches this board off (`enabled: false` under it in "
                "`sources:`), so a search for it would never run; switch it back on there first"),
+    "overlay": ("this board was switched off with `job-sluice ingest disable`, so a search for "
+                "it would never run; run `job-sluice ingest enable` for it first"),
 }
 HIDDEN_TEXT = ("it contains a control or bidirectional character that could hide or reorder "
                "text when it is read back")
@@ -78,13 +79,15 @@ class SetAside:
 
 @dataclass(frozen=True)
 class Unit:
+    """One agreed change, checked. `before` and `after` are recorded only where `previous`
+    reads them: a section's old and new text, and a candidate field's old value. A config
+    change's `previous` reads the snapshot's loaded setting instead, and a search has none."""
     key: str          # stable id, e.g. "config:lead_ttl_days"
     kind: str
     artefact: str     # "config", "profile", "candidate", "brief"
-    title: str        # a readable label for the change
-    before: str | None
-    after: str
     change: Change
+    before: str | None = None
+    after: str | None = None
 
 
 def _label(c):
@@ -110,7 +113,7 @@ def unit_key(c) -> str:
     to one thing, so propose keeps the first and sets the rest aside."""
     if c.kind == "search":
         # No verb in the key: an add and a remove of one search are contradictory writes to one
-        # thing, so the second must be set aside as a duplicate (the verb stays in the title).
+        # thing, so the second must be set aside as a duplicate.
         return f"search:{c.target}:{_search_label(c)}:{_search_url(c)}"
     if c.kind == "profile":
         return f"profile:{_heading(c.target) or c.target}"
@@ -150,10 +153,6 @@ def _candidate_field(target):
 
 def _render(value):
     return flow_list(value) if isinstance(value, list) else scalar(value)
-
-
-def _display(value):
-    return CLEARED if value in (None, [], "") else _render(value)
 
 
 def prose_problem(text) -> str | None:
@@ -224,7 +223,9 @@ def propose(changes, snap) -> tuple:
         if key in seen_keys:
             skip("this batch already proposes a change to the same thing; propose one value")
             continue
-        if c.kind == "search" and c.target in snap.disabled_sources:
+        # A removal is exempt: deleting a search cannot add one that never runs, and a user with a
+        # leftover search on a board that is now off must not have to switch it back on to delete it.
+        if c.kind == "search" and not c.remove and c.target in snap.disabled_sources:
             skip(SOURCE_OFF[snap.disabled_sources[c.target]])
             continue
         problem = _vault_problem(c, snap, changes)
@@ -286,14 +287,7 @@ def _config_unit(c, snap, qs):
                 _edit.clear_key(snap.config_text, d)
             else:
                 _edit.set_key(snap.config_text, d, _render(value))
-    before = snap.settings.get(q.writes_to[0])
-    if q.key == "vault_dir":
-        # The RESOLVED path: what will be written. It never appears in a setup_save response
-        # (rows name the change by key), so no path the server resolved reaches the client.
-        before, after = None, _display(value)
-    else:
-        before, after = _display(before), _display(value)
-    return Unit(f"config:{q.key}", "config", "config", f"Config: {q.key}", before, after, c)
+    return Unit(f"config:{q.key}", "config", "config", c)
 
 
 def _search_unit(c, snap):
@@ -307,7 +301,6 @@ def _search_unit(c, snap):
         # what was asked, so it is refused by name rather than ignored.
         raise ValueError("`clear` does not apply to a search; use `remove: true` to remove one")
     url = _questions.parse_url(c.url or "")
-    verb = "remove" if c.remove else "add"
     c = dataclasses.replace(c, label=label, url=url)
     # Checked against what is configured NOW, with a reason naming the case (build_writes'
     # editor would refuse the same three, less clearly).
@@ -320,9 +313,7 @@ def _search_unit(c, snap):
         raise ValueError(f"it is the last search for {c.target}, and an empty list makes the "
                          f"source run its built-in example search; run `job-sluice ingest "
                          f"disable {c.target}` to stop it")
-    return Unit(unit_key(c), "search", "config",
-                f"Search on {c.target}: {verb} {label} ({url})", None,
-                f"[{label}, {url}]", c)
+    return Unit(unit_key(c), "search", "config", c)
 
 
 def _snapshot_notes_are_the_target(snap) -> bool:
@@ -338,12 +329,11 @@ def _prose_unit(c, snap):
         heading = _heading(c.target)
         if heading is None:
             raise ValueError(f"`{c.target}` is not a Judging Profile heading")
-        title = f"Judging Profile: {heading.lstrip('#').strip()}"
         default = _plan.default_sections()[heading]
     else:
         if c.target not in ROLE_BRIEF_SECTIONS:
             raise ValueError(f"`{c.target}` is not a Role Brief section")
-        heading, title, default = f"## {c.target}", f"Role Brief: {c.target}", BRIEF_PLACEHOLDER
+        heading, default = f"## {c.target}", BRIEF_PLACEHOLDER
     if not c.clear:
         problem = prose_problem(c.value)
         if problem:
@@ -351,7 +341,7 @@ def _prose_unit(c, snap):
     text = snap.notes.get(c.kind) if _snapshot_notes_are_the_target(snap) else None
     before = section_text(text, heading) if text is not None else None
     after = default if c.clear else c.value.strip()
-    return Unit(f"{c.kind}:{heading}", c.kind, c.kind, title, before, after, c)
+    return Unit(f"{c.kind}:{heading}", c.kind, c.kind, c, before, after)
 
 
 def _candidate_unit(c, snap):
@@ -369,8 +359,7 @@ def _candidate_unit(c, snap):
     before = parse_frontmatter(text).get(field) if text is not None else None
     if text is not None:
         set_frontmatter_line(text, field, literal)     # refuses an unsafe note shape now
-    return Unit(f"candidate:{field}", "candidate", "candidate",
-                f"Candidate Profile: {field}", before, value or CLEARED, c)
+    return Unit(f"candidate:{field}", "candidate", "candidate", c, before)
 
 
 BRIEF_PLACEHOLDER = "Not researched yet."
@@ -690,12 +679,33 @@ def _default_text(unit) -> str:
     return "\n".join(body).strip()
 
 
-def previous(unit, snap) -> str | None:
+@dataclass(frozen=True)
+class NotRestorable:
+    """`previous`'s answer for a written change that DID replace something of the user's, but
+    whose old value no `value` sent back through setup_save would reproduce. Distinct from None
+    on purpose: the coach reads None as "replaced nothing" and restores it with `clear: true`,
+    which would lose the value outright. `reason` names the key to edit by hand."""
+    reason: str
+
+
+def _not_restorable(q) -> NotRestorable:
+    keys = ", ".join(f"`{d}`" for d in q.writes_to)
+    return NotRestorable(f"the value it replaced cannot be restored through setup_save; edit "
+                         f"{keys} in your sluice config file by hand")
+
+
+def previous(unit, snap) -> "str | NotRestorable | None":
     """What a WRITTEN change replaced, as a `value` setup_save can be handed back to restore it,
     or None when it replaced nothing of the user's: a key that was not set in the config, a
     section still holding its default text, a field that was blank, a search (the change itself
     names the search, so restoring it is the opposite `remove`). The coach restores a change
     with no `previous` by sending it again with `clear: true`.
+
+    A config value is offered back only when its question's own `parse` reads the text back to
+    exactly the loaded value. A list setting is written comma-separated, and `parse_csv` splits
+    on EVERY comma, so a hand-typed item holding one would come back as two items -- a
+    restored `reject_companies` entry naming an employer with a comma in its name would then
+    reject every company matching either half. Such a value is `NotRestorable`, never None.
 
     Read off the SAME snapshot the save was checked against, so it is exactly what the write
     replaced. A section's text is returned whole, `init`'s prompt comment included when the
@@ -710,7 +720,15 @@ def previous(unit, snap) -> str | None:
             return None
         old = snap.settings.get(dotted)
         new = None if c.clear else q.parse(c.value or "")
-        return None if old == new else _answer_text(old)
+        if old == new:
+            return None
+        text = _answer_text(old)
+        try:
+            if q.parse(text) == old:
+                return text
+        except ValueError:          # BadAnswer: a hand-typed value its own question refuses
+            pass
+        return _not_restorable(q)
     if unit.kind in ("profile", "brief"):
         if unit.before is None or unit.before == unit.after or unit.before == _default_text(unit):
             return None

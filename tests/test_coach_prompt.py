@@ -159,7 +159,12 @@ def test_the_review_walks_the_user_through_obsidian_and_invites_corrections():
     at = [text.index(s) for s in steps]
     assert at == sorted(at), "the walkthrough's steps are out of order"
     assert "Invite corrections now and in any later session." in text
+    # gen-002: doctor resolves the vault from the terminal's own environment, so the coach
+    # names the folder the user agreed to, and qualifies doctor by the server's VAULT_DIR.
+    assert "it is the `vault_dir` they agreed to" in text
+    assert "the same `VAULT_DIR` the sluice server was registered with" in text
     assert "send its `previous` as the new value" in text
+    assert "came back with `not_restorable` cannot be put back through `setup_save`" in text
     assert "`clear: true`" in text and "Do this only when they ask." in text
 
 

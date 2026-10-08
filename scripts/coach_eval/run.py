@@ -34,12 +34,25 @@ CLAUDE_TIMEOUT_S = 900
 # from Haiku to Sonnet the same day, on the owner's decision after regrading runs 2-5 with both
 # and cross-checking against a different model family (README.md, "Cross-checking the grader").
 COACH_MODEL, USER_MODEL, GRADER_MODEL = "sonnet", "haiku", "sonnet"
+# Run 8: told to "never invent preferences beyond your situation", the simulated user took the
+# sketch as everything it was allowed to say and refused to name any role, history or place, so
+# the coach had nothing to work with. The situation is a sketch: the details about the person
+# are invented here, at run time, and kept consistent, so the persona files stay neutral. A
+# preference the person has no view on may still be declined.
+# Run 9: told to reply DONE "when the coach says the setup is done", the simulated user answered the
+# coach's playback question with DONE, which ends the run before any save. A save question gets a
+# yes or no; DONE waits for the coach's report of what was saved.
 USER_PROMPT = ("You are role-playing a person looking for work, talking to a career coach. "
                "Stay in character. Answer only what you are asked, briefly, as this person "
-               "would. Never invent preferences beyond your situation; if you have no view, say "
-               "so. Reply with your next message only. When the coach says the setup is done, "
-               "reply DONE.\n\nYour name: {name}\nWhere you live: {location}\nYour situation: "
-               "{situation}\n\nThe conversation so far:\n{transcript}")
+               "would. Your situation below is a sketch. When the coach asks about your own "
+               "work, your history or where you would work, fill in concrete details that fit "
+               "it, and keep to the details you have given for the whole conversation. Never "
+               "refuse to answer about your own situation. On a preference you have no view "
+               "on, you may say so. Reply with your next message only. When the coach plays back "
+               "what it will save and asks whether to save it, answer yes or no as this person "
+               "would; that question is not the end. Reply DONE only after the coach has told "
+               "you what was saved, or that nothing was.\n\nYour name: {name}\nWhere you live: {location}\n"
+               "Your situation: {situation}\n\nThe conversation so far:\n{transcript}")
 # The grader sees only the conversation, never the tool calls, so it is TOLD what setup_save
 # received. Run 3 never called the save tool (then `setup_review`) and the grader still scored
 # asked_before_proposing 4 ("All setup_review settings were based on user agreement"), reading

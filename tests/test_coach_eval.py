@@ -844,3 +844,23 @@ def test_a_denied_save_does_not_count_against_the_chat_yes_checks():
     events = _flat(_start(), _use(rubric.SAVE, _SAVED, denied=True), _say(_PLAYBACK),
                    _start(), _use(rubric.SAVE, _SAVED))
     assert _chat_yes(events) == (True, True)
+
+
+def test_the_simulated_user_fills_in_its_own_situation_and_never_refuses_it():
+    """Run 8: told never to invent preferences beyond its situation, the simulated user refused
+    to name any role, history or place, and the coach could do nothing. The prompt now says the
+    situation is a sketch to fill in consistently, and still lets a preference go unanswered."""
+    from scripts.coach_eval import run
+
+    text = " ".join(run.USER_PROMPT.split())
+    for phrase in ("Your situation below is a sketch.",
+                   "fill in concrete details that fit it",
+                   "keep to the details you have given for the whole conversation",
+                   "Never refuse to answer about your own situation.",
+                   "On a preference you have no view on, you may say so.",
+                   "answer yes or no as this person would; that question is not the end.",
+                   "Reply DONE only after the coach has told you what was saved"):
+        assert phrase in text, phrase
+    assert "Never invent preferences" not in text
+    filled = run.USER_PROMPT.format(name="N", location="L", situation="S", transcript="T")
+    assert "Your name: N" in filled and "Your situation: S" in filled
