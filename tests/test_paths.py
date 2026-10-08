@@ -477,8 +477,11 @@ def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
     # and nothing else -- unlike the two dedup stores, which REFUSE on relocation because an
     # empty dedup set re-submits an already-applied lead. A missing usage log makes a report
     # start from today, which is visible in the report itself.
+    # In-session setup's config copies (`core/config.py::config_copy_dir`) are a fifth: a
+    # folder new in this release, which nothing ever kept cwd-relative, so there is no
+    # predecessor to warn about.
     exempt = {"config.yaml", "role_type_reverdict_ack.json", "fx-rates.json",
-              "sluice_usage.jsonl"}
+              "sluice_usage.jsonl", "config_backups"}
     missing = called - set(paths._LEGACY) - exempt
     assert not missing, (
         "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "

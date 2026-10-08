@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, fields
 from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.language import parse_listing_languages
 from sluice.core.leads import LEAD_LAYOUTS, Lead
-from sluice.core.paths import config_file
+from sluice.core.paths import config_file, resolve
 from sluice.core.protocols import CV_LAYOUT_RELPATH, document_sha
 from sluice.core.urlguard import parse_allow_hosts
 
@@ -1034,16 +1034,29 @@ def _config_write_lock(real: str) -> threading.Lock:
         return _config_write_locks.setdefault(real, threading.Lock())
 
 
+def config_copy_dir() -> str:
+    """Where `keep_config_copy` keeps the config's prior bytes: `config_backups` in sluice's XDG
+    STATE folder, resolved the way every other state path is. No env var or config key relocates
+    it, so it has no explicit rung. The name is a literal here because the path sweeps read
+    `name=` statically; `mcpserver.py`'s `setup_save` text names the folder too, and
+    `tests/functional/test_mcp_setup_save.py` pins the two together.
+
+    Never beside the config file: a config is often a symlink into a dotfiles repository, where
+    a routine `git add -A` would publish every old value a copy holds, a credential among them.
+    The state folder is per-machine and holds nothing a user versions."""
+    return resolve(env_var=None, config_value="", kind="state", name="config_backups")
+
+
 def keep_config_copy(path: str, expect_sha: str) -> str:
-    """Keep a copy of the config file's current bytes beside it, before in-session setup
-    replaces it (`core/backup.py`). Returns the copy's file NAME, or "" -- keeping nothing --
+    """Keep a copy of the config file's current bytes in `config_copy_dir()`, before in-session
+    setup replaces it (`core/backup.py`). Returns the copy's file NAME, or "" -- keeping nothing --
     when the file is gone or no longer hashes to `expect_sha`: the copy stands for the text the
     user was shown being replaced. Raises OSError when the copy cannot be written, and the
     caller then does not replace the config: never a replace without a copy.
 
-    The symlink is resolved exactly as `write_config_text` resolves it, so the copy lands
-    beside the REAL file, not the link, and carries its mode, which matters
-    because a config may hold a credential."""
+    The symlink is resolved exactly as `write_config_text` resolves it, so the copy holds the
+    REAL file's bytes and carries its mode, which matters because a config may hold a
+    credential; for the same reason a folder this creates is private to the user (0o700)."""
     from sluice.core import backup
     real = os.path.realpath(path)
     with _config_write_lock(real):
@@ -1055,8 +1068,9 @@ def keep_config_copy(path: str, expect_sha: str) -> str:
         if document_sha(data.decode("utf-8")) != expect_sha:
             return ""
         mode = stat.S_IMODE(os.stat(real).st_mode)
-        return backup.write_copy(os.path.dirname(real) or ".", os.path.basename(real) + ".",
-                                 ".bak", data, mode)
+        directory = config_copy_dir()
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        return backup.write_copy(directory, os.path.basename(real) + ".", ".bak", data, mode)
 
 
 def write_config_text(path: str, text: str, *, expect_sha: str | None = None) -> bool:

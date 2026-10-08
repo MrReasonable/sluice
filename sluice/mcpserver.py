@@ -1063,10 +1063,13 @@ _STALE = ("the config file or a setup note changed, appeared or went away, or th
 def _copy_words(artefact: str, kept: str) -> str:
     """Where a replaced artefact's copy went, for the user. `kept` is the store's key for a
     note's copy (relative to the vault) or the file name of the config's copy -- neither is a
-    path on this machine, so neither discloses where the vault or the config lives."""
+    path on this machine, so neither discloses where the vault or the state folder lives. The
+    config's is named by the folder's place in sluice's state folder and by how to find that
+    folder, which docs/CONFIGURATION.md also states."""
     if artefact == "config":
-        return (f"the config file as it was before this save is kept beside the config file, "
-                f"named {kept}")
+        return (f"the config file as it was before this save is kept in the config_backups "
+                f"folder of sluice's state folder ($XDG_STATE_HOME/sluice, by default "
+                f"~/.local/state/sluice), named {kept}")
     return f"the note as it was before this save is kept in your vault at {kept}"
 
 
@@ -1426,9 +1429,9 @@ def build_server(config, write: bool = False):
             "`not_restorable` when no value sent back would restore it, naming what to edit by "
             "hand instead. Before replacing a setup note or the config, the save keeps a copy "
             "of it as it was: `copies_kept` says, per replaced artefact, where (a note's copy in "
-            "the vault's Job Applications/_setup_backups folder, the config's beside the config "
-            "file). Every copy is kept; a change whose copy could not be kept is failed and "
-            "nothing of it is written.")
+            "the vault's Job Applications/_setup_backups folder, the config's in the "
+            "config_backups folder of sluice's state folder). Every copy is kept; a change "
+            "whose copy could not be kept is failed and nothing of it is written.")
         mcp_server.tool(name="setup_save")(setup_save_tool)
 
     return mcp_server

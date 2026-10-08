@@ -392,9 +392,9 @@ def test_a_list_value_keeps_each_item_whole(key):
 def test_a_string_value_for_a_list_setting_is_still_split_on_commas():
     from sluice.onboard.questions import catalogue
     q = next(q for q in catalogue() if q.key == "target_locations")
-    u = _one({"kind": "config", "target": "target_locations", "value": "Remote, Example, UK"},
+    u = _one({"kind": "config", "target": "target_locations", "value": "Remote, Example, Placeland"},
              snap(CONFIG))
-    assert review.parse_value(q, u.change.value) == ["Remote", "Example", "UK"]
+    assert review.parse_value(q, u.change.value) == ["Remote", "Example", "Placeland"]
 
 
 def test_a_list_for_a_scalar_setting_is_set_aside_by_name():

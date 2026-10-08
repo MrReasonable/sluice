@@ -489,9 +489,10 @@ Every REPLACE through setup is preceded by a durable copy of the prior bytes, an
 replace: `Store.keep_document_copy` (the vault keeps it under `Job Applications/_setup_backups/`,
 OUTSIDE `leads_dir`, which is why the lead walk never reaches it and `_PRIVATE_SUBDIRS` does not
 name it -- move that folder under `leads_dir` and it needs the prune) and
-`core/config.py::keep_config_copy` (beside the symlink-resolved config, with its mode). Copies
-are never pruned; `setup_save` reports each under `copies_kept` relative to the vault or the
-config file, never as a path.
+`core/config.py::keep_config_copy` (in `config_backups/` under sluice's XDG STATE folder, with
+the real config's mode -- never beside the config, which can be a link into a dotfiles repo
+where a routine commit would publish the old values). Copies are never pruned; `setup_save`
+reports each under `copies_kept` relative to the vault or the state folder, never as a path.
 That consent is a yes in CHAT, by the owner's ruling (2026-10-08): no form stands between the
 model and `setup_save`, so do not describe it as a guard the model cannot cross --
 `verify_evidence`'s form is the one place that holds. The config file's own writer is `core/config.py::write_config_text`, which

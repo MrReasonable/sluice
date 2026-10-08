@@ -68,8 +68,9 @@ coach can send back to undo it, or with `not_restorable` when sending a value ba
 reproduce it (a hand-typed list item that is empty, is not text or carries surrounding spaces,
 or a value its own setting would refuse), naming the config key to edit by hand. Every note or
 config file a save replaces is first copied, exactly as it was, and kept for good: a note's copy
-in `Job Applications/_setup_backups/` in your vault, the config's beside the config file, both
-named with the date and time of the save; the result's `copies_kept` says where, and a file
+in `Job Applications/_setup_backups/` in your vault, the config's in the `config_backups`
+folder of sluice's state folder (`~/.local/state/sluice/` unless `XDG_STATE_HOME` moves it),
+both named with the date and time of the save; the result's `copies_kept` says where, and a file
 whose copy cannot be written is not replaced. So `previous` restores within the chat, and the
 copies restore in a later session. After saving, the
 coach walks you through opening your vault in Obsidian: on a first run, the folder you named

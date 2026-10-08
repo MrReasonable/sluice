@@ -1204,11 +1204,12 @@ snapshot, to `Sluice.apply_setup`, which owns the config check and every write. 
 REPLACES an artefact it keeps a durable copy of the prior bytes -- a note's through
 `Store.keep_document_copy` (the vault puts it under `Job Applications/_setup_backups/`, outside
 `leads_dir`, so the lead walk never reaches it and `_PRIVATE_SUBDIRS` needs no entry), the
-config's through `core/config.py::keep_config_copy`, beside the symlink-resolved file with its
-mode -- both written exclusively by `core/backup.py::write_copy` under a time-sortable name with
+config's through `core/config.py::keep_config_copy`, into `config_backups/` in sluice's XDG
+state folder (`core/config.py::config_copy_dir`, never beside the config, which may be a link
+into a dotfiles repository) with the real file's mode -- both written exclusively by `core/backup.py::write_copy` under a time-sortable name with
 a random suffix. A copy that abstains (the artefact no longer holds what was read) or fails
 stops the replace: setup never replaces without a copy. Every copy is kept, and the report's
-`copies_kept` names each in words relative to the vault or the config file. There is no
+`copies_kept` names each in words relative to the vault or the state folder. There is no
 form: the user's consent is a yes in chat to the coach's playback, a rule the playbooks state
 and the eval harness scores, which the model can break, unlike `verify_evidence`'s form (owner's
 ruling, `docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md`).
@@ -2199,7 +2200,13 @@ sentence cannot be.
   (compared against `core/protocols.py::document_sha`) is in-session setup's update arm, which
   replaces the document only when its current text still hashes to what a human was shown, and
   writes nothing otherwise. In-session setup's creates are exclusive (`only_if_absent`); a bare
-  `write_document` (the rejected-leads digest) is still a plain atomic replace. The Role Brief note
+  `write_document` (the rejected-leads digest) is still a plain atomic replace.
+  `keep_document_copy(rel, expect_sha)` is REQUIRED too: before in-session setup replaces a
+  document it keeps a copy of the current text and returns the copy's store-relative key (which
+  `read_document` reads back as that exact text), or `""` when the document is absent or no
+  longer hashes to `expect_sha`; every copy is new and none is pruned, a copy is never read back
+  as the document it copies nor as a lead, and a copy that cannot be kept raises
+  `OSError`/`ValueError` so the caller replaces nothing. The Role Brief note
   (`ROLE_BRIEF_RELPATH`) is written only that way, and no pipeline stage reads it
   (`tests/test_role_brief_unread.py`).
   This seam has a second, OPTIONAL member too: `preflight() -> dict`,

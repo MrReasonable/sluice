@@ -901,7 +901,7 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   that replaced a value or text of yours carries `previous` -- a list for a list setting --
   which puts it back when sent again as the value, or `not_restorable` instead when no value
   sent back would reproduce it: a value typed by hand that its own setting would not read back
-  unchanged, such as a list item that is empty, is not text or carries surrounding spaces, is
+  unchanged (a hand-typed list item that is empty, is not text or carries surrounding spaces) is
   edited by hand in the config key it names), `stale` (the config file, a setup note or the vault changed after
   `setup_status` read them, say because you edited a note in Obsidian; nothing was written,
   so read `setup_status` again), `config_refused` (the config file does not load; fix it by
@@ -914,8 +914,9 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   Before replacing a setup note or the config file, `setup_save` keeps a copy of it exactly as
   it was, and `copies_kept` says, per replaced file, where: a note's copy is a new note in
   `Job Applications/_setup_backups/` in your vault, named after the note with the UTC date and
-  time of the save; the config's copy sits beside the config file (beside its real location,
-  when the config is a symlink), with the config's own file mode, named
+  time of the save; the config's copy goes in the `config_backups` folder of sluice's state
+  folder (`<XDG_STATE_HOME>/sluice/config_backups/`, `~/.local/state/sluice/config_backups/`
+  by default), never beside the config file, with the config's own file mode, named
   `<config file name>.<UTC date and time>-<suffix>.bak`. A copy is never overwritten and never
   removed: every save that replaces something adds one, and they are kept until you delete
   them. If a copy cannot be written, that file is not replaced and its change comes back

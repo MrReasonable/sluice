@@ -80,5 +80,21 @@ def write_copy(directory: str, prefix: str, suffix: str, data: bytes,
                 pass
             raise
         os.close(fd)
+        # The file's own fsync makes its BYTES durable, not the directory entry naming it: after
+        # a crash the copy could be gone while the original it backs up has been replaced. So
+        # the folder holding it is synced, and its parent too, since the folder may have been
+        # created for this very copy. A failure raises, and the caller then replaces nothing.
+        _fsync_dir(directory)
+        _fsync_dir(os.path.dirname(os.path.abspath(directory)))
         return name
     raise last
+
+
+def _fsync_dir(directory: str) -> None:
+    if os.name == "nt":     # Windows cannot open a directory to fsync it; NTFS journals entries
+        return
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)

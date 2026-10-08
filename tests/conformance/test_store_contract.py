@@ -496,6 +496,35 @@ def test_keep_document_copy_abstains_on_a_changed_or_absent_document(
     assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
 
 
+def test_keep_document_copy_is_never_read_as_a_lead(store_name, tmp_path, monkeypatch):
+    """A copy must never surface as a lead. The copied document is LEAD-SHAPED (lead
+    frontmatter), so a store keeping copies anywhere its lead read reaches fails here."""
+    from sluice.core.protocols import CRITERIA_RELPATH, document_sha
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    lead_shaped = ("---\ncompany: Example Co\nrole: Example Role\nstatus: new\n---\n\n"
+                   "body\n")
+    store.write_document(CRITERIA_RELPATH, lead_shaped)
+    before = [(n.slug, n.status) for n in store.read_leads()]
+    assert len(before) == 1, "the fixture must really hold a lead to compare against"
+    assert store.keep_document_copy(CRITERIA_RELPATH, document_sha(lead_shaped))
+    assert [(n.slug, n.status) for n in store.read_leads()] == before
+
+
+@pytest.mark.parametrize("rel", ["../outside.md", "Job Applications/../../outside.md"])
+def test_keep_document_copy_refuses_a_key_escaping_the_store(store_name, tmp_path, monkeypatch,
+                                                             rel):
+    """`rel` must stay inside the store, as for write_document: an escaping key RAISES
+    ValueError. Abstaining with "" is not enough: the caller would read that as a document
+    edited since it was read, not as a key the store refuses."""
+    from sluice.core.protocols import document_sha
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    with pytest.raises(ValueError):
+        store.keep_document_copy(rel, document_sha("anything"))
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+
+
 def test_only_if_absent_lets_exactly_ONE_concurrent_caller_claim_the_create(
         store_name, tmp_path, monkeypatch):
     """`protocols.py` requires never-clobber be a property of the CREATE ITSELF -- an exclusive

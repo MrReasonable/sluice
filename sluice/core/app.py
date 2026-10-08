@@ -727,6 +727,22 @@ def _reason(exc) -> str:
     return f"{type(exc).__name__}{': ' + detail if detail else ''}"
 
 
+# A copy the STORE refused (a symlinked folder on the way to it, a key escaping the store)
+# raises with no OS message, so `_reason` would say only "OSError" or "ValueError". Its own
+# message is not passed through either: a second store's refusal text is not known to be
+# free of a path. So the report carries this fixed, path-free sentence instead.
+_COPY_REFUSED = ("the store refused the place the copy goes: a folder on the way to it is a "
+                 "symlink, or it leads outside the vault")
+
+
+def _copy_reason(exc) -> str:
+    """Why a note's copy could not be kept: the OS's own reason when there is one, else the
+    store's refusal in fixed words (`_COPY_REFUSED`)."""
+    if getattr(exc, "strerror", None) or isinstance(exc, UnicodeDecodeError):
+        return _reason(exc)
+    return _COPY_REFUSED
+
+
 class Sluice:
     """Resolve the configured adapters and expose the pipeline operations.
 
@@ -931,7 +947,7 @@ class Sluice:
                 except (OSError, ValueError) as exc:
                     out[w.artefact] = ArtefactOutcome(
                         "failed", f"the note was left as it is, because a copy of it could not "
-                                  f"be kept first ({_reason(exc)})")
+                                  f"be kept first ({_copy_reason(exc)})")
                     continue
                 # Not redundant with the replace's own check: a note edited away and back in
                 # the instant between the two would pass it and be replaced with no copy kept.
