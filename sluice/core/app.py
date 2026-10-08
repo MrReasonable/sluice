@@ -851,6 +851,16 @@ class Sluice:
         # promised to be dot-free, and split would take only its first segment.
         searches = {k[len("sources."):-len(".searches")]: v for k, v in settings.items()
                     if k.startswith("sources.") and k.endswith(".searches")}
+        # Enabled exactly as `ingest run` decides it (cli.py::_is_enabled, less the CLI's own
+        # `ingest disable` overlay): the config's `enabled` AND the source's shipped one. A
+        # config cannot switch a source on that its module ships off, so `enabled: true` for
+        # a retired board still runs nothing and is not offered either.
+        disabled = {}
+        for src in registry.all_sources():
+            if not getattr(src, "enabled", True):
+                disabled[src.id] = "shipped"
+            elif not settings.get(f"sources.{src.id}.enabled", True):
+                disabled[src.id] = "config"
         vault_dir = getattr(store, "dir", None)
         vault_digest = (hashlib.sha256(os.path.realpath(vault_dir).encode("utf-8", "surrogatepass"))
                         .hexdigest() if vault_dir else None)
@@ -859,7 +869,7 @@ class Sluice:
                              vault_is_default=is_default, settings=settings, defaults=defaults,
                              source_ids=tuple(sorted(s.id for s in registry.all_sources())),
                              searches=searches, source_defaults=_source_defaults(),
-                             vault_digest=vault_digest)
+                             vault_digest=vault_digest, disabled_sources=disabled)
 
     def apply_setup(self, writes):
         """Write agreed in-session setup changes: the config first, then the notes, each

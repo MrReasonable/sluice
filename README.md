@@ -360,8 +360,8 @@ pending entries in a review form and verifies only the ones you tick, and nothin
 you.
 
 In Claude Code, `/mcp__job-sluice__career_interview` starts a career coach that interviews you, can
-research the role you choose, and proposes setup changes you approve one by one in a review form
-(the review step needs `--write`). Your client cannot list this prompt, so type it by name. The middle part of that command is whatever name you registered the server under (`job-sluice` in the registration shown here).
+research the role you choose, plays back every setup change it would save and saves only when you
+say yes in chat (saving needs `--write`), then shows you how to open the result in Obsidian. Your client cannot list this prompt, so type it by name. The middle part of that command is whatever name you registered the server under (`job-sluice` in the registration shown here).
 [`docs/MCP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/MCP.md) has the tool tables and the reasoning.
 
 ## Configuration

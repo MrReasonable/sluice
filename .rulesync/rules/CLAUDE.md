@@ -167,7 +167,7 @@ deferral that import does not provide, which invited someone to "restore" the la
 hoisting the per-function `Sluice` import to module scope and putting a heavy import on every
 invocation. `sluice/mcpserver.py` is a further importer of `sluice.onboard`: it imports the
 `review` and `coach` modules (and through them `edit`, `plan` and `questions`) at its own module
-scope, for `setup_status`, `setup_review` and the `career_interview` prompt, so `cli.py` is not
+scope, for `setup_status`, `setup_save` and the `career_interview` prompt, so `cli.py` is not
 onboard's only importer. Neither does I/O, but neither is free to import: `review` imports
 `core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver` loads the
 store module, and `coach.assemble_prompt` imports `core/app.py` and `sluice.backends` (registering
@@ -480,9 +480,14 @@ CodeQL flags a new write function as a new sink.
 The Store contract also carries `read_document(rel)` and `write_document(rel, text, *,
 only_if_absent, expect_sha)` for store-managed documents (Judging Profile, Candidate Profile, the
 Role Brief). `expect_sha` is in-session setup's update arm: the document is replaced only when its
-current text still hashes to the bytes a human was shown in a review form, else nothing is
-written, and a create through that path is exclusive (`only_if_absent`); a bare `write_document` is still a
-plain atomic replace. The config file's own writer is `core/config.py::write_config_text`, which
+current text still hashes to the bytes `setup_status` read, the state the coach played back and the
+user said yes to, else nothing is written, and a create through that path is exclusive
+(`only_if_absent`); a bare `write_document` is still a plain atomic replace. `setup_save` also
+refuses a whole save as `stale` when `setup_status`'s `version` (a digest of the config, every
+setup note and the vault in use) no longer matches, before any of those per-artefact checks run.
+That consent is a yes in CHAT, by the owner's ruling (2026-10-08): no form stands between the
+model and `setup_save`, so do not describe it as a guard the model cannot cross --
+`verify_evidence`'s form is the one place that holds. The config file's own writer is `core/config.py::write_config_text`, which
 likewise creates exclusively when given no `expect_sha` and replaces only on a matching hash when given one. `mcp serve` does not hold one
 `Sluice` for its whole life: the setup tools build a fresh one from the config file on
 every call, and the shared holder is rebuilt after a setup write changes the config.

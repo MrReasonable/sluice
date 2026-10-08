@@ -897,3 +897,26 @@ def test_the_renderer_row_states_its_remedy_once(capsys):
     message = "renderer 'template': cv.template is not a file: '/nope.j2'."
     assert classify_renderer(message).detail == message
     assert classify_renderer(message, missing_dependency=True).detail == message
+
+
+@pytest.mark.parametrize("flags", [[], ["--verbose"]], ids=["default", "verbose"])
+def test_doctor_prints_the_vault_folder_in_either_view(_fresh_cli, capsys, flags):
+    """The career coach sends the user here to find the folder to open in Obsidian ("Open
+    folder as vault"), so both views name it. A terminal is the user's own; the MCP doctor
+    tool's report carries no path, and this line is not part of it."""
+    from sluice.cli import main
+
+    main(["doctor", "--offline", *flags])
+    out = capsys.readouterr().out
+    assert f"Vault folder: {os.path.realpath(os.environ['VAULT_DIR'])}" in out
+
+
+def test_the_mcp_doctor_report_carries_no_vault_path(_fresh_cli):
+    import json
+
+    from sluice.core.app import Sluice
+    from sluice.core.config import load_config
+    from sluice.mcpserver import doctor
+    text = json.dumps(doctor(Sluice(load_config()), offline=True))
+    vault = os.environ["VAULT_DIR"]
+    assert vault not in text and os.path.realpath(vault) not in text

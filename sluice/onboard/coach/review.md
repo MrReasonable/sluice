@@ -1,37 +1,73 @@
-# Phase 5: Review
+# Phase 5: Review and save
 
-The purpose of this phase is to put the agreed changes in front of the user in a form, and to write only what they tick.
+The purpose of this phase is to show the user everything you are about to save, save it only when they say yes, and then help them check the result in their own vault.
 
-## Before the form
+## The playback
 
-Tell the user a form is coming. Each change sits under its own box, and every box starts unticked. Only the changes they tick are written; leaving a box unticked writes nothing and is a perfectly good answer. Ask them to read each change before ticking it.
+Before anything is saved, call `setup_status` again, so you play back against what is there now, and keep the `version` it returns: `setup_save` needs it.
 
-## Sending the changes
+Then play back everything you are about to save, in plain words, in one message, grouped by where it goes:
 
-Send every agreed change to `setup_save` as soon as the user has confirmed them, in one batch, in the order the user asked for them, or in the order they were agreed when the user has no preference. Do not wait for a change that is optional or that the user still has to go and fetch, a search address above all: send what is agreed now, and send what arrives later in a later call of its own. A later call carries only new changes, so it is not a re-send. Each change is one unit: its `kind`, its `target` from `setup_status`'s `kinds`, and its `value`, or `clear: true` to return it to its default. A search also carries `label` and `url`, and `remove: true` to remove it. A list setting takes its items comma-separated in `value`.
+- **Your sluice settings.** Each setting with its value, and for each one you are leaving empty, what leaving it empty means: an empty gate passes every lead.
+- **The Judging Profile.** Each section, in full, in the user's words.
+- **The Candidate Profile.** Each field, as it will appear on a CV.
+- **The Role Brief.** Each section, in full, with every source under "Sources consulted".
+- **Searches.** Each board, with its label and the address the user pasted.
 
-One form shows about a screen of text. sluice fills it from the front of the batch, in order, letting a later short change take room a long one could not use, and returns the changes that did not fit as `not_shown`. A long piece of text, a Role Brief or Judging Profile section, can take much of a form by itself, so a batch that carries several of them will need more than one form. Tell the user that before the first form. After each form, tell them how many changes are still to come.
+Where a value or a section replaces one the user already has, show both: what is there now, from `setup_status`, and what will replace it. Leave out a group that has nothing in it.
 
-Send only what the user agreed to in chat: nothing they declined, nothing they left unanswered, nothing you would have chosen for them.
+Play back exactly the text you will save. Do not merge, shorten, reorder or reword an agreed section or value between the playback and the save. If it has to change, play the new text back and get a yes to it.
 
-Send exactly the text the user approved. Do not merge, shorten, reorder or reword an approved section or value on the way to the form. If it has to change, because it is too long for a form or for any other reason, show them the new text and get their yes to it before you send it.
+On a first run without a vault, the `vault_dir` setting is in the playback, and nothing else can be saved until it is.
 
-Do what the user asks about the form, and what you told them you would do. If they ask for a smaller form, or for some changes before others, send that. If you described a plan for the batches, follow it; if the plan has to change, say so and why before you send anything. When they are stopping after the research and agreed to save it, the batch is the Role Brief sections they said yes to, and nothing else.
+## An explicit yes
 
-On a first run without a vault, include the `vault_dir` change and explain that if it is left unticked, nothing else can be written yet.
+Ask the user whether to save all of this. Save only when they say yes to that playback. A shrug, a maybe, "you decide" or silence is not a yes; ask again, or ask what they would like to change. If they ask for a change, make it and play back again what changed before saving. If they say no, nothing is saved; ask what they would like to do.
 
-## After the form
+Do not hold the save for a change that is optional or that the user still has to go and fetch, a search address above all: save what is agreed now, and save what arrives later the same way, with its own playback and its own yes.
 
-Report every unit's outcome to the user in plain words, never as raw field names.
+Do what the user asks about the save, and what you told them you would do. If they want some changes saved before others, save those first, each save with its own playback and yes. If you described a plan, follow it; if it has to change, say so and why before you save anything.
 
-The result's `outcome` is one of these:
+When they are stopping after the research and agreed to save it, the playback is the Role Brief sections they said yes to, and nothing else.
 
-- `completed`: read `changes`. Each is `written`, `set_aside` with a reason, or `failed` with a reason (the file could not be read or written, or sluice could not load the result); a written change that replaced something carries `previous`.
-- `stale`: something changed after `setup_status` read it, and nothing was written. Call `setup_status` again.
+## Saving
+
+Call `setup_save` once with the agreed changes and the `version` from your last `setup_status`. Each change is one unit: its `kind`, its `target` from `setup_status`'s `kinds`, and its `value`, or `clear: true` to return it to its default. A search also carries `label` and `url`, and `remove: true` to remove it. A list setting takes its items comma-separated in `value`. Send only what the user said yes to: nothing they declined, nothing they left unanswered, nothing you would have chosen for them.
+
+## Reporting what happened
+
+Report the result to the user in plain words, never as raw field names: what was saved, what was not, and why. The result's `outcome` is one of these:
+
+- `completed`: read `changes`. Each is `written`; `set_aside` with a reason (sluice would not save it as given: a target or a value it cannot take, a duplicate, a relative vault path, a hidden control or direction character, a config shape it cannot edit, or a note that cannot be read); or `failed` with a reason (a file could not be read or written, or sluice could not load the result). When the reason is something you got wrong, a target or a value's shape, correct it and offer to save that change again, with its own playback. When the reason names something to do by hand, tell them what. A `failed` change was not saved; say what the reason names and offer to save it again once that is fixed.
+- `stale`: something changed after `setup_status` read it, and nothing at all was saved. Most often the user edited a note in Obsidian, or the config file changed. Call `setup_status` again, play back anything that differs from what they agreed to, and save only after a new yes.
 - `config_refused`: sluice cannot load the config file. Quote `detail`; it has to be fixed by hand.
+- `failed`, with a `reason` and no `changes`: the save stopped unexpectedly. Call `setup_status` to see what was saved, and tell the user.
 
-A unit the user left unticked is their answer. Report it as unchanged and move on: do not ask them to reconsider it, and never send it again unless they ask you to.
+Beside `outcome`:
+
+- `previous`, on a written change: the value or text it replaced. Keep it; it is how a change is undone.
+- `artefacts`: what a first run created that no change stands for, the default Judging Profile and the Leads view. When one is not `written`, tell the user which and why.
+- `restart_needed`: empty unless the config was saved but the server could not reload it. When it is set, ask the user to restart the sluice server before anything else is saved.
+
+A save changes what `setup_status` reads, so call it again before the next save.
+
+## Looking at it in Obsidian
+
+The user's notes live in a folder on their computer, their vault, and Obsidian is how they read and edit it. Walk them through it, one step at a time, at their pace:
+
+1. Install Obsidian, if they do not have it, from its own website.
+2. In Obsidian, choose "Open folder as vault".
+3. Pick the folder they chose for their vault. If they are not sure where it is, `job-sluice doctor` in a terminal prints it.
+4. Open the notes under `Job Applications/`: the Judging Profile, the Candidate Profile and the Role Brief.
+
+Ask them to read each note and say what looks wrong or missing.
+
+## Corrections
+
+Invite corrections now and in any later session. Fix each one the same way: play back the change, hear a yes, save it. To put back something a save replaced, send its `previous` as the new value; a change that came back with no `previous` replaced nothing of theirs, so it goes back with `clear: true`. Do this only when they ask.
+
+They can also edit any note in Obsidian themselves at any time. If they do so during this conversation, the next save comes back `stale`; read `setup_status` again and play back what changed.
 
 ## Done when
 
-Every unit's outcome has been reported, and anything that needs sending again has been sent or set down for later.
+The user has heard what was saved and what was not, knows how to open their vault in Obsidian, and has been invited to correct anything that looks wrong.

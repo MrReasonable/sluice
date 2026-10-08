@@ -1032,7 +1032,8 @@ config is its own DEAD `cv-config` row rather than a traceback — see
 does are ready, which are waiting on something you have not supplied, and which are broken —
 followed by the remedy for each row in the last two groups, verbatim from the check that knows
 it. `--verbose` prints the full table instead, which is what you want once something *is*
-broken.
+broken. Both views end with a `Vault folder:` line naming the folder your notes live in, the one
+to pick in Obsidian's "Open folder as vault". The MCP `doctor` tool's report does not carry it.
 
 Five classification states per row: `ok`, `degraded`, `dead`, `setup`, and `notice`. `notice`
 and `setup` never affect the exit code, even under `--strict`. The `--verbose` output is two

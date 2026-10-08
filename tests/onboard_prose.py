@@ -378,6 +378,8 @@ def shipped_prose(tmp_path=None):
         out.append((f"review.{name}", getattr(review_mod, name)))
     for key, text in review_mod.REMEDY.items():
         out.append((f"review.REMEDY[{key}]", text))
+    for key, text in review_mod.SOURCE_OFF.items():
+        out.append((f"review.SOURCE_OFF[{key}]", text))
     for key, text in review_mod.NOTE_NAMES.items():
         out.append((f"review.NOTE_NAMES[{key}]", text))
     for section in review_mod.ROLE_BRIEF_SECTIONS:
