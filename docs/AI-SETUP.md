@@ -180,9 +180,10 @@ echo "$JOB_SLUICE"
 ```
 
 Stop and report unless `$JOB_SLUICE` starts with `/`: an alias or a shell function prints a name,
-not a path. Stop and report if the probe exits 2: that install lacks the `mcp` extra, and it
-prints the command that adds it. With the extra the probe exits 0, since it reads end of input at
-once. Then register it (drop `--write` if they said no):
+not a path. Register only if the probe exits 0, which it does with the extra, since it reads end
+of input at once. If it exits 2, that install lacks the `mcp` extra, and it prints the command
+that adds it; stop and report that, and any other non-zero exit with what it printed. Then register it
+(drop `--write` if they said no):
 
 ```bash
 JOB_SLUICE=$(command -v job-sluice)
@@ -344,7 +345,9 @@ End by telling them, concretely, what the coach did not already report:
 ### Docker: one environment
 
 On the Docker channel every command after the hand-over runs through the same compose project,
-never a host `job-sluice`:
+never a host `job-sluice`. The restart in step 2 starts a new shell, so first set
+`SLUICE_COMPOSE` again to the absolute path of the compose file chosen in step 0 (the same one
+the registration names; `claude mcp get job-sluice` shows it). Then:
 
 ```bash
 docker compose -f "$SLUICE_COMPOSE" run --rm -T job-sluice doctor --offline
@@ -362,11 +365,16 @@ since it asks `[y/N]` on a terminal.
 
 ## Other MCP clients
 
-The server command is the same everywhere: `job-sluice mcp serve`, with `--write` for the write
-tools. [MCP.md](MCP.md#install-in-your-client) has the registration for each client it has been
-measured on, and what each can show. On a client that cannot show MCP prompts, follow the
-[appendix](#appendix-without-mcp-prompts). On one that cannot show the review form, the human
-verifies with `job-sluice experience verify`.
+Steps 1 and 2 are written for Claude Code. The server command is the same everywhere:
+`job-sluice mcp serve`, with `--write` for the write tools.
+[MCP.md](MCP.md#install-in-your-client) has the registration for each client it has been measured
+on, what each needs after registering (a restart, a switch, a trusted folder), and the form its
+slash command for the coach takes. On a client that shows MCP prompts, do step 1 the way its
+entry there says, run the probe from step 1 first on a host install, then in place of step 2 tell
+the user to reload the client as its entry says and type the coach's command in that client's
+form, and continue at step 3 when they come back. On a client that cannot show MCP prompts,
+follow the [appendix](#appendix-without-mcp-prompts). On one that cannot show the review form,
+the human verifies with `job-sluice experience verify`.
 
 ---
 
