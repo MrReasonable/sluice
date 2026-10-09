@@ -124,6 +124,16 @@ install` does not. `--verbose` prints every check as a table when you need the d
 
 ### 0. Install
 
+On Docker there is no `job-sluice` on the host. From the directory holding their
+`docker-compose.yml`, check the image instead, and keep `SLUICE_COMPOSE` for every later step:
+
+```bash
+SLUICE_COMPOSE="$PWD/docker-compose.yml"
+docker compose -f "$SLUICE_COMPOSE" run --rm -T job-sluice --version
+```
+
+On every other channel:
+
 ```bash
 job-sluice --version
 ```
@@ -156,7 +166,12 @@ Then explain `--write` and ask whether they want it: it adds the tools that chan
 config (the coach's saves, evidence proposals and the review form, leads, CVs), and with the
 registration below those tools are present in every Claude Code session, not only this one.
 
-Find the executable and check it can serve MCP before registering it:
+On Docker, register the compose project's `mcp` service exactly as
+[MCP.md's Docker entry](MCP.md#docker-claude-code) shows, skip the rest of this step, and run
+[every later command](#docker-one-environment) through the same compose project. The image
+always carries the `mcp` extra, so there is nothing to probe.
+
+On every other channel, find the executable and check it can serve MCP before registering it:
 
 ```bash
 JOB_SLUICE=$(command -v job-sluice)
@@ -178,10 +193,7 @@ The path is absolute because the `PATH` a stdio server inherits is not documente
 makes the server available in every directory; without it the server loads only where you ran the
 command. Do not add a `VAULT_DIR`: the coach agrees the vault with the user and saves it.
 
-On Docker, register the compose project's `mcp` service instead, exactly as
-[MCP.md's Docker entry](MCP.md#docker-claude-code) shows, and keep `SLUICE_COMPOSE` for
-[every later command](#docker-one-environment). For a client other than Claude Code, see
-[Other MCP clients](#other-mcp-clients).
+For a client other than Claude Code, see [Other MCP clients](#other-mcp-clients).
 
 ### 2. Hand over to the coach
 
@@ -209,8 +221,8 @@ was started from): anything written would land where nothing else reads it. The 
 the user's: set `vault_dir` in their sluice config file by hand, then restart the server.
 
 Otherwise get the vault's path the way the coach does: the `vault_dir` the user agreed, said back
-verbatim, or `job-sluice doctor` run with the same `VAULT_DIR` the server was registered with. On
-Docker the host vault is the `SLUICE_VAULT` value, resolved against the compose file's directory
+verbatim, or the vault `job-sluice doctor` reports, run as the same user so it reads the same
+config file the server does. On Docker the host vault is the `SLUICE_VAULT` value, resolved against the compose file's directory
 (`./vault` there when unset).
 
 Then ask which roles their CV shows, newest first: each employer as the CV should print it, the
