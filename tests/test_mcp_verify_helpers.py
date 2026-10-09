@@ -9,13 +9,22 @@ def _cap(form=None, url=None):
     return types.SimpleNamespace(form=form, url=url)
 
 
-def test_can_elicit_needs_the_modern_protocol_and_form_elicitation():
-    assert m._can_elicit("2026-07-28", _cap(form={})) is True
-    assert m._can_elicit("2026-07-28", _cap()) is True         # a bare {} counts as form
-    assert m._can_elicit("2026-07-28", _cap(url={})) is False   # url-only
-    assert m._can_elicit("2026-07-28", None) is False           # declared no elicitation
-    assert m._can_elicit("2025-06-18", _cap(form={})) is False  # legacy protocol
-    assert m._can_elicit(None, _cap(form={})) is False
+def test_form_route_by_protocol_and_declared_form_support():
+    """2026-07-28 clients get the SEP-2322 input-required result; an older client that
+    declares form elicitation gets the form pushed as elicitation/create. No form support,
+    or no negotiated protocol at all, gets no route. Measured 2026-10-09: Claude Code and
+    VS Code negotiate 2026-07-28; Cursor, Codex and opencode negotiate older versions and
+    declare `form`; Gemini CLI and Claude Desktop declare no elicitation."""
+    assert m._form_route("2026-07-28", _cap(form={})) == "input_required"
+    assert m._form_route("2026-07-28", _cap()) == "input_required"   # a bare {} is form
+    assert m._form_route("2025-11-25", _cap(form={})) == "push"
+    assert m._form_route("2025-06-18", _cap(form={}, url={})) == "push"
+    assert m._form_route("2025-06-18", _cap()) == "push"             # a bare {} is form
+    assert m._form_route("2026-07-28", _cap(url={})) is None         # url-only
+    assert m._form_route("2025-06-18", _cap(url={})) is None
+    assert m._form_route("2026-07-28", None) is None                  # declared none
+    assert m._form_route("2025-06-18", None) is None
+    assert m._form_route(None, _cap(form={})) is None
 
 
 def test_each_entry_is_shown_in_full_under_its_own_checkbox():

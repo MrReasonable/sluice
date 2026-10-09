@@ -241,10 +241,77 @@ def test_unknown_names_are_reported(tmp_path):
     assert out["not_found"] == ["No such entry"]
 
 
-def test_legacy_client_and_client_without_elicitation_get_unsupported(tmp_path):
+def test_client_without_elicitation_gets_unsupported(tmp_path):
     cfg, app = _seed(tmp_path, "Example alpha")
-    assert _call(cfg, _all(True), mode="legacy")["outcome"] == "unsupported_client"
-    assert _call(cfg, _all(True), with_callback=False)["outcome"] == "unsupported_client"
+    for mode in ("auto", "legacy"):
+        out = _call(cfg, _all(True), mode=mode, with_callback=False)
+        assert out["outcome"] == "unsupported_client", mode
+    assert _citable(app) == []
+
+
+# The PUSHED route: a pre-2026-07-28 client that declares form elicitation (Cursor, Codex,
+# opencode, measured 2026-10-09) is sent the same form as an elicitation/create request
+# inside the tool call. `mode="legacy"` is the initialize handshake such a client speaks.
+# Every human-in-front property of the input-required route must hold here too.
+
+def test_pushed_form_accept_all_promotes_every_entry(tmp_path):
+    cfg, app = _seed(tmp_path, "Example alpha", "Example beta")
+    out = _call(cfg, _all(True), mode="legacy")
+    assert out["outcome"] == "completed"
+    assert _citable(app) == ["example-alpha", "example-beta"]
+
+
+def test_pushed_form_promotes_only_the_ticked_entry(tmp_path):
+    cfg, app = _seed(tmp_path, "Example alpha", "Example beta")
+    out = _call(cfg, lambda p: ("accept", {"entry_1": True, "entry_2": False}),
+                mode="legacy")
+    assert len(out["promoted"]) == 1 and len(out["skipped"]) == 1
+    assert len(_citable(app)) == 1
+
+
+def test_pushed_form_decline_and_cancel_promote_nothing(tmp_path):
+    cfg, app = _seed(tmp_path)
+    for i, answer in enumerate((lambda p: ("decline", None), lambda p: ("cancel", None),
+                                lambda p: ("accept", {}))):
+        app.add_evidence(kind="experience", name=f"Example entry {i}", fields=_FIELDS,
+                         body="Did a thing.")
+        _call(cfg, answer, args={"kind": "experience", "names": [f"Example entry {i}"]},
+              mode="legacy")
+        assert _citable(app) == []
+
+
+def test_pushed_form_entry_edited_while_shown_is_changed_not_promoted(tmp_path):
+    cfg, app = _seed(tmp_path, "Example alpha")
+
+    def edit_then_accept(params):
+        inbox = next(pathlib.Path(tmp_path / "vault").rglob("_inbox/*.md"))
+        inbox.write_text(inbox.read_text() + "\nedited after review\n")
+        return "accept", {"entry_1": True}
+
+    out = _call(cfg, edit_then_accept, mode="legacy")
+    assert out["changed"] == ["example-alpha"] and out["promoted"] == []
+    assert _citable(app) == []
+
+
+def test_pushed_form_shows_every_entry_in_full_under_its_checkbox(tmp_path):
+    cfg, app = _seed(tmp_path, "Example alpha", body="Shipped <!-- 40% --> literally.")
+    seen = []
+    _call(cfg, lambda p: ("cancel", None), seen=seen, mode="legacy")
+    assert len(seen) == 1
+    text = app.store().read_pending_evidence_text("experience", "example-alpha")
+    assert text in seen[0].requested_schema["properties"]["entry_1"]["description"]
+
+
+def test_pushed_form_the_client_fails_to_show_promotes_nothing(tmp_path):
+    """A client that declares form support and then errors on the request (Gemini's
+    reported "Method not found" shape) gets unsupported_client, not a tool crash."""
+    cfg, app = _seed(tmp_path, "Example alpha")
+
+    def broken(params):
+        raise RuntimeError("cannot draw forms after all")
+
+    out = _call(cfg, broken, mode="legacy")
+    assert out["outcome"] == "unsupported_client"
     assert _citable(app) == []
 
 

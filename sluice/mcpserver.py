@@ -138,20 +138,29 @@ _LIST_EVIDENCE_CONTENT_WARNING = (
 
 # SEP-2322 input-required results exist from this protocol on. Claude Code 2.1.291
 # negotiates it, and cannot take a server-PUSHED elicitation at all (NoBackChannelError,
-# measured 2026-10-06), so this is the only mechanism that reaches the user there. An
-# older client cannot even parse an InputRequiredResult, so it must never be sent one.
+# measured 2026-10-06), so for a client on this protocol the form goes back as the tool's
+# result. An older client cannot even parse an InputRequiredResult, so it is never sent
+# one; when it declares form elicitation it is sent the same form as an elicitation/create
+# request instead, inside the tool call. Measured 2026-10-09 with a logging proxy: Claude
+# Code and VS Code negotiate this protocol; Cursor, Codex and opencode negotiate older ones
+# and declare `form`; Gemini CLI and Claude Desktop declare no elicitation at all.
 _MIN_PROTOCOL = "2026-07-28"
 
 
-def _can_elicit(protocol_version, elicitation) -> bool:
-    """True when this client can show an input-required form. A bare `elicitation: {}`
-    counts as form support (the library's own rule, mcp/server/mcpserver/resolve.py);
-    a declaration naming only `url` does not. ISO dates compare correctly as strings."""
-    if not protocol_version or protocol_version < _MIN_PROTOCOL or elicitation is None:
-        return False
+def _form_route(protocol_version, elicitation) -> str | None:
+    """How this client can be shown a review form: "input_required" (SEP-2322),
+    "push" (elicitation/create), or None when it cannot. A bare `elicitation: {}` counts
+    as form support (the library's own rule, mcp/server/mcpserver/resolve.py); a
+    declaration naming only `url` does not. ISO dates compare correctly as strings. No
+    negotiated version at all is no route: which protocol the answer would ride on is
+    then unknown."""
+    if not protocol_version or elicitation is None:
+        return None
     form = getattr(elicitation, "form", None)
     url = getattr(elicitation, "url", None)
-    return form is not None or url is None
+    if form is None and url is not None:
+        return None
+    return "input_required" if protocol_version >= _MIN_PROTOCOL else "push"
 
 
 def _set_aside_reason(kind: str, text: str) -> str:
@@ -919,7 +928,7 @@ def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
 
 
 def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
-                         elicitation, responses, state) -> dict:
+                         elicitation, responses, state, unshown=False) -> dict:
     """One leg of the verify loop, with the protocol stripped off so tests reach it
     without mcp. `responses` is None on the first leg; on the retry it is the client's
     answer to the one form (build_server keys it "verify").
@@ -939,7 +948,9 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
     phrase = verify_outcome_text(kind, subject="them")
-    if not _can_elicit(protocol_version, elicitation):
+    # `unshown`: the client declared a form and then failed to show it (the pushed route
+    # only), which leaves the human exactly where a client without forms does.
+    if unshown or _form_route(protocol_version, elicitation) is None:
         report["outcome"] = "unsupported_client"
         report["detail"] = (f"this client cannot show a review form -- run "
                             f"`job-sluice {kind} verify` in a terminal instead")
@@ -1194,7 +1205,9 @@ def build_server(config, write: bool = False):
     tests/functional/test_mcp_contract.py's asyncio.gather sanity check are
     validating against -- replaces #105's open dispatch-model caveat."""
     try:
+        import anyio.from_thread
         from mcp.server.mcpserver import Context, MCPServer
+        from mcp.shared.exceptions import MCPError
         from mcp_types import (
             CallToolResult,
             ElicitRequest,
@@ -1342,25 +1355,47 @@ def build_server(config, write: bool = False):
             'outcome="refused", not an error.')
         mcp_server.tool(name="propose_evidence")(propose_evidence_tool)
 
-        # The one tool that returns an InputRequiredResult (SEP-2322): the human's answer
-        # comes back on the protocol's retry as ctx.input_responses. Still a SYNC def,
-        # dispatched to a worker thread like every other tool here.
+        # The one tool that shows the human a form. A 2026-07-28 client gets it as an
+        # InputRequiredResult (SEP-2322) and answers on the protocol's retry, as
+        # ctx.input_responses. An older client that declares form elicitation gets it
+        # PUSHED (elicitation/create) inside this same call, and its answer goes straight
+        # into the second leg with the state the first leg built -- the identical checks,
+        # since verify_evidence_step is the one place they live. Still a SYNC def,
+        # dispatched to a worker thread like every other tool here, so the push crosses
+        # back to the event loop with anyio.from_thread.run.
         def verify_evidence_tool(kind: str, names: list[str] | None = None,
                                  ctx: Context = None) -> CallToolResult | InputRequiredResult:
             responses = ctx.input_responses
-            caps = ctx.session.client_capabilities
-            out = verify_evidence_step(
-                holder.sluice, kind=kind, names=names, protocol_version=ctx.protocol_version,
-                elicitation=getattr(caps, "elicitation", None),
-                responses=None if responses is None else responses.get("verify"),
-                state=ctx.request_state)
-            if "ask" in out:
+            elicitation = getattr(ctx.session.client_capabilities, "elicitation", None)
+            route = _form_route(ctx.protocol_version, elicitation)
+
+            def step(**leg):
+                return verify_evidence_step(
+                    holder.sluice, kind=kind, names=names,
+                    protocol_version=ctx.protocol_version, elicitation=elicitation, **leg)
+
+            out = step(responses=None if responses is None else responses.get("verify"),
+                       state=ctx.request_state)
+            if "ask" in out and route == "input_required":
                 ask = out["ask"]
                 return InputRequiredResult(
                     input_requests={"verify": ElicitRequest(params=ElicitRequestFormParams(
                         mode="form", message=ask["message"],
                         requested_schema=ask["schema"]))},
                     request_state=ask["state"])
+            if "ask" in out:
+                ask = out["ask"]
+                try:
+                    answer = anyio.from_thread.run(
+                        ctx.session.elicit_form, ask["message"], ask["schema"],
+                        ctx.request_id)
+                except MCPError:
+                    # It declared form support and then could not show one (or the
+                    # connection has no back-channel). Nothing was shown, so nothing is
+                    # promoted, and the report says to use the CLI.
+                    out = step(responses=None, state=None, unshown=True)
+                else:
+                    out = step(responses=answer, state=ask["state"])
             return CallToolResult(content=[TextContent(type="text", text=json.dumps(out))])
 
         # Derived, and assigned before registering, for the reason given above
