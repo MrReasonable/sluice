@@ -271,12 +271,16 @@ def test_pushed_form_promotes_only_the_ticked_entry(tmp_path):
 
 def test_pushed_form_decline_and_cancel_promote_nothing(tmp_path):
     cfg, app = _seed(tmp_path)
-    for i, answer in enumerate((lambda p: ("decline", None), lambda p: ("cancel", None),
-                                lambda p: ("accept", {}))):
+    cases = ((lambda p: ("decline", None), "declined"), (lambda p: ("cancel", None), "cancelled"),
+             (lambda p: ("accept", {}), "completed"))
+    for i, (answer, outcome) in enumerate(cases):
         app.add_evidence(kind="experience", name=f"Example entry {i}", fields=_FIELDS,
                          body="Did a thing.")
-        _call(cfg, answer, args={"kind": "experience", "names": [f"Example entry {i}"]},
-              mode="legacy")
+        seen = []
+        out = _call(cfg, answer, args={"kind": "experience", "names": [f"Example entry {i}"]},
+                    mode="legacy", seen=seen)
+        assert len(seen) == 1, outcome   # the form really was pushed, not skipped
+        assert out["outcome"] == outcome and out["promoted"] == []
         assert _citable(app) == []
 
 
@@ -303,15 +307,18 @@ def test_pushed_form_shows_every_entry_in_full_under_its_checkbox(tmp_path):
 
 
 def test_pushed_form_the_client_fails_to_show_promotes_nothing(tmp_path):
-    """A client that declares form support and then errors on the request (Gemini's
-    reported "Method not found" shape) gets unsupported_client, not a tool crash."""
+    """A client that declares form support and then answers the request with an error
+    (Gemini's reported "Method not found" shape) gets form_failed, not a tool crash and not
+    "cannot show a form": the error may have come after the human saw it."""
     cfg, app = _seed(tmp_path, "Example alpha")
 
     def broken(params):
         raise RuntimeError("cannot draw forms after all")
 
     out = _call(cfg, broken, mode="legacy")
-    assert out["outcome"] == "unsupported_client"
+    assert out["outcome"] == "form_failed"
+    assert "cannot show" not in out["detail"]
+    assert "job-sluice experience verify" in out["detail"]
     assert _citable(app) == []
 
 
