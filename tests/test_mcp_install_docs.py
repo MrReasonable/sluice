@@ -85,8 +85,10 @@ def _server(obj):
             # shape reads as "No MCP servers configured").
             if top == "mcp":
                 table = table["servers"]
-            (entry,) = table.values()
-            return entry
+            # The prompt's slash command is built from this name, so the doc must register
+            # exactly `job-sluice`, and nothing else beside it.
+            assert list(table) == ["job-sluice"], sorted(table)
+            return table["job-sluice"]
     raise AssertionError(f"no server table in {sorted(obj)}")
 
 

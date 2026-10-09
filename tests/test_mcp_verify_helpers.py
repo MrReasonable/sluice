@@ -153,5 +153,9 @@ def test_the_docs_state_the_pushed_form_wait_the_code_uses():
     assert m._FORM_WAIT_SECONDS == minutes * 60 and minutes in words
     docs = pathlib.Path(__file__).resolve().parents[1] / "docs"
     for name in ("MCP.md", "USAGE.md"):
-        text = " ".join((docs / name).read_text().split())
-        assert f"{words[minutes]} minutes" in text, name
+        # Only the paragraph stating the general rule (the one saying the form is
+        # "abandoned"): a client entry's own mention of the wait must not stand in for it.
+        paras = [" ".join(p.split()) for p in (docs / name).read_text().split("\n\n")]
+        stated = [p for p in paras if "abandoned" in p and "form" in p]
+        assert len(stated) == 1, (name, len(stated))
+        assert f"no answer within {words[minutes]} minutes" in stated[0], name
