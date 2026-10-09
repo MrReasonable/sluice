@@ -81,7 +81,8 @@ it was measured, so a reader can tell how old it is.
 4. **The sequence.** `doctor` after each state-changing step and the exit-code guidance, unchanged.
    - **0 Install.** The coach path needs a channel carrying the `mcp` extra: uv/pipx/pip with
      `[mcp]`, Homebrew, or Docker. The `.deb`/`.rpm` packages cannot carry it (`docs/INSTALL.md`),
-     so on those the agent uses the appendix, or the user adds a second channel.
+     so on those the agent uses the appendix, or the user adds a second channel for MCP
+     (`uv tool install 'job-sluice[mcp]'`).
    - **1 Register.** `claude mcp get job-sluice` first. If absent, explain what `--write` adds,
      including that its tools will be present in every Claude Code session, and ask. Then, by
      channel:
@@ -233,6 +234,12 @@ add) before the PR goes up.
 - `job-sluice mcp install` (piece 3b, next).
 - Multi-hunt (after 3b).
 - ChatGPT / any remote transport; a Claude Desktop `.mcpb` extension.
+- A `.deb`/`.rpm` companion package carrying the `mcp` extra (owner: its own later piece). The
+  native packages run on the system Python with distro-packaged dependencies, and neither family
+  packages `mcp`, so a companion must vendor `mcp` and its tree (some of it compiled), built per
+  architecture and possibly per distro Python, and sluice then owns those libraries' security
+  updates on that channel. Until then the doc offers the appendix, or a second channel for MCP
+  (`uv tool install 'job-sluice[mcp]'`).
 - Any eval run (needs the owner's go-ahead; the harness fix is code only).
 
 ## Changes from revision 1
