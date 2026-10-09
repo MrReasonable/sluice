@@ -94,7 +94,8 @@ argument that approves on your behalf, so an agent can open the form but cannot 
 `verify_evidence` needs a client that supports form elicitation. On the 2026-07-28 MCP protocol
 the form comes back as the tool's result; on an older protocol it is sent to the client as a
 request. A client without form support, or one that fails to show the form, is told to use the
-CLI, and nothing is written. Boxes start
+CLI, and nothing is written. A form that gets no answer within five minutes is abandoned,
+and nothing is written either. Boxes start
 unticked, so an entry you could not see — a form that runs off a small terminal — can never be
 approved by Accept.
 
