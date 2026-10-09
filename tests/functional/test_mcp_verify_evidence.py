@@ -326,3 +326,31 @@ def test_unknown_kind_is_a_tool_error_and_writes_nothing(tmp_path):
 
     assert asyncio.run(_run()).is_error is True
     assert _citable(app) == []
+
+
+def test_pushed_form_never_answered_times_out_and_promotes_nothing(tmp_path, monkeypatch):
+    """opencode 2.0.20 declares form elicitation, accepts the request and then never
+    answers it or cancels (measured 2026-10-09: no reply after nine minutes). The tool
+    must not wait forever, and an answer arriving after the limit must promote nothing."""
+    import sluice.mcpserver as m
+
+    monkeypatch.setattr(m, "_FORM_WAIT_SECONDS", 0.2)
+    cfg, app = _seed(tmp_path, "Example alpha")
+
+    async def _run():
+        from mcp import Client, types
+
+        async def late(context, params):
+            await asyncio.sleep(1)
+            return types.ElicitResult(action="accept", content={"entry_1": True})
+
+        async with Client(build_server(cfg, write=True), mode="legacy",
+                          elicitation_callback=late) as client:
+            r = await client.call_tool("verify_evidence", {"kind": "experience"})
+            await asyncio.sleep(1.5)  # let the late answer arrive before closing
+            return json.loads(r.content[0].text)
+
+    out = asyncio.run(_run())
+    assert out["outcome"] == "no_answer"
+    assert "job-sluice experience verify" in out["detail"]
+    assert _citable(app) == []

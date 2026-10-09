@@ -146,6 +146,13 @@ _LIST_EVIDENCE_CONTENT_WARNING = (
 # and declare `form`; Gemini CLI and Claude Desktop declare no elicitation at all.
 _MIN_PROTOCOL = "2026-07-28"
 
+# How long a PUSHED form waits for the human's answer. opencode 2.0.20 declares form
+# elicitation, accepts the request and then neither shows it nor answers or cancels
+# (measured 2026-10-09: nothing after nine minutes), so without a limit the tool call
+# never returns. Five minutes is ample to read one screen of entries; after it the
+# answer is abandoned, and one arriving later is read by nothing.
+_FORM_WAIT_SECONDS = 300
+
 
 def _form_route(protocol_version, elicitation) -> str | None:
     """How this client can be shown a review form: "input_required" (SEP-2322),
@@ -928,7 +935,8 @@ def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
 
 
 def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
-                         elicitation, responses, state, unshown=False) -> dict:
+                         elicitation, responses, state, unshown=False,
+                         unanswered=False) -> dict:
     """One leg of the verify loop, with the protocol stripped off so tests reach it
     without mcp. `responses` is None on the first leg; on the retry it is the client's
     answer to the one form (build_server keys it "verify").
@@ -950,6 +958,15 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     phrase = verify_outcome_text(kind, subject="them")
     # `unshown`: the client declared a form and then failed to show it (the pushed route
     # only), which leaves the human exactly where a client without forms does.
+    # `unanswered`: the pushed form was sent and no answer came within _FORM_WAIT_SECONDS.
+    # Whether the human ever saw it is unknown, so it is reported as its own outcome.
+    if unanswered:
+        report["outcome"] = "no_answer"
+        report["detail"] = (f"the review form got no answer within "
+                            f"{_FORM_WAIT_SECONDS // 60} minutes and nothing was verified "
+                            f"-- this client may not show forms; run "
+                            f"`job-sluice {kind} verify` in a terminal instead")
+        return report
     if unshown or _form_route(protocol_version, elicitation) is None:
         report["outcome"] = "unsupported_client"
         report["detail"] = (f"this client cannot show a review form -- run "
@@ -1385,10 +1402,15 @@ def build_server(config, write: bool = False):
                     request_state=ask["state"])
             if "ask" in out:
                 ask = out["ask"]
+                async def ask_human():
+                    with anyio.fail_after(_FORM_WAIT_SECONDS):
+                        return await ctx.session.elicit_form(
+                            ask["message"], ask["schema"], ctx.request_id)
+
                 try:
-                    answer = anyio.from_thread.run(
-                        ctx.session.elicit_form, ask["message"], ask["schema"],
-                        ctx.request_id)
+                    answer = anyio.from_thread.run(ask_human)
+                except TimeoutError:
+                    out = step(responses=None, state=None, unanswered=True)
                 except MCPError:
                     # It declared form support and then could not show one (or the
                     # connection has no back-channel). Nothing was shown, so nothing is
