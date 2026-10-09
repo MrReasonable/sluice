@@ -935,11 +935,12 @@ def propose_evidence(sluice: Sluice, kind: str, name: str, fields: dict,
 
 
 def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
-                         elicitation, responses, state, unshown=False,
+                         elicitation, responses, state, form_error=False,
                          unanswered=False) -> dict:
     """One leg of the verify loop, with the protocol stripped off so tests reach it
-    without mcp. `responses` is None on the first leg; on the retry it is the client's
-    answer to the one form (build_server keys it "verify").
+    without mcp. `responses` is None on the first leg; on the second it is the client's
+    answer to the one form -- from the protocol's retry on the input-required route
+    (build_server keys it "verify"), or the pushed request's own reply.
 
     First leg: read the pending entries and return {"ask": ...} carrying the form and a
     state binding each checkbox to the hash of the exact text shown. Second leg: promote
@@ -956,8 +957,8 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
     # Raises ValueError for an unknown kind before anything is read or shown -- the same
     # SDK tool error list_evidence gives for one.
     phrase = verify_outcome_text(kind, subject="them")
-    # `unshown`: the client declared a form and then failed to show it (the pushed route
-    # only), which leaves the human exactly where a client without forms does.
+    # `form_error`: the pushed request came back as an error rather than an answer. That
+    # may happen before or after the human saw the form, so the report claims neither.
     # `unanswered`: the pushed form was sent and no answer came within _FORM_WAIT_SECONDS.
     # Whether the human ever saw it is unknown, so it is reported as its own outcome.
     if unanswered:
@@ -967,7 +968,13 @@ def verify_evidence_step(sluice: Sluice, *, kind: str, names, protocol_version,
                             f"-- this client may not show forms; run "
                             f"`job-sluice {kind} verify` in a terminal instead")
         return report
-    if unshown or _form_route(protocol_version, elicitation) is None:
+    if form_error:
+        report["outcome"] = "form_failed"
+        report["detail"] = (f"the client returned an error instead of an answer to the "
+                            f"review form, and nothing was verified -- run "
+                            f"`job-sluice {kind} verify` in a terminal instead")
+        return report
+    if _form_route(protocol_version, elicitation) is None:
         report["outcome"] = "unsupported_client"
         report["detail"] = (f"this client cannot show a review form -- run "
                             f"`job-sluice {kind} verify` in a terminal instead")
@@ -1412,10 +1419,10 @@ def build_server(config, write: bool = False):
                 except TimeoutError:
                     out = step(responses=None, state=None, unanswered=True)
                 except MCPError:
-                    # It declared form support and then could not show one (or the
-                    # connection has no back-channel). Nothing was shown, so nothing is
-                    # promoted, and the report says to use the CLI.
-                    out = step(responses=None, state=None, unshown=True)
+                    # An error in place of an answer: the client declared form support
+                    # and then refused the request, or the connection has no back-channel.
+                    # Nothing is promoted, and the report says to use the CLI.
+                    out = step(responses=None, state=None, form_error=True)
                 else:
                     out = step(responses=answer, state=ask["state"])
             return CallToolResult(content=[TextContent(type="text", text=json.dumps(out))])
@@ -1429,7 +1436,8 @@ def build_server(config, write: bool = False):
             "those as `names` to review the rest. `names` only narrows which pending entries "
             "are offered; it never approves anything, and no argument approves on the "
             "human's behalf. Clients that cannot show a form get "
-            'outcome="unsupported_client", and a form left unanswered for '
+            'outcome="unsupported_client"; a form answered with an error gets '
+            'outcome="form_failed", and one left unanswered for '
             f'{_FORM_WAIT_SECONDS // 60} minutes '
             f'gets outcome="no_answer". {evidence_verify_effects()}')
         mcp_server.tool(name="verify_evidence")(verify_evidence_tool)
