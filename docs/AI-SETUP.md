@@ -9,6 +9,11 @@ rulesync and are gitignored, so a fresh clone has neither, and both are about *c
 sluice rather than *operating* it. This file is the one an agent can rely on finding, and it is
 about operating it.
 
+The main path is Claude Code with sluice's MCP server: you install and register the server, and the
+user runs the career coach, an MCP prompt that interviews them, researches the role they choose and
+saves the settings they agree to. You then pick up the steps the coach does not do. An agent whose
+client cannot show MCP prompts follows the [appendix](#appendix-without-mcp-prompts) instead.
+
 If you are an agent reading this after being pointed at the repository: read the whole file before
 running anything. The three rules below are not style preferences. Two of them guard failures that
 are silent and expensive, and the third guards the thing sluice exists to prevent.
@@ -24,15 +29,16 @@ empty gate passes every lead through rather than filtering on a value nobody cho
 project's core invariant and it has a test that fails the build if it regresses, because getting it
 backwards once silently binned an entire job hunt.
 
-The failure mode when an agent sets this up is specific and worth naming: you will have just read
-the user's CV, so you will be able to *infer* plausible values for `accept_titles`,
+On the main path the coach asks the preference questions and saves only what the user says yes to.
+Off it, the failure mode when an agent sets this up is specific and worth naming: you will have just
+read the user's CV, so you will be able to *infer* plausible values for `accept_titles`,
 `target_locations`, `reject_companies` and the pay floors. **Inferring them is the bug.** A gate you
 filled in from a guess looks identical to one the user chose, and the leads it silently discards
-never appear anywhere for them to notice. Ask, and leave anything they do not answer unset.
+never appear anywhere for them to notice. Ask, and leave anything they do not answer unset. That
+binds you on both paths: never edit a gate the coach left unset.
 
 The same rule governs `Job Applications/Judging Profile.md`, which is where the LLM judge reads its
-criteria at runtime. Interview the user and write down their answers. Do not write down your
-reading of their CV.
+criteria at runtime. Its text is the user's answers, never your reading of their CV.
 
 ### 2. Never mark evidence verified
 
@@ -41,13 +47,13 @@ reading of their CV.
 against the exact bytes a human was shown, so an edit made after approval abstains rather than
 becoming citable.
 
-`job-sluice experience add` (and `skills add` / `stories add`) **proposes**. It lands the entry
-unverified and prints so. There is no `--all` and no `--yes` on `verify`. Under `mcp serve
---write` the `verify_evidence` tool shows the user a review form in their client, with each
-entry's full text under its own checkbox; only the entries they tick are verified, and you cannot
-answer that form for them. A form holds about a screen of entries, so a large queue takes a few
-calls: pass the result's `not_shown_titles` as `names` to show the next batch. None of that is an obstacle to route around: the human reading each entry is the point
-of it.
+The `propose_evidence` MCP tool and `job-sluice experience add` (and `skills add` / `stories add`)
+**propose**. They land the entry unverified. There is no `--all` and no `--yes` on `verify`. Under
+`mcp serve --write` the `verify_evidence` tool shows the user a review form in their client, with
+each entry's full text under its own checkbox; only the entries they tick are verified, and you
+cannot answer that form for them. A form holds about a screen of entries, so a large queue takes a
+few calls: pass the result's `not_shown_titles` as `names` to show the next batch. None of that is
+an obstacle to route around: the human reading each entry is the point of it.
 
 So: propose freely, then hand the decision back. Call `verify_evidence` and let them tick the
 form, or have them run `job-sluice experience verify`. Either way the verifying is theirs.
@@ -70,9 +76,9 @@ under their name.
 
 | Task | You | The human |
 |---|---|---|
-| Install, `init`, config | yes | |
-| Interview for judging criteria, then write the Judging Profile | yes | answers |
-| Interview for identity, then write the Candidate Profile | yes | answers |
+| Install, register the MCP server | yes | says whether it gets `--write` |
+| Start the career coach (its slash command) | cannot | types it |
+| Judging Profile, Candidate Profile, Role Brief, searches | | answers the coach, and says yes to each save |
 | Interview for the CV Layout, then write it | yes | answers |
 | Propose evidence entries from their existing CV, if they have one | yes | |
 | **Verify evidence** | **never** (you may open the `verify_evidence` form) | **only they can** (by ticking that form, or with the CLI) |
@@ -82,10 +88,11 @@ under their name.
 | Sign off a held CV (`cv signoff`) | | theirs |
 | Actually submitting an application | | theirs |
 
-Two things you cannot do at all, and should say so plainly rather than working around: logging into
-a job board (it is their account, over an interactive browser), and minting the Google OAuth token
-`track` needs. `job-sluice track auth` is the command for that second one, but it opens a browser
-and waits on their Google consent, so running it is theirs.
+Three things you cannot do at all, and should say so plainly rather than working around: starting
+an MCP prompt (only the user can type its slash command), logging into a job board (it is their
+account, over an interactive browser), and minting the Google OAuth token `track` needs.
+`job-sluice track auth` is the command for that last one, but it opens a browser and waits on their
+Google consent, so running it is theirs.
 
 ---
 
@@ -115,53 +122,98 @@ Deliberately no number of setup rows: how many there are depends on which channe
 installed from, since a packaged install brings the renderer's native libraries and a bare `pip
 install` does not. `--verbose` prints every check as a table when you need the detail.
 
-### 0. Confirm the install
+### 0. Install
 
 ```bash
 job-sluice --version
 ```
 
-Not installed? Prefer a packaged channel over `pip`, because those install the native cairo, pango
-and gdk-pixbuf libraries that PDF rendering needs and pip cannot supply. See
-[INSTALL.md](INSTALL.md). `brew install MrReasonable/tap/job-sluice` on macOS.
+The coach needs a channel that carries the `mcp` extra: uv, pipx or pip with
+`'job-sluice[mcp]'`, Homebrew, or Docker. See [INSTALL.md](INSTALL.md); prefer a packaged channel
+over `pip`, because those install the native cairo, pango and gdk-pixbuf libraries that PDF
+rendering needs and pip cannot supply. `brew install MrReasonable/tap/job-sluice` on macOS.
 
-### 1. Scaffold
+The `.deb` and `.rpm` packages cannot carry the `mcp` extra. If that is what they installed, offer
+two choices: follow the [appendix](#appendix-without-mcp-prompts) with the package they have, or
+switch channel (remove the package, then install from uv, pipx or Homebrew with the extra). Never
+both side by side: two `job-sluice` executables share one config and state at possibly different
+versions, so a key one version refuses breaks the other, and the registration below could pick
+the one without `mcp`.
+
+### 1. Register the server
+
+First look for an existing registration:
 
 ```bash
-job-sluice init --vault <where their notes should live>
+claude mcp get job-sluice
 ```
 
-Ask where the vault goes before running this. If they already keep an Obsidian vault, point at it;
-`init` never overwrites an existing artefact, so it is safe against a real vault.
+If one exists, tell the user its scope and whether its command carries `--write`. If it must
+change, remove it with `claude mcp remove job-sluice -s <scope>` before adding the new one; never
+add a second. A read-only registration lets the coach interview and research, but not save.
 
-**You cannot run the interview, and dropping `--no-input` will not give it to you.** `init` selects
-its asker on `sys.stdin.isatty()`, so from a subprocess it takes the no-input path whatever flags
-you pass: you are asked nothing and no Candidate Profile is written. That is why step 3 has you
-write that note directly from what the user told you, and why the only way to reach the real
-five-question interview is for the HUMAN to run `job-sluice init` in their own terminal. Say so
-rather than reporting an interview that did not happen.
+Then explain `--write` and ask whether they want it: it adds the tools that change their vault and
+config (the coach's saves, evidence proposals and the review form, leads, CVs), and with the
+registration below those tools are present in every Claude Code session, not only this one.
 
-The config lands in the XDG config directory unless `SLUICE_CONFIG` names somewhere else.
+Find the executable and check it can serve MCP before registering it:
 
-### 2. Judging Profile: interview, then write
+```bash
+JOB_SLUICE=$(command -v job-sluice)
+echo "$JOB_SLUICE"
+"$JOB_SLUICE" mcp serve </dev/null; echo "exit $?"
+```
 
-Open `Job Applications/Judging Profile.md` in the vault. It ships with neutral text under each
-heading that tells the judge to abstain. Replace a heading's text only where the user has told you
-what belongs there.
+Stop and report unless `$JOB_SLUICE` starts with `/`: an alias or a shell function prints a name,
+not a path. Stop and report if the probe exits 2: that install lacks the `mcp` extra, and it
+prints the command that adds it. With the extra the probe exits 0, since it reads end of input at
+once. Then register it (drop `--write` if they said no):
 
-Good questions: what roles are you actually going for, what would make you turn one down, where will
-you work and on what terms, what does the pay have to clear, what have you had enough of. Write their
-answers in their words. Leave the neutral text where they had no answer.
+```bash
+JOB_SLUICE=$(command -v job-sluice)
+claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve --write
+```
 
-### 3. Candidate Profile: interview, then write
+The path is absolute because the `PATH` a stdio server inherits is not documented. `--scope user`
+makes the server available in every directory; without it the server loads only where you ran the
+command. Do not add a `VAULT_DIR`: the coach agrees the vault with the user and saves it.
 
-`init` writes this only when answered interactively, so a `--no-input` run leaves it absent and
-`doctor` reports it `setup` and blocking `cv`. Ask for the name and contact details that should head
-their CV, then fill it in. This is rule 3 territory: nothing here is guessable.
+On Docker, register the compose project's `mcp` service instead, exactly as
+[MCP.md's Docker entry](MCP.md#docker-claude-code) shows, and keep `SLUICE_COMPOSE` for
+[every later command](#docker-one-environment). For a client other than Claude Code, see
+[Other MCP clients](#other-mcp-clients).
 
-### 4. CV Layout: interview, then write
+### 2. Hand over to the coach
 
-Ask which roles their CV shows, newest first: each employer as the CV should print it, the
+A server added during a session is not loaded by that session, so stop here and tell the user:
+
+1. Exit Claude Code, then run `claude --continue` in the same directory. It resumes only
+   conversations started in the directory it is run from.
+2. Type `/mcp` and check `job-sluice` shows as connected.
+3. Type `/mcp__job-sluice__career_interview` on its own and send it (the middle part is the
+   name the server was registered under in step 1), then say what they want from
+   the session in their next message. The prompt takes no argument: text typed after the command
+   on the same line is dropped.
+
+The coach plays back their current setup, interviews them, researches the role, and saves each
+change only after reading it back and getting a yes. It does not set up evidence: it ends by saying
+that verifying evidence is the user's step. When the user comes back and says carry on, continue
+at step 3.
+
+### 3. Vault check, then CV Layout
+
+Before writing anything, confirm which vault the server uses: call `setup_status` and read
+`vault`. Stop while `vault.is_default` is true, or while the configured `vault_dir` is neither an
+absolute path nor one starting with `~` (a relative value resolves against the folder the server
+was started from): anything written would land where nothing else reads it. The one remedy is
+the user's: set `vault_dir` in their sluice config file by hand, then restart the server.
+
+Otherwise get the vault's path the way the coach does: the `vault_dir` the user agreed, said back
+verbatim, or `job-sluice doctor` run with the same `VAULT_DIR` the server was registered with. On
+Docker the host vault is the `SLUICE_VAULT` value, resolved against the compose file's directory
+(`./vault` there when unset).
+
+Then ask which roles their CV shows, newest first: each employer as the CV should print it, the
 dates, and optionally the location and title; any roll-up of earlier roles under one heading,
 and which employers it covers; companies whose work fits any role; companies to leave off;
 certificates; education. Then create `Job Applications/CV Layout.md` in the shape
@@ -169,44 +221,50 @@ certificates; education. Then create `Job Applications/CV Layout.md` in the shap
 what you would change and edit only what they approve; never rewrite it. Every value is
 theirs: never fill in a date, a title or a qualification they did not give you.
 
-### 5. Evidence: propose, then hand back
+### 4. Evidence: propose, then hand back
 
-If they have an existing CV, read it as source material and propose one entry per real achievement, each with the `--company` a role in their CV Layout names and the specific tools and hard skills that job used in `--tools`. General soft skills, tied to no particular job, go in `--skills`:
+This step is yours, not the coach's. If they have an existing CV, read it as source material and
+propose one entry per real achievement, each with the company a role in their CV Layout names and
+the specific tools and hard skills that job used. With the MCP server, call `propose_evidence`
+with `kind: "experience"`, a `name`, the entry's `body`, and `fields` holding `Company`,
+`Metrics`, `Tools` and `Skills`. Without it, the CLI does the same:
 
 ```bash
 job-sluice experience add --name "..." --company "..." --metrics "..." --tools "..." --skills "..." --body "..."
 ```
 
-Put only named tools in `--tools`: tools, technologies, languages, platforms, standards and named
+Put only named tools in `Tools` (`--tools`): tools, technologies, languages, platforms, standards and named
 methods (`Terraform`, `React`, `WCAG`, `Scrum`). Never general practices or concepts such as
 `security`, `coaching`, `pairing` or `architecture`. Every declared item is checked, as spelled, in
 every bullet of every CV, hyphenated compounds included (`security-focused` matches a declared
 `security`), so a practice word there can turn ordinary prose into a `MISATTRIBUTED TOOL` refusal
 and get leads skipped. General soft skills (`coaching`, `stakeholder management`) go in
-`--skills` instead: those items are offered for the CV's SKILLS section and used nowhere else --
+`Skills` (`--skills`) instead: those items are offered for the CV's SKILLS section and used nowhere else --
 never shown as part of the entry, never checked. Never put a tool in `--skills`: a tool named
 only under `Skills:` and nowhere else in their evidence, then claimed in a bullet, is reported
 as a term named in no evidence (while `cv.term_check` is on, its default). A Skills Inventory note
 (`job-sluice skills add`) also works.
 
-Every figure you put in `--metrics` must come from their CV or from something they told you. This is
+Every figure you put in `Metrics` (`--metrics`) must come from their CV or from something they told you. This is
 the pool the fabrication gate licenses bullets against, so a number you rounded, extrapolated or
 invented here becomes a number the gate will happily certify in a CV sent under their name.
 
 Then **stop** and hand the decision to them: call `verify_evidence` so they can tick the entries
 in a review form without leaving the session, or have them run `job-sluice experience verify`.
-Nothing is citable until they do, and `cv run` now refuses outright while NO verified `experience` entry exists -- once for the
-run, before any fetch or backend call, exiting 2 and naming the two commands. The bar is one, not
-all: a corpus holding one verified entry and ten pending ones composes fine. So an unverified
-corpus costs nothing, but it also composes nothing until the human verifies at least one.
+Not every client can show that form; [MCP.md](MCP.md#install-in-your-client) lists which can.
+Nothing is citable until they do, and `cv run` refuses outright while NO verified `experience`
+entry exists -- once for the run, before any fetch or backend call, exiting 2 and naming the two
+commands. The bar is one, not all: a corpus holding one verified entry and ten pending ones
+composes fine. So an unverified corpus costs nothing, but it also composes nothing until the
+human verifies at least one.
 
-### 6. Backend
+### 5. Backend
 
 `claude-max` is the shipped default and needs no API key, just the `claude` CLI on `$PATH`.
 Otherwise ask which provider they want and where the key should live. Never write a key into the
 config file: it belongs in the environment. `job-sluice doctor --verbose` reports which provider fills each role.
 
-### 7. Camofox, if they want real leads
+### 6. Camofox, if they want real leads
 
 This is what turns sluice from a thing that judges leads into a thing that finds them. It is a
 separate container, built once from source because upstream publishes no image:
@@ -224,11 +282,13 @@ compose file, so `docker compose up` will not work from a fresh clone. Then send
 they use, exactly as they normally would. You cannot do this part. Tell them to close the session
 afterwards, because a login is flushed to disk on session destroy rather than at login.
 
-Then set their real searches in `sources.<id>.searches`. Every source ships one example search, and
+Searches belong to the coach on the main path: the user types
+`/mcp__job-sluice__career_interview` (with the name the server was registered under) again and hands it a search address, and it saves the search
+after reading it back and getting a yes. Every source ships one example search, and
 `job-sluice ingest list-sources` marks those `EXAMPLE-SEARCH(n/m)`, so anything still carrying that
 tag is searching for something the user never asked for.
 
-### 8. First run
+### 7. First run
 
 ```bash
 job-sluice ingest run --all --dry-run   # see what comes back, write nothing
@@ -256,9 +316,9 @@ Invent nothing. Every field must come from the advert or from the user; if they 
 a location or a salary, omit the flag rather than guessing, and if the advert has no url, ask for
 one — it is required, and it is what triage fetches the job description from.
 
-### 9. Hand back
+### 8. Hand back
 
-End by telling them, concretely:
+End by telling them, concretely, what the coach did not already report:
 
 - what you set up, and what you deliberately left unset because they did not answer
 - that pending evidence is waiting for them to verify (the `verify_evidence` form, or
@@ -268,6 +328,65 @@ End by telling them, concretely:
   and blocks nothing: triage falls back to the shipped neutral criteria rather than stopping
 - that `track` is not set up, and needs a Google OAuth token they mint themselves with
   `job-sluice track auth` — after the Google Cloud console steps in `docs/INSTALL.md`
+
+### Docker: one environment
+
+On the Docker channel every command after the hand-over runs through the same compose project,
+never a host `job-sluice`:
+
+```bash
+docker compose -f "$SLUICE_COMPOSE" run --rm -T job-sluice doctor --offline
+docker compose -f "$SLUICE_COMPOSE" run --rm -T job-sluice experience add --name "..." --company "..." --body "..."
+docker compose -f "$SLUICE_COMPOSE" run --rm job-sluice experience verify
+docker compose -f "$SLUICE_COMPOSE" run --rm -T job-sluice ingest run --all --dry-run
+```
+
+and likewise `triage`, `cv` and `leads add`. A host command would read a config with no
+`vault_dir`, write leads into a stray `./vault`, and record them in the host's `seen.db`, which
+suppresses them for good once the real vault is in use. `experience verify` runs without `-T`,
+since it asks `[y/N]` on a terminal.
+
+---
+
+## Other MCP clients
+
+The server command is the same everywhere: `job-sluice mcp serve`, with `--write` for the write
+tools. [MCP.md](MCP.md#install-in-your-client) has the registration for each client it has been
+measured on, and what each can show. On a client that cannot show MCP prompts, follow the
+[appendix](#appendix-without-mcp-prompts). On one that cannot show the review form, the human
+verifies with `job-sluice experience verify`.
+
+---
+
+## Appendix: without MCP prompts
+
+Without the coach you do its setup steps yourself, then rejoin the sequence at step 3's CV Layout
+interview. Skip step 3's vault check only when no MCP server is registered. Run every later command
+in the same environment (`SLUICE_CONFIG`, `VAULT_DIR`) that ran `init`.
+
+**Scaffold.** Ask where the vault goes, then:
+
+```bash
+job-sluice init --vault <where their notes should live>
+```
+
+If they already keep an Obsidian vault, point at it; `init` never overwrites an existing artefact.
+You cannot run its interview: `init` selects its asker on `sys.stdin.isatty()`, so from a
+subprocess it takes the no-input path whatever flags you pass, and writes no Candidate Profile.
+Only the human, running `job-sluice init` in their own terminal, reaches the real interview. Say so
+rather than reporting an interview that did not happen.
+
+**Judging Profile.** Open `Job Applications/Judging Profile.md`. It ships with neutral text under
+each heading that tells the judge to abstain. Ask what roles they are going for, what would make
+them turn one down, where they will work and on what terms, what the pay has to clear, and what
+they have had enough of. Write their answers in their words under the matching heading, and leave
+the neutral text where they had no answer.
+
+**Candidate Profile.** Ask for the name and contact details that should head their CV, then fill
+in `Job Applications/Candidate Profile.md`. Nothing here is guessable (rule 3).
+
+**Searches.** Set their real searches in `sources.<id>.searches` in the config. The
+`EXAMPLE-SEARCH(n/m)` tag in step 6 applies here too.
 
 ---
 
@@ -297,3 +416,6 @@ End by telling them, concretely:
 - **`leads` passes print and change nothing.** `dedupe`, `expire` and `reconcile` report by default
   and need `--merge` / `--expire` / `--apply` to act. `dismiss` is the exception and writes on every
   call, because the verdict is one the user typed.
+- **`setup_save` reports `stale`.** The user edited a note or the config during the session, so
+  what the coach played back is no longer what is on disk. Call `setup_status` again and play the
+  change back before saving.
