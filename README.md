@@ -351,7 +351,8 @@ call `list_leads`/`get_lead`/`doctor`/`health`/`list_evidence` directly instead 
 output. Read-only by default; needs `pip install 'job-sluice[mcp]'`.
 
 ```bash
-claude mcp add job-sluice -- job-sluice mcp serve
+JOB_SLUICE=$(command -v job-sluice)
+claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve
 ```
 
 `--write` additionally registers the write tools, as a per-registration trust decision rather than
