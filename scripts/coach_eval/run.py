@@ -308,7 +308,7 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     user_messages, edit, board = [], None, None
     if p.scenario == "retired_board":
         board = retired_board_id()
-    message = "/mcp__sluice__career_interview" + (f" {p.focus}" if p.focus else "")
+    message = "/mcp__sluice__career_interview"
     for turn in range(p.max_turns):
         coach = _claude(coach_args(message, mcp, session), empty)
         init = next((e for e in coach if e.get("subtype") == "init"), {})
@@ -324,6 +324,13 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
         if (p.scenario == "edited_mid_session" and edit is None
                 and any(n == rubric.STATUS for n, _ in rubric.tool_calls(coach))):
             edit = {"invocation": turn, "note": hand_edit(sandbox, p.vault_env)}
+        # The persona's focus is the user's first message, never text after the command:
+        # Claude Code delivers only the first word of that (measured on 2.1.295).
+        if turn == 0 and p.focus:
+            message = p.focus
+            transcript.append(f"USER: {message}")
+            user_messages.append(message)
+            continue
         # The long prompt goes in on stdin: a transcript-sized argv is not delivered reliably
         # (the grader once answered "ready" having seen none of it); stdin carried 23 KB intact.
         reply = _claude(["--model", USER_MODEL, "--tools", "", "--system-prompt", USER_SYSTEM,
