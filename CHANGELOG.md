@@ -40,6 +40,27 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.3.0](https://github.com/MrReasonable/sluice/compare/v4.2.0...v4.3.0) (2026-10-09)
+
+
+### Features
+
+* **mcp:** `verify_evidence`'s review form now reaches MCP clients on protocols older than 2026-07-28 that declare form support ([#387](https://github.com/MrReasonable/sluice/pull/387)). They are sent the form as a request during the tool call; before, they were told to use the CLI. Measured on 2026-10-09: Cursor and Codex now show the form and verify what you tick. The rules are unchanged: every entry starts unticked, only an explicit tick verifies it, and only while its text is still what the form showed. A form sent this way waits five minutes for an answer, then reports `no_answer` and verifies nothing (opencode 2.0.20 accepts the form and never answers); a client that answers with an error gets `form_failed`. Clients without form support, among them Gemini CLI and Claude Desktop, still get `unsupported_client` and the `job-sluice experience verify` fallback.
+
+
+### Bug Fixes
+
+* **mcp:** the `career_interview` prompt no longer takes an argument ([#387](https://github.com/MrReasonable/sluice/pull/387)). Claude Code passes a prompt only the first word of whatever follows the command, so a request typed after `/mcp__job-sluice__career_interview` reached the coach as one word. Type the command on its own, then say what you want from the session in your next message.
+
+No existing config key, default or note changes meaning in this release.
+
+
+### Documentation
+
+* `docs/AI-SETUP.md` is rewritten around the career coach: an agent installs sluice, registers its MCP server at user scope, checks the install can serve MCP, and hands you the coach's command; it then sets up the CV Layout and proposes evidence for you to verify. Agents whose client cannot show MCP prompts follow an appendix ([#387](https://github.com/MrReasonable/sluice/pull/387)).
+* `docs/MCP.md` has a new "Install in your client" section with setup for Claude Code, Docker, opencode, Claude Desktop, Cursor, VS Code, Codex and Gemini CLI, each giving the version and date it was measured and whether prompts and the review form work there.
+* Every `claude mcp add` example registers the server with `--scope user` and the executable's full path.
+
 ## [4.2.0](https://github.com/MrReasonable/sluice/compare/v4.1.0...v4.2.0) (2026-10-08)
 
 
