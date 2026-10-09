@@ -1248,11 +1248,11 @@ def build_server(config, write: bool = False):
     # before saving. The text names no role, sector, seniority or employer
     # (tests/test_coach_prompt.py sweeps it and this description).
     @mcp_server.prompt(name="career_interview")
-    def career_interview_prompt(focus: str = "") -> str:
+    def career_interview_prompt() -> str:
         """A career coach that interviews you, researches the role you choose, and sets up
-        your job hunt with the changes you agree to in chat. Optional `focus`: what you want
-        from this session, in your own words."""
-        return coach.assemble_prompt(focus, write=write)
+        your job hunt with the changes you agree to in chat. Type the command on its own,
+        then say what you want from the session in your next message."""
+        return coach.assemble_prompt(write=write)
 
     @mcp_server.tool(name="setup_status")
     def setup_status_tool() -> dict:

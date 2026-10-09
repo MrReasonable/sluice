@@ -634,18 +634,22 @@ def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
     `prompts/list` and `prompts/get` through the real SDK. Registered at the DEFAULT
     privilege level (write=False), because a read-only server's coach can still interview
     and research -- the prompt itself tells the user to restart with `--write` before the
-    save. Exact-set `==` so a second prompt cannot arrive unreviewed."""
+    save. Exact-set `==` so a second prompt cannot arrive unreviewed. It declares no
+    arguments: see the assertion."""
     async def _run():
         from mcp import Client
         server = build_server(Config())
         async with Client(server, raise_exceptions=True) as client:
             return (await client.list_prompts(),
-                    await client.get_prompt("career_interview", {"focus": "x"}))
+                    await client.get_prompt("career_interview", {}))
 
     listed, got = asyncio.run(_run())
     assert {p.name for p in listed.prompts} == {"career_interview"}
     (prompt,) = listed.prompts
-    assert [(a.name, bool(a.required)) for a in (prompt.arguments or [])] == [("focus", False)]
+    # No arguments (2026-10-09, measured on Claude Code 2.1.295): the client splits text after
+    # the slash command on whitespace and delivers only the first word, so a free-text argument
+    # was silently truncated. The coach's opening asks what the user wants instead.
+    assert (prompt.arguments or []) == []
     text = "".join(m.content.text for m in got.messages)
     assert "setup_status" in text
 

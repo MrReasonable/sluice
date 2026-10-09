@@ -50,8 +50,8 @@ the property that makes the flag meaningful rather than advisory.
 
 The server also offers a prompt, `career_interview`, at either privilege level. Claude Code
 surfaces it as the slash command `/mcp__job-sluice__career_interview` (the middle part is the name you gave
-`claude mcp add`), with one optional argument
-saying what you want from the session. Your client cannot list prompts for you, so start it by
+`claude mcp add`). Type it on its own and say what you
+want from the session in your next message. Your client cannot list prompts for you, so start it by
 name. The coach interviews you, can research the role you choose, and agrees setup changes with
 you in chat. Before saving it plays back everything the save would write, grouped by where it
 goes and showing any value it replaces, and it calls `setup_save` (under `--write`) only after
