@@ -1,7 +1,7 @@
 # AI-SETUP around the career coach, and installing the MCP server per client (design)
 
-Status: revision 2, 2026-10-09. One `/review-plan` round (four reviewers) folded in; the table at
-the end maps every finding.
+Status: revision 3, 2026-10-09. Two `/review-plan` rounds (four reviewers each) folded in; the
+tables at the end map every finding.
 
 Piece 3 of "drive sluice from Claude Code" (piece 1: `2026-10-06-mcp-verify-elicitation-design.md`;
 piece 2: `2026-10-07-in-session-setup-career-coach-design.md`, amended by
@@ -45,7 +45,8 @@ not assumed.
    conversations from the current directory.
 2. **An MCP prompt argument receives the first whitespace-separated token only.** Headless probe
    (`--restricted --strict-mcp-config`, sandboxed server wrapped to log the argument): typing
-   `/mcp__sl__career_interview I want to move into data engineering` delivered `focus='I'`, which
+   `/mcp__sl__career_interview I want to change roles` (a neutral probe phrase) delivered
+   `focus='I'`, which
    the prompt then quoted as the user's focus; the remaining words were dropped. Quoting is
    undocumented.
    - Consequence 1: a user following MCP.md/USAGE.md/handoff.md's "optionally followed by what
@@ -80,18 +81,33 @@ it was measured, so a reader can tell how old it is.
    (an agent cannot start an MCP prompt; the docs describe only user execution).
 4. **The sequence.** `doctor` after each state-changing step and the exit-code guidance, unchanged.
    - **0 Install.** The coach path needs a channel carrying the `mcp` extra: uv/pipx/pip with
-     `[mcp]`, Homebrew, or Docker. The `.deb`/`.rpm` packages cannot carry it (`docs/INSTALL.md`),
-     so on those the agent uses the appendix, or the user adds a second channel for MCP
-     (`uv tool install 'job-sluice[mcp]'`).
+     `[mcp]`, Homebrew, or Docker. The `.deb`/`.rpm` packages cannot carry it (`docs/INSTALL.md`).
+     On those the agent offers two choices: use the appendix, or SWITCH channel (remove the
+     package, install from uv/pipx/Homebrew with `[mcp]`) **(owner)**. Never both side by side:
+     two `job-sluice` executables would share one config and state at possibly different
+     versions, so a key one version refuses breaks the other, and `command -v` could register
+     the one without `mcp`.
    - **1 Register.** `claude mcp get job-sluice` first. If absent, explain what `--write` adds,
      including that its tools will be present in every Claude Code session, and ask. Then, by
      channel:
-     - host install (uv, pipx, pip, Homebrew): resolve `command -v job-sluice`; if it prints
-       nothing, stop and report rather than registering. Otherwise:
-       `claude mcp add --scope user --transport stdio job-sluice -- <that absolute path> mcp serve --write`.
-       The doc shows the line with a placeholder for the path, and says how to fill it. Absolute
-       because the docs do not state the PATH a stdio server inherits.
-     - Docker: the measured `docker compose ... run` registration (see Per-client install). The
+     - host install (uv, pipx, pip, Homebrew): a runnable two-line block,
+       ```bash
+       JOB_SLUICE=$(command -v job-sluice)
+       claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve --write
+       ```
+       preceded by two checks: `JOB_SLUICE` is non-empty, and a probe shows this executable
+       can serve MCP, i.e. has the `mcp` extra. The probe must be measured to DISCRIMINATE an
+       install with the extra from one without (the plan picks it; `mcp serve --help` likely
+       cannot, since argparse answers before the lazy `mcp` import). Either check failing stops
+       the step with a report, before anything is registered. Absolute path because the docs do
+       not state the PATH a stdio server inherits.
+     - Docker: the compose file already defines an `mcp` service (`stdin_open: true`, command
+       `mcp serve`, no `--write`), so the registration overrides its command:
+       ```bash
+       claude mcp add --scope user --transport stdio job-sluice -- docker compose -f "$SLUICE_COMPOSE" run --rm -T mcp mcp serve --write
+       ```
+       where `SLUICE_COMPOSE` is the absolute path of the user's compose file, set on the line
+       before. `-T` because a stdio server must not get a TTY; measured before it ships. The
        compose file pins `VAULT_DIR`, so the coach reports the vault as decided by the
        environment.
 
@@ -105,29 +121,44 @@ it was measured, so a reader can tell how old it is.
      closing says evidence is the user's step; the doc reconciles that by having the agent only
      propose, and the human verify.
    - **3 Vault check, then CV Layout.** Before writing anything, the agent confirms which vault
-     the server uses: call `setup_status`; while `vault.is_default` is true, stop (anything
-     written would land in the server's launch directory, which nothing else reads) and send the
-     user back to the coach to agree `vault_dir`. Otherwise get the path the way the coach's
-     review phase does: the `vault_dir` the user agreed, said back verbatim, or `job-sluice
-     doctor` run with the same `VAULT_DIR` the server was registered with (for Docker, the
-     compose vault mount). Then the CV Layout interview, unchanged: create only if absent,
-     otherwise show a diff, invent no value.
-   - **4 Evidence.** `propose_evidence` in place of shelling out; today's `Tools:`/`Skills:` and
-     `--metrics` guidance kept in substance. Then **stop and hand the decision back**: call
+     the server uses: call `setup_status`. Stop while `vault.is_default` is true, or while the
+     configured `vault_dir` is neither absolute nor `~`-anchored (a hand-typed relative value
+     passes `is_default` but resolves against the server's launch directory): anything written
+     would land where nothing else reads it. The remedy is the coach's own (`DEFAULT_VAULT` in
+     `sluice/onboard/review.py`, `open.md`): set `vault_dir` in the config by hand, then
+     restart the server; the doc states that one remedy and no other. Otherwise get the path
+     the way the coach's review phase does: the `vault_dir` the user agreed, said back verbatim,
+     or `job-sluice doctor` run with the same `VAULT_DIR` the server was registered with. On
+     Docker the host vault is the `SLUICE_VAULT` value, resolved against the compose file's
+     directory (`./vault` there when unset). Then the CV Layout interview, unchanged: create
+     only if absent, otherwise show a diff, invent no value.
+   - **4 Evidence.** With the MCP server: `propose_evidence`. Without it (the appendix path):
+     `job-sluice experience add`, as today. Today's `Tools:`/`Skills:` and `--metrics` guidance
+     kept in substance for both. Then **stop and hand the decision back**: call
      `verify_evidence` so the user ticks the form, or have them run `job-sluice experience
      verify`. The "one verified entry composes" paragraph kept.
    - **5 Backend, 6 Camofox, 7 First run.** As today, except searches belong to the coach on the
      main path: the user re-types `/mcp__job-sluice__career_interview` and hands the coach a
-     search address, which it saves with a playback and a yes. The `EXAMPLE-SEARCH(n/m)` tag
+     search address, which it saves with a playback and a yes. On the appendix path, the
+     appendix's `sources.<id>.searches` instruction applies. The `EXAMPLE-SEARCH(n/m)` tag
      paragraph stays.
+   - **Docker: one environment.** On the Docker channel every CLI command after the hand-over
+     (`doctor`, `experience add`/`verify`, `ingest`, `triage`, `cv`, `leads add`) runs through
+     the same compose project, `docker compose -f "$SLUICE_COMPOSE" run --rm job-sluice ...`,
+     never a host binary: a host `ingest run` would read a config with no `vault_dir`, write
+     leads into a stray `./vault` and record them in the host's `seen.db`, suppressing them for
+     good once the real vault is in use (the #81 harm). `experience verify` runs without `-T`,
+     since it asks `[y/N]` on a terminal.
    - **8 Hand back.** As today, minus what the coach already reported.
 5. **Other MCP clients.** One paragraph: the server command is the same everywhere; registration
    per client is in MCP.md; no MCP prompts → the appendix; no form elicitation → the human runs
    `job-sluice experience verify`.
 6. **Appendix: without MCP prompts.** Today's `init` step (with the tty caveat), Judging Profile
    and Candidate Profile interview steps, condensed, and today's `sources.<id>.searches`
-   instruction (the coach owns searches only on the main path); rejoins at step 3's CV Layout
-   (the vault is the one `init` was given, so the vault check is not needed there).
+   instruction (the coach owns searches only on the main path); rejoins at step 3's CV Layout.
+   The vault check is skipped only when no MCP server is registered, and every later command
+   runs in the same environment (`SLUICE_CONFIG`, `VAULT_DIR`) that ran `init`; the appendix
+   says both.
 7. **Things that look like bugs.** Unchanged, plus: `setup_save` reporting `stale` because the
    user edited a note or the config mid-session (re-read with `setup_status`, play back again).
 
@@ -141,10 +172,12 @@ never an absolute home path), and a capability line: MCP prompts (the coach) yes
 elicitation (the `verify_evidence` form) yes/no, each "no" naming its fallback, plus the client
 version and date measured. A client that could not be measured is left out, not guessed.
 
-**Snippets are written, not copied.** Every snippet uses the placeholder `<path from command -v
-job-sluice>` for the command (Docker: the compose file path placeholder), carries no env block
-beyond documented placeholder keys, and is never transcribed from a measured config, which can
-carry the measuring machine's paths and other registered servers.
+**Snippets are written, not copied.** Every snippet's command is ONE placeholder token held in a
+single test constant per format: `"$JOB_SLUICE"` in shell (set by the `command -v` line above
+it), and one fixed string value in JSON/TOML config blocks. The Docker entry's host paths (the
+compose `-f` value, the vault mount) are placeholders too (`"$SLUICE_COMPOSE"`,
+`SLUICE_VAULT`). No env block beyond documented placeholder keys. Never transcribed from a
+measured config, which can carry the measuring machine's paths and other registered servers.
 
 **One Claude Code form.** MCP.md's existing bare `claude mcp add job-sluice -- job-sluice mcp
 serve` lines become the scoped, placeholder form, so the doc never shows two Claude Code
@@ -210,21 +243,35 @@ stay `bash` so `_shell_blocks` keeps seeing them). New or changed:
   go, with the mechanism.
 - **Eval harness** (`tests/test_coach_eval.py`): the first turn's message is exactly the bare
   slash command, and the persona's focus arrives verbatim as the next user message.
-- **Human verifies.** The division-of-labour verify row and "have them run `job-sluice
-  experience verify`" are present.
-- **Vault check.** Step 3's instruction to stop while `vault.is_default` is present, and names
-  `setup_status`.
+- **Human verifies.** Sliced by heading: the division-of-labour table's verify row, matched by
+  its cells (never / only they can), and step 4's "have them run `job-sluice experience verify`"
+  inside step 4's section. Witnessed by deleting only that row or sentence.
+- **Vault check.** Inside step 3's section only: `setup_status`, `vault.is_default` and a stop
+  instruction. Witnessed by deleting only that sentence.
+- **Docker one-environment.** Inside the Docker paragraph: every post-hand-over command shown
+  runs through `docker compose -f "$SLUICE_COMPOSE" run`.
 - **Install section, parsed per format.** Each client entry's block is parsed the way that
   client reads it: `shlex` for shell, `json` for JSON, JSON-with-comments stripped explicitly for
-  VS Code, `tomllib` for TOML. Assertions on the parsed command and argv: the argv after the
-  executable is `mcp serve` plus `--write` exactly where a hand-written `{client: write}` roster
-  in the test says; that argv validates against the real `_build_parser()`; no absolute path in
-  the command or any value. Scope: the client headings found equal the roster BY NAME.
+  VS Code, `tomllib` for TOML. Assertions:
+  - the command EQUALS that format's placeholder constant (positive, so the bare `job-sluice`
+    form fails; witnessed by restoring it);
+  - for Docker, the prefix tokens equal `docker compose -f "$SLUICE_COMPOSE" run --rm -T <svc>`
+    exactly, with `<svc>` read from `docker-compose.yml` as the service whose command is
+    `["mcp", "serve"]`; the sluice argv is what follows;
+  - the sluice argv is `mcp serve` plus `--write` exactly where a hand-written
+    `{client: write}` roster says, and validates against the real `_build_parser()`;
+  - no value anywhere in the block (docker/compose flags included) is an absolute path by
+    `posixpath.isabs` OR `ntpath.isabs` (drive letter, UNC), nor `~`-prefixed; one witnessed
+    row per form.
+  Scope: the client headings found equal the roster BY NAME.
 - **One Claude Code line.** AI-SETUP's host registration line appears verbatim in MCP.md's
   Claude Code entry.
-- **Scope.** Every `claude mcp add` in every doc on `test_docs_claims.py`'s `_DOCS` roster
-  carries `--scope user`; scope check: the sweep finds at least AI-SETUP, MCP.md, README and
-  USAGE.md.
+- **Scope.** Matched as an INVOCATION (`claude mcp add` followed by a flag or a server name),
+  in fenced shell blocks AND inline code spans, never as raw text, so MCP.md's prose mention
+  ("the name you gave `claude mcp add`") is exempt by shape, not by file. Inputs: every doc on
+  `test_docs_claims.py`'s `_DOCS` roster plus `sluice/mcpserver.py` explicitly. Each invocation
+  carries `--scope user`; scope check per file: AI-SETUP, MCP.md, README, USAGE.md and
+  mcpserver.py each yield at least one invocation.
 
 Each new assertion gets a scope check and is witnessed red by a mutation (move or delete, never
 add) before the PR goes up.
@@ -238,8 +285,7 @@ add) before the PR goes up.
   native packages run on the system Python with distro-packaged dependencies, and neither family
   packages `mcp`, so a companion must vendor `mcp` and its tree (some of it compiled), built per
   architecture and possibly per distro Python, and sluice then owns those libraries' security
-  updates on that channel. Until then the doc offers the appendix, or a second channel for MCP
-  (`uv tool install 'job-sluice[mcp]'`).
+  updates on that channel. Until then the doc offers the appendix, or switching channel.
 - Any eval run (needs the owner's go-ahead; the harness fix is code only).
 
 ## Changes from revision 1
@@ -260,3 +306,20 @@ add) before the PR goes up.
 | TE-1 (snippet test format-blind) | Per-format parsing, write roster, headings by name. |
 | TE-2 (leak test, harness untested) | Leak test kept; harness test added. |
 | TE-3 (command sweep, two forms, what CI holds) | argv validated against the parser; one Claude Code form; CI vs measurement stated. |
+
+## Changes from revision 2
+
+| Finding | Resolution |
+|---|---|
+| INV-R2-1 (Docker: host commands split vault from dedup) | Docker one-environment rule; host vault = `SLUICE_VAULT`; test pins it. |
+| INV-R2-2 (two remedies) | Step 3 defers to the coach's `DEFAULT_VAULT` remedy (hand-edit, restart). |
+| INV-R2-3 (relative `vault_dir`) | Treated as unresolved in step 3; appendix states its scoping. |
+| NEU2-1 (Windows paths) | `ntpath.isabs` + `posixpath.isabs`, `~`; one witnessed row per form. |
+| NEU2-2 (role phrase) | Neutral probe phrase. |
+| NEU2-3 (Docker host paths) | Compose path and vault mount are placeholders; check covers the whole argv. |
+| SR2-1 (Docker vs the real compose file) | `mcp` service named, `-T`, command override; Docker prefix rule in the test. |
+| SR2-2 (two `job-sluice` on PATH) | Owner: switch channel, never side by side; discriminating `mcp` probe before registering. |
+| SR2-3 (MCP-only steps 4/7 on the appendix path) | `experience add` branch; appendix searches pointer; vault-check scoping. |
+| TE-R2-1 (placeholder splits; Docker argv) | One-token placeholder constants, command EQUALS it; Docker prefix pinned. |
+| TE-R2-2 (`--scope` sweep engine) | Invocation shape in fences and inline code; `mcpserver.py` explicit; per-file scope. |
+| TE-R2-3 (unanchored prose pins) | Sliced by heading / table row; witnessed by deleting only that text. |
