@@ -1190,8 +1190,8 @@ def build_server(config, write: bool = False):
     return the constructed (NOT yet running) MCPServer. `mcp` is imported HERE and nowhere else -- see the module docstring,
     which also says why no COUNT of those tools appears in this file.
 
-    write=False is the default: every existing `claude mcp add job-sluice --
-    job-sluice mcp serve` registration stays read-only across this upgrade, and a
+    write=False is the default: every existing registration made without `--write`
+    stays read-only across this upgrade, and a
     read-only server's tools/list genuinely omits every write tool's name and
     schema too, not merely refusing them at call time -- shrinking what an agent
     steered by prompt-injected content it just read through get_lead could even

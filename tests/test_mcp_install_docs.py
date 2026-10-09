@@ -7,6 +7,7 @@ to type or paste: the command is a placeholder (never a real path, which would b
 measuring machine's), the sluice argv is a real `job-sluice` command, and `--write` appears
 exactly where the roster says.
 """
+import glob
 import json
 import ntpath
 import os
@@ -17,7 +18,7 @@ import tomllib
 
 import pytest
 
-from tests.test_docs_claims import _shell_blocks
+from tests.test_docs_claims import _DOCS, _shell_blocks
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MCP = os.path.join(_ROOT, "docs", "MCP.md")
@@ -159,3 +160,45 @@ def test_each_entry_states_what_was_measured(name):
                                    "\\\\server\\share\\job-sluice", "~/bin/job-sluice"])
 def test_the_path_check_rejects_every_absolute_form(value):
     assert posixpath.isabs(value) or ntpath.isabs(value) or value.startswith("~")
+
+
+_ADD = re.compile(r"claude mcp add(?=\s+[-A-Za-z])")
+# Files expected to carry at least one invocation. Scope: a sweep that found none would pass.
+_CARRIERS = {"README.md", "docs/MCP.md", "docs/AI-SETUP.md"}
+
+
+def _invocations(rel):
+    with open(os.path.join(_ROOT, rel), encoding="utf-8") as fh:
+        text = fh.read()
+    if rel.endswith(".py"):
+        candidates = [text]
+    else:
+        candidates = _shell_blocks(text) + re.findall(r"`([^`\n]+)`", text)
+    out = []
+    for c in candidates:
+        c = c.replace("\\\n", " ")
+        for ln in c.split("\n"):
+            m = _ADD.search(ln)
+            if m:
+                out.append(ln[m.start():])
+    return out
+
+
+def _scanned():
+    return sorted(set(_DOCS) | {os.path.relpath(p, _ROOT) for p in
+                               glob.glob(os.path.join(_ROOT, "sluice", "**", "*.py"),
+                                         recursive=True)})
+
+
+@pytest.mark.xfail(strict=True, reason="AI-SETUP lands in Task 6")
+def test_every_claude_mcp_add_is_user_scoped_and_uses_one_command_form():
+    found = {}
+    for rel in _scanned():
+        for inv in _invocations(rel):
+            found.setdefault(rel, []).append(inv)
+            toks = shlex.split(inv)
+            assert "--scope" in toks and toks[toks.index("--scope") + 1] == "user", (rel, inv)
+            if "--" in toks:
+                assert toks[toks.index("--") + 1] in (SHELL_PLACEHOLDER, "docker"), (rel, inv)
+    missing = _CARRIERS - set(found)
+    assert not missing, f"no `claude mcp add` invocation found in {sorted(missing)}"
