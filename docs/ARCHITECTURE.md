@@ -1240,11 +1240,14 @@ CR or ESC, and both of those are escaped.
 `verify_evidence`, both under `--write`. Proposing lands an entry under `_inbox/`, which
 `read_evidence` cannot see, so it is inert until a human promotes it. VERIFYING is what
 makes it citable, so the standing property is that a human approves every promotion
-(#164's central decision, unchanged): `verify_evidence` returns an SEP-2322
-`InputRequiredResult` carrying a review form -- each entry's full text in its own checkbox
+(#164's central decision, unchanged): `verify_evidence` shows a review form -- returned as
+an SEP-2322 `InputRequiredResult` to a client on the 2026-07-28 protocol, or pushed as an
+`elicitation/create` request inside the call to an older client that declares form
+elicitation (`mcpserver.py::_form_route`), both answers running through the one
+`verify_evidence_step` -- each entry's full text in its own checkbox
 description, since Claude Code folds the form's message after three lines but shows a
 description in full up to about 2,000 characters (measured) -- the client
-shows it to the user, and on the protocol's retry only entries the client returned an
+shows it to the user, and in its answer only entries the client returned an
 explicit `true` for -- and whose current text still hashes to what was shown -- reach
 `Store.verify_evidence` through `Sluice.promote_shown_evidence` (which holds that hash check,
 re-reading by exact title) and `Sluice.promote_reviewed_evidence`. Boxes start unticked, so a box
