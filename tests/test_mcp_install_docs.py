@@ -190,7 +190,6 @@ def _scanned():
                                          recursive=True)})
 
 
-@pytest.mark.xfail(strict=True, reason="AI-SETUP lands in Task 6")
 def test_every_claude_mcp_add_is_user_scoped_and_uses_one_command_form():
     found = {}
     for rel in _scanned():

@@ -233,3 +233,85 @@ def test_the_rule_sweep_is_falsified_by_a_missing_rule(rule):
     with one rule removed and confirm it complains."""
     text = _doc().lower().replace(rule, "")
     assert [r for r in _RULES if r not in text] == [rule]
+
+
+def _section(text, heading_start):
+    """From the heading line starting with `heading_start` to the next heading of the same or
+    higher level. Scoped slices, so a phrase elsewhere in the file cannot satisfy a pin."""
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.startswith(heading_start):
+            level = len(ln) - len(ln.lstrip("#"))
+            end = next((j for j in range(i + 1, len(lines))
+                        if lines[j].startswith("#")
+                        and len(lines[j]) - len(lines[j].lstrip("#")) <= level), len(lines))
+            return "\n".join(lines[i:end])
+    raise AssertionError(f"docs/AI-SETUP.md has no heading starting {heading_start!r}")
+
+
+def test_the_doc_names_the_coach_prompt_the_server_registers():
+    import asyncio
+    from mcp import Client
+    from sluice.core.config import Config
+    from sluice.mcpserver import build_server
+
+    assert "/mcp__job-sluice__career_interview" in _doc()
+    for write in (False, True):
+        async def _names(srv=build_server(Config(), write=write)):
+            async with Client(srv, raise_exceptions=True) as client:
+                return {p.name for p in (await client.list_prompts()).prompts}
+        assert asyncio.run(_names()) == {"career_interview"}, write
+
+
+def test_step_1_registration_is_mcp_md_s_claude_code_entry_verbatim():
+    from tests.test_docs_claims import _shell_blocks
+    from tests.test_mcp_install_docs import client_entries, ASSIGNMENT
+    step1 = _section(_doc(), "### 1. Register")
+    lines = [ln for b in _shell_blocks(step1) for ln in b.split("\n")
+             if ln.startswith("claude mcp add") and '"$JOB_SLUICE"' in ln]
+    assert len(lines) == 1, lines
+    with open(os.path.join(_ROOT, "docs", "MCP.md"), encoding="utf-8") as fh:
+        cc = client_entries(fh.read())["Claude Code"]
+    assert lines[0] in cc and ASSIGNMENT in step1
+
+
+def test_step_1_guards_the_registration():
+    step1 = _section(_doc(), "### 1. Register").lower()
+    for phrase in ("claude mcp get job-sluice", "claude mcp remove",
+                   "every claude code session", "starts with `/`",
+                   "mcp serve </dev/null", "exits 2"):
+        assert phrase in step1, phrase
+
+
+def test_step_2_restarts_in_the_same_directory_and_asks_in_the_next_message():
+    step2 = _section(_doc(), "### 2. Hand over").lower()
+    for phrase in ("claude --continue", "same directory", "/mcp",
+                   "/mcp__job-sluice__career_interview", "next message"):
+        assert phrase in step2, phrase
+
+
+def test_step_3_checks_the_vault_before_writing():
+    step3 = _section(_doc(), "### 3. Vault check")
+    for phrase in ("setup_status", "vault.is_default", "Stop", "restart the server"):
+        assert phrase in step3, phrase
+
+
+def test_the_human_verifies():
+    table = _section(_doc(), "## Division of labour")
+    rows = [ln for ln in table.split("\n") if ln.startswith("|") and "Verify evidence" in ln]
+    assert len(rows) == 1 and "never" in rows[0] and "only they can" in rows[0], rows
+    step4 = _section(_doc(), "### 4. Evidence")
+    assert "have them run `job-sluice experience verify`" in step4
+
+
+def test_docker_runs_every_later_command_through_compose():
+    from tests.test_docs_claims import _shell_blocks
+    docker = _section(_doc(), "### Docker:")
+    cmds = [ln for b in _shell_blocks(docker) for ln in b.split("\n") if ln.strip()]
+    assert cmds, "the Docker section shows no commands, so this check examined nothing"
+    for ln in cmds:
+        assert ln.startswith('docker compose -f "$SLUICE_COMPOSE" run'), ln
+
+
+def test_stale_is_listed_as_not_a_bug():
+    assert "`stale`" in _section(_doc(), "## Things that will look like bugs")
