@@ -61,7 +61,8 @@ def test_unticked_entry_is_not_promoted(tmp_path):
     cfg, app = _seed(tmp_path, "Example alpha", "Example beta")
     out = _call(cfg, lambda p: ("accept", {"entry_1": True, "entry_2": False}))
     assert len(out["promoted"]) == 1 and len(out["skipped"]) == 1
-    assert len(_citable(app)) == 1
+    assert out["promoted"] == ["example-alpha"]   # entry_1 is the first pending entry
+    assert _citable(app) == ["example-alpha"]
 
 
 def test_empty_answer_decline_and_cancel_promote_nothing(tmp_path):
@@ -266,7 +267,8 @@ def test_pushed_form_promotes_only_the_ticked_entry(tmp_path):
     out = _call(cfg, lambda p: ("accept", {"entry_1": True, "entry_2": False}),
                 mode="legacy")
     assert len(out["promoted"]) == 1 and len(out["skipped"]) == 1
-    assert len(_citable(app)) == 1
+    assert out["promoted"] == ["example-alpha"]   # entry_1 is the first pending entry
+    assert _citable(app) == ["example-alpha"]
 
 
 def test_pushed_form_decline_and_cancel_promote_nothing(tmp_path):
