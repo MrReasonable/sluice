@@ -860,7 +860,9 @@ is what holds it, since `fields` is caller-supplied), so it is inert until a hum
 The `verify_evidence` MCP tool is a second route to `Store.verify_evidence` (through
 `Sluice.promote_shown_evidence`, which holds the hash check below), and it keeps a human in front
 of every promotion: it has the CLIENT show, in full and each under its own UNTICKED checkbox, every
-entry it offers in a review form (SEP-2322 input-required elicitation), promotes only entries the
+entry it offers in a review form (SEP-2322 input-required elicitation on the 2026-07-28
+protocol, an `elicitation/create` pushed inside the call on an older one -- both answers go
+through the one `verify_evidence_step`), promotes only entries the
 client returned an explicit `true` for, and only when the entry's current text still hashes to what
 the form showed. Its input
 is exactly `{kind, names}` (pinned in `tests/functional/test_mcp_contract.py`), so the model has no

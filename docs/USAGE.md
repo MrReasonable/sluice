@@ -983,9 +983,11 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   displayed; it is reported under `failed` with that reason, for `job-sluice <kind> verify`. An entry whose text
   changed after the form was built is reported `changed` and left pending; one that left
   the queue in the meantime (verified through the CLI, or deleted) is reported
-  `no_longer_pending`. It needs a client on the
-  2026-07-28 MCP protocol that supports form elicitation (Claude Code does); any other
-  client gets `outcome: "unsupported_client"` and nothing is written. There is no
+  `no_longer_pending`. It needs a client that
+  supports form elicitation: on the 2026-07-28 MCP protocol the form comes back as the
+  tool's result, on an older one it is sent to the client as a request. A client without
+  form support, or one that fails to show the form, gets
+  `outcome: "unsupported_client"` and nothing is written. There is no
   argument that approves on the user's behalf.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
