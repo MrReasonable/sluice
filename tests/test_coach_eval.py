@@ -310,7 +310,9 @@ def test_an_empty_simulated_user_reply_stops_the_loop_with_a_recorded_failure(
     p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
     card = run.run_persona(p, tmp_path)
     assert card["failure"] == "the simulated user returned an empty reply"
-    assert len(calls) == 3  # coach, empty user turn, grader: no second coach call on `-p ""`
+    # coach, [the focus turn's second coach call,] empty user turn, grader: no further coach
+    # call on `-p ""`
+    assert len(calls) == (4 if p.focus else 3)
 
 
 def test_provider_env_names_are_derived_and_include_the_anthropic_key():
@@ -431,8 +433,15 @@ def test_the_scorecard_says_whether_setup_save_was_reached(
             "mcp_servers": [{"name": "sluice", "status": "connected"}],
             "tools": sorted(run.COACH_EXPECTED_TOOLS)}
 
+    coach_turns = []
+
     def reply(cmd, kw):
         if "--mcp-config" in cmd:
+            # The scripted calls happen once, on the first coach turn; a later turn (the
+            # persona's focus message) only talks, so each call is counted exactly once.
+            coach_turns.append(cmd)
+            if len(coach_turns) > 1:
+                return [init]
             return [init, *_flat(*[_use(n, [_SOURCED] if n == rubric.SAVE else None)
                                    for n in coach_calls])]
         if kw["input"].startswith("Grade"):
@@ -1245,10 +1254,39 @@ def test_the_simulated_user_and_the_grader_replace_claude_codes_agent_prompt(mon
     monkeypatch.setattr(run, "_claude", fake)
     p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
     run.run_persona(p, tmp_path)
-    coach, user, grader = calls
+    # Every coach call (the bare command, then the focus turn when the persona has one), then
+    # the simulated user's empty reply and the grader.
+    coaches = [a for a in calls if "--mcp-config" in a]
+    user, grader = calls[-2:]
 
     def system(args):
         return args[args.index("--system-prompt") + 1] if "--system-prompt" in args else None
 
-    assert system(coach) is None
+    assert coaches and all(system(c) is None for c in coaches)
     assert system(user) == run.USER_SYSTEM and system(grader) == run.GRADER_SYSTEM
+
+
+def test_the_first_turn_is_the_bare_command_and_the_focus_is_the_next_message(
+        monkeypatch, tmp_path):
+    """Claude Code delivers only the first word of text after an MCP prompt command (measured,
+    2026-10-09), so every eval used to run with a one-word focus. The command goes alone and
+    the persona's focus is its own user message, verbatim."""
+    from scripts.coach_eval import run
+
+    init = {"subtype": "init", "session_id": "s", "claude_code_version":
+            next(iter(isolation.MEASURED_VERSIONS)), "plugins": [],
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+    coach_messages = []
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            coach_messages.append(args[args.index("-p") + 1])
+            return [init]
+        return []  # the simulated user says nothing, which ends the loop
+
+    monkeypatch.setattr(run, "_claude", fake)
+    ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
+    p = next(x for x in ps if " " in x.focus)  # scope: a multi-word focus, the case that broke
+    run.run_persona(p, tmp_path)
+    assert coach_messages[:2] == ["/mcp__sluice__career_interview", p.focus]
