@@ -1429,7 +1429,9 @@ def build_server(config, write: bool = False):
             "those as `names` to review the rest. `names` only narrows which pending entries "
             "are offered; it never approves anything, and no argument approves on the "
             "human's behalf. Clients that cannot show a form get "
-            f'outcome="unsupported_client". {evidence_verify_effects()}')
+            'outcome="unsupported_client", and a form left unanswered for '
+            f'{_FORM_WAIT_SECONDS // 60} minutes '
+            f'gets outcome="no_answer". {evidence_verify_effects()}')
         mcp_server.tool(name="verify_evidence")(verify_evidence_tool)
 
         # The config is applied before the notes, and a written config means the shared Sluice

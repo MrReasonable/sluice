@@ -141,3 +141,17 @@ def test_only_an_explicit_true_approves():
     assert m._approved_keys({}) == set()
     assert m._approved_keys(None) == set()
     assert m._approved_keys({"entry_1": 1, "entry_2": "true"}) == set()
+
+
+def test_the_docs_state_the_pushed_form_wait_the_code_uses():
+    """MCP.md and USAGE.md tell the user how long an unanswered form waits; the prose spells
+    the number out, so this pins the pair rather than letting the docs drift from the code."""
+    import pathlib
+
+    words = {5: "five"}
+    minutes = m._FORM_WAIT_SECONDS // 60
+    assert m._FORM_WAIT_SECONDS == minutes * 60 and minutes in words
+    docs = pathlib.Path(__file__).resolve().parents[1] / "docs"
+    for name in ("MCP.md", "USAGE.md"):
+        text = " ".join((docs / name).read_text().split())
+        assert f"{words[minutes]} minutes" in text, name

@@ -987,7 +987,9 @@ verify`. See `sluice/mcpserver.py`'s `list_evidence` docstring for why.
   supports form elicitation: on the 2026-07-28 MCP protocol the form comes back as the
   tool's result, on an older one it is sent to the client as a request. A client without
   form support, or one that fails to show the form, gets
-  `outcome: "unsupported_client"` and nothing is written. There is no
+  `outcome: "unsupported_client"` and nothing is written. A form sent to an older-protocol
+  client that gets no answer within five minutes is abandoned with `outcome: "no_answer"`,
+  and nothing is written. There is no
   argument that approves on the user's behalf.
 
 `--write` is a per-registration trust decision about one MCP client: every existing
