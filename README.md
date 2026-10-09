@@ -53,8 +53,10 @@ paste:
 
 > Read `docs/AI-SETUP.md` and set sluice up for me.
 
-It installs sluice, interviews you for your judging criteria and your CV details, proposes your
-evidence entries from your existing CV, and runs the first pass.
+In Claude Code it installs sluice, registers its MCP server and hands you the career coach,
+which interviews you, researches the role you choose and saves your setup when you say yes;
+then it proposes your evidence entries from your existing CV and runs the first pass. Other
+agents follow the same file without the coach.
 [`docs/AI-SETUP.md`](https://github.com/MrReasonable/sluice/blob/main/docs/AI-SETUP.md) is the
 contract it follows, and it is worth skimming yourself: it is mostly a list of things the agent is
 forbidden to do on your behalf. Three stay yours by design, because each is a decision no tool
