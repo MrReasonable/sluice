@@ -1250,7 +1250,10 @@ description in full up to about 2,000 characters (measured) -- the client
 shows it to the user, and in its answer only entries the client returned an
 explicit `true` for -- and whose current text still hashes to what was shown -- reach
 `Store.verify_evidence` through `Sluice.promote_shown_evidence` (which holds that hash check,
-re-reading by exact title) and `Sluice.promote_reviewed_evidence`. Boxes start unticked, so a box
+re-reading by exact title) and `Sluice.promote_reviewed_evidence`. A pushed form waits
+`mcpserver.py::_FORM_WAIT_SECONDS` for its answer and then reports `no_answer`; an answer that
+arrives later is read by nothing, and an error in place of an answer reports `form_failed`.
+Boxes start unticked, so a box
 the human cannot see is never approved. The tool takes no
 argument that approves. It guards against the model accidentally making its own claims
 citable, not against a client configured to answer the form for the user.

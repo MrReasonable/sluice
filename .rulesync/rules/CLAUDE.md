@@ -992,6 +992,9 @@ And `mcp`, imported lazily inside `build_server()`'s own function body in
 the `mcp` extra -- it pulls in an async/network stack (uvicorn, starlette, anyio,
 pydantic, ...) meaningfully heavier than a config-file parser, so nothing outside
 `job-sluice mcp serve` may cause it to load; a bare install never imports it.
+`anyio.from_thread`, which the pushed review form uses to reach the event loop from
+`verify_evidence`'s worker thread, is imported in that same guarded block: anyio is mcp's
+own async runtime, installed with the `mcp` extra and declared nowhere else.
 
 HTTP goes through `urllib`, not `requests`. Do not add a runtime dependency without a deliberate decision. The rule
 binds `sluice/` -- what ships to a user. The root `package.json` is not an exception to it: it
