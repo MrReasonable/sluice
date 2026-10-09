@@ -6,12 +6,132 @@ output.
 
 ```bash
 pip install 'job-sluice[mcp]'
-claude mcp add job-sluice -- job-sluice mcp serve
+JOB_SLUICE=$(command -v job-sluice)
+claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve
 ```
 
 The `mcp` extra is required. It pulls in an async network stack — uvicorn, starlette, anyio,
 pydantic — meaningfully heavier than the rest of sluice, which is why nothing outside this one
 command ever imports it. A bare install never loads any of it.
+
+## Install in your client
+
+The server command is the same everywhere: `job-sluice mcp serve`, plus `--write` for the write
+tools. Every entry below registers it with `--write`; drop that flag for a read-only server.
+Where an entry shows a config file, replace `<output of: command -v job-sluice>` with what that command prints in
+your terminal: a client started from your desktop may not search the `PATH` your shell does.
+Each entry was measured on the client and version it names. Where a client cannot show MCP
+prompts, the career coach is not available there: follow [AI-SETUP.md](AI-SETUP.md)'s appendix.
+Where it cannot show the review form, verify evidence with `job-sluice experience verify`.
+
+sluice serves over stdio only, so a client that connects only to remote servers cannot use it.
+
+### Claude Code
+
+```bash
+JOB_SLUICE=$(command -v job-sluice)
+claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve --write
+```
+
+`--scope user` makes it available in every directory; without it the server loads only where
+you ran the command. Restart Claude Code after adding it (`claude --continue` resumes the
+conversation, from the same directory). Measured with Claude Code 2.1.295 on 2026-10-09:
+prompts yes (`/mcp__job-sluice__career_interview`, whose middle part is the name the server
+was registered under), review form yes.
+
+### Docker (Claude Code)
+
+From the directory holding `docker-compose.yml`:
+
+```bash
+SLUICE_COMPOSE="$PWD/docker-compose.yml"
+claude mcp add --scope user --transport stdio job-sluice -- docker compose -f "$SLUICE_COMPOSE" run --rm -T mcp mcp serve --write
+```
+
+The compose file's path is absolute so the registration works from any directory. `-T` stops
+Compose giving the server a terminal, which would mix terminal control output into the stdio
+stream the client reads. The server then uses the container's vault, the one every
+`docker compose run --rm job-sluice ...` command uses. Measured with Docker Compose 5.1.2 and
+the job-sluice 4.2.0 image on 2026-10-09: connects with every write tool; prompts and the review
+form are Claude Code's, as above.
+
+### opencode
+
+In `opencode.json` in a project, or `~/.config/opencode/opencode.json` for every project:
+
+```json
+{"mcp": {"servers": {"job-sluice": {"type": "local", "command": ["<output of: command -v job-sluice>", "mcp", "serve", "--write"]}}}}
+```
+
+The servers sit under `mcp.servers`; an entry directly under `mcp` is not read. Measured with
+opencode 2.0.20 on 2026-10-09: prompts yes (`/job-sluice:career_interview`), review form no (the
+request is accepted and never shown; the call ends after five minutes with `no_answer`).
+
+### Claude Desktop
+
+In `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS, then quit and
+reopen Claude Desktop:
+
+```json
+{"mcpServers": {"job-sluice": {"command": "<output of: command -v job-sluice>", "args": ["mcp", "serve", "--write"]}}}
+```
+
+Measured with Claude Desktop 2.19675.1 on macOS on 2026-10-09: prompts yes (from the + menu,
+which attaches it as `career_interview_text`), review form no.
+
+### Cursor
+
+In `.cursor/mcp.json` in a project, or `~/.cursor/mcp.json` for every project:
+
+```json
+{"mcpServers": {"job-sluice": {"command": "<output of: command -v job-sluice>", "args": ["mcp", "serve", "--write"]}}}
+```
+
+Then switch `job-sluice` on in Settings → Tools & MCP, and start a new chat: a newly added
+server starts off. Measured with Cursor 3.23.23 on 2026-10-09: prompts yes
+(`/job-sluice/career_interview`), review form yes.
+
+### VS Code
+
+In `.vscode/mcp.json` in a workspace:
+
+```jsonc
+{
+  // VS Code names the table "servers", not "mcpServers".
+  "servers": {
+    "job-sluice": {"type": "stdio", "command": "<output of: command -v job-sluice>", "args": ["mcp", "serve", "--write"]}
+  }
+}
+```
+
+Start it from the Command Palette (MCP: List Servers → `job-sluice` → Start); if that reports
+the session is not ready, send a chat message first. Measured with VS Code 1.140.0 (Copilot
+Chat, Agent mode) on 2026-10-09: prompts yes (`/mcp.job-sluice.career_interview`), review form
+yes.
+
+### Codex
+
+In `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`):
+
+```toml
+[mcp_servers.job-sluice]
+command = "<output of: command -v job-sluice>"
+args = ["mcp", "serve", "--write"]
+```
+
+Measured with Codex 0.162.1 on 2026-10-09: prompts no (Codex lists only tools and resources),
+review form yes.
+
+### Gemini CLI
+
+In `.gemini/settings.json` in a project, or `~/.gemini/settings.json` for every project:
+
+```json
+{"mcpServers": {"job-sluice": {"command": "<output of: command -v job-sluice>", "args": ["mcp", "serve", "--write"]}}}
+```
+
+Gemini CLI connects only in a folder you have marked as trusted. Measured with Gemini CLI 0.63.0
+on 2026-10-09: prompts yes (`/career_interview`), review form no.
 
 ## Read-only by default
 
@@ -29,7 +149,8 @@ That is the whole surface without `--write`.
 ## `--write` is a trust decision, made once
 
 ```bash
-claude mcp add job-sluice -- job-sluice mcp serve --write
+JOB_SLUICE=$(command -v job-sluice)
+claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve --write
 ```
 
 This additionally registers `dismiss_lead`, `apply_record`, `cv_run`, `cv_signoff`,

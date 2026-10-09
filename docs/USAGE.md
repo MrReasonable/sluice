@@ -997,7 +997,7 @@ read-only registration is unaffected, and a read-only server's `tools/list`
 genuinely omits every write tool, not merely refusing them at call time.
 
 **The career coach.** In Claude Code, type `/mcp__job-sluice__career_interview` on its own, then say what you want from the session in your next message (the middle part is
-whatever name you registered the server under; see [MCP.md](MCP.md)). The coach interviews you, can research the role
+whatever name you registered the server under; see [MCP.md](MCP.md#install-in-your-client)). The coach interviews you, can research the role
 you choose, then plays back every setup change it would save, grouped by where it goes, and
 saves only after you say yes in chat. Afterwards it walks you through opening your vault in
 Obsidian to check the result, and fixes anything you say looks wrong the same way. Your client
