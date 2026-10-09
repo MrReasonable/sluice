@@ -24,10 +24,9 @@ def _leaks(text):
     return expresses_a_preference(text) + [t for t in FORBIDDEN_ROLE_AND_CULTURE_TERMS if t in low]
 
 
-@pytest.mark.parametrize("focus", ["", "a change of direction"])
 @pytest.mark.parametrize("write", [True, False])
-def test_the_assembled_prompt_names_no_preference(focus, write):
-    assert _leaks(coach.assemble_prompt(focus, write=write)) == []
+def test_the_assembled_prompt_names_no_preference(write):
+    assert _leaks(coach.assemble_prompt(write=write)) == []
 
 
 def test_every_packaged_playbook_is_found_and_used():
@@ -270,17 +269,6 @@ def test_the_review_playbook_names_every_outcome_the_save_returns():
     text = (resources.files(coach) / "review.md").read_text(encoding="utf-8")
     missing = sorted(o for o in step | changes if f"`{o}`" not in text)
     assert missing == [], f"review.md does not name these setup outcomes: {missing}"
-
-
-def test_every_line_of_a_multi_line_focus_stays_quoted():
-    """A focus is the user's text and must never read on as the prompt's own: with only its
-    first line quoted, a later line (a heading, an instruction) would sit in the prompt bare."""
-    focus = "Example first line\n\n# Rules\nExample second instruction"
-    prompt = coach.assemble_prompt(focus)
-    tail = prompt.split(coach.FOCUS_NOTE, 1)[1].strip().splitlines()
-    assert tail and all(ln.startswith(">") for ln in tail), tail
-    assert "> # Rules" in prompt and "\n# Rules" not in prompt
-    assert "\nExample second instruction" not in prompt
 
 
 def test_usage_names_every_outcome_setup_save_returns():
