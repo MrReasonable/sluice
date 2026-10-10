@@ -32,6 +32,7 @@ changed.
 | Environment | Pin sluice's relocating path variables into the entry; report any other env key by NAME only (review ruling) |
 | Reading JSONC for the collateral check | A read-only JSONC reader (comments, trailing commas); sluice never writes JSONC (review ruling, round 2) |
 | Delivery | Two PRs: the shared writer first, then the command (review ruling, round 2) |
+| Backup retention | A copy is deleted when its client's write ends CLEAN; kept only when the outcome is `failed` (owner, 2026-10-10, on a side agent's note that copies of other tools' configs accumulate their credentials) |
 | A replace over an entry carrying env keys install cannot carry | JSON route keeps them; a command route REFUSES the replace and names the keys, since its add command would drop them (author ruling, round 2) |
 
 ## Measurements behind the mechanism (2026-10-10, macOS)
@@ -163,7 +164,15 @@ A file that does not exist yet has nothing to copy: the run proceeds, the "befor
 empty, and the after-check below still applies.
 The copy goes through `core/backup.write_copy` into `mcp_install_backups/` in sluice's XDG state
 folder (0o700, via `paths.resolve(kind="state", ...)`), carrying the file's mode — these files
-hold credentials. Copies are never pruned and nothing in sluice reads them back.
+hold credentials, and that is why a copy does not outlive its purpose: it exists to restore
+from if THIS write does damage, so it is deleted the moment the write is proven clean — the
+readback shows the spec, the same-file check passes and the collateral check finds nothing
+changed. Only a client that ends `failed` keeps its copy, and the report names it (relative to
+the state folder) and says it holds that tool's configuration, credentials included, to delete
+once restored. Every run therefore adds at most one copy per failed client and none per clean
+one, so rotating a key is not undone by a pile of old copies. Deletion is a plain unlink of the
+copy this run created (by the name `write_copy` returned, in sluice's own private folder), not a
+secure erase. Nothing in sluice reads a copy back.
 
 **Collateral check.** Before and after each write, the adapter reads the client's whole server
 table (not just `job-sluice`) from its config file, through a reader named per client: JSON
@@ -212,8 +221,8 @@ never printed, and a timeout. Environment values are passed as the client's own 
    not; the report says so.
 4. Copy the read bytes (`write_copy`), then replace only if the file still hashes to the read
    bytes. A change between read and copy, or between copy and replace, ends `failed` with nothing
-   replaced; a copy made before the second window is left in place and named in the report
-   (copies are never deleted, by design). A missing file is created exclusively.
+   replaced; a copy made before the second window is kept and named, since that run ended
+   `failed` (see retention above). A missing file is created exclusively.
 
 The write itself is one general writer, `core/atomicfile.py::replace_if(path, data: bytes, *,
 fresh, tmp_prefix)`, extracted from `core/config.py::write_config_text` in its own PR (see
@@ -279,7 +288,11 @@ Offline, against the sandbox above.
 - Fake client commands in the temp PATH that record argv and keep state:
   - a fake `claude` that exits 0 and changes nothing → `failed` (readback decides; this is the
     witness that the exit code is not trusted);
-  - a fake add that drops another server → `failed` naming that server, copy named (collateral);
+  - a fake add that drops another server → `failed` naming that server, copy kept and named
+    (collateral);
+  - a clean register and a clean replace (JSON route and command route) → the copy taken for
+    that write no longer exists afterwards, and the state folder holds no copy for that client;
+  - two clients in one run, one clean and one `failed` → only the failed client's copy remains;
   - a fake `get` that exits 1 with an unrelated error → `Unreadable`, nothing run;
   - a fake that hangs past an injected sub-second timeout → `failed: timed out`;
   - a fake removed between detect and apply → `failed: not found on PATH`;
@@ -322,6 +335,10 @@ Offline, against the sandbox above.
 7. Delete the same-file check → the wrong-file test.
 8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
    `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
+
+9. Delete the post-success deletion → the clean-register test (a copy remains).
+10. Move the deletion ahead of the collateral check → the drops-another-server test (its copy
+    is gone).
 
 Witness 2 is caught first by `tests/test_config_write.py`'s existing sha-match test, which says
 nothing about the new one, so the new test is witnessed with the existing one deselected.
