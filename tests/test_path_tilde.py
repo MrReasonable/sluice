@@ -703,6 +703,7 @@ _EXPANDUSER_SITES = {
     "track/auth.py": "--client-secrets, in its `=`-joined form no shell expands",
     "mcpinstall/server.py": ("a pinned path variable carried into a client registration, which "
                              "no shell expands when the client starts the server"),
+    "mcpinstall/clients.py": "the user's home, which every client config path is built under",
 }
 
 

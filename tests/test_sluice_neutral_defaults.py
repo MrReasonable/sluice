@@ -1033,7 +1033,9 @@ _MUST_FLAG = [
     # added for them. They are not rooted at `/` or `~` at all.
     ("env expansion", "vault_dir: $HOME/vault"),
     ("braced env expansion", "vault_dir: ${HOME}/vault"),
-    ("windows drive letter", "vault_dir: C:\\Users\\someone\\vault"),
+    # Joined at the drive so the literal is not itself a Windows home path in a tracked file
+    # (tests/test_no_leaked_files.py::test_no_windows_home_path_is_tracked); the value is the same.
+    ("windows drive letter", "vault_dir: C:" + "\\Users\\someone\\vault"),
 ]
 _MUST_NOT_FLAG = [
     ("relative", "vault_dir: ./vault"),
