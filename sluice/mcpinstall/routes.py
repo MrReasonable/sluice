@@ -27,8 +27,8 @@ from dataclasses import dataclass, field, replace
 
 from sluice.core.atomicfile import replace_if
 from sluice.mcpinstall import jsonc
-from sluice.mcpinstall.clients import (Client, check_scope, entry_value, extra_fields,
-                                       parse_entry, server_table)
+from sluice.mcpinstall.clients import (Client, add_argv, check_scope, entry_value, extra_fields,
+                                       parse_entry, redact_argv, remove_argv, server_table)
 from sluice.mcpinstall.server import PINNED_ENV, SERVER_NAME, ServerSpec
 
 BACKUP_FOLDER = "mcp_install_backups"
@@ -298,3 +298,74 @@ def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -
             notes += ("kept the old entry's other settings: " + ", ".join(kept_fields),)
         out = replace(out, details=out.details + notes)
     return out
+
+
+def _run(deps: Deps, argv: list[str], client: Client, verb: str) -> str:
+    """Run one client command; "" on success, else a classified reason (never its output)."""
+    try:
+        code = deps.run(argv, deps.timeout)
+    except subprocess.TimeoutExpired:
+        return f"`{client.executable} mcp {verb}` timed out"
+    except OSError:
+        return f"`{client.executable}` could not be started"
+    return "" if code == 0 else f"`{client.executable} mcp {verb}` exited {code}"
+
+
+def refusal(client: Client, state: FileState) -> "Outcome | None":
+    """A command route's add writes a fresh entry, so a replace over anything it would drop is
+    refused, naming it: env keys outside `PINNED_ENV` (passing a user's key back through argv
+    would also put it in the process list) and other fields such as `autoApprove` or `trust`.
+    `--dry-run` asks the same question, so a preview never promises a write the run refuses."""
+    if not isinstance(state.current, Entry):
+        return None
+    foreign = sorted(k for k, _ in state.current.env if k not in PINNED_ENV)
+    fields = extra_fields(client, state.table.get(SERVER_NAME, {}))
+    if not (foreign or fields):
+        return None
+    named = (["environment keys: " + ", ".join(foreign)] if foreign else []) + (
+        ["settings: " + ", ".join(fields)] if fields else [])
+    return Outcome(client.name, "refused",
+                   "the existing entry carries what install's add would drop ("
+                   + "; ".join(named) + ")",
+                   ("re-add them by hand after registering, or move them out of the entry and "
+                    "run install again",))
+
+
+def apply_command(client: Client, state: FileState, spec: ServerSpec, deps: Deps,
+                  which: Callable[[str], str | None]) -> Outcome:
+    replacing = isinstance(state.current, Entry)
+    kind = "replaced" if replacing else "registered"
+    refused = refusal(client, state)
+    if refused:
+        return refused
+    exe = which(client.executable)
+    if not exe:
+        return Outcome(client.name, "failed", f"`{client.executable}` not found on PATH")
+    before = _scoped(client, state.doc, state.table)
+    copy, failure = _take_copy(state, deps, same=lambda now: _scope_of(client, now) == before)
+    if failure:
+        return Outcome(client.name, "failed", failure)
+    deps.before_recheck()
+    # The add reads and writes the file itself, so this is the last moment to notice a change.
+    # Parsed content is compared, not bytes, and for Claude Code only the server table: a
+    # running session rewrites the rest of ~/.claude.json constantly (`check_scope`).
+    now = read_state(client, state.path)
+    if (isinstance(now, Unreadable) or (now.raw is None) != (state.raw is None)
+            or _scoped(client, now.doc, now.table) != before):
+        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
+    steps = [("add", add_argv(client, spec))]
+    if replacing and client.remove_before_add:
+        steps.insert(0, ("remove", remove_argv(client)))
+    for verb, argv in steps:
+        reason = _run(deps, [exe, *argv[1:]], client, verb)
+        if reason:
+            details = _kept(copy, state.path, deps)
+            if verb == "add" and len(steps) == 2:
+                old_env = [k for k, _ in state.current.env]
+                details = (
+                    "the entry it replaced, now removed, ran: "
+                    + " ".join(redact_argv(state.current.argv, deps.display)),
+                    "with environment keys: " + (", ".join(old_env) or "none"),
+                ) + details
+            return Outcome(client.name, "failed", reason, details)
+    return _verify(client, state, spec, copy, deps, kind)
