@@ -12,9 +12,18 @@ Shared by every sub-app:
   exception: `load_config` also refuses the retired CV inputs (the root `baseline_rel`
   and the `cv:` block's `employers`, `refuse_retired_cv_inputs`), so that EVERY command
   stops on them, not only the commands that load the `cv:` block. `write_config_text`
-  is the config file's one writer (in-session setup): with no `expect_sha` it creates the file
-  exclusively, with one it replaces the file only when its current text hashes to it, and a
-  symlinked config has its TARGET replaced so a link into a dotfiles repository survives.
+  is the config file's one writer (in-session setup), built on `atomicfile.py::replace_if`:
+  with no `expect_sha` it creates the file exclusively, with one it replaces the file only
+  when its current text hashes to it, and a symlinked config has its TARGET replaced so a
+  link into a dotfiles repository survives.
+- `atomicfile.py`: the writer for a config file replaced under a freshness check (the vault's
+  notes keep `vault.py::_atomic_write`, which replaces a symlink itself). `replace_if` creates
+  exclusively (`fresh=None`) or replaces only when a caller-supplied `fresh(current_bytes)`
+  agrees, resolving a symlink and replacing its TARGET in the target's own directory, keeping
+  the mode, under one in-process lock per resolved path (`file_lock`), which a backup copy of
+  the same file takes too. `config.py::write_config_text` is its caller for the config file;
+  the lock is in-process only, so an outside editor writing between the check and the replace
+  is overwritten.
 - `formfit.py`: pure measurement of what one checkbox in a client's review form can show in
   full (`DESC_MAX_CHARS` and how many display lines an entry takes), for the evidence-verify
   form in `mcpserver.py`. Its `hides_text` is also in-session setup's control and
@@ -1188,7 +1197,9 @@ help, in `docs/USAGE.md` and in both MCP test files, and every one went stale th
 moment #175 registered a sixth. No count of THOSE either — three reviewers tallied
 the stale statements and returned three different totals, which is the argument for
 enumerating rather than counting. `tests/functional/test_mcp_contract.py`'s exact-set `==`
-assertions pin the roster at both privilege levels; prose cannot.
+assertions pin the roster at both privilege levels; prose cannot. The message for an install
+without the `mcp` extra lives in `sluice/mcpextra.py`, a module that imports nothing, so a
+caller can print it without loading the store the way importing `mcpserver.py` does.
 
 In-session setup adds `setup_status` (read-only, always registered), `setup_save` (under
 `--write`) and the `career_interview` PROMPT (registered at both levels). Unlike the other
