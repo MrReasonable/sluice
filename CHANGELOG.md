@@ -40,6 +40,52 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.4.0](https://github.com/MrReasonable/sluice/compare/v4.3.0...v4.4.0) (2026-10-10)
+
+
+### Features
+
+* **mcp:** job-sluice mcp install ([dfa1af2](https://github.com/MrReasonable/sluice/commit/dfa1af23b25f25d904e5bd25d958c13385659bbb))
+* **mcp:** read a client's registration and write the JSON route ([cddf871](https://github.com/MrReasonable/sluice/commit/cddf871a8d8aded40aaef092478c31471d08cb4c))
+* **mcp:** register in Codex by appending a new entry table ([6aed841](https://github.com/MrReasonable/sluice/commit/6aed8415ad684531e1327b10436a1b1116e268c5))
+* **mcp:** register through a client's own add command, proven by readback ([3e20dd8](https://github.com/MrReasonable/sluice/commit/3e20dd8390d63c86bb2270adac281cac214e5937))
+* **mcp:** strict and JSONC readers for client config files ([c82e0f6](https://github.com/MrReasonable/sluice/commit/c82e0f6c2a7318d0601c1b20c524d146aa92dd51))
+* **mcp:** the client roster mcp install writes to, per platform ([2968d4a](https://github.com/MrReasonable/sluice/commit/2968d4a2d76f3b4330632a5c0b29ff0644506753))
+* **mcp:** the server command mcp install registers ([977faaa](https://github.com/MrReasonable/sluice/commit/977faaa6e75878d3f7688aff91391f09335f265b))
+
+
+### Bug Fixes
+
+* **mcp:** report only the extra's own modules missing as the extra missing ([5200a08](https://github.com/MrReasonable/sluice/commit/5200a08bb11b1b0c03d5687a74f92fe1cd4c378c))
+* **setup:** report a config that stops being UTF-8 mid-save as failed ([b64982b](https://github.com/MrReasonable/sluice/commit/b64982b527efe1ffffb5e40c54161a10ed4d3202))
+
+
+### Refactoring
+
+* **core:** add atomicfile.replace_if, one create-or-replace writer ([712b0e6](https://github.com/MrReasonable/sluice/commit/712b0e644919d72bc411f6b33bcfc17d79c87f68))
+* **core:** write_config_text and keep_config_copy use atomicfile ([e93101a](https://github.com/MrReasonable/sluice/commit/e93101ae1089709f2acde0affeed91061ce18513))
+* **mcp:** give the mcp-not-installed message one importable home ([62b7b92](https://github.com/MrReasonable/sluice/commit/62b7b9257648d1d27d02d45e63ee2deb837d0c0c))
+
+
+### Documentation
+
+* **architecture:** describe core/atomicfile.py ([16066de](https://github.com/MrReasonable/sluice/commit/16066de0d167517dfd9dc5a6b9e139690527de75))
+* **plan:** Codex appends a new entry table when it has none ([059679b](https://github.com/MrReasonable/sluice/commit/059679b46a04ddf2ad0aaa1ab42509e872dd8a8b))
+* **plan:** fold review-plan findings into the atomicfile plan ([5743b01](https://github.com/MrReasonable/sluice/commit/5743b0166dac3c930b40413ec5096c26e173d14e))
+* **plan:** fold review-plan findings into the mcp install command plan ([68bc1f7](https://github.com/MrReasonable/sluice/commit/68bc1f74591020c814b7de20619738d8d14a69b3))
+* **plan:** fold the append-route plan review into mcp install ([76a0d0c](https://github.com/MrReasonable/sluice/commit/76a0d0ca135b9b6ddb60bc4e0f1b2f2f46383f79))
+* **plan:** job-sluice mcp install, PR 2 of mcp install ([100d61a](https://github.com/MrReasonable/sluice/commit/100d61aeed7c0ce035bb146b3ad2a3f5a0fa9d01))
+* **plan:** shared atomicfile writer, PR 1 of mcp install ([01bd819](https://github.com/MrReasonable/sluice/commit/01bd819548f8ff636e7e31f0c523642f8a079ead))
+* **spec:** an absent file's expected state is absence on the command route ([7675a2d](https://github.com/MrReasonable/sluice/commit/7675a2d72af5be97ac82b9660278d5b820d3cbd9))
+* **spec:** Codex appends a new entry when it has none ([29c3d5a](https://github.com/MrReasonable/sluice/commit/29c3d5afca19417fd743d2ae506183c854202f5d))
+* **spec:** fold review-plan findings into mcp install design ([6699a37](https://github.com/MrReasonable/sluice/commit/6699a375d1c791536620de7214c3bf52f9b408e3))
+* **spec:** fold round-2 review-plan findings into mcp install design ([ad55c20](https://github.com/MrReasonable/sluice/commit/ad55c20cc4a7eb6db9290006c447beb85e8de3c5))
+* **spec:** fold the PR 2 plan review's rulings into mcp install design ([8e86952](https://github.com/MrReasonable/sluice/commit/8e86952cc98391842f338f717f03ddce18d61cd6))
+* **spec:** job-sluice mcp install design ([b8cca6f](https://github.com/MrReasonable/sluice/commit/b8cca6fb201208eb38d6a0e50e04fd0bb8050ca1))
+* **spec:** mcp install deletes a client's backup once its write is proven clean ([a9e9a13](https://github.com/MrReasonable/sluice/commit/a9e9a139d76ac2ffb3928f0c5aadf39f800bc52b))
+* **spec:** record the client measurements and the routes they decide ([de5cebe](https://github.com/MrReasonable/sluice/commit/de5cebe8776fdea026b41f013837608340b1269c))
+* **spec:** redact an existing entry's arguments; recheck before a client write ([0fa2adf](https://github.com/MrReasonable/sluice/commit/0fa2adf17f6c061b706ad4ac3c08e433b07860aa))
+
 ## [4.3.0](https://github.com/MrReasonable/sluice/compare/v4.2.0...v4.3.0) (2026-10-09)
 
 
