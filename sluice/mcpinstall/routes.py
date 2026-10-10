@@ -27,8 +27,9 @@ from dataclasses import dataclass, field, replace
 
 from sluice.core.atomicfile import replace_if
 from sluice.mcpinstall import jsonc
-from sluice.mcpinstall.clients import (Client, add_argv, check_scope, entry_value, extra_fields,
-                                       parse_entry, redact_argv, remove_argv, server_table)
+from sluice.mcpinstall.clients import (DOCS_URL, Client, add_argv, check_scope, entry_value,
+                                       extra_fields, parse_entry, redact_argv, remove_argv,
+                                       server_table, snippet)
 from sluice.mcpinstall.server import PINNED_ENV, SERVER_NAME, ServerSpec
 
 BACKUP_FOLDER = "mcp_install_backups"
@@ -369,3 +370,66 @@ def apply_command(client: Client, state: FileState, spec: ServerSpec, deps: Deps
                 ) + details
             return Outcome(client.name, "failed", reason, details)
     return _verify(client, state, spec, copy, deps, kind)
+
+
+def appended(client: Client, state: FileState, spec: ServerSpec,
+             text: str | None = None) -> bytes | None:
+    """The bytes an append would write: the file as it is, then a new entry table. `None` when
+    they would not read as the old document plus exactly the new entry: an inline
+    `mcp_servers = {...}` table, for one, makes an appended table invalid TOML, and writing it
+    would leave the user's file unreadable to Codex. Pure, so `--dry-run` asks the same question
+    the write does."""
+    old = state.raw or b""
+    gap = b"" if not old else (b"\n" if old.endswith(b"\n") else b"\n\n")
+    table = snippet(client, spec) if text is None else text
+    data = old + gap + (table + "\n").encode("utf-8")
+    expected = _copy.deepcopy(state.doc)
+    node = expected
+    for key in client.table:
+        node = node.setdefault(key, {})
+    node[SERVER_NAME] = entry_value(client, spec)
+    try:
+        after = _load(client, data)
+    except jsonc.ReadError:
+        return None
+    return data if _canon(after) == _canon(expected) else None
+
+
+def cannot_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    where = deps.display(state.path)
+    return Outcome(
+        client.name, "manual",
+        f"a table appended to {where} would not read as just the job-sluice entry "
+        "(`mcp_servers` written as an inline table, for one), so nothing was written",
+        paste=(f"add this inside the `mcp_servers` table in {where} by hand "
+               f"(see {DOCS_URL}#{client.anchor})", snippet(client, spec, inline=True)))
+
+
+def edit_by_hand(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    """An existing entry that differs: install appends, it never edits TOML in place. The other
+    env keys and settings are NAMED, so a user pasting the values does not drop them; their
+    values are never printed (a key can hold a token)."""
+    where = deps.display(state.path)
+    other_env = sorted(k for k, _ in state.current.env if k not in PINNED_ENV)
+    fields = extra_fields(client, state.table.get(SERVER_NAME, {}))
+    details = ()
+    if other_env:
+        details += ("keep its other environment keys: " + ", ".join(other_env),)
+    if fields:
+        details += ("keep its other settings: " + ", ".join(fields),)
+    return Outcome(
+        client.name, "manual",
+        f"install adds a {client.title} entry but does not edit an existing one", details,
+        paste=(f"in {where}'s job-sluice entry, set these values by hand and keep the rest "
+               f"(see {DOCS_URL}#{client.anchor})", snippet(client, spec)))
+
+
+def apply_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    """Add a NEW entry table at the end of a TOML file, editing no existing byte (Codex, by the
+    owner's ruling: its own add re-serialises the server table and drops what it does not know,
+    and the standard library cannot edit TOML). Only for an absent entry; then the copy,
+    compare-and-set and readback every other write has."""
+    data = appended(client, state, spec)
+    if data is None:
+        return cannot_append(client, state, spec, deps)
+    return _write_checked(client, state, data, spec, deps, "registered")
