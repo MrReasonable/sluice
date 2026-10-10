@@ -1,8 +1,8 @@
 # `job-sluice mcp install` — design
 
 Piece 3b of the AI-setup work. Approved in brainstorming on 2026-10-10; revised the same day
-after `/review-plan` (16 findings, all folded in below; three owner rulings recorded under
-Decisions).
+after two `/review-plan` rounds, every finding folded in below. Rulings are recorded under
+Decisions.
 
 ## Goal
 
@@ -30,6 +30,9 @@ changed.
 | What makes a run non-interactive | `--yes`, or no TTY on stdin. `--client` only narrows the list (review ruling) |
 | Platforms | macOS, Linux and Windows (review ruling) |
 | Environment | Pin sluice's relocating path variables into the entry; report any other env key by NAME only (review ruling) |
+| Reading JSONC for the collateral check | A read-only JSONC reader (comments, trailing commas); sluice never writes JSONC (review ruling, round 2) |
+| Delivery | Two PRs: the shared writer first, then the command (review ruling, round 2) |
+| A replace over an entry carrying env keys install cannot carry | JSON route keeps them; a command route REFUSES the replace and names the keys, since its add command would drop them (author ruling, round 2) |
 
 ## Measurements behind the mechanism (2026-10-10, macOS)
 
@@ -51,8 +54,11 @@ The Cursor row is why success is decided by readback.
 **Still to measure, before each command adapter ships:** whether the client's add preserves
 other servers, other keys and (VS Code, opencode) comments in the file it rewrites; how each add
 command takes environment values (`-e`/`--env` and the JSON `env` key); how `claude mcp get`
-prints an entry's environment. Each result becomes a column here, and a client whose add command
-drops other entries is moved to the JSON route or the snippet route instead.
+prints an entry's environment; which variables relocate opencode's config (e.g. an `OPENCODE_CONFIG`
+override), from its docs and a probe. Each result is recorded here as BEHAVIOUR (`keeps other
+servers: yes`, a flag's spelling), never as pasted client output, which can carry home paths and
+env values. A client whose add command drops other entries is moved to the JSON route or the
+snippet route instead.
 
 **Windows** ships unmeasured (owner ruling): path rows below come from each client's own
 documentation, the `measured` field on every Windows row says "unmeasured on Windows", and the
@@ -89,16 +95,25 @@ rejects an unknown name and lists the valid ones (fail loudly). Without `--clien
 in the roster is considered.
 
 1. **Resolve the server command** once into a `ServerSpec`:
-   - argv: `os.path.abspath(sys.argv[0])` — absolute, symlinks NOT followed, so a Homebrew or
-     pipx launcher path survives an upgrade (a resolved path would name a versioned directory
-     that the next upgrade deletes). Then `mcp serve`, then `--write` unless read-only.
-   - env: every sluice relocating variable set in install's own environment, made absolute
-     (`expanduser` + `abspath`), because a client launched from a desktop never sees the shell's
-     exports and its server would otherwise open a different config or vault while install said
-     `registered`. The set is DERIVED, not hand-listed: every `env_var=` passed to
-     `core/paths.py::resolve`, plus `VAULT_DIR` and the XDG base variables `paths.py` reads. A
-     guard test enumerates those call sites and fails if the pinned set and the derived set
-     differ. Credentials (API keys, `SLUICE_TELEGRAM_*`) are never pinned.
+   - argv: the `job-sluice` LAUNCHER, absolute, symlinks NOT followed, so a Homebrew or pipx
+     launcher path survives an upgrade (a resolved path would name a versioned directory that
+     the next upgrade deletes). It is `os.path.abspath(sys.argv[0])` only when that names an
+     executable file whose basename is `job-sluice` (on Windows, `job-sluice.exe` or `.cmd`);
+     otherwise — `python -m sluice.cli` makes it `cli.py`, which a client cannot start — the
+     command stops, exit 2, saying to run the installed `job-sluice`. Then `mcp serve`, then
+     `--write` unless read-only.
+   - env: every variable in `mcpinstall.PINNED_ENV` that is set in install's own environment,
+     made absolute (`expanduser` + `abspath`), because a client launched from a desktop never
+     sees the shell's exports and its server would otherwise open a different config or vault
+     while install said `registered`. `PINNED_ENV` is a LITERAL tuple in production; the guard
+     test DERIVES the expected set from source — every `env_var=` keyword passed to
+     `core/paths.py::resolve` under any local binding (found through each file's own
+     `ImportFrom` nodes, so `core/app.py`'s `resolve as _resolve_path` is seen), plus every
+     `os.environ` read of `VAULT_DIR` and the XDG base variables `paths.py` reads — and asserts
+     the two are equal. It also asserts scope: the derived set contains `SLUICE_CONFIG`,
+     `SEEN_DB` and `DOSSIER_DIR`, so a walk that finds nothing cannot pass. The same shape as
+     `tests/test_path_sandbox.py::test_the_sandbox_covers_every_path_env_var`. Credentials (API
+     keys, `SLUICE_TELEGRAM_*`) are never pinned.
    - If the `mcp` extra is not importable (`importlib.util.find_spec("mcp")`), stop before
      detecting anything, exit **2** (the code `mcp serve` uses for the same condition), with the
      same message. The message moves to one constant in a new leaf module, `sluice/mcpextra.py`,
@@ -109,8 +124,9 @@ in the roster is considered.
 3. **Read** each found client's current entry: `Absent`, `Entry(argv, env)`, or
    `Unreadable(reason)` (unparseable file, wrong shape, a client command that failed for any
    reason other than its own "not found" text, a timeout). `Unreadable` ends `failed` and nothing
-   runs for that client. `Entry` compares to the spec as `same` (argv equal and every pinned key
-   equal) or `different`.
+   runs for that client. `Entry` compares to the spec as `same` (argv equal, and every
+   `PINNED_ENV` key equal on BOTH sides: a key the old entry carries and this install does not
+   pin makes it `different`, since the server would still open the old path) or `different`.
 4. **Choose.**
    - Interactive (a TTY and no `--yes`): a checklist of found clients, absent and different
      ticked, same shown as already registered; the `--write` question (default yes) unless
@@ -143,15 +159,35 @@ relative to sluice's state folder, never as an absolute path.
 whose config file is known (VS Code's user `mcp.json`, the opencode global config, Claude Code's
 `~/.claude.json` or `$CLAUDE_CONFIG_DIR/.claude.json`, Codex's `config.toml`, Gemini's
 `settings.json`), the file's current bytes are copied before the command runs; no copy, no run.
+A file that does not exist yet has nothing to copy: the run proceeds, the "before" table is
+empty, and the after-check below still applies.
 The copy goes through `core/backup.write_copy` into `mcp_install_backups/` in sluice's XDG state
 folder (0o700, via `paths.resolve(kind="state", ...)`), carrying the file's mode — these files
 hold credentials. Copies are never pruned and nothing in sluice reads them back.
 
 **Collateral check.** Before and after each write, the adapter reads the client's whole server
-table (not just `job-sluice`). If any other server's entry was removed or changed, the outcome is
-`failed` with the changed server NAMES and the copy to restore from, even though `job-sluice`
-was registered. For Claude Code only the user-scope `mcpServers` table is compared, because the
-rest of `~/.claude.json` is rewritten by any running session.
+table (not just `job-sluice`) from its config file, through a reader named per client: JSON
+(`~/.claude.json`, Gemini), JSONC (VS Code, opencode — a read-only reader that drops `//` and
+`/* */` comments and trailing commas outside strings, then hands the text to `json.loads`;
+sluice never writes JSONC), or TOML (Codex, stdlib `tomllib`). If any other server's entry was
+removed or changed, the outcome is `failed` with the changed server NAMES, even though
+`job-sluice` was registered. For Claude Code only the user-scope `mcpServers` table is compared,
+because the rest of `~/.claude.json` is rewritten by any running session; for the same reason
+the report never says to restore the copy wholesale — it says to restore the NAMED servers'
+entries from it, since a whole-file restore would revert unrelated changes made since.
+
+**The file must be the one the client wrote.** After a command adapter's add, `job-sluice`
+must appear, with the spec, in the SAME file the copy and the collateral check read. If the
+command reports success and the readback shows the entry but that file does not, the outcome is
+`failed: wrote somewhere other than <file relative to home>` — the computed path is wrong (an
+unmeasured Windows row, an override variable), so the collateral check checked nothing. This is
+what makes an unmeasured row safe rather than merely labelled.
+
+**Env keys on a replace.** The JSON route keeps every env key on the old entry that is not in
+`PINNED_ENV` and names it. A command route cannot carry them (its add command takes only what
+install passes, and passing a user's API key back through argv would expose it in the process
+list), so a replace over an entry carrying such keys is `refused` with the key NAMES and the
+instruction to re-add them by hand or move them; `--replace` does not override this.
 
 **Claude Code replace** (remove then add): the old entry's argv and env-key names are captured
 before the remove; if the add fails, the report shows that argv and those names (values never) and
@@ -179,10 +215,14 @@ never printed, and a timeout. Environment values are passed as the client's own 
    replaced; a copy made before the second window is left in place and named in the report
    (copies are never deleted, by design). A missing file is created exclusively.
 
-The replace itself is a general compare-and-set writer extracted from
-`core/config.py::write_config_text` into `core/` (symlink resolved and its TARGET replaced in the
-target's directory so a dotfiles link survives; temp file plus `os.replace`; mode kept), with a
-caller-supplied temp prefix and a caller-supplied freshness check (`write_config_text` keeps its
+The write itself is one general writer, `core/atomicfile.py::replace_if(path, data: bytes, *,
+fresh, tmp_prefix)`, extracted from `core/config.py::write_config_text` in its own PR (see
+Delivery). `fresh=None` is an exclusive create (parent directory first, the inode-checked
+cleanup of a partial moved with it); otherwise `fresh(current_bytes) -> bool` decides. The
+per-path in-process lock (`_config_write_lock` today) moves into the module and is taken by every
+caller, including `keep_config_copy`. It carries over the symlink rule (resolved, and its TARGET
+replaced in the target's directory so a dotfiles link survives), the temp file plus `os.replace`,
+and the kept mode, with a caller-supplied temp prefix and a caller-supplied freshness check (`write_config_text` keeps its
 text sha; `mcpinstall` compares raw bytes, since a BOM or non-UTF-8 file is refused before it
 gets there). `write_config_text` becomes a thin caller of
 it, and `mcpinstall` is the second. One writer, so no new CodeQL sink and no second copy of the
@@ -213,14 +253,29 @@ its own value), any client not selected.
   variables beyond what `conftest.py` already pins. A test asserts that under it every roster
   client detects `NotFound` (not `Found` because this machine has `claude` and `code`).
 - The default `run` used in tests raises if handed an executable outside the test's temp
-  directory.
+  directory. `write_copy` is injected too, so a test can land a change to the file between the
+  copy and the replace.
+- The sandbox's variable list also covers `LOCALAPPDATA` and opencode's config override
+  variables (as measured). The "every client is NotFound" test runs `detect()` with
+  PRODUCTION's lookups (the same `which`, `env` and `home` builder `cli.py` uses, pointed at the
+  sandbox), not the test fakes; its control is a temp-PATH fake `claude` that the same builder
+  DOES find, so the test is shown able to see a client before it asserts none.
 
 ## Tests
 
 Offline, against the sandbox above.
 
 - `plan()` per client and platform: the exact argv (with env flags) or exact JSON, for macOS,
-  Linux and Windows rows, so CI on Linux still covers the Windows and macOS path tables.
+  Linux and Windows rows, so CI on Linux still covers the Windows and macOS path tables. Every
+  row is built from ONE placeholder home (a fixed synthetic user under each platform's root),
+  never a real one; `tests/test_no_leaked_files.py`'s home-path check gains the Windows form
+  (`<drive>:\Users\`), proven by a known-bad line it must catch when run through the same
+  engine that runs the sweep, with that one placeholder allow-listed by exact value.
+- The JSONC reader: comments in every position (line, block, inside a string — kept), trailing
+  commas, a `//` inside a URL string; and a property check that on comment-free JSON it returns
+  exactly what `json.loads` returns.
+- Launcher: `argv0` naming `cli.py` → exit 2, nothing detected; a launcher reached through a
+  symlink yields the launcher's path.
 - Fake client commands in the temp PATH that record argv and keep state:
   - a fake `claude` that exits 0 and changes nothing → `failed` (readback decides; this is the
     witness that the exit code is not trusted);
@@ -245,8 +300,16 @@ Offline, against the sandbox above.
   and a re-run reads `same`.
 - Pinned env: set `SLUICE_CONFIG=~/x.yaml` → the entry carries the absolute path; an unset
   variable is not pinned; the derived-roster guard (above).
-- Neutrality: with a sentinel value in another server's env and in a fake client's stderr, no
-  output stream contains the sentinel.
+- Neutrality: sentinel values placed in another server's env, in a fake client's stderr, and
+  under a NON-pinned env key of the existing `job-sluice` entry appear in no output stream, on
+  every path that prints an entry: the old/new comparison, `--dry-run`, the refused-replace
+  report and the Claude Code failed-add report. Control: the same run shows the sentinel's KEY
+  NAME in the output, proving the planted entry was read.
+- Env on replace: JSON route keeps and names a non-pinned key; a command route refuses with the
+  name even under `--replace`; an old entry pinning `SLUICE_CONFIG` that this install does not
+  pin reads `different`.
+- Wrong file: a fake add that writes its entry somewhere other than the computed file, while its
+  `get` shows it → `failed: wrote somewhere other than …`.
 
 **Mutation witnesses**, each a named mutant that must turn the named test red:
 1. Delete the readback comparison (treat exit 0 as success) → the exits-0-changes-nothing test.
@@ -255,6 +318,13 @@ Offline, against the sandbox above.
    write (the fake records whether the copy was present when it ran).
 4. Delete the collateral comparison → the drops-another-server test.
 5. Remove `Unreadable` and fall through to `Absent` → the unrelated-`get`-error test.
+6. Print env values instead of names → the job-sluice-entry sentinel test.
+7. Delete the same-file check → the wrong-file test.
+8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
+   `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
+
+Witness 2 is caught first by `tests/test_config_write.py`'s existing sha-match test, which says
+nothing about the new one, so the new test is witnessed with the existing one deselected.
 
 ## Docs
 
@@ -272,6 +342,18 @@ Offline, against the sandbox above.
   heading, and the adapter roster equals the MCP.md client headings EXCLUDING the Docker heading,
   which is excluded by name with the reason (it has no adapter: a container is not detectable
   from the host).
+
+## Delivery
+
+**PR 1, `refactor(core)`:** `core/atomicfile.py::replace_if` with its own tests — the temp file
+is removed when the replace fails, the temp file is created in the TARGET's directory (proven
+across a symlink whose link and target are in different directories), the lock serialises two
+threads (a `threading.Barrier`), exclusive create, fresh-check abstain. `write_config_text` and
+`keep_config_copy` call it; `tests/test_config_write.py` and the `setup_save` tests in
+`tests/test_mcpserver.py` pass unchanged. `sluice/mcpextra.py` holds the "mcp not installed"
+message, imported by `mcpserver.build_server`. No behaviour change.
+
+**PR 2, `feat(mcp)`:** everything else in this spec.
 
 ## Measured before it ships
 
