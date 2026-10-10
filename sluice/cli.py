@@ -2356,6 +2356,26 @@ def cmd_mcp_serve(args, config) -> int:
     return 0
 
 
+def cmd_mcp_install(args, config) -> int:
+    """`job-sluice mcp install`: everything lives in `sluice/mcpinstall/`; this builds the real
+    host and dependencies it is handed, so its tests can hand it fakes instead."""
+    import importlib.util
+
+    from sluice.core import backup
+    from sluice.mcpinstall import clients, flow, routes
+
+    host = clients.host_from_os()
+    deps = routes.Deps(
+        run=routes.run_quietly, write_copy=backup.write_copy,
+        backup_dir=routes.backup_dir(),
+        display=lambda path: clients.display_path(path, host))
+    opts = flow.Options(clients=tuple(args.client or ()), read_only=args.read_only,
+                        replace=args.replace, yes=args.yes, dry_run=args.dry_run)
+    return flow.run(opts, host=host, deps=deps, argv0=sys.argv[0], stdin=sys.stdin,
+                    out=sys.stdout, err=sys.stderr, interactive=sys.stdin.isatty(),
+                    find_spec=importlib.util.find_spec)
+
+
 # ── doctor ────────────────────────────────────────────────────────────────────
 def _thousands(n) -> str:
     """`18,442`, or `-` for a count nothing reported.
@@ -3142,6 +3162,25 @@ def _build_parser() -> argparse.ArgumentParser:
              "writes the setup changes the user agreed to in chat, refusing them all "
              "when anything it read has changed since setup_status")
     mcp_serve.set_defaults(func=cmd_mcp_serve)
+    # The roster module imports nothing beyond the mcpinstall package's own stdlib modules
+    # (tests/mcpinstall/test_flow.py::test_the_parser_import_loads_only_the_roster pins it),
+    # so the choices can come from it on every invocation.
+    from sluice.mcpinstall.clients import NAMES as _MCP_CLIENTS
+    mcp_install = mcp_group.add_parser(
+        "install", help="register the MCP server in the AI clients installed on this machine")
+    mcp_install.add_argument(
+        "--client", action="append", choices=_MCP_CLIENTS, metavar="NAME",
+        help=f"only this client (repeatable): {', '.join(_MCP_CLIENTS)}")
+    mcp_install.add_argument("--read-only", action="store_true",
+                             help="register without the write tools")
+    mcp_install.add_argument("--replace", action="store_true",
+                             help="replace an existing job-sluice entry with different settings")
+    mcp_install.add_argument("--yes", action="store_true",
+                             help="ask nothing: write tools on unless --read-only, and refuse "
+                                  "to replace an entry unless --replace")
+    mcp_install.add_argument("--dry-run", action="store_true",
+                             help="print what would be run or written, and change nothing")
+    mcp_install.set_defaults(func=cmd_mcp_install)
 
     init = top.add_parser("init", help="scaffold a config, a Judging Profile and a Candidate Profile")
     init.add_argument("--vault", help="your Obsidian vault directory")

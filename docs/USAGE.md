@@ -1006,6 +1006,32 @@ server too, but saving needs `--write`; the coach says so. What the research pro
 note, which no pipeline stage reads (see `docs/CONFIGURATION.md`). The coach's evaluation
 harness is a developer tool and never runs in CI: `scripts/coach_eval/README.md`.
 
+### `job-sluice mcp install [--client NAME ...] [--read-only] [--replace] [--yes] [--dry-run]`
+
+Registers the MCP server above in the AI clients installed on this machine: Claude Code, VS
+Code, opencode, Cursor, Claude Desktop, Codex and Gemini CLI (`--client` takes those names:
+`claude-code`, `vscode`, `opencode`, `cursor`, `claude-desktop`, `codex`, `gemini`; repeat it
+to name several). It writes user scope only, and every registration is read back from the
+client's config file, never trusted from a command's exit code. Before changing a file it
+copies it into `mcp_install_backups/` in sluice's state folder, and deletes the copy once the
+change is proven; a client that fails keeps its copy, and the report names it.
+
+Each client ends in one of `registered`, `replaced`, `unchanged`, `refused`, `failed` or
+`manual`. Exit code 2 means the `mcp` extra is missing or the command was not started as the
+installed `job-sluice` (both checked before anything is detected); 1 means a client ended
+`failed` or `refused`, or `manual` for a client named by `--client`; otherwise 0.
+
+It asks which clients to register in, whether to include the write tools, and whether to
+replace an entry with different settings. `--yes`, a standard input that is not a terminal, or
+`--dry-run` asks nothing: the write tools are on unless `--read-only`, and an entry with
+different settings is refused unless `--replace`. `--dry-run` prints what each client would
+run or write and changes nothing. Codex gets a new entry appended to `config.toml`, with nothing
+else edited; it is `manual` (nothing written, the values to set printed) when Codex already has
+an entry that differs, or when `mcp_servers` is an inline table an appended table cannot extend.
+The report never prints a client's own output, and names any environment key outside sluice's
+own path variables without its value. [MCP.md](MCP.md#install-in-your-client) has the manual
+entry for each client.
+
 ## `job-sluice init`
 
 Scaffold a config, a Judging Profile, and a Candidate Profile. See the Quickstart section of

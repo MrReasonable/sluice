@@ -199,3 +199,38 @@ def test_the_runner_refuses_anything_outside_the_test_folder(tmp_path):
     rig = Rig(tmp_path)
     with pytest.raises(AssertionError):
         rig.runner(["/usr/bin/true"], 1)
+
+
+def test_an_empty_server_parent_is_not_a_collateral_change(tmp_path):
+    """opencode's add creates `mcp.servers` under an existing `"mcp": {}`; that is the entry's
+    own path, not another setting changing."""
+    rig = Rig(tmp_path)
+    rig.cli("opencode")
+    rig.write("opencode", {"theme": "dark", "mcp": {}})
+    out = _apply(rig, "opencode")
+    assert out.kind == "registered", out
+    assert rig.copies() == []
+
+
+def test_an_unexpected_error_from_the_runner_keeps_and_names_the_copy(tmp_path):
+    rig = Rig(tmp_path)
+    rig.cli("gemini")
+    _seed(rig, "gemini", {"other": OTHER})
+
+    def boom(argv, timeout):
+        raise RuntimeError("SENTINEL-NOT-A-SECRET-BOOM")
+    rig.deps.run = boom
+    out = _apply(rig, "gemini")
+    assert out.kind == "failed" and "unexpected error: RuntimeError" in out.reason
+    assert "SENTINEL" not in out.reason and rig.copies() == rig.copies_written
+
+
+def test_a_replace_the_client_does_not_apply_has_failed(tmp_path):
+    """Readback must find THIS run's entry, not merely an entry: a client that exits 0 and leaves
+    the old one in place has not replaced it."""
+    rig = Rig(tmp_path)
+    rig.cli("gemini", noop=True)
+    _seed(rig, "gemini", {"job-sluice": {"command": "/old/job-sluice", "args": ["mcp", "serve"]}})
+    out = _apply(rig, "gemini")
+    assert out.kind == "failed" and "readback did not show the entry" in out.reason
+    assert rig.copies() == rig.copies_written and len(rig.copies()) == 1

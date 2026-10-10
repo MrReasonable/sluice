@@ -415,7 +415,9 @@ def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
 def test_no_windows_home_path_is_tracked():
     out = _git("grep", "-n", "-I", "-i", "-E", _WIN_GREP,
                *(("--",) + _GATE_PATHSPEC if _GATE_PATHSPEC else ()), allow=(0, 1))
-    hits = [ln for ln in out.splitlines() if not ln.startswith("tests/test_no_leaked_files.py:")]
+    # No exemption, not even this file: its planted values are joined from parts and the
+    # pattern does not match itself, so any hit anywhere is a leak.
+    hits = out.splitlines()
     assert not hits, f"absolute Windows home path in tracked files: {hits}"
 
 

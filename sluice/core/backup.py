@@ -1,4 +1,7 @@
-"""Durable copies of what in-session setup replaces.
+"""Durable copies of a file's prior bytes, taken before something replaces it. Each caller decides
+how long its copies live: in-session setup keeps every one (below); `mcp install`
+(`mcpinstall/routes.py::_take_copy`) deletes its copy of another tool's config once readback
+proves the write clean, and keeps it when the write fails, since those files hold credentials.
 
 `setup_save` hands the replaced text back in its response (`previous`), which restores it only
 while the chat lasts; the coach also invites the user to come back later if something looks
@@ -6,7 +9,7 @@ wrong. So before `Sluice.apply_setup` replaces a setup note or the config file, 
 (`core/vault.py::Vault.keep_document_copy`) or the config writer
 (`core/config.py::keep_config_copy`) keeps the artefact's prior bytes through `write_copy`.
 
-All copies are kept: they are small and they are the user's, and nothing here decides which of
+Setup keeps all its copies: they are small and they are the user's, and nothing here decides which of
 the user's old wording is safe to lose. Nothing reads a copy back automatically either -- a
 restore is the user's (or the coach's, from `previous`) to make.
 

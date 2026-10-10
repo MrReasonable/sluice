@@ -1201,6 +1201,24 @@ assertions pin the roster at both privilege levels; prose cannot. The message fo
 without the `mcp` extra lives in `sluice/mcpextra.py`, a module that imports nothing, so a
 caller can print it without loading the store the way importing `mcpserver.py` does.
 
+`sluice/mcpinstall/` is `job-sluice mcp install`: it registers that server in the AI clients
+installed on this machine, and so writes OTHER tools' config files, at user scope only. Every
+registration is read from the client's own file, never from a client command, and before any
+write the file's bytes are copied into `mcp_install_backups/` in sluice's state folder
+(`core/backup.py::write_copy`); the copy is deleted once readback and the collateral check
+prove the write clean, and kept and named when the client fails. Each client names its route
+(`clients.py::ROUTES`), and `flow.py` dispatches on that name: the JSON route (VS Code, Cursor,
+Claude Desktop) and the append route (Codex) write through `core/atomicfile.py::replace_if`,
+replacing only while the file still holds the bytes read. The append route adds a table after
+the file's last byte, writes it only when the resulting bytes parse as the old document plus
+exactly the new entry, and never edits an existing entry. The command route (Claude Code,
+opencode, Gemini CLI) runs the client's own add, re-reading the server table just before it,
+since the add reads and writes the file itself. The package is stdlib only and imports nothing
+from the `mcp` package; `_build_parser` imports `clients.py` for `--client`'s choices, which
+loads it and the two modules it needs (`jsonc`, `server`) on every invocation
+(`tests/mcpinstall/test_flow.py::test_the_parser_import_loads_only_the_roster` pins the set);
+`routes` and `flow` load only inside `cli.py::cmd_mcp_install`.
+
 In-session setup adds `setup_status` (read-only, always registered), `setup_save` (under
 `--write`) and the `career_interview` PROMPT (registered at both levels). Unlike the other
 tools, which share the server's one `Sluice` (the holder), the two setup tools build a fresh

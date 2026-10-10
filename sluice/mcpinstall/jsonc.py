@@ -10,6 +10,7 @@ outside strings and the rest goes to `json.loads`.
 
 A `ReadError`'s text is printed, so it names the PROBLEM and never quotes the file, whose
 values can be another tool's credentials."""
+import decimal
 import json
 
 
@@ -87,9 +88,26 @@ def _no_duplicates(pairs):
     return doc
 
 
-def load(data: bytes, *, jsonc: bool) -> dict:
+def _exact_float(text: str) -> float:
+    value = float(text)
+    # json.dumps writes a non-finite float as the bare word Infinity (not JSON) and a float as
+    # its shortest repr: a number that does not survive that round trip would be re-saved as
+    # something else, so the file is refused before anything is copied or written.
+    # An out-of-range literal parses to inf, whose repr is not the text either.
+    if decimal.Decimal(text) != decimal.Decimal(repr(value)):
+        raise ReadError("it holds a number install could not re-save exactly")
+    return value
+
+
+def _no_constant(name: str):
+    raise ReadError("it holds a number install could not re-save exactly")
+
+
+def load(data: bytes, *, jsonc: bool, exact: bool = False) -> dict:
     """Parse a config file's bytes. An empty (or whitespace-only) file is an empty document,
-    the state a create starts from. Raises `ReadError` with a printable reason."""
+    the state a create starts from. Raises `ReadError` with a printable reason. `exact` (the
+    files install re-saves whole) also refuses a number `json.dumps` would write differently:
+    NaN, Infinity, an out-of-range float, a float with more digits than a double keeps."""
     if data.startswith(b"\xef\xbb\xbf"):
         raise ReadError("it starts with a byte-order mark, which install does not write")
     try:
@@ -100,7 +118,8 @@ def load(data: bytes, *, jsonc: bool) -> dict:
         return {}
     source = strip_jsonc(text) if jsonc else text
     try:
-        doc = json.loads(source, object_pairs_hook=_no_duplicates)
+        hooks = {"parse_float": _exact_float, "parse_constant": _no_constant} if exact else {}
+        doc = json.loads(source, object_pairs_hook=_no_duplicates, **hooks)
     except json.JSONDecodeError as exc:
         if not jsonc:
             try:

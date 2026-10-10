@@ -150,10 +150,11 @@ reading the diff it is certifying.
 ## Architecture
 
 Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluice/`, all sitting on
-`sluice/core/`, plus two COMMAND packages, neither a sixth sub-app: `sluice/onboard/` for
-`job-sluice init` and (#164) `sluice/evidence/` for the nine `job-sluice
-{experience,skills,stories} {add,list,verify}` handlers. Neither pipeline sub-app -- ingest,
-triage, cv, apply, track -- imports either. `cli.py` imports both, and neither import sits at
+`sluice/core/`, plus COMMAND packages, none a sixth sub-app: `sluice/onboard/` for
+`job-sluice init`, (#164) `sluice/evidence/` for the nine `job-sluice
+{experience,skills,stories} {add,list,verify}` handlers, and `sluice/mcpinstall/` for
+`job-sluice mcp install`. No pipeline sub-app -- ingest, triage, cv, apply, track -- imports any
+of them. `cli.py` imports onboard and evidence, and neither import sits at
 cli.py's own module scope, but that is NOT uniformly the same as deferred until the command
 runs: `sluice.onboard.ask`/`.plan`/`.questions` and `sluice.evidence.wizard`'s `collect_evidence`
 are imported inside `cmd_init`'s own body, so none of them loads unless `init` actually runs, but
@@ -171,10 +172,14 @@ scope, for `setup_status`, `setup_save` and the `career_interview` prompt, so `c
 onboard's only importer. Neither does I/O, but neither is free to import: `review` imports
 `core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver` loads the
 store module, and `coach.assemble_prompt` imports `core/app.py` and `sluice.backends` (registering
-every backend) inside the function, when the prompt is built. The two packages are not mutually isolated, either: `sluice/evidence/commands.py`
+every backend) inside the function, when the prompt is built. `sluice/mcpinstall/` writes
+other tools' MCP config files at user scope: it copies each before changing it, reads every
+registration back from the file, and imports nothing from the `mcp` package; `_build_parser`
+imports its `clients` module for `--client`'s choices, which loads only the package's own stdlib
+modules. Onboard and evidence are not mutually isolated, either: `sluice/evidence/commands.py`
 imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
 imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
-the two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
+those two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
 INJECTED instead and imports nothing from onboard at all. `docs/ARCHITECTURE.md` has the
 per-module detail; what follows is what you cannot see from the file tree.
 

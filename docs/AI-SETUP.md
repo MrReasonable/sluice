@@ -158,8 +158,10 @@ First look for an existing registration:
 claude mcp get job-sluice
 ```
 
-If one exists, tell the user its scope and whether its command carries `--write`. If it must
-change, remove it with `claude mcp remove job-sluice -s <scope>` before adding the new one; never
+If one exists, tell the user its scope and whether its command carries `--write`. If the
+existing one is at user scope, the install below refuses it until you pass `--replace`. At local
+or project scope, install cannot replace it (it writes user scope only, and that entry would
+still win in its project): remove it with `claude mcp remove job-sluice -s <scope>` first. Never
 add a second. A read-only registration lets the coach interview and research, but not save.
 
 Then explain `--write` and ask whether they want it: it adds the tools that change their vault and
@@ -182,17 +184,25 @@ echo "$JOB_SLUICE"
 Stop and report unless `$JOB_SLUICE` starts with `/`: an alias or a shell function prints a name,
 not a path. Register only if the probe exits 0, which it does with the extra, since it reads end
 of input at once. If it exits 2, that install lacks the `mcp` extra, and it prints the command
-that adds it; stop and report that, and any other non-zero exit with what it printed. Then register it
-(drop `--write` if they said no):
+that adds it; stop and report that, and any other non-zero exit with what it printed.
+
+Then register it (add `--read-only` if they said no to the write tools):
 
 ```bash
 JOB_SLUICE=$(command -v job-sluice)
-claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp serve --write
+"$JOB_SLUICE" mcp install --client claude-code --yes
 ```
 
-The path is absolute because the `PATH` a stdio server inherits is not documented. `--scope user`
-makes the server available in every directory; without it the server loads only where you ran the
-command. Do not add a `VAULT_DIR`: the coach agrees the vault with the user and saves it.
+It registers at user scope, which makes the server available in every Claude Code session, and
+reads Claude Code's config back to prove it. If an entry with different settings exists it is
+refused and the command exits non-zero: tell the user what it printed, and run it again with
+`--replace` only if they agree.
+
+The registration names the executable by its absolute path, because the `PATH` a stdio server
+inherits is not documented. Do not add a `VAULT_DIR` yourself: the coach agrees the vault with
+the user and saves it. If the user's shell already exports one, install carries it into the
+registration, since it is the vault every command they run already uses; say so, and that
+unsetting it is how to let the saved vault apply.
 
 For a client other than Claude Code, see [Other MCP clients](#other-mcp-clients).
 

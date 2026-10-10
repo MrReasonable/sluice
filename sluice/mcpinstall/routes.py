@@ -92,7 +92,9 @@ class Deps:
 
 def run_quietly(argv: list[str], timeout: float) -> int:
     """The production runner: no shell, stdin closed, output discarded unread (a client's output
-    can echo an entry's environment, and those hold other tools' credentials)."""
+    can echo an entry's environment, and those hold other tools' credentials). On Windows a
+    `.cmd` shim is run through `cmd.exe`, which parses `%` and `&` in its arguments; that is
+    unmeasured (every Windows row says so), and readback catches an argv it mangled."""
     return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                           stderr=subprocess.DEVNULL, timeout=timeout, check=False).returncode
 
@@ -112,11 +114,21 @@ def _scoped(client: Client, doc: dict, table: dict):
 
 def _without_entry(client: Client, doc: dict) -> dict:
     rest = _copy.deepcopy(doc)
-    node = rest
+    chain, node = [rest], rest
     for key in client.table:
         node = node.get(key) if isinstance(node, dict) else None
+        chain.append(node)
     if isinstance(node, dict):
         node.pop(SERVER_NAME, None)
+    # An EMPTY table on the entry's own path is the entry's absence: opencode's add turns
+    # `"mcp": {}` into `"mcp": {"servers": {...}}`, which is no other setting changing. A table
+    # there holding anything else is kept, so a key the add drops beside it is still caught.
+    for parent, key, child in reversed(list(zip(chain, client.table, chain[1:]))):
+        if child is None or (isinstance(child, dict) and not child):
+            if isinstance(parent, dict):
+                parent.pop(key, None)
+        else:
+            break
     return rest
 
 
@@ -129,7 +141,9 @@ def _load(client: Client, data: bytes) -> dict:
             raise jsonc.ReadError("it is not UTF-8") from None
         except tomllib.TOMLDecodeError:
             raise jsonc.ReadError("it is not valid TOML") from None
-    return jsonc.load(data, jsonc=client.reader == "jsonc")
+    # Only the JSON route re-saves the whole file, so only its files must hold numbers that
+    # survive json.dumps unchanged.
+    return jsonc.load(data, jsonc=client.reader == "jsonc", exact=client.route == "json")
 
 
 def _scope_of(client: Client, data: bytes | None):
@@ -164,6 +178,8 @@ def read_state(client: Client, path: str) -> "FileState | Unreadable":
             current = Entry(argv, tuple(sorted(env.items())))
     except jsonc.ReadError as exc:
         return Unreadable(str(exc))
+    except RecursionError:
+        return Unreadable("it is nested too deeply to read")
     return FileState(path, raw, doc, table, current)
 
 
@@ -268,9 +284,25 @@ def _write_checked(client: Client, state: FileState, data: bytes, spec: ServerSp
     except OSError:
         return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
                        _kept(copy, state.path, deps))
+    except Exception as exc:      # noqa: BLE001 -- see _unexpected
+        return _unexpected(client, exc, copy, state.path, deps)
     if not wrote:
         return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
-    return _verify(client, state, spec, copy, deps, kind)
+    try:
+        return _verify(client, state, spec, copy, deps, kind)
+    except Exception as exc:      # noqa: BLE001 -- see _unexpected
+        return _unexpected(client, exc, copy, state.path, deps)
+
+
+def _unexpected(client: Client, exc: Exception, copy: str | None, path: str,
+                deps: Deps) -> Outcome:
+    """An error nothing here anticipated, AFTER the copy was taken: this client ends `failed`
+    with its copy kept and named, instead of the exception ending the run and the report with
+    it (an earlier client's write would then go unreported). Only the type is printed: a
+    message can quote the file, whose values can be credentials. `Exception`, not
+    `BaseException`: Ctrl-C still stops the run."""
+    return Outcome(client.name, "failed", f"unexpected error: {type(exc).__name__}",
+                   _kept(copy, path, deps))
 
 
 def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
@@ -287,7 +319,13 @@ def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -
     # there, and the copy that held them is deleted once this write is proven clean.
     node[SERVER_NAME] = {**{k: old[k] for k in kept_fields},
                          **entry_value(client, spec, kept_env)}
-    data = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        data = (json.dumps(doc, indent=2, ensure_ascii=False, allow_nan=False)
+                + "\n").encode("utf-8")
+    except UnicodeEncodeError:
+        # A lone surrogate (`"\ud800"`, which json reads) has no UTF-8 form: write it escaped,
+        # which is the same document.
+        data = (json.dumps(doc, indent=2, allow_nan=False) + "\n").encode("utf-8")
     out = _write_checked(client, state, data, spec, deps, kind)
     if out.kind == kind:
         notes = ("the file was re-saved as two-space-indented JSON: its formatting may have "
@@ -343,16 +381,26 @@ def apply_command(client: Client, state: FileState, spec: ServerSpec, deps: Deps
     if not exe:
         return Outcome(client.name, "failed", f"`{client.executable}` not found on PATH")
     before = _scoped(client, state.doc, state.table)
-    copy, failure = _take_copy(state, deps, same=lambda now: _scope_of(client, now) == before)
+    copy, failure = _take_copy(state, deps,
+                               same=lambda now: _same_value(_scope_of(client, now), before))
     if failure:
         return Outcome(client.name, "failed", failure)
+    try:
+        return _command_after_copy(client, state, spec, deps, exe, before, copy, kind)
+    except Exception as exc:      # noqa: BLE001 -- see _unexpected
+        return _unexpected(client, exc, copy, state.path, deps)
+
+
+def _command_after_copy(client: Client, state: FileState, spec: ServerSpec, deps: Deps, exe: str,
+                        before, copy: str | None, kind: str) -> Outcome:
+    replacing = isinstance(state.current, Entry)
     deps.before_recheck()
     # The add reads and writes the file itself, so this is the last moment to notice a change.
     # Parsed content is compared, not bytes, and for Claude Code only the server table: a
     # running session rewrites the rest of ~/.claude.json constantly (`check_scope`).
     now = read_state(client, state.path)
     if (isinstance(now, Unreadable) or (now.raw is None) != (state.raw is None)
-            or _scoped(client, now.doc, now.table) != before):
+            or not _same_value(_scoped(client, now.doc, now.table), before)):
         return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
     steps = [("add", add_argv(client, spec))]
     if replacing and client.remove_before_add:

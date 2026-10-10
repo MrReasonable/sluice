@@ -182,10 +182,17 @@ def test_the_codex_snippet_escapes_any_path_codex_can_read(path):
         assert got["command"] == path and got["env"]["SLUICE_CONFIG"] == path
 
 
-def test_an_unknown_route_fails_at_construction():
+@pytest.mark.parametrize("field,value,valid", [
+    ("route", "apend", "'command', 'json', 'append'"),
+    ("env_key", "envs", "'env', 'environment'"),
+    ("entry_type", "sse", "'stdio', 'local', ''"),
+    ("collateral", "whole", "'file', 'table'"),
+])
+def test_an_unknown_roster_value_fails_at_construction(field, value, valid):
     import dataclasses
-    with pytest.raises(ValueError, match="command, json, append"):
-        dataclasses.replace(clients.by_name("codex"), route="apend")
+    with pytest.raises(ValueError) as exc:
+        dataclasses.replace(clients.by_name("codex"), **{field: value})
+    assert valid in str(exc.value) and field in str(exc.value)
 
 
 def test_a_json_snippet_nests_under_the_client_s_table():
@@ -200,8 +207,15 @@ def test_redaction_shows_only_the_executable_and_sluice_s_vocabulary():
         "/x/job-sluice", "mcp", "serve", "<other argument>", "<other argument>", "--write"]
 
 
-def test_redaction_hides_a_command_shaped_like_a_setting():
-    assert clients.redact_argv(["API_KEY=SENTINEL", "x"]) == ["<command>", "<other argument>"]
+@pytest.mark.parametrize("argv0", ["API_KEY=SENTINEL", "/opt/srv --token SENTINEL",
+                                   "https://user:SENTINEL@host.invalid/mcp"])
+def test_redaction_hides_a_command_shaped_like_more_than_a_path(argv0):
+    """A user can type a whole command line, or a URL carrying a password, into `command`."""
+    assert clients.redact_argv([argv0, "x"]) == ["<command>", "<other argument>"]
+
+
+def test_redaction_shows_a_plain_executable_path():
+    assert clients.redact_argv(["/opt/My Apps/job-sluice"])[0] == "/opt/My Apps/job-sluice"
     shown = clients.redact_argv([P(MAC_HOME, "bin", "job-sluice")],
                                 lambda p: clients.display_path(p, _host("darwin", MAC_HOME)))
     assert shown == ["~/bin/job-sluice"]

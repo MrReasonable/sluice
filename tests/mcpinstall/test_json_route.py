@@ -166,3 +166,50 @@ def test_matches_compares_argv_and_every_pinned_key_on_both_sides():
     assert not routes.matches(routes.Entry(SPEC.argv, ()), SPEC)
     bare = server.ServerSpec(SPEC.argv, ())
     assert not routes.matches(entry, bare)     # the old entry pins a path this run does not
+
+
+def test_a_lone_surrogate_in_the_file_still_writes_it_back_unchanged(tmp_path):
+    rig = Rig(tmp_path)
+    rig.write("vscode", '{"servers": {"x": {"command": "\\ud800"}}}')
+    assert _apply(rig, "vscode").kind == "registered"
+    assert rig.read("vscode")["servers"]["x"]["command"] == "\ud800"
+
+
+def test_a_file_nested_too_deep_is_unreadable(tmp_path):
+    rig = Rig(tmp_path)
+    p = rig.write("cursor", '{"a": ' + "[" * 200000 + "]" * 200000 + "}")
+    got = routes.read_state(CURSOR, str(p))
+    assert isinstance(got, routes.Unreadable) and "nested" in got.reason
+
+
+def test_an_unexpected_error_after_the_copy_keeps_and_names_it(tmp_path, monkeypatch):
+    rig = Rig(tmp_path)
+    rig.write("cursor", {"mcpServers": {"other": OTHER}})
+    state = routes.read_state(CURSOR, rig.path("cursor"))
+
+    def boom(*a, **k):
+        raise RuntimeError("SENTINEL-NOT-A-SECRET-BOOM")
+    monkeypatch.setattr(routes, "_verify", boom)
+    out = routes.apply_json(CURSOR, state, SPEC, rig.deps)
+    assert out.kind == "failed" and "unexpected error: RuntimeError" in out.reason
+    assert "SENTINEL" not in out.reason and rig.copies() == rig.copies_written
+    assert any(rig.copies_written[0] in d for d in out.details)
+
+
+@pytest.mark.parametrize("number", ["1e400", "-1e400", "1.00000000000000000001", "NaN", "Infinity"])
+def test_a_number_a_re_save_would_change_is_refused_before_any_write(tmp_path, number):
+    """The JSON route re-saves the whole file with json.dumps, which writes an out-of-range
+    number as the bare word Infinity (not JSON) and rounds a long float; the client could then
+    not read its own file, and readback (python's json, which accepts both) would not notice."""
+    rig = Rig(tmp_path)
+    text = '{"mcpServers": {"other": {"command": "/o", "timeout": %s}}}' % number
+    p = rig.write("cursor", text)
+    got = routes.read_state(CURSOR, str(p))
+    assert isinstance(got, routes.Unreadable) and "number" in got.reason
+    assert p.read_text() == text and rig.copies_written == []
+
+
+def test_an_exact_float_is_still_read():
+    cursor_state = clients.by_name("cursor")
+    assert routes._load(cursor_state, b'{"a": 0.1, "b": 1e5, "c": -2.5e-3}') == {
+        "a": 0.1, "b": 1e5, "c": -2.5e-3}

@@ -65,13 +65,24 @@ class Client:
     remove_before_add: bool   # its add refuses an existing name (measured: Claude Code only)
     next_step: str            # what to do after registering: docs/MCP.md's text
     measured: str
+    # The entry's shape, as the client itself writes it (measured). Every client states each
+    # one: a default here would hand an eighth client some other client's shape unnoticed.
+    entry_type: str           # its `type` value: "stdio", "local", or "" for no `type` key
+    env_key: str              # "env" or "environment"
+    argv_in_command: bool     # `command` holds the whole argv (opencode), not `command`+`args`
+    collateral: str           # what the collateral check compares: "file" or "table" (check_scope)
+    local_scope: bool         # it also keeps LOCAL-scope entries in this file (Claude Code)
 
     def __post_init__(self):
         # flow.py dispatches on the route by key; an unknown one must stop here, not fall
-        # through to some other route's writer.
-        if self.route not in ROUTES:
-            raise ValueError(f"{self.name}: route {self.route!r} is not one of "
-                             + ", ".join(ROUTES))
+        # through to some other route's writer. The shape fields are checked the same way.
+        for field_name, value, valid in (("route", self.route, ROUTES),
+                                         ("entry_type", self.entry_type, ("stdio", "local", "")),
+                                         ("env_key", self.env_key, ("env", "environment")),
+                                         ("collateral", self.collateral, ("file", "table"))):
+            if value not in valid:
+                raise ValueError(f"{self.name}: {field_name} {value!r} is not one of "
+                                 + ", ".join(repr(v) for v in valid))
 
 
 ROSTER = (
@@ -79,33 +90,68 @@ ROSTER = (
            ("mcpServers",), True,
            "Restart Claude Code (`claude --continue` resumes the conversation, from the same "
            f"directory); the coach is `/mcp__{SERVER_NAME}__career_interview`.",
-           "Claude Code 2.1.296 on macOS, 2026-10-10"),
+           "Claude Code 2.1.296 on macOS, 2026-10-10",
+           entry_type="stdio",
+           env_key="env",
+           argv_in_command=False,
+           collateral="table",
+           local_scope=True),
     Client("vscode", "VS Code", "vs-code", "json", "code", "json", ("servers",), False,
            "Start it from the Command Palette (MCP: List Servers, then job-sluice, then "
            f"Start); the coach is `/mcp.{SERVER_NAME}.career_interview`.",
-           "VS Code 1.141.0 on macOS, 2026-10-10"),
+           "VS Code 1.141.0 on macOS, 2026-10-10",
+           entry_type="stdio",
+           env_key="env",
+           argv_in_command=False,
+           collateral="file",
+           local_scope=False),
     Client("opencode", "opencode", "opencode", "command", "opencode", "jsonc",
            ("mcp", "servers"), False,
            f"Restart opencode; the coach is `/{SERVER_NAME}:career_interview`.",
-           "opencode 2.0.25 on macOS, 2026-10-10"),
+           "opencode 2.0.25 on macOS, 2026-10-10",
+           entry_type="local",
+           env_key="environment",
+           argv_in_command=True,
+           collateral="file",
+           local_scope=False),
     Client("cursor", "Cursor", "cursor", "json", "cursor", "json", ("mcpServers",), False,
            "Switch job-sluice on in Settings, Tools & MCP, and start a new chat; the coach is "
            f"`/{SERVER_NAME}/career_interview`.",
-           "Cursor 3.24.9 on macOS, 2026-10-10"),
+           "Cursor 3.24.9 on macOS, 2026-10-10",
+           entry_type="",
+           env_key="env",
+           argv_in_command=False,
+           collateral="file",
+           local_scope=False),
     Client("claude-desktop", "Claude Desktop", "claude-desktop", "json", "", "json",
            ("mcpServers",), False,
            "Quit and reopen Claude Desktop; the coach is in the + menu as "
            "`career_interview_text`.",
-           "Claude Desktop 2.19675.1 on macOS, 2026-10-09"),
+           "Claude Desktop 2.19675.1 on macOS, 2026-10-09",
+           entry_type="",
+           env_key="env",
+           argv_in_command=False,
+           collateral="file",
+           local_scope=False),
     Client("codex", "Codex", "codex", "append", "codex", "toml", ("mcp_servers",), False,
            "Restart Codex. Codex shows no MCP prompts, so run the coach as AI-SETUP.md's "
            "appendix describes.",
-           "Codex 0.162.1 on macOS, 2026-10-10"),
+           "Codex 0.162.1 on macOS, 2026-10-10",
+           entry_type="",
+           env_key="env",
+           argv_in_command=False,
+           collateral="file",
+           local_scope=False),
     Client("gemini", "Gemini CLI", "gemini-cli", "command", "gemini", "jsonc",
            ("mcpServers",), False,
            "Restart Gemini CLI in a folder you have marked as trusted; the coach is "
            "`/career_interview`.",
-           "Gemini CLI 0.63.0 on macOS, 2026-10-10"),
+           "Gemini CLI 0.63.0 on macOS, 2026-10-10",
+           entry_type="",
+           env_key="env",
+           argv_in_command=False,
+           collateral="file",
+           local_scope=False),
 )
 NAMES = tuple(c.name for c in ROSTER)
 
@@ -192,16 +238,13 @@ def server_table(client: Client, doc: dict) -> dict:
 
 
 def _env_key(client: Client) -> str:
-    return "environment" if client.name == "opencode" else "env"
+    return client.env_key
 
 
 def _shape(client: Client) -> frozenset:
     """The keys of the entry install writes for this client (`entry_value`)."""
-    if client.name == "opencode":
-        return frozenset({"type", "command", "environment"})
-    if client.name in ("claude-code", "vscode"):
-        return frozenset({"type", "command", "args", "env"})
-    return frozenset({"command", "args", "env"})
+    keys = {"command", client.env_key} | ({"type"} if client.entry_type else set())
+    return frozenset(keys if client.argv_in_command else keys | {"args"})
 
 
 def extra_fields(client: Client, value: dict) -> list[str]:
@@ -214,13 +257,13 @@ def extra_fields(client: Client, value: dict) -> list[str]:
 def check_scope(client: Client) -> str:
     """What the collateral check compares: the whole file, except for Claude Code, whose
     ~/.claude.json a running session rewrites constantly outside `mcpServers`."""
-    return "table" if client.name == "claude-code" else "file"
+    return client.collateral
 
 
 def local_entries(client: Client, doc: dict) -> int:
     """Claude Code's LOCAL-scope `job-sluice` entries (under `projects` in ~/.claude.json): each
     takes precedence over the user-scope entry in its project, so the report says so."""
-    if client.name != "claude-code" or not isinstance(doc.get("projects"), dict):
+    if not client.local_scope or not isinstance(doc.get("projects"), dict):
         return 0
     return sum(1 for project in doc["projects"].values()
                if isinstance(project, dict) and isinstance(project.get("mcpServers"), dict)
@@ -230,12 +273,12 @@ def local_entries(client: Client, doc: dict) -> int:
 def entry_value(client: Client, spec: ServerSpec, extra_env: Mapping[str, str] = {}) -> dict:
     """The `job-sluice` entry in the shape the client itself writes (measured)."""
     env = {**dict(extra_env), **spec.env_dict}
-    if client.name == "opencode":
-        value = {"type": "local", "command": list(spec.argv)}
+    if client.argv_in_command:
+        value = {"command": list(spec.argv)}
     else:
         value = {"command": spec.argv[0], "args": list(spec.argv[1:])}
-        if client.name in ("claude-code", "vscode"):
-            value = {"type": "stdio", **value}
+    if client.entry_type:
+        value = {"type": client.entry_type, **value}
     if env:
         value[_env_key(client)] = dict(sorted(env.items()))
     return value
@@ -249,7 +292,7 @@ def parse_entry(client: Client, value) -> tuple[tuple[str, ...], dict]:
     bad = ReadError(f"its job-sluice entry is not in the shape {client.title} writes")
     if not isinstance(value, dict):
         raise bad
-    if client.name == "opencode":
+    if client.argv_in_command:
         if not _strings(value.get("command")) or not value["command"]:
             raise bad
         argv = tuple(value["command"])
@@ -335,9 +378,14 @@ def snippet(client: Client, spec: ServerSpec, *, inline: bool = False) -> str:
 
 def redact_argv(argv, display=None) -> list[str]:
     """An EXISTING entry's argv as the report may print it: the executable (shortened by
-    `display`, and hidden when it carries an `=`, the shape of `KEY=value`), sluice's own
-    vocabulary, and `<other argument>` for the rest (a user can put a token in an argument)."""
-    exe = "<command>" if "=" in argv[0] else (display(argv[0]) if display else argv[0])
+    `display`), sluice's own vocabulary, and `<other argument>` for the rest (a user can put a
+    token in an argument). The executable is hidden too when it is not shaped like a path: an
+    `=` (`KEY=value`), a `://` (a URL can carry a password), or whitespace in its last component
+    (a whole command line typed into `command`). A space earlier in a path is a folder name."""
+    first = argv[0]
+    last = first.replace("\\", "/").rsplit("/", 1)[-1]
+    hidden = "=" in first or "://" in first or any(ch.isspace() for ch in last)
+    exe = "<command>" if hidden else (display(first) if display else first)
     return [exe, *(a if a in SLUICE_ARGS else "<other argument>" for a in argv[1:])]
 
 
