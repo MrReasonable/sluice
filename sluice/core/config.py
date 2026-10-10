@@ -6,10 +6,9 @@ can override without editing files.
 """
 import os
 import stat
-import tempfile
-import threading
 from dataclasses import dataclass, field, fields
 
+from sluice.core.atomicfile import file_lock, replace_if
 from sluice.core.timeouts import DEFAULT_TIMEOUT
 from sluice.core.language import parse_listing_languages
 from sluice.core.leads import LEAD_LAYOUTS, Lead
@@ -1023,17 +1022,6 @@ def load_config(path: str | None = None) -> Config:
                   dossier_allow_hosts=allow)
 
 
-# One lock per resolved file: two threads racing an update would otherwise both pass the sha
-# check against the same text and the second replace would clobber the first.
-_config_write_locks: dict[str, threading.Lock] = {}
-_config_write_locks_guard = threading.Lock()
-
-
-def _config_write_lock(real: str) -> threading.Lock:
-    with _config_write_locks_guard:
-        return _config_write_locks.setdefault(real, threading.Lock())
-
-
 def config_copy_dir() -> str:
     """Where `keep_config_copy` keeps the config's prior bytes: `config_backups` in sluice's XDG
     STATE folder, resolved the way every other state path is. No env var or config key relocates
@@ -1059,7 +1047,7 @@ def keep_config_copy(path: str, expect_sha: str) -> str:
     credential; for the same reason a folder this creates is private to the user (0o700)."""
     from sluice.core import backup
     real = os.path.realpath(path)
-    with _config_write_lock(real):
+    with file_lock(real):
         try:
             with open(real, "rb") as f:
                 data = f.read()
@@ -1074,75 +1062,26 @@ def keep_config_copy(path: str, expect_sha: str) -> str:
 
 
 def write_config_text(path: str, text: str, *, expect_sha: str | None = None) -> bool:
-    """The config file's one writer (in-session setup). A symlink is resolved and its TARGET
-    replaced in the target's own directory, so a link into a dotfiles repository survives;
-    `core/vault.py::_atomic_write` would replace the link itself, which is why this is not that.
+    """The config file's one writer (in-session setup), over `core/atomicfile.py::replace_if`,
+    which resolves a symlink and replaces its TARGET in the target's own directory, so a link
+    into a dotfiles repository survives.
 
     No `expect_sha`: create exclusively (O_EXCL), parent directory first -- never-clobber is a
     property of the open. With it: replace only when the current text hashes to it, keeping the
     file's mode. Returns False whenever it wrote nothing.
 
-    The update arm is best-effort, the residual `core/vault.py::_cas_write` states: the lock is
-    in-process only, so an outside editor (a human saving the file by hand) that writes between
-    the sha check and the replace is overwritten. No portable atomic compare-and-replace exists;
-    the window is the read-compare-replace, not the human's review time."""
-    real = os.path.realpath(path)
-    with _config_write_lock(real):
-        if expect_sha is None:
-            # Encode BEFORE the exclusive open: an unencodable text (a lone surrogate) must
-            # fail while nothing exists, or the empty file it left would read as "someone else
-            # created it" to every later create and setup could never write a config.
-            data = text.encode("utf-8")
-            parent = os.path.dirname(real)
-            if parent:
-                os.makedirs(parent, exist_ok=True)
-            try:
-                f = open(real, "xb")
-            except FileExistsError:
-                return False
-            # Our exclusive open made the file, so a failure after it leaves a partial that is
-            # ours to remove -- whatever the exception type. But ownership at CREATE time is not
-            # ownership at CLEANUP time: another process (a second session, `init`, a hand
-            # save) may have replaced the pathname since, and unlinking by name would delete
-            # ITS config. So the open handle's identity is kept, and the name is removed only
-            # while it still points at that file. A replace landing between that check and the
-            # unlink is the residual no portable stdlib call closes.
-            mine = None
-            try:
-                try:
-                    st = os.fstat(f.fileno())
-                    mine = (st.st_dev, st.st_ino)
-                    f.write(data)
-                finally:
-                    f.close()
-            except BaseException:
-                try:
-                    now = os.lstat(real)
-                    if (now.st_dev, now.st_ino) == mine:
-                        os.unlink(real)
-                except OSError:
-                    pass
-                raise
-            return True
-        try:
-            with open(real, encoding="utf-8", newline="") as f:
-                current = f.read()
-        except FileNotFoundError:
-            return False
-        if document_sha(current) != expect_sha:
-            return False
-        mode = stat.S_IMODE(os.stat(real).st_mode)
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".", prefix=".sluice-config-",
-                                   suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
-                f.write(text)
-            os.chmod(tmp, mode)
-            os.replace(tmp, real)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
-        return True
+    The update arm is best-effort, the residual `replace_if` states: an outside editor that
+    writes between the sha check and the replace is overwritten."""
+    # Encode BEFORE anything touches the disk: an unencodable text (a lone surrogate) must fail
+    # while nothing exists, or the empty file a create left would read as "someone else created
+    # it" to every later create and setup could never write a config. On the update arm this
+    # also means such a text raises even when the sha is stale: a text that cannot be written
+    # is reported as that, never as "stale".
+    data = text.encode("utf-8")
+    if expect_sha is None:
+        return replace_if(path, data, fresh=None, tmp_prefix=".sluice-config-")
+    # The sha is over the TEXT, as the review form recorded it (`document_sha`); decoding the
+    # raw bytes is what reading with newline="" did, so a CRLF config still compares truly and
+    # a non-UTF-8 one still raises rather than being replaced.
+    return replace_if(path, data, fresh=lambda current: document_sha(
+        current.decode("utf-8")) == expect_sha, tmp_prefix=".sluice-config-")
