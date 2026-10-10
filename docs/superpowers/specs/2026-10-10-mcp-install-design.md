@@ -147,8 +147,12 @@ in the roster is considered.
 `--dry-run` asks nothing: it runs steps 1–3, applies the flags as a non-interactive run would,
 prints exactly what would be run or written per client, and writes nothing.
 
-**What is printed** (neutrality): an entry's argv and the values of pinned sluice keys (sluice's
-own paths, shown so the user sees what the server will open); any other env key by NAME only;
+**What is printed** (neutrality): the argv install REGISTERS, in full (it is built from sluice's
+own launcher path and vocabulary); an EXISTING entry's argv only element by element, where the
+executable path and the elements in sluice's own argument vocabulary (`mcp`, `serve`, `--write`)
+are shown and every other element is shown as `<other argument>` — an entry a user wrote can carry
+a token as an argument; the values of pinned sluice keys (sluice's own paths, shown so the user
+sees what the server will open); any other env key by NAME only;
 never a client's raw stdout/stderr — a failure is reported as a classified reason (`timed out`,
 `exited 1`, `not found on PATH`, `readback did not show the entry`), because a client's output
 can echo an entry's environment and those hold third-party credentials. Backup copies are named
@@ -199,8 +203,19 @@ list), so a replace over an entry carrying such keys is `refused` with the key N
 instruction to re-add them by hand or move them; `--replace` does not override this.
 
 **Claude Code replace** (remove then add): the old entry's argv and env-key names are captured
-before the remove; if the add fails, the report shows that argv and those names (values never) and
-the copy that holds the full old entry.
+before the remove; if the add fails, the report shows that argv, redacted by the rule in "What is
+printed", and those names (values never), and the copy that holds the full old entry.
+
+**Freshness on the command route.** A client's add command does not compare-and-set: it reads the
+file and writes it back. So immediately before running it, the adapter re-reads the file and
+compares it with the bytes it copied; if they differ (someone edited the file after the copy),
+the outcome is `failed: the file changed while install was running`, nothing is run, and the copy
+is kept. What remains is the window while the client's own command runs, which no outside check
+can close: an edit landing there may be overwritten by the client's write. The collateral check
+afterwards catches that edit when it touched another server; when it touched the `job-sluice`
+entry itself, the readback shows install's entry, which is the outcome the user asked for. This
+residual is stated in the report's help text and in `docs/MCP.md`, the same posture as
+`core/vault.py::_cas_write`'s micro-window.
 
 **Command adapters** run the client with `subprocess.run([...], shell=False)`, the executable
 resolved by `shutil.which` (so a Windows `.cmd` shim launches), stdin closed, output captured and
@@ -295,6 +310,9 @@ Offline, against the sandbox above.
   - two clients in one run, one clean and one `failed` → only the failed client's copy remains;
   - a fake `get` that exits 1 with an unrelated error → `Unreadable`, nothing run;
   - a fake that hangs past an injected sub-second timeout → `failed: timed out`;
+  - an edit to the file between the copy and the client run (landed by the injected `write_copy`
+    returning after it writes) → `failed: the file changed while install was running`, the fake's
+    call log shows no add, the copy kept;
   - a fake removed between detect and apply → `failed: not found on PATH`;
   - Claude Code remove-then-add with a failing add → report shows the old argv and env NAMES.
 - JSON route: an unrelated key and a sentinel credential (`SENTINEL-NOT-A-SECRET-…`) survive
@@ -313,8 +331,9 @@ Offline, against the sandbox above.
   and a re-run reads `same`.
 - Pinned env: set `SLUICE_CONFIG=~/x.yaml` → the entry carries the absolute path; an unset
   variable is not pinned; the derived-roster guard (above).
-- Neutrality: sentinel values placed in another server's env, in a fake client's stderr, and
-  under a NON-pinned env key of the existing `job-sluice` entry appear in no output stream, on
+- Neutrality: sentinel values placed in another server's env, in a fake client's stderr, as an
+  ARGUMENT of the existing `job-sluice` entry, and under a NON-pinned env key of that entry appear
+  in no output stream, on
   every path that prints an entry: the old/new comparison, `--dry-run`, the refused-replace
   report and the Claude Code failed-add report. Control: the same run shows the sentinel's KEY
   NAME in the output, proving the planted entry was read.
