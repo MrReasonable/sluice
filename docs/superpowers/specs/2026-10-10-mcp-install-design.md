@@ -36,7 +36,7 @@ changed.
 | A replace over an entry carrying env keys install cannot carry | JSON route keeps them; a command route REFUSES the replace and names the keys, since its add command would drop them (author ruling, round 2) |
 | How a registration is read | From the client's config FILE, for every client; a client command is used only to WRITE. `claude mcp get` starts the server to health-check it, prints env values and answers for the current directory's project scope first; `opencode mcp list` answers from a daemon's stale snapshot; `gemini mcp list` shows no env. So the readback IS the file the copy and the collateral check read, and the same-file check is that readback (author ruling, measurements) |
 | VS Code | JSON route: `code --add-mcp` drops unrelated top-level keys and every comment (author ruling, measurements) |
-| Codex | Snippet only (`manual`): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot write TOML. Its file is still read, so a matching entry reads `unchanged` (author ruling, measurements) |
+| Codex | APPEND when absent (owner, 2026-10-10): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot edit TOML, but it can add a NEW `[mcp_servers.job-sluice]` table at the end of `config.toml` without touching an existing byte. The candidate bytes are parsed before anything is written, and the write goes ahead only when they parse and the result is the old document plus exactly the new entry (an inline `mcp_servers = {...}` table, for one, makes an appended table invalid); otherwise it is `manual` with the snippet. An existing entry that differs is `manual` too: install does not edit TOML. Copy, compare-and-set and readback as on the JSON route |
 | Freshness on the command route | Compares the parsed server TABLE, not raw bytes: a running Claude Code session rewrites `~/.claude.json` constantly, so a byte comparison would fail every run made from inside one, which is the AI-SETUP case; each add command was measured to keep everything outside its table (author ruling, measurements) |
 | Code shape | A package, `sluice/mcpinstall/`, one module per concern, instead of one module (author ruling, planning) |
 | Other fields on an existing entry (`autoApprove`, `cwd`, `trust`, ...) on a replace | Same rule as env keys: the JSON route keeps them and names them; a command route REFUSES the replace and names them, since its add writes a fresh entry (author ruling, plan review) |
@@ -93,7 +93,7 @@ process directly by an adapter.
 | opencode (global config) | `$OPENCODE_CONFIG_DIR/opencode.json`, else `$XDG_CONFIG_HOME/opencode/` (default `~/.config`): `opencode.jsonc` when it is the only one there, else `opencode.json` | same | same rule under the user profile |
 | Cursor | `~/.cursor/mcp.json` | same | `%USERPROFILE%\.cursor\mcp.json` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `Unsupported` (no official Linux build) | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Codex | `$CODEX_HOME/config.toml`, default `~/.codex/config.toml` (read; snippet only) | same | same |
+| Codex | `$CODEX_HOME/config.toml`, default `~/.codex/config.toml` (appended when absent; snippet otherwise) | same | same |
 | Gemini CLI | `$GEMINI_CLI_HOME/.gemini/settings.json`, else `~/.gemini/settings.json` | same | same |
 
 VS Code Insiders and VSCodium are out of scope (each a separate user folder and command).
@@ -153,7 +153,7 @@ in the roster is considered.
      reason (it was asked for and cannot be done), not silently skipped.
 5. **Write** through each adapter (see Write safety), then **read back**. Outcome per client:
    `registered`, `replaced`, `unchanged`, `refused`, `failed` (reason plus the snippet to
-   paste), or `manual` (a snippet-only client: the snippet, nothing written). A readback that
+   paste), or `manual` (an entry install will not write, such as an existing Codex entry: the snippet, nothing written). A readback that
    does not show the spec is `failed`, whatever the client's exit code.
 6. **Finish** with each client's restart step and its slash command, the same text MCP.md gives.
    Exit non-zero when any client ends `failed` or `refused`, or `manual` for a client named by
@@ -366,8 +366,11 @@ Offline, against the sandbox above.
   pin reads `different`.
 - Wrong file: a fake add that writes its entry somewhere other than the computed file →
   `failed: readback did not show the entry in …`.
-- Codex: a matching entry in `config.toml` → `unchanged`; otherwise `manual` with the TOML
-  snippet, nothing run; `manual` is non-zero only under `--client codex`.
+- Codex: absent → appended, every byte before the new table unchanged (comments and another
+  server's unknown field included), copy deleted; missing file → created; a matching entry →
+  `unchanged`; a different entry → `manual` with the snippet, nothing written; an inline
+  `mcp_servers = {...}` table → `manual`, nothing written (the pre-write parse refuses it);
+  `manual` is non-zero only under `--client codex`.
 
 **Mutation witnesses**, each a named mutant that must turn the named test red:
 1. Delete the readback comparison (treat exit 0 as success) → the exits-0-changes-nothing test.
@@ -382,6 +385,7 @@ Offline, against the sandbox above.
    expects success sees it. The wrong-file test stays as a behaviour pin.
 11. Compare only the server table for a client whose file is checked whole → a test whose
     fake add drops an unrelated top-level key.
+12. Delete Codex's pre-write parse → the inline-table test (the file is left invalid).
 8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
    `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
 
