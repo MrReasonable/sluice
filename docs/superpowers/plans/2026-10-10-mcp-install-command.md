@@ -573,7 +573,8 @@ Witness 8b: in `build_spec` replace `for k in PINNED_ENV` with `for k in ("SLUIC
   - `Found(evidence: str)`, `NotFound()`, `Unsupported(reason: str)`; `config_path(client, host) -> str | Unsupported`; `detect(client, host) -> Found | NotFound | Unsupported`.
   - `server_table(client, doc: dict) -> dict` (raises `ReadError`); `entry_value(client, spec, extra_env: Mapping = {}) -> dict`; `parse_entry(client, value) -> tuple[tuple[str, ...], dict]` (raises `ReadError`).
   - `add_argv(client, spec) -> list[str]`, `remove_argv(client) -> list[str]` (element 0 is `client.executable`; the caller swaps in the resolved path).
-  - `snippet(client, spec) -> str`; `redact_argv(argv) -> list[str]`; `display_path(path, host) -> str`; `measured_note(client, host) -> str`.
+  - `snippet(client, spec) -> str`; `redact_argv(argv, display=None) -> list[str]`; `display_path(path, host) -> str`; `measured_note(client, host) -> str`.
+  - `check_scope(client) -> str` (`"table"` for Claude Code, else `"file"`); `extra_fields(client, value: dict) -> list[str]` (an entry's keys beyond the shape install writes); `local_entries(client, doc: dict) -> int` (Claude Code local-scope `job-sluice` entries in the same file).
 
 - [ ] **Step 1: Write the sandbox fixture**
 
@@ -775,6 +776,33 @@ def test_redaction_shows_only_the_executable_and_sluice_s_vocabulary():
     assert clients.redact_argv(["/x/job-sluice", "mcp", "serve", "--token", "SENTINEL",
                                 "--write"]) == [
         "/x/job-sluice", "mcp", "serve", "<other argument>", "<other argument>", "--write"]
+
+
+def test_redaction_hides_a_command_shaped_like_a_setting():
+    assert clients.redact_argv(["API_KEY=SENTINEL", "x"]) == ["<command>", "<other argument>"]
+    shown = clients.redact_argv([P(MAC_HOME, "bin", "job-sluice")],
+                                lambda p: clients.display_path(p, _host("darwin", MAC_HOME)))
+    assert shown == ["~/bin/job-sluice"]
+
+
+def test_extra_fields_are_the_keys_install_does_not_write():
+    cursor, oc = clients.by_name("cursor"), clients.by_name("opencode")
+    assert clients.extra_fields(cursor, {"command": "x", "args": [], "autoApprove": [],
+                                         "cwd": "/w"}) == ["autoApprove", "cwd"]
+    assert clients.extra_fields(oc, {"type": "local", "command": ["x"], "enabled": False}) == [
+        "enabled"]
+
+
+def test_only_claude_code_is_checked_by_table():
+    assert [c.name for c in clients.ROSTER if clients.check_scope(c) == "table"] == [
+        "claude-code"]
+
+
+def test_local_scope_entries_are_counted_for_claude_code_only():
+    doc = {"projects": {"/p1": {"mcpServers": {"job-sluice": {}}}, "/p2": {"mcpServers": {}},
+                        "/p3": "junk"}}
+    assert clients.local_entries(clients.by_name("claude-code"), doc) == 1
+    assert clients.local_entries(clients.by_name("gemini"), doc) == 0
 
 
 def test_display_path_is_relative_to_home():
@@ -984,6 +1012,38 @@ def _env_key(client: Client) -> str:
     return "environment" if client.name == "opencode" else "env"
 
 
+def _shape(client: Client) -> frozenset:
+    """The keys of the entry install writes for this client (`entry_value`)."""
+    if client.name == "opencode":
+        return frozenset({"type", "command", "environment"})
+    if client.name in ("claude-code", "vscode"):
+        return frozenset({"type", "command", "args", "env"})
+    return frozenset({"command", "args", "env"})
+
+
+def extra_fields(client: Client, value: dict) -> list[str]:
+    """Keys a user (or the client) put on an entry beyond what install writes: `autoApprove`,
+    `cwd`, `trust`, `timeout`, ... A replace keeps them (JSON route) or refuses (command route),
+    never drops them, since the copy that held them is deleted on a clean write."""
+    return sorted(k for k in value if k not in _shape(client))
+
+
+def check_scope(client: Client) -> str:
+    """What the collateral check compares: the whole file, except for Claude Code, whose
+    ~/.claude.json a running session rewrites constantly outside `mcpServers`."""
+    return "table" if client.name == "claude-code" else "file"
+
+
+def local_entries(client: Client, doc: dict) -> int:
+    """Claude Code's LOCAL-scope `job-sluice` entries (under `projects` in ~/.claude.json): each
+    takes precedence over the user-scope entry in its project, so the report says so."""
+    if client.name != "claude-code" or not isinstance(doc.get("projects"), dict):
+        return 0
+    return sum(1 for project in doc["projects"].values()
+               if isinstance(project, dict) and isinstance(project.get("mcpServers"), dict)
+               and SERVER_NAME in project["mcpServers"])
+
+
 def entry_value(client: Client, spec: ServerSpec, extra_env: Mapping[str, str] = {}) -> dict:
     """The `job-sluice` entry in the shape the client itself writes (measured)."""
     env = {**dict(extra_env), **spec.env_dict}
@@ -1061,10 +1121,12 @@ def snippet(client: Client, spec: ServerSpec) -> str:
     return json.dumps(doc, indent=2, ensure_ascii=False)
 
 
-def redact_argv(argv) -> list[str]:
-    """An EXISTING entry's argv as the report may print it: the executable, sluice's own
+def redact_argv(argv, display=None) -> list[str]:
+    """An EXISTING entry's argv as the report may print it: the executable (shortened by
+    `display`, and hidden when it carries an `=`, the shape of `KEY=value`), sluice's own
     vocabulary, and `<other argument>` for the rest (a user can put a token in an argument)."""
-    return [argv[0], *(a if a in SLUICE_ARGS else "<other argument>" for a in argv[1:])]
+    exe = "<command>" if "=" in argv[0] else (display(argv[0]) if display else argv[0])
+    return [exe, *(a if a in SLUICE_ARGS else "<other argument>" for a in argv[1:])]
 
 
 def display_path(path: str, host: Host) -> str:
@@ -1085,75 +1147,68 @@ Expected: all passed.
 
 - [ ] **Step 6: Add the leak gate's Windows form**
 
-Nothing needs allow-listing: the placeholders are joined from parts. The gate gains the Windows
-shape (a drive, `Users` and the account name, with one or two backslashes, since a Python or JSON
-string doubles them). Every home-shaped string below is concatenated so that this plan and the
-test file stay clean under the gate they describe. First the failing tests, appended after
-`test_the_allowance_is_scoped_to_the_file_that_needs_it`:
+Nothing is allow-listed: the tests join their placeholder from parts, so ANY Windows home path
+`git grep` finds outside this guard's own file is a failure, and no second (Python) pattern is
+needed to decide which hits are allowed. The separators are any run of `\` or `/`: a JSON path
+inside a Python string carries four backslashes, and a path can mix a backslash with a slash. Every
+home-shaped string below is concatenated so that this plan and the test file stay clean under
+the gate they describe.
+
+First the failing tests, appended after `test_the_allowance_is_scoped_to_the_file_that_needs_it`:
 
 ```python
-_WIN_PLACEHOLDER = "C:" + r"\Users\example"
-
-
-@pytest.mark.parametrize("line,allowed", [
-    ("tests/mcpinstall/test_clients.py:1: " + _WIN_PLACEHOLDER, True),
-    ("tests/mcpinstall/test_clients.py:1: " + _WIN_PLACEHOLDER.replace("\\", "\\\\"), True),
-    ("tests/mcpinstall/test_clients.py:1: C:" + r"\Users\realperson", False),
-    ("sluice/cli.py:1: " + _WIN_PLACEHOLDER, False),
-    ("tests/mcpinstall/test_clients.py:1: d:" + r"\\users\\someone\\x", False),
-])
-def test_the_windows_allowance_is_scoped_too(line, allowed):
-    assert _is_allowed_win_hit(line) is allowed
-
-
 def test_no_windows_home_path_is_tracked():
     out = _git("grep", "-n", "-I", "-i", "-E", _WIN_GREP,
                *(("--",) + _GATE_PATHSPEC if _GATE_PATHSPEC else ()), allow=(0, 1))
-    hits = [ln for ln in out.splitlines()
-            if not ln.startswith("tests/test_no_leaked_files.py:")
-            and not _is_allowed_win_hit(ln)]
+    hits = [ln for ln in out.splitlines() if not ln.startswith("tests/test_no_leaked_files.py:")]
     assert not hits, f"absolute Windows home path in tracked files: {hits}"
 
 
-def test_the_windows_gate_catches_a_planted_path_through_git(tmp_path):
+def test_the_windows_gate_catches_every_separator_form_through_git(tmp_path):
     """Run through the engine the gate uses: a pattern that works in Python `re` and not in
     `git grep -E` would certify a blind gate (this file's own history)."""
     import subprocess
+    bs = "\\"
+    planted = [f"C:{bs}Users{bs}one", f"C:{bs * 2}Users{bs * 2}two",
+               f"C:{bs * 4}Users{bs * 4}three", f"C:{bs}Users/four", f"c:{bs}users{bs}five"]
+    control = f"C:{bs}Program Files{bs}x"
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    single = "C:" + r"\Users\realperson\x"
-    double = "C:" + r"\\Users\\other"
-    (tmp_path / "a.py").write_text(f"p = {single}\nq = {double}\n")
-    subprocess.run(["git", "-C", str(tmp_path), "add", "a.py"], check=True)
+    (tmp_path / "a.txt").write_text("\n".join(planted + [control]) + "\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "a.txt"], check=True)
     out = subprocess.run(["git", "-C", str(tmp_path), "grep", "-n", "-I", "-i", "-E", _WIN_GREP],
                          capture_output=True, text=True).stdout
-    assert out.count("\n") == 2, out
+    found = {int(line.split(":", 2)[1]) for line in out.splitlines()}
+    assert found == set(range(1, len(planted) + 1)), out
 ```
 
-Run them (FAIL: `_is_allowed_win_hit` / `_WIN_GREP` undefined), then add beside
+And make `test_the_gate_actually_uses_the_declared_pathspec` check EVERY gate call, not the
+first (its body today slices from the first `out = _git("grep"`):
+
+```python
+    src = pathlib.Path(__file__).read_text(encoding="utf-8")
+    calls = src.split("out = _git(\"grep\"")[1:]
+    assert len(calls) >= 2, "expected the POSIX gate call and the Windows gate call"
+    for call in calls:
+        call = call[:call.index("allow=(0, 1))")]
+        assert "_GATE_PATHSPEC" in call, (
+            "a gate no longer derives its pathspec from _GATE_PATHSPEC, so the "
+            "completeness guard below constrains nothing")
+        assert '"--", "' not in call, f"a literal pathspec is hardcoded at the call site: {call}"
+```
+
+Run them (FAIL: `_WIN_GREP` undefined; the pathspec test finds one call), then add beside
 `_WIDE_HOME_PATH_RE`:
 
 ```python
 # The Windows form, for `mcp install`'s Windows path tables: a drive, Users and the account
-# name, with one or two backslashes (a Python or JSON string doubles them). A second pattern
-# pair rather than a widening of the POSIX one: the two allow-lists differ.
-_WIN_HOME_PATH_RE = re.compile(r"""[A-Za-z]:(?:\\){1,2}Users(?:\\){1,2}[^\\\s'"`,)<>\]]+""",
-                               re.IGNORECASE)
-_WIN_GREP = r"[A-Za-z]:\\{1,2}Users\\{1,2}[^\\[:space:]'\"<>]"
-# The placeholder `tests/mcpinstall/` would use if it ever wrote the literal; today it joins it
-# from parts, so this entry is the documented allowance, not a need.
-_ALLOWED_WIN_HOME_PATH_FILES = {"C:" + r"\Users\example": ("tests/mcpinstall/",)}
-
-
-def _is_allowed_win_hit(line: str) -> bool:
-    path_in_repo = line.split(":", 1)[0]
-    found = [m.replace("\\\\", "\\") for m in _WIN_HOME_PATH_RE.findall(line)]
-    return bool(found) and all(
-        any(path_in_repo.startswith(w) for w in _ALLOWED_WIN_HOME_PATH_FILES.get(m, ()))
-        for m in found)
+# name, the separators any run of backslashes or slashes (a JSON path in a Python string has
+# four, and a path can mix a backslash with a slash). Nothing is allow-listed: tests join their placeholder from
+# parts, so every hit outside this file is a leak.
+_WIN_GREP = r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/[:space:]'\"<>]"
 ```
 
 Run: `.venv/bin/python -m pytest tests/test_no_leaked_files.py -rA 2>&1 | grep -E "^(FAILED|ERROR)|passed|failed"` → all passed.
-Witness: change both `\\{1,2}` in `_WIN_GREP` to `\\` → `test_the_windows_gate_catches_a_planted_path_through_git` FAILS (the doubled form is missed). Restore.
+Witness: change both `[\\/]+` in `_WIN_GREP` to `\\` → `test_the_windows_gate_catches_every_separator_form_through_git` FAILS (only the single-backslash and lowercase lines remain). Restore.
 
 - [ ] **Step 7: Commit**
 
@@ -1172,13 +1227,14 @@ EOF
 
 **Files:**
 - Create: `sluice/mcpinstall/routes.py`, `tests/mcpinstall/fakes.py`, `tests/mcpinstall/test_json_route.py`
+- Modify: `tests/test_paths.py` and `tests/test_path_tilde.py` (the new state-folder name, exactly as `config_backups` is handled in each: `grep -n config_backups tests/test_paths.py tests/test_path_tilde.py` and mirror every hit for `mcp_install_backups`; the reason is the same, the folder is new so no older location can hold copies)
 
 **Interfaces:**
 - Consumes: Task 3's `Client`, `server_table`, `entry_value`, `parse_entry`, `display_path`; `core.atomicfile.replace_if`; `core.backup.write_copy` (injected).
 - Produces:
   - `Absent()`, `Entry(argv: tuple[str, ...], env: tuple[tuple[str, str], ...])`, `Unreadable(reason: str)`, `FileState(path, raw: bytes | None, doc: dict, table: dict, current: Absent | Entry)`, `Outcome(client: str, kind: str, reason: str = "", details: tuple[str, ...] = ())`.
   - `@dataclass Deps(run: Callable[[list[str], float], int], write_copy: Callable[..., str], backup_dir: str, display: Callable[[str], str], timeout: float = 60.0, before_recheck: Callable[[], None] = <no-op>)`.
-  - `read_state(client, path) -> FileState | Unreadable`; `matches(entry: Entry, spec) -> bool`; `apply_json(client, state, spec, deps) -> Outcome`; `BACKUP_FOLDER = "mcp_install_backups"`; `CHANGED` (the reason string).
+  - `read_state(client, path) -> FileState | Unreadable`; `matches(entry: Entry, spec) -> bool`; `apply_json(client, state, spec, deps) -> Outcome`; `BACKUP_FOLDER = "mcp_install_backups"`; `backup_dir() -> str`; `CHANGED` (the reason string).
 
 - [ ] **Step 1: Write the shared test rig**
 
@@ -1198,10 +1254,10 @@ from sluice.mcpinstall import clients, jsonc, routes
 
 
 class FakeClient:
-    def __init__(self, name, config_path, *, noop=False, drop=None, write_to=None,
-                 fail=None, fail_verb="add"):
+    def __init__(self, name, config_path, *, noop=False, drop=None, drop_top=None,
+                 write_to=None, fail=None, fail_verb="add"):
         self.name, self.path = name, config_path
-        self.noop, self.drop, self.write_to = noop, drop, write_to
+        self.noop, self.drop, self.drop_top, self.write_to = noop, drop, drop_top, write_to
         self.fail, self.fail_verb = fail, fail_verb
         self.calls, self.copy_present = [], []
 
@@ -1244,6 +1300,8 @@ class FakeClient:
             table["job-sluice"] = value
         if self.drop:
             table.pop(self.drop, None)
+        if self.drop_top:
+            doc.pop(self.drop_top, None)
         pathlib.Path(target).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(target).write_text(json.dumps(doc, indent=2))
         return 0
@@ -1416,6 +1474,20 @@ def test_a_replace_keeps_and_names_a_user_env_key(tmp_path):
     assert not any("SENTINEL" in d for d in out.details)
 
 
+def test_a_replace_keeps_and_names_the_entry_s_other_settings(tmp_path):
+    rig = Rig(tmp_path)
+    old = {"command": "/old/job-sluice", "args": [], "autoApprove": ["list_leads"], "cwd": "/w"}
+    rig.write("cursor", {"mcpServers": {"job-sluice": old}})
+    out = _apply(rig)
+    entry = rig.read("cursor")["mcpServers"]["job-sluice"]
+    assert out.kind == "replaced" and entry["autoApprove"] == ["list_leads"] and entry["cwd"] == "/w"
+    assert any("autoApprove, cwd" in d for d in out.details)
+
+
+def test_the_backup_folder_name_is_the_one_the_path_sweeps_read():
+    assert os.path.basename(routes.backup_dir()) == routes.BACKUP_FOLDER
+
+
 @pytest.mark.parametrize("content,reason", [
     ("\ufeff{}", "byte-order mark"),
     ('{"mcpServers": {}} // c', "comments"),
@@ -1550,8 +1622,8 @@ from dataclasses import dataclass, field, replace
 
 from sluice.core.atomicfile import replace_if
 from sluice.mcpinstall import jsonc
-from sluice.mcpinstall.clients import (Client, entry_value, parse_entry, redact_argv,
-                                       server_table)
+from sluice.mcpinstall.clients import (Client, check_scope, entry_value, extra_fields,
+                                       parse_entry, redact_argv, server_table)
 from sluice.mcpinstall.server import PINNED_ENV, SERVER_NAME, ServerSpec
 
 BACKUP_FOLDER = "mcp_install_backups"
@@ -1616,6 +1688,29 @@ def run_quietly(argv: list[str], timeout: float) -> int:
                           stderr=subprocess.DEVNULL, timeout=timeout, check=False).returncode
 
 
+def backup_dir() -> str:
+    """`mcp_install_backups` in sluice's XDG state folder, the way `core/config.py::
+    config_copy_dir` places `config_backups`. The name is a LITERAL because the path sweeps read
+    `name=` statically; `tests/mcpinstall/test_json_route.py` pins it to `BACKUP_FOLDER`."""
+    from sluice.core.paths import resolve
+    return resolve(env_var=None, config_value="", kind="state", name="mcp_install_backups")
+
+
+def _scoped(client: Client, doc: dict, table: dict):
+    """What freshness and the collateral check compare for this client (`check_scope`)."""
+    return table if check_scope(client) == "table" else doc
+
+
+def _without_entry(client: Client, doc: dict) -> dict:
+    rest = _copy.deepcopy(doc)
+    node = rest
+    for key in client.table:
+        node = node.get(key) if isinstance(node, dict) else None
+    if isinstance(node, dict):
+        node.pop(SERVER_NAME, None)
+    return rest
+
+
 def _load(client: Client, data: bytes) -> dict:
     if client.reader == "toml":
         import tomllib
@@ -1628,11 +1723,13 @@ def _load(client: Client, data: bytes) -> dict:
     return jsonc.load(data, jsonc=client.reader == "jsonc")
 
 
-def _table_of(client: Client, data: bytes | None):
+def _scope_of(client: Client, data: bytes | None):
+    """The part of the file freshness compares, from raw bytes; `_GONE` when it does not parse."""
     if data is None:
         return {}
     try:
-        return server_table(client, _load(client, data))
+        doc = _load(client, data)
+        return _scoped(client, doc, server_table(client, doc))
     except jsonc.ReadError:
         return _GONE
 
@@ -1722,11 +1819,17 @@ def _verify(client: Client, state: FileState, spec: ServerSpec, copy: str | None
     if not (isinstance(after.current, Entry) and matches(after.current, spec)):
         return Outcome(client.name, "failed", f"readback did not show the entry in {where}",
                        _kept(copy, state.path, deps))
+    # Something the write REMOVED or CHANGED is a failure; something it ADDED is not (a client
+    # may add its own bookkeeping key). Servers are named first; for a file checked whole, the
+    # top-level keys that changed are named when no server did.
     changed = sorted(k for k in state.table
                      if k != SERVER_NAME and after.table.get(k, _GONE) != state.table[k])
+    if not changed and check_scope(client) == "file":
+        before, now = _without_entry(client, state.doc), _without_entry(client, after.doc)
+        changed = sorted(k for k in before if now.get(k, _GONE) != before[k])
     if changed:
         return Outcome(client.name, "failed",
-                       "other servers in the file changed: " + ", ".join(changed),
+                       "other settings in the file changed: " + ", ".join(changed),
                        _kept(copy, state.path, deps))
     return Outcome(client.name, kind, "", _drop_copy(copy, deps))
 
@@ -1735,11 +1838,16 @@ def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -
     replacing = isinstance(state.current, Entry)
     kind = "replaced" if replacing else "registered"
     kept_env = {k: v for k, v in state.current.env if k not in PINNED_ENV} if replacing else {}
+    old = state.table.get(SERVER_NAME, {}) if replacing else {}
+    kept_fields = extra_fields(client, old)
     doc = _copy.deepcopy(state.doc)
     node = doc
     for key in client.table:
         node = node.setdefault(key, {})
-    node[SERVER_NAME] = entry_value(client, spec, kept_env)
+    # Start from the old entry's other fields (`autoApprove`, `cwd`, ...): the user put them
+    # there, and the copy that held them is deleted once this write is proven clean.
+    node[SERVER_NAME] = {**{k: old[k] for k in kept_fields},
+                         **entry_value(client, spec, kept_env)}
     data = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
     copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
     if failure:
@@ -1759,6 +1867,8 @@ def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -
         if kept_env:
             notes += ("kept the old entry's other environment keys: "
                       + ", ".join(sorted(kept_env)),)
+        if kept_fields:
+            notes += ("kept the old entry's other settings: " + ", ".join(kept_fields),)
         out = replace(out, details=out.details + notes)
     return out
 ```
@@ -1793,7 +1903,7 @@ Witness 9: in `_verify`, replace `_drop_copy(copy, deps)` with `()` → `test_ot
 
 **Interfaces:**
 - Consumes: Task 3's `add_argv`, `remove_argv`, `redact_argv`; Task 4's state, `_take_copy`, `_verify`, `_kept`.
-- Produces: `apply_command(client, state, spec, deps, which: Callable[[str], str | None]) -> Outcome`.
+- Produces: `apply_command(client, state, spec, deps, which: Callable[[str], str | None]) -> Outcome`; `refusal(client, state) -> Outcome | None` (the command route's replace refusal, shared with `--dry-run`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -1898,6 +2008,32 @@ def test_a_replace_over_foreign_env_keys_is_refused_naming_them(tmp_path):
     assert fake.calls == [] and rig.copies_written == []
 
 
+def test_a_replace_over_other_settings_is_refused_naming_them(tmp_path):
+    rig = Rig(tmp_path)
+    fake = rig.cli("gemini")
+    _seed(rig, "gemini", {"job-sluice": {"command": "/old/job-sluice", "args": [],
+                                         "trust": True, "timeout": 5}})
+    out = _apply(rig, "gemini")
+    assert out.kind == "refused" and "trust, timeout" in out.reason and fake.calls == []
+
+
+def test_an_add_that_drops_an_unrelated_setting_fails_and_keeps_the_copy(tmp_path):
+    rig = Rig(tmp_path)
+    rig.cli("opencode", drop_top="theme")
+    rig.write("opencode", {"theme": "dark", "mcp": {"servers": {}}})
+    out = _apply(rig, "opencode")
+    assert out.kind == "failed" and "theme" in out.reason and len(rig.copies()) == 1
+
+
+def test_a_settings_edit_between_the_copy_and_the_run_stops_a_whole_file_client(tmp_path):
+    rig = Rig(tmp_path)
+    fake = rig.cli("gemini")
+    rig.write("gemini", {"theme": "dark", "mcpServers": {}})
+    rig.after_copy = lambda: rig.write("gemini", {"theme": "light", "mcpServers": {}})
+    out = _apply(rig, "gemini")
+    assert (out.kind, out.reason) == ("failed", routes.CHANGED) and fake.calls == []
+
+
 def test_an_edit_between_the_copy_and_the_run_stops_it(tmp_path):
     rig = Rig(tmp_path)
     fake = rig.cli("opencode")
@@ -1997,34 +2133,47 @@ def _run(deps: Deps, argv: list[str], client: Client, verb: str) -> str:
     return "" if code == 0 else f"`{client.executable} mcp {verb}` exited {code}"
 
 
+def refusal(client: Client, state: FileState) -> "Outcome | None":
+    """A command route's add writes a fresh entry, so a replace over anything it would drop is
+    refused, naming it: env keys outside `PINNED_ENV` (passing a user's key back through argv
+    would also put it in the process list) and other fields such as `autoApprove` or `trust`.
+    `--dry-run` asks the same question, so a preview never promises a write the run refuses."""
+    if not isinstance(state.current, Entry):
+        return None
+    foreign = sorted(k for k, _ in state.current.env if k not in PINNED_ENV)
+    fields = extra_fields(client, state.table.get(SERVER_NAME, {}))
+    if not (foreign or fields):
+        return None
+    named = (["environment keys: " + ", ".join(foreign)] if foreign else []) + (
+        ["settings: " + ", ".join(fields)] if fields else [])
+    return Outcome(client.name, "refused",
+                   "the existing entry carries what install's add would drop ("
+                   + "; ".join(named) + ")",
+                   ("re-add them by hand after registering, or move them out of the entry and "
+                    "run install again",))
+
+
 def apply_command(client: Client, state: FileState, spec: ServerSpec, deps: Deps,
                   which: Callable[[str], str | None]) -> Outcome:
     replacing = isinstance(state.current, Entry)
     kind = "replaced" if replacing else "registered"
-    if replacing:
-        # The add takes only what install passes, and passing a user's key back through argv
-        # would put it in the process list, so a replace over one is refused, not lost.
-        foreign = sorted(k for k, _ in state.current.env if k not in PINNED_ENV)
-        if foreign:
-            return Outcome(client.name, "refused",
-                           "the existing entry carries environment keys install cannot carry "
-                           "over: " + ", ".join(foreign),
-                           ("re-add those keys by hand after registering, or move them out of "
-                            "the entry and run install again",))
+    refused = refusal(client, state)
+    if refused:
+        return refused
     exe = which(client.executable)
     if not exe:
         return Outcome(client.name, "failed", f"`{client.executable}` not found on PATH")
-    copy, failure = _take_copy(state, deps,
-                               same=lambda now: _table_of(client, now) == state.table)
+    before = _scoped(client, state.doc, state.table)
+    copy, failure = _take_copy(state, deps, same=lambda now: _scope_of(client, now) == before)
     if failure:
         return Outcome(client.name, "failed", failure)
     deps.before_recheck()
     # The add reads and writes the file itself, so this is the last moment to notice a change.
-    # The TABLE is compared, not the bytes: a running Claude Code session rewrites the rest of
-    # ~/.claude.json constantly, and each add was measured to keep everything outside its table.
+    # Parsed content is compared, not bytes, and for Claude Code only the server table: a
+    # running session rewrites the rest of ~/.claude.json constantly (`check_scope`).
     now = read_state(client, state.path)
     if (isinstance(now, Unreadable) or (now.raw is None) != (state.raw is None)
-            or now.table != state.table):
+            or _scoped(client, now.doc, now.table) != before):
         return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
     steps = [("add", add_argv(client, spec))]
     if replacing and client.remove_before_add:
@@ -2037,7 +2186,7 @@ def apply_command(client: Client, state: FileState, spec: ServerSpec, deps: Deps
                 old_env = [k for k, _ in state.current.env]
                 details = (
                     "the entry it replaced, now removed, ran: "
-                    + " ".join(redact_argv(state.current.argv)),
+                    + " ".join(redact_argv(state.current.argv, deps.display)),
                     "with environment keys: " + (", ".join(old_env) or "none"),
                 ) + details
             return Outcome(client.name, "failed", reason, details)
@@ -2064,9 +2213,10 @@ EOF
 Each mutant is applied alone, its named test must FAIL, then `git checkout sluice/mcpinstall/routes.py`:
 - 1 (exit code trusted): in `_verify`, delete the `if not (isinstance(after.current, Entry) and matches(after.current, spec)):` block → `test_a_client_that_exits_0_and_writes_nothing_has_failed`.
 - 3 (no copy before run): in `apply_command`, replace `copy, failure = _take_copy(...)` with `copy, failure = None, None` → `test_a_clean_register_keeps_other_servers_and_deletes_its_copy` (`copy_present == [False]`).
-- 4 (no collateral): in `_verify`, replace `changed = sorted(...)` with `changed = []` → `test_a_client_that_drops_another_server_fails_naming_it_and_keeps_the_copy`.
+- 4 (no collateral): in `_verify`, delete both `changed = ...` computations' bodies, leaving `changed = []` → `test_a_client_that_drops_another_server_fails_naming_it_and_keeps_the_copy`.
+- 11 (file-scoped clients checked by table only): in `clients.check_scope`, return `"table"` for every client → `test_an_add_that_drops_an_unrelated_setting_fails_and_keeps_the_copy` and `test_a_settings_edit_between_the_copy_and_the_run_stops_a_whole_file_client`.
 - 5 (Unreadable falls through to Absent): in `read_state`, change `return Unreadable(str(exc))` to `return FileState(path, raw, {}, {}, Absent())` → `test_an_unparseable_opencode_file_is_unreadable_and_nothing_runs` and Task 4's refusal rows.
-- 7 (the readback no longer reads the computed file): in `_verify`, replace `after = read_state(client, state.path)` with `after = state` → `test_a_client_that_writes_another_file_fails_on_readback`.
+- 7 (the readback no longer reads the computed file): in `_verify`, replace `after = read_state(client, state.path)` with `after = state` → `test_a_clean_register_keeps_other_servers_and_deletes_its_copy` (a stale readback can only FAIL, so only a test expecting success sees it; `test_a_client_that_writes_another_file_fails_on_readback` stays green under this mutant and is a behaviour pin, per the spec).
 - 10 (deletion before the collateral check): move `_drop_copy(copy, deps)` to run before `changed = ...` (call it, then return `Outcome(...)` without it) → `test_a_client_that_drops_another_server_fails_naming_it_and_keeps_the_copy` (its copy is gone).
 
 ---
@@ -2279,6 +2429,35 @@ def test_a_pinned_path_reaches_the_entry(tmp_path):
                                                "SLUICE_CONFIG": "/cfg/sluice.yaml"}
 
 
+@pytest.mark.parametrize("name,content", [("opencode", '{"mcp": {'),
+                                          ("cursor", '{"mcpServers": {} // c')])
+def test_an_unparseable_file_fails_and_runs_nothing(tmp_path, name, content):
+    rig = Rig(tmp_path)
+    fake = rig.cli(name)
+    p = rig.write(name, content)
+    rc, out, _ = install(rig, "--yes")
+    assert rc == 1 and f"{name}: failed" in out and "could not be read" in out
+    assert fake.calls == [] and p.read_text() == content and rig.copies_written == []
+
+
+def test_dry_run_previews_the_same_refusal_the_run_makes(tmp_path):
+    rig = Rig(tmp_path)
+    rig.cli("gemini")
+    rig.write("gemini", {"mcpServers": {"job-sluice": {
+        "command": "/old/job-sluice", "args": [], "env": {"MY_KEY": "v"}}}})
+    rc, out, _ = install(rig, "--yes", "--dry-run", "--replace")
+    assert rc == 1 and "gemini: refused" in out and "would run" not in out
+
+
+def test_a_local_scope_claude_code_entry_is_reported(tmp_path):
+    rig = Rig(tmp_path)
+    rig.cli("claude-code")
+    rig.write("claude-code", {"mcpServers": {}, "projects": {
+        "/w/p": {"mcpServers": {"job-sluice": {"command": "/x", "args": []}}}}})
+    _, out, _ = install(rig, "--yes")
+    assert "1 project(s) also have a local-scope job-sluice entry" in out
+
+
 SENTINEL = "SENTINEL-NOT-A-SECRET-FLOW"
 
 
@@ -2287,6 +2466,14 @@ def _planted(rig):
         "other": {"command": "/o", "env": {"OTHER_KEY": SENTINEL}},
         "job-sluice": {"command": "/old/job-sluice", "args": ["mcp", "--token", SENTINEL],
                        "env": {"PLANTED_KEY": SENTINEL}}}})
+
+
+def test_a_command_shaped_like_a_setting_is_not_printed(tmp_path):
+    rig = Rig(tmp_path)
+    rig.write("cursor", {"mcpServers": {"job-sluice": {"command": f"API_KEY={SENTINEL}",
+                                                      "args": []}}})
+    _, out, err = install(rig, "--yes")
+    assert SENTINEL not in out + err and "<command>" in out
 
 
 @pytest.mark.parametrize("args", [["--yes"], ["--yes", "--dry-run"], ["--yes", "--replace"]])
@@ -2331,7 +2518,7 @@ narrows the list. What is printed follows the spec's neutrality rule: the argv i
 registers in full, an existing entry's argv redacted, pinned values, any other env key by NAME
 only, never a client's output."""
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from sluice import mcpextra
 from sluice.mcpinstall import clients, routes, server
@@ -2456,6 +2643,14 @@ def run(opts: Options, *, host, deps, argv0, stdin, out, err, interactive, find_
                                            f"install does not write {c.title}'s file"))
         elif c.name in selected:
             outcomes.append(_one(c, state, spec, opts, ask, deps, host, out))
+        if isinstance(state, routes.FileState) and outcomes and outcomes[-1].client == c.name:
+            shadows = clients.local_entries(c, state.doc)
+            if shadows:
+                last = outcomes.pop()
+                outcomes.append(replace(last, details=last.details + (
+                    f"{shadows} project(s) also have a local-scope job-sluice entry, which takes "
+                    "precedence in that project: remove it there with `claude mcp remove "
+                    "job-sluice -s local`",)))
     _report(outcomes, paths, spec, host, out)
     return _exit(outcomes, opts)
 
@@ -2468,7 +2663,8 @@ def _same(state, spec) -> bool:
 def _one(c, state, spec, opts, ask, deps, host, out) -> routes.Outcome:
     if isinstance(state.current, routes.Entry):
         print(f"{c.name} already has a job-sluice entry with different settings:", file=out)
-        print("  now: " + " ".join(clients.redact_argv(state.current.argv)), file=out)
+        print("  now: " + " ".join(clients.redact_argv(state.current.argv, deps.display)),
+              file=out)
         for line in _env_lines(dict(state.current.env)):
             print("       " + line, file=out)
         print("  new: " + " ".join(spec.argv), file=out)
@@ -2478,6 +2674,10 @@ def _one(c, state, spec, opts, ask, deps, host, out) -> routes.Outcome:
             return routes.Outcome(c.name, "refused",
                                   "an entry with different settings exists; run with --replace "
                                   "to replace it")
+    if c.route == "command":
+        refused = routes.refusal(c, state)
+        if refused:
+            return refused
     if opts.dry_run:
         if c.route == "command":
             argv = clients.add_argv(c, spec)
@@ -2533,14 +2733,12 @@ def cmd_mcp_install(args, config) -> int:
     import importlib.util
 
     from sluice.core import backup
-    from sluice.core.paths import resolve
     from sluice.mcpinstall import clients, flow, routes
 
     host = clients.host_from_os()
     deps = routes.Deps(
         run=routes.run_quietly, write_copy=backup.write_copy,
-        backup_dir=resolve(env_var=None, config_value="", kind="state",
-                           name=routes.BACKUP_FOLDER),
+        backup_dir=routes.backup_dir(),
         display=lambda path: clients.display_path(path, host))
     opts = flow.Options(tuple(args.client or ()), args.read_only, args.replace, args.yes,
                         args.dry_run)
@@ -2593,7 +2791,8 @@ Run: `.venv/bin/python -m pytest tests/mcpinstall -rA 2>&1 | grep -E "^(FAILED|E
 Expected: all passed. Then the whole suite (CLI guards sweep the parser):
 `.venv/bin/python -m pytest > "$SCRATCH/full.txt" 2>&1; echo rc=$?; grep -E "[0-9]+ passed" "$SCRATCH/full.txt" | tail -1`.
 Expected failures at this point ONLY in the doc guards (`tests/test_docs_claims.py`: USAGE and
-README must document `mcp install`) — Task 7 fixes those. Any other failure is a defect here.
+README must document `mcp install`) — Task 7 fixes those. Any other failure is a defect here
+(the path sweeps were satisfied in Task 4, which added `backup_dir`).
 
 - [ ] **Step 6: Commit, then witness spec mutant 6**
 
@@ -2666,8 +2865,9 @@ def test_step_1_registers_with_mcp_install():
 
 def test_step_1_guards_the_registration():
     step1 = _section(_doc(), "### 1. Register").lower()
-    for phrase in ("--read-only", "every claude code session", "starts with `/`",
-                   "mcp serve </dev/null", "exits 2", "refused", "--replace"):
+    for phrase in ("claude mcp get job-sluice", "claude mcp remove job-sluice -s <scope>",
+                   "--read-only", "every claude code session", "starts with `/`",
+                   "mcp serve </dev/null", "exits 2", "refused", "--replace", "vault_dir"):
         assert phrase in step1, phrase
 ```
 
@@ -2714,9 +2914,17 @@ refused and the command exits non-zero: tell the user what it printed, and run i
 `--replace` only if they agree.
 ```
 
-Keep the paragraph about `claude mcp get` (the existing-registration check) unchanged except
-that its "remove it ... before adding" sentence now reads: "If it must change, the install
-below refuses until you pass `--replace`; never add a second."
+Keep the paragraph about `claude mcp get` (the existing-registration check), and change its
+"remove it ... before adding" sentence to: "If the existing one is at user scope, the install
+below refuses it until you pass `--replace`. At local or project scope, install cannot replace
+it (it writes user scope only, and that entry would still win in its project): remove it with
+`claude mcp remove job-sluice -s <scope>` first. Never add a second."
+
+Change the step's last paragraph's "Do not add a `VAULT_DIR`" sentence to: "Do not add a
+`VAULT_DIR` yourself: the coach agrees the vault with the user and saves it. If the user's
+shell already exports one, install carries it into the registration, since it is the vault
+every command they run already uses; say so, and that unsetting it is how to let the saved
+vault apply."
 
 `docs/USAGE.md`, after the `mcp serve` section, a `### \`job-sluice mcp install [--client NAME
 ...] [--read-only] [--replace] [--yes] [--dry-run]\`` section summarising: what it detects
@@ -2736,12 +2944,21 @@ re-reads the table before the add; every registration read from the file; stdlib
 `mcp` import; `clients.py` loads on every invocation for `--client`'s choices, the rest only in
 `cli.py::cmd_mcp_install`.
 
-`.rulesync/rules/CLAUDE.md` Architecture paragraph: after the sentence naming
-`sluice/mcpserver.py` as a further importer of `sluice.onboard`, add: "`sluice/mcpinstall/` is
-a third command package (`job-sluice mcp install`): it writes other tools' MCP config files,
-copies each before changing it, reads every registration back from the file, and imports
-nothing from the `mcp` package; `_build_parser` imports its `clients` module for `--client`'s
-choices, which loads only the package's own stdlib modules." Then:
+`.rulesync/rules/CLAUDE.md` Architecture paragraph. It opens by COUNTING the command packages
+("plus two COMMAND packages, neither a sixth sub-app") and says no pipeline sub-app "imports
+either"; a third makes both stale, and a count here is the drift class this file warns about,
+so remove the count rather than bump it: "plus COMMAND packages, none a sixth sub-app:
+`sluice/onboard/` for `job-sluice init`, (#164) `sluice/evidence/` for the nine `job-sluice
+{experience,skills,stories} {add,list,verify}` handlers, and `sluice/mcpinstall/` for
+`job-sluice mcp install`. No pipeline sub-app -- ingest, triage, cv, apply, track -- imports any
+of them." Then, after the sentence naming `sluice/mcpserver.py` as a further importer of
+`sluice.onboard`, add: "`sluice/mcpinstall/` writes other tools' MCP config files at user
+scope: it copies each before changing it, reads every registration back from the file, and
+imports nothing from the `mcp` package; `_build_parser` imports its `clients` module for
+`--client`'s choices, which loads only the package's own stdlib modules." Make the same
+count-free change to the comment above `_SUB_APPS` in `tests/test_core_layering.py`, which
+quotes that sentence, and check `docs/ARCHITECTURE.md` for a count of command packages
+(`grep -n "COMMAND\|command package" docs/ARCHITECTURE.md`). Then:
 
 ```bash
 npm ci --ignore-scripts && npm run rulesync
@@ -2755,7 +2972,7 @@ Then the full suite twice (`.venv/bin/python -m pytest` and `env PATH=/usr/bin:/
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs README.md .rulesync/rules/CLAUDE.md tests/test_mcp_install_docs.py tests/test_ai_setup_contract.py
+git add docs README.md .rulesync/rules/CLAUDE.md tests/test_mcp_install_docs.py tests/test_ai_setup_contract.py tests/test_core_layering.py
 git commit -F - <<'EOF'
 docs(mcp): job-sluice mcp install first, the manual entries after
 
