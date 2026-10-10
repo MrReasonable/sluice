@@ -337,3 +337,24 @@ def test_two_config_saves_in_the_same_instant_keep_two_copies(monkeypatch):
     assert s.apply_setup([second])["config"].status == "written"
     d = config_copy_dir()
     assert {Path(d, c).read_text() for c in _config_copies()} == {old, first.text}
+
+
+def test_a_config_turned_non_utf8_after_its_copy_is_reported_failed_not_raised(monkeypatch):
+    """Between the copy and the replace, a hand editor saves the config as bytes that are not
+    UTF-8. The writer's freshness check decodes them and raises; `apply_setup` reports that
+    save `failed`, as its read and copy arms already do, rather than raising out of the setup
+    tool. The copy taken first is the user's way back and stays."""
+    from sluice.core import config as config_mod
+    old, sha = _seed_config()
+    real_keep = config_mod.keep_config_copy
+
+    def keep_then_editor_saves(path, expect_sha):
+        name = real_keep(path, expect_sha)
+        Path(path).write_bytes(b"lead_ttl_days: \xff\n")
+        return name
+
+    monkeypatch.setattr(config_mod, "keep_config_copy", keep_then_editor_saves)
+    out = Sluice.from_config_file().apply_setup([_ttl_write(old, sha)])
+    assert out["config"].status == "failed", out
+    assert Path(config_file()).read_bytes() == b"lead_ttl_days: \xff\n"
+    assert len(_config_copies()) == 1
