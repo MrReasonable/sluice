@@ -536,7 +536,31 @@ def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
 
     args = _build_parser().parse_args(["mcp", "serve"])
     assert cmd_mcp_serve(args, Config()) == 2
-    assert "job-sluice[mcp]" in capsys.readouterr().err
+    from sluice import mcpextra
+    assert mcpextra.NOT_INSTALLED in capsys.readouterr().err
+
+
+def test_the_not_installed_message_names_the_extra():
+    from sluice import mcpextra
+    assert mcpextra.NOT_INSTALLED == (
+        "the 'mcp' package is not installed -- run `pip install job-sluice[mcp]`")
+
+
+def test_mcpextra_imports_nothing(tmp_path):
+    """`mcp install` reads the message before deciding anything; importing it must not load
+    the store, the backends or the mcp package. Run in a fresh interpreter so this file's own
+    imports cannot satisfy it."""
+    import subprocess
+    import sys
+    code = ("import sys, sluice.mcpextra; "
+            "bad = sorted(m for m in sys.modules if m.startswith(('sluice.core', 'sluice.onboard',"
+            " 'mcp')) or m == 'sluice.mcpserver'); print(bad); sys.exit(1 if bad else 0)")
+    # cwd is a temp dir so `python -c` (which puts the cwd on sys.path) imports the installed
+    # package, not whatever checkout pytest was launched from.
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                       cwd=tmp_path)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.stdout.strip() == "[]"
 
 
 # ── serve() coverage (important finding #1) ───────────────────────────────────
