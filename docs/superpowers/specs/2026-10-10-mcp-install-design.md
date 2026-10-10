@@ -36,7 +36,7 @@ changed.
 | A replace over an entry carrying env keys install cannot carry | JSON route keeps them; a command route REFUSES the replace and names the keys, since its add command would drop them (author ruling, round 2) |
 | How a registration is read | From the client's config FILE, for every client; a client command is used only to WRITE. `claude mcp get` starts the server to health-check it, prints env values and answers for the current directory's project scope first; `opencode mcp list` answers from a daemon's stale snapshot; `gemini mcp list` shows no env. So the readback IS the file the copy and the collateral check read, and the same-file check is that readback (author ruling, measurements) |
 | VS Code | JSON route: `code --add-mcp` drops unrelated top-level keys and every comment (author ruling, measurements) |
-| Codex | APPEND when absent (owner, 2026-10-10): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot edit TOML, but it can add a NEW `[mcp_servers.job-sluice]` table at the end of `config.toml` without touching an existing byte. The candidate bytes are parsed before anything is written, and the write goes ahead only when they parse and the result is the old document plus exactly the new entry (an inline `mcp_servers = {...}` table, for one, makes an appended table invalid); otherwise it is `manual` with the snippet. An existing entry that differs is `manual` too: install does not edit TOML. Copy, compare-and-set and readback as on the JSON route |
+| Codex | APPEND when absent (owner, 2026-10-10): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot edit TOML, but it can add a NEW `[mcp_servers.job-sluice]` table at the end of `config.toml` without touching an existing byte. The candidate bytes are parsed before anything is written, and the write goes ahead only when they parse and the result is the old document plus exactly the new entry (an inline `mcp_servers = {...}` table, for one, makes an appended table invalid); otherwise it is `manual`, and the guidance printed is the entry as one inline `job-sluice = { ... }` line to add inside that table (the table-form snippet would break such a file). An existing entry that differs is `manual` too: install does not edit TOML, and the guidance names that entry's other env keys and settings (never their values) so pasting the new values keeps them. `--dry-run` runs the same pre-write parse. The snippet's strings are written as TOML basic strings, never `json.dumps` (a character outside the BMP becomes a surrogate pair TOML refuses). Parsed documents are compared as canonical JSON text, so a `nan` anywhere does not read as a change. Copy, compare-and-set and readback as on the JSON route (one shared write helper) |
 | Freshness on the command route | Compares the parsed server TABLE, not raw bytes: a running Claude Code session rewrites `~/.claude.json` constantly, so a byte comparison would fail every run made from inside one, which is the AI-SETUP case; each add command was measured to keep everything outside its table (author ruling, measurements) |
 | Code shape | A package, `sluice/mcpinstall/`, one module per concern, instead of one module (author ruling, planning) |
 | Other fields on an existing entry (`autoApprove`, `cwd`, `trust`, ...) on a replace | Same rule as env keys: the JSON route keeps them and names them; a command route REFUSES the replace and names them, since its add writes a fresh entry (author ruling, plan review) |
@@ -368,9 +368,13 @@ Offline, against the sandbox above.
   `failed: readback did not show the entry in …`.
 - Codex: absent → appended, every byte before the new table unchanged (comments and another
   server's unknown field included), copy deleted; missing file → created; a matching entry →
-  `unchanged`; a different entry → `manual` with the snippet, nothing written; an inline
-  `mcp_servers = {...}` table → `manual`, nothing written (the pre-write parse refuses it);
-  `manual` is non-zero only under `--client codex`.
+  `unchanged`; a different entry → `manual`, its other env keys and settings named, nothing
+  written, and not offered in the interactive list; an inline `mcp_servers = {...}` table →
+  `manual`, nothing written (the pre-write parse refuses it), the inline form printed, and the
+  same under `--dry-run`; a CRLF file, an empty file, a file without a final newline, a launcher
+  path holding an emoji and a `nan` value elsewhere all append cleanly; a failed readback keeps
+  the copy; `manual` is non-zero only under `--client codex`; planted credentials in Codex's
+  file reach no output.
 
 **Mutation witnesses**, each a named mutant that must turn the named test red:
 1. Delete the readback comparison (treat exit 0 as success) → the exits-0-changes-nothing test.
@@ -386,6 +390,9 @@ Offline, against the sandbox above.
 11. Compare only the server table for a client whose file is checked whole → a test whose
     fake add drops an unrelated top-level key.
 12. Delete Codex's pre-write parse → the inline-table test (the file is left invalid).
+13. Keep the parse but drop the comparison with the expected document → a test appending a
+    text that parses but adds another table.
+14. Compare parsed documents with `==` → the `nan` test.
 8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
    `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
 

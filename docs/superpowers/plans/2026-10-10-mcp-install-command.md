@@ -9,7 +9,8 @@ file back.
 **Architecture:** A stdlib-only package `sluice/mcpinstall/`: `jsonc.py` (readers), `server.py`
 (the launcher, the pinned environment, `ServerSpec`), `clients.py` (the roster as data: paths per
 platform, detection, entry shapes, add/remove argv), `routes.py` (read state, the JSON route's
-compare-and-set write, the command route's copy/recheck/run, readback and the collateral check),
+compare-and-set write, the command route's copy/recheck/run, the append route's pre-parsed
+append for Codex, readback and the collateral check),
 `flow.py` (choose, dry-run, report, exit code). `cli.py::cmd_mcp_install` builds the real
 host/deps and calls `flow.run`. Every OS touchpoint is injected, so no test reaches a real client.
 
@@ -59,9 +60,12 @@ added from the measurements and they change the routes.
    `test_an_edit_outside_the_server_table_does_not_stop_the_command_route`.
 2. A config file that is a symlink into a dotfiles repo: the JSON route replaces the TARGET and
    the link survives — Task 4's `test_a_symlinked_file_has_its_target_replaced`.
-3. A launcher path with spaces and non-ASCII characters reaches every client argv and JSON
-   entry intact — Task 4's `test_a_path_with_spaces_and_non_ascii_round_trips` and Task 5's
-   `test_the_add_argv_carries_a_spaced_launcher_as_one_element`.
+3. A launcher path with spaces and non-ASCII characters (an emoji included) reaches every
+   client argv, JSON entry and TOML entry intact — Task 4's
+   `test_a_path_with_spaces_and_non_ascii_round_trips`, Task 5's
+   `test_the_add_argv_carries_a_spaced_launcher_as_one_element`, Task 3's
+   `test_the_codex_snippet_escapes_any_path_codex_can_read` and Task 6's
+   `test_a_non_ascii_launcher_is_appended_as_valid_toml`.
 4. stdin at EOF in an interactive run (a piped empty stdin forced interactive in a test, or Ctrl-D)
    takes each question's default and never loops — Task 7's
    `test_eof_takes_every_default`.
@@ -77,12 +81,12 @@ added from the measurements and they change the routes.
 | `sluice/mcpinstall/__init__.py` | Package docstring only (importing a submodule loads nothing else) |
 | `sluice/mcpinstall/jsonc.py` | `ReadError`, `strip_jsonc`, `load(data, *, jsonc)`: strict and JSONC readers |
 | `sluice/mcpinstall/server.py` | `SERVER_NAME`, `SLUICE_ARGS`, `PINNED_ENV`, `ServerSpec`, `LauncherError`, `resolve_launcher`, `build_spec` |
-| `sluice/mcpinstall/clients.py` | `Host`, `host_from_os`, `Client`, `ROSTER`, `NAMES`, `Found`/`NotFound`/`Unsupported`, `config_path`, `detect`, `server_table`, `entry_value`, `parse_entry`, `add_argv`, `remove_argv`, `snippet`, `redact_argv`, `display_path`, `measured_note` |
-| `sluice/mcpinstall/routes.py` | `Absent`/`Entry`/`Unreadable`/`FileState`/`Outcome`/`Deps`, `read_state`, `matches`, `apply_json`, `apply_command`, `run_quietly`, `BACKUP_FOLDER` |
+| `sluice/mcpinstall/clients.py` | `Host`, `host_from_os`, `Client`, `ROUTES`, `ROSTER`, `NAMES`, `Found`/`NotFound`/`Unsupported`, `config_path`, `detect`, `server_table`, `entry_value`, `parse_entry`, `add_argv`, `remove_argv`, `toml_str`, `snippet`, `redact_argv`, `display_path`, `measured_note` |
+| `sluice/mcpinstall/routes.py` | `Absent`/`Entry`/`Unreadable`/`FileState`/`Outcome`/`Deps`, `read_state`, `matches`, `apply_json`, `apply_command`, `appended`, `cannot_append`, `edit_by_hand`, `apply_append`, `run_quietly`, `BACKUP_FOLDER` |
 | `sluice/mcpinstall/flow.py` | `Options`, `run` |
 | `sluice/cli.py` | `cmd_mcp_install`, the `mcp install` parser |
 | `tests/mcpinstall/__init__.py`, `conftest.py`, `fakes.py` | Sandbox fixture, rigs, fake client CLIs |
-| `tests/mcpinstall/test_jsonc.py`, `test_server.py`, `test_clients.py`, `test_json_route.py`, `test_command_route.py`, `test_flow.py` | Tests per module |
+| `tests/mcpinstall/test_jsonc.py`, `test_server.py`, `test_clients.py`, `test_json_route.py`, `test_command_route.py`, `test_append_route.py`, `test_flow.py` | Tests per module |
 | `tests/test_no_leaked_files.py` | Windows home-path form |
 | `tests/test_mcp_install_docs.py`, `tests/test_ai_setup_contract.py` | Doc pins |
 | `docs/MCP.md`, `docs/AI-SETUP.md`, `docs/USAGE.md`, `README.md`, `docs/ARCHITECTURE.md`, `.rulesync/rules/CLAUDE.md` | Docs |
@@ -570,11 +574,11 @@ Witness 8b: in `build_spec` replace `for k in PINNED_ENV` with `for k in ("SLUIC
 - Consumes: `server.SERVER_NAME`, `server.SLUICE_ARGS`, `server.ServerSpec`, `jsonc.ReadError`.
 - Produces:
   - `@dataclass(frozen=True) Host(home: str, env: Mapping[str, str], platform: str, which: Callable[[str], str | None], isdir: Callable[[str], bool], isfile: Callable[[str], bool])` with `.path` (ntpath on `"win32"`, else posixpath) and `.join(*parts)`; `host_from_os() -> Host`.
-  - `@dataclass(frozen=True) Client(name, title, anchor, route, executable, reader, table: tuple[str, ...], remove_before_add: bool, next_step, measured)`; `ROSTER: tuple[Client, ...]`; `NAMES: tuple[str, ...]`; `by_name(name) -> Client`.
+  - `ROUTES = ("command", "json", "append")`; `@dataclass(frozen=True) Client(name, title, anchor, route, executable, reader, table: tuple[str, ...], remove_before_add: bool, next_step, measured)`, raising `ValueError` naming `ROUTES` for any other route; `ROSTER: tuple[Client, ...]`; `NAMES: tuple[str, ...]`; `by_name(name) -> Client`.
   - `Found(evidence: str)`, `NotFound()`, `Unsupported(reason: str)`; `config_path(client, host) -> str | Unsupported`; `detect(client, host) -> Found | NotFound | Unsupported`.
   - `server_table(client, doc: dict) -> dict` (raises `ReadError`); `entry_value(client, spec, extra_env: Mapping = {}) -> dict`; `parse_entry(client, value) -> tuple[tuple[str, ...], dict]` (raises `ReadError`).
   - `add_argv(client, spec) -> list[str]`, `remove_argv(client) -> list[str]` (element 0 is `client.executable`; the caller swaps in the resolved path).
-  - `snippet(client, spec) -> str`; `redact_argv(argv, display=None) -> list[str]`; `display_path(path, host) -> str`; `measured_note(client, host) -> str`.
+  - `toml_str(value: str) -> str` (a TOML basic string); `snippet(client, spec, *, inline=False) -> str` (`inline=True`: Codex's entry as one `job-sluice = { ... }` line); `redact_argv(argv, display=None) -> list[str]`; `display_path(path, host) -> str`; `measured_note(client, host) -> str`.
   - `check_scope(client) -> str` (`"table"` for Claude Code, else `"file"`); `extra_fields(client, value: dict) -> list[str]` (an entry's keys beyond the shape install writes); `local_entries(client, doc: dict) -> int` (Claude Code local-scope `job-sluice` entries in the same file).
 
 - [ ] **Step 1: Write the sandbox fixture**
@@ -767,6 +771,36 @@ def test_the_codex_snippet_is_toml_codex_reads():
         "env": {"SLUICE_CONFIG": "/cfg/sluice.yaml"}}
 
 
+def test_the_inline_codex_snippet_reads_inside_an_existing_table():
+    import tomllib
+    codex = clients.by_name("codex")
+    snip = clients.snippet(codex, SPEC, inline=True)
+    assert "\n" not in snip
+    got = tomllib.loads("[mcp_servers]\n" + snip + "\n")["mcp_servers"]["job-sluice"]
+    assert got == clients.entry_value(codex, SPEC)
+
+
+# json.dumps is not a TOML string writer: it escapes a character outside the BMP as a surrogate
+# pair, which TOML refuses. Each row is a path some user can have.
+@pytest.mark.parametrize("path", ["/opt/My Apps/jöb/job-sluice", "/opt/\U0001F600/job-sluice",
+                                  '/opt/q"uote\\back/job-sluice', "/opt/new\nline/job-sluice"])
+def test_the_codex_snippet_escapes_any_path_codex_can_read(path):
+    import tomllib
+    codex = clients.by_name("codex")
+    spec = server.ServerSpec((path, "mcp", "serve"), (("SLUICE_CONFIG", path),))
+    for inline in (False, True):
+        text = clients.snippet(codex, spec, inline=inline)
+        doc = tomllib.loads(("[mcp_servers]\n" if inline else "") + text + "\n")
+        got = doc["mcp_servers"]["job-sluice"]
+        assert got["command"] == path and got["env"]["SLUICE_CONFIG"] == path
+
+
+def test_an_unknown_route_fails_at_construction():
+    import dataclasses
+    with pytest.raises(ValueError, match="command, json, append"):
+        dataclasses.replace(clients.by_name("codex"), route="apend")
+
+
 def test_a_json_snippet_nests_under_the_client_s_table():
     import json
     snip = json.loads(clients.snippet(clients.by_name("opencode"), SPEC))
@@ -879,6 +913,9 @@ def host_from_os() -> Host:
                 which=shutil.which, isdir=os.path.isdir, isfile=os.path.isfile)
 
 
+ROUTES = ("command", "json", "append")
+
+
 @dataclass(frozen=True)
 class Client:
     name: str                 # the `--client` value
@@ -891,6 +928,13 @@ class Client:
     remove_before_add: bool   # its add refuses an existing name (measured: Claude Code only)
     next_step: str            # what to do after registering: docs/MCP.md's text
     measured: str
+
+    def __post_init__(self):
+        # flow.py dispatches on the route by key; an unknown one must stop here, not fall
+        # through to some other route's writer.
+        if self.route not in ROUTES:
+            raise ValueError(f"{self.name}: route {self.route!r} is not one of "
+                             + ", ".join(ROUTES))
 
 
 ROSTER = (
@@ -1108,14 +1152,40 @@ def remove_argv(client: Client) -> list[str]:
     raise ValueError(f"{client.name} has no remove command install runs")
 
 
-def snippet(client: Client, spec: ServerSpec) -> str:
+def toml_str(value: str) -> str:
+    """A TOML basic string. `json.dumps` is not one: it writes a character outside the BMP as
+    a surrogate pair (an emoji in a launcher path, say), which TOML refuses, and the append
+    route WRITES this text into the user's config.toml."""
+    out = []
+    for ch in value:
+        if ch in '"\\':
+            out.append("\\" + ch)
+        elif ord(ch) < 0x20 or ord(ch) == 0x7F:
+            out.append(f"\\u{ord(ch):04x}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
+
+
+def snippet(client: Client, spec: ServerSpec, *, inline: bool = False) -> str:
+    """The entry as text to paste (and, for Codex, to append). `inline` gives Codex's entry
+    as one `job-sluice = { ... }` line, for a file whose `mcp_servers` an appended table cannot
+    extend."""
     value = entry_value(client, spec)
     if client.reader == "toml":
-        lines = [f"[mcp_servers.{SERVER_NAME}]", f"command = {json.dumps(value['command'])}",
-                 f"args = {json.dumps(value['args'])}"]
-        if value.get("env"):
+        command = toml_str(value["command"])
+        args = "[" + ", ".join(toml_str(a) for a in value["args"]) + "]"
+        env = value.get("env") or {}
+        if inline:
+            pairs = [f"command = {command}", f"args = {args}"]
+            if env:
+                pairs.append("env = { " + ", ".join(f"{k} = {toml_str(v)}"
+                                                    for k, v in env.items()) + " }")
+            return f"{SERVER_NAME} = {{ " + ", ".join(pairs) + " }"
+        lines = [f"[mcp_servers.{SERVER_NAME}]", f"command = {command}", f"args = {args}"]
+        if env:
             lines += ["", f"[mcp_servers.{SERVER_NAME}.env]"]
-            lines += [f"{k} = {json.dumps(v)}" for k, v in value["env"].items()]
+            lines += [f"{k} = {toml_str(v)}" for k, v in env.items()]
         return "\n".join(lines)
     doc = value
     for key in reversed(client.table + (SERVER_NAME,)):
@@ -1211,6 +1281,8 @@ _WIN_GREP = r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/[:space:]'\"<>]"
 
 Run: `.venv/bin/python -m pytest tests/test_no_leaked_files.py -rA 2>&1 | grep -E "^(FAILED|ERROR)|passed|failed"` → all passed.
 Witness: change both `[\\/]+` in `_WIN_GREP` to `\\` → `test_the_windows_gate_catches_every_separator_form_through_git` FAILS (only the single-backslash and lowercase lines remain). Restore.
+Witness: in `toml_str`, delete the `elif ord(ch) < 0x20 ...` arm and its append → the `new\nline` row of `test_the_codex_snippet_escapes_any_path_codex_can_read` FAILS. Restore. Then make `toml_str`'s body `return json.dumps(value)` → the emoji row FAILS. Restore.
+Witness: delete `Client.__post_init__` → `test_an_unknown_route_fails_at_construction` FAILS. Restore.
 
 - [ ] **Step 7: Commit**
 
@@ -1234,9 +1306,9 @@ EOF
 **Interfaces:**
 - Consumes: Task 3's `Client`, `server_table`, `entry_value`, `parse_entry`, `display_path`; `core.atomicfile.replace_if`; `core.backup.write_copy` (injected).
 - Produces:
-  - `Absent()`, `Entry(argv: tuple[str, ...], env: tuple[tuple[str, str], ...])`, `Unreadable(reason: str)`, `FileState(path, raw: bytes | None, doc: dict, table: dict, current: Absent | Entry)`, `Outcome(client: str, kind: str, reason: str = "", details: tuple[str, ...] = ())`.
+  - `Absent()`, `Entry(argv: tuple[str, ...], env: tuple[tuple[str, str], ...])`, `Unreadable(reason: str)`, `FileState(path, raw: bytes | None, doc: dict, table: dict, current: Absent | Entry)`, `Outcome(client: str, kind: str, reason: str = "", details: tuple[str, ...] = (), paste: tuple[str, str] | None = None)` (`paste`: the hand-guidance and text a `manual` outcome prints in place of the snippet).
   - `@dataclass Deps(run: Callable[[list[str], float], int], write_copy: Callable[..., str], backup_dir: str, display: Callable[[str], str], timeout: float = 60.0, before_recheck: Callable[[], None] = <no-op>)`.
-  - `read_state(client, path) -> FileState | Unreadable`; `matches(entry: Entry, spec) -> bool`; `apply_json(client, state, spec, deps) -> Outcome`; `BACKUP_FOLDER = "mcp_install_backups"`; `backup_dir() -> str`; `CHANGED` (the reason string).
+  - `read_state(client, path) -> FileState | Unreadable`; `matches(entry: Entry, spec) -> bool`; `apply_json(client, state, spec, deps) -> Outcome`; `_write_checked(client, state, data, spec, deps, kind) -> Outcome` (copy, compare-and-set, readback: shared with Task 6); `_canon(value) -> str`, `_load(client, data) -> dict`; `BACKUP_FOLDER = "mcp_install_backups"`; `backup_dir() -> str`; `CHANGED` (the reason string).
 
 - [ ] **Step 1: Write the shared test rig**
 
@@ -1609,8 +1681,10 @@ The copy is deleted once the write is proven clean (readback shows the spec, and
 server changed), and kept, and named, only when the client ends `failed`. These files hold other
 tools' credentials, so a copy does not outlive its purpose.
 
-The JSON route writes through `core/atomicfile.py::replace_if`, replacing only while the file
-still holds the bytes read. The command route cannot compare-and-set (the client's add reads and
+The JSON and append routes write through `core/atomicfile.py::replace_if`, replacing only while
+the file still holds the bytes read. The append route (Codex) adds a new table after the file's
+last byte and edits nothing; the bytes it would write are parsed first, and written only when
+they read as the old document plus exactly the new entry. The command route cannot compare-and-set (the client's add reads and
 writes the file itself), so it re-reads the server table just before running the add and stops
 when it changed; the window while the add runs is the residual no outside check closes, the
 same posture as `core/vault.py::_cas_write`."""
@@ -1665,6 +1739,9 @@ class Outcome:
     kind: str          # registered, replaced, unchanged, refused, failed, manual
     reason: str = ""
     details: tuple[str, ...] = ()
+    # (instruction, text) when a `manual` outcome needs other hand-guidance than "paste the
+    # snippet": the snippet itself would break some files (the append route).
+    paste: tuple[str, str] | None = None
 
 
 def _no_op() -> None:
@@ -1811,6 +1888,17 @@ def _take_copy(state: FileState, deps: Deps, same: Callable[[bytes], bool]):
     return name, None
 
 
+def _canon(value) -> str:
+    """A parsed value as comparable text. `==` is wrong here: a TOML or JSON `nan` never equals
+    itself, so a file holding one would read as changed by every write; `default=str` covers
+    TOML's dates."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _same_value(a, b) -> bool:
+    return a is not _GONE and b is not _GONE and _canon(a) == _canon(b)
+
+
 def _verify(client: Client, state: FileState, spec: ServerSpec, copy: str | None, deps: Deps,
             kind: str) -> Outcome:
     after = read_state(client, state.path)
@@ -1825,15 +1913,34 @@ def _verify(client: Client, state: FileState, spec: ServerSpec, copy: str | None
     # may add its own bookkeeping key). Servers are named first; for a file checked whole, the
     # top-level keys that changed are named when no server did.
     changed = sorted(k for k in state.table
-                     if k != SERVER_NAME and after.table.get(k, _GONE) != state.table[k])
+                     if k != SERVER_NAME
+                     and not _same_value(after.table.get(k, _GONE), state.table[k]))
     if not changed and check_scope(client) == "file":
         before, now = _without_entry(client, state.doc), _without_entry(client, after.doc)
-        changed = sorted(k for k in before if now.get(k, _GONE) != before[k])
+        changed = sorted(k for k in before if not _same_value(now.get(k, _GONE), before[k]))
     if changed:
         return Outcome(client.name, "failed",
                        "other settings in the file changed: " + ", ".join(changed),
                        _kept(copy, state.path, deps))
     return Outcome(client.name, kind, "", _drop_copy(copy, deps))
+
+
+def _write_checked(client: Client, state: FileState, data: bytes, spec: ServerSpec, deps: Deps,
+                   kind: str) -> Outcome:
+    """The write every file-writing route shares (JSON and append): copy, replace only while
+    the file still holds the bytes read, then readback and the collateral check."""
+    copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
+    if failure:
+        return Outcome(client.name, "failed", failure)
+    fresh = None if state.raw is None else (lambda current: current == state.raw)
+    try:
+        wrote = replace_if(state.path, data, fresh=fresh, tmp_prefix=_TMP_PREFIX)
+    except OSError:
+        return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
+                       _kept(copy, state.path, deps))
+    if not wrote:
+        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
+    return _verify(client, state, spec, copy, deps, kind)
 
 
 def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
@@ -1851,18 +1958,7 @@ def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -
     node[SERVER_NAME] = {**{k: old[k] for k in kept_fields},
                          **entry_value(client, spec, kept_env)}
     data = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
-    copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
-    if failure:
-        return Outcome(client.name, "failed", failure)
-    fresh = None if state.raw is None else (lambda current: current == state.raw)
-    try:
-        wrote = replace_if(state.path, data, fresh=fresh, tmp_prefix=_TMP_PREFIX)
-    except OSError:
-        return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
-                       _kept(copy, state.path, deps))
-    if not wrote:
-        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
-    out = _verify(client, state, spec, copy, deps, kind)
+    out = _write_checked(client, state, data, spec, deps, kind)
     if out.kind == kind:
         notes = ("the file was re-saved as two-space-indented JSON: its formatting may have "
                  "changed, its content has not",)
@@ -1892,7 +1988,7 @@ EOF
 .venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 ```
 
-Witness 2: in `apply_json`, change `fresh = None if state.raw is None else (lambda current: current == state.raw)` to `fresh = None if state.raw is None else (lambda current: True)` (the check moved out of the replace) → `test_a_change_after_the_copy_keeps_and_names_the_copy` FAILS. Run with `tests/test_config_write.py` deselected (`--deselect tests/test_config_write.py`), per the spec's note. Restore.
+Witness 2: in `_write_checked`, change `fresh = None if state.raw is None else (lambda current: current == state.raw)` to `fresh = None if state.raw is None else (lambda current: True)` (the check moved out of the replace) → `test_a_change_after_the_copy_keeps_and_names_the_copy` FAILS. Run with `tests/test_config_write.py` deselected (`--deselect tests/test_config_write.py`), per the spec's note. Restore.
 Witness 9: in `_verify`, replace `_drop_copy(copy, deps)` with `()` → `test_other_keys_and_a_credential_survive_and_the_clean_copy_is_deleted` FAILS. Restore.
 
 ---
@@ -2226,12 +2322,16 @@ Each mutant is applied alone, its named test must FAIL, then `git checkout sluic
 ### Task 6: The append route (Codex)
 
 **Files:**
-- Modify: `sluice/mcpinstall/routes.py` (add `apply_append`; import `snippet` from `clients`)
+- Modify: `sluice/mcpinstall/routes.py` (add `appended`, `cannot_append`, `edit_by_hand`, `apply_append`; import `DOCS_URL` and `snippet` from `clients`)
 - Create: `tests/mcpinstall/test_append_route.py`
 
 **Interfaces:**
-- Consumes: Task 3's `snippet`, `entry_value`; Task 4's `_load`, `_take_copy`, `_verify`, `_kept`, `replace_if`.
-- Produces: `apply_append(client, state, spec, deps) -> Outcome` — called only when `state.current` is `Absent`; outcome `registered`, `failed` or `manual`.
+- Consumes: Task 3's `snippet` (and `inline=True`), `entry_value`, `extra_fields`, `DOCS_URL`; Task 4's `_load`, `_canon`, `_write_checked`, `Outcome.paste`.
+- Produces:
+  - `appended(client, state, spec, text=None) -> bytes | None` — pure: the bytes an append would write, or `None` when they would not read as the old document plus exactly the new entry. `text` replaces the snippet (a test hands another).
+  - `cannot_append(client, state, spec, deps) -> Outcome` — the `manual` outcome for a file `appended` refuses, with the inline entry as its paste text.
+  - `edit_by_hand(client, state, spec, deps) -> Outcome` — the `manual` outcome for an existing entry that differs, naming (never showing) its other env keys and fields.
+  - `apply_append(client, state, spec, deps) -> Outcome` — called only when `state.current` is `Absent`; outcome `registered`, `failed` or `manual`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -2249,6 +2349,7 @@ from tests.mcpinstall.fakes import Rig
 SPEC = server.ServerSpec(("/opt/x/job-sluice", "mcp", "serve", "--write"),
                          (("SLUICE_CONFIG", "/cfg/sluice.yaml"),))
 CODEX = clients.by_name("codex")
+SENTINEL = "SENTINEL-NOT-A-SECRET-APPEND"
 
 EXISTING = (
     '# my settings\n'
@@ -2264,14 +2365,24 @@ def _toml(rig, text=None) -> pathlib.Path:
     p = pathlib.Path(rig.path("codex"))
     p.parent.mkdir(parents=True, exist_ok=True)
     if text is not None:
-        p.write_text(text)
+        p.write_bytes(text.encode() if isinstance(text, str) else text)
     return p
 
 
-def _apply(rig):
+def _state(rig):
     state = routes.read_state(CODEX, rig.path("codex"))
-    assert isinstance(state, routes.FileState) and isinstance(state.current, routes.Absent)
-    return routes.apply_append(CODEX, state, SPEC, rig.deps)
+    assert isinstance(state, routes.FileState), state
+    return state
+
+
+def _apply(rig, spec=SPEC):
+    state = _state(rig)
+    assert isinstance(state.current, routes.Absent)
+    return routes.apply_append(CODEX, state, spec, rig.deps)
+
+
+def _said(out) -> str:
+    return " ".join((out.reason, *out.details, *(out.paste or ())))
 
 
 def test_an_absent_entry_is_appended_and_every_existing_byte_kept(tmp_path):
@@ -2291,7 +2402,24 @@ def test_a_file_without_a_final_newline_still_appends_cleanly(tmp_path):
     rig = Rig(tmp_path)
     p = _toml(rig, 'model = "example-model"')
     assert _apply(rig).kind == "registered"
+    assert p.read_bytes().startswith(b'model = "example-model"\n')
     assert tomllib.loads(p.read_text())["model"] == "example-model"
+
+
+def test_a_crlf_file_keeps_every_byte(tmp_path):
+    rig = Rig(tmp_path)
+    old = EXISTING.replace("\n", "\r\n").encode()
+    p = _toml(rig, old)
+    assert _apply(rig).kind == "registered"
+    assert p.read_bytes().startswith(old)
+    assert tomllib.loads(p.read_bytes().decode())["mcp_servers"]["other"]["custom_field"] == "kept"
+
+
+def test_an_empty_file_gets_just_the_entry(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, b"")
+    assert _apply(rig).kind == "registered"
+    assert p.read_text() == clients.snippet(CODEX, SPEC) + "\n"
 
 
 def test_a_missing_file_is_created(tmp_path):
@@ -2301,74 +2429,150 @@ def test_a_missing_file_is_created(tmp_path):
     assert doc == {"mcp_servers": {"job-sluice": clients.entry_value(CODEX, SPEC)}}
 
 
+def test_a_non_ascii_launcher_is_appended_as_valid_toml(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, EXISTING)
+    path = "/opt/My Apps/jöb \U0001F600/job-sluice"
+    spec = server.ServerSpec((path, "mcp", "serve"), (("SLUICE_CONFIG", path),))
+    assert _apply(rig, spec).kind == "registered"
+    assert tomllib.loads(p.read_text())["mcp_servers"]["job-sluice"]["command"] == path
+
+
+def test_a_nan_elsewhere_does_not_block_the_append(tmp_path):
+    rig = Rig(tmp_path)
+    _toml(rig, EXISTING.replace('model = "example-model"', "ratio = nan"))
+    assert _apply(rig).kind == "registered"
+
+
 def test_an_inline_server_table_is_manual_and_nothing_is_written(tmp_path):
     rig = Rig(tmp_path)
-    p = _toml(rig, 'mcp_servers = { other = { command = "x" } }\n')
+    p = _toml(rig, 'mcp_servers = { other = { command = "x", env = { T = "%s" } } }\n'
+              % SENTINEL)
     before = p.read_bytes()
     out = _apply(rig)
     assert out.kind == "manual" and p.read_bytes() == before and rig.copies_written == []
+    # The guidance is the inline form, which DOES read inside that table; the table form the
+    # other outcomes print would make this file unreadable.
+    instruction, text = out.paste
+    assert "[mcp_servers" not in text
+    doc = tomllib.loads('mcp_servers = { other = { command = "x" }, %s }\n' % text)
+    assert doc["mcp_servers"]["job-sluice"] == clients.entry_value(CODEX, SPEC)
+    assert SENTINEL not in _said(out)
+
+
+def test_an_appended_text_that_changes_anything_else_is_refused(tmp_path):
+    rig = Rig(tmp_path)
+    _toml(rig, EXISTING)
+    state = _state(rig)
+    assert routes.appended(CODEX, state, SPEC) is not None          # control
+    extra = clients.snippet(CODEX, SPEC) + '\n\n[sneaky]\nk = 1'
+    assert routes.appended(CODEX, state, SPEC, text=extra) is None   # parses, but adds [sneaky]
 
 
 def test_a_change_after_the_copy_keeps_the_copy_and_appends_nothing(tmp_path):
     rig = Rig(tmp_path)
     p = _toml(rig, EXISTING)
-    state = routes.read_state(CODEX, str(p))
+    state = _state(rig)
     rig.after_copy = lambda: p.write_text(EXISTING + 'late = 1\n')
     out = routes.apply_append(CODEX, state, SPEC, rig.deps)
     assert (out.kind, out.reason) == ("failed", routes.CHANGED)
     assert "job-sluice" not in p.read_text() and rig.copies() == rig.copies_written
+
+
+def test_a_failed_readback_keeps_and_names_the_copy(tmp_path, monkeypatch):
+    rig = Rig(tmp_path)
+    _toml(rig, EXISTING)
+    state = _state(rig)
+    monkeypatch.setattr(routes, "read_state", lambda c, path: routes.Unreadable("gone"))
+    out = routes.apply_append(CODEX, state, SPEC, rig.deps)
+    assert out.kind == "failed" and "readback could not read" in out.reason
+    assert rig.copies() == rig.copies_written and len(rig.copies()) == 1
+    assert any(rig.copies_written[0] in d for d in out.details)
+
+
+def test_an_existing_entry_is_edited_by_hand_with_its_other_keys_named(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, '[mcp_servers.job-sluice]\ncommand = "/old/job-sluice"\n'
+              'args = ["--token", "%s"]\nstartup_timeout_sec = 30\n\n'
+              '[mcp_servers.job-sluice.env]\nMY_KEY = "%s"\n' % (SENTINEL, SENTINEL))
+    before = p.read_bytes()
+    state = _state(rig)
+    out = routes.edit_by_hand(CODEX, state, SPEC, rig.deps)
+    said = _said(out)
+    assert out.kind == "manual" and "does not edit an existing one" in out.reason
+    assert "MY_KEY" in said and "startup_timeout_sec" in said and "keep" in said
+    assert SENTINEL not in said and p.read_bytes() == before
 ```
 
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `.venv/bin/python -m pytest tests/mcpinstall/test_append_route.py -rA 2>&1 | grep -E "^(PASSED|FAILED|ERROR)|passed|failed|error"`
-Expected: every test FAILS with `AttributeError: module 'sluice.mcpinstall.routes' has no attribute 'apply_append'`.
+Expected: every test FAILS with `AttributeError: module 'sluice.mcpinstall.routes' has no attribute` (`apply_append`, `appended` or `edit_by_hand`).
 
-- [ ] **Step 3: Implement** — add `snippet` to `routes.py`'s `clients` import, then append:
+- [ ] **Step 3: Implement** — add `DOCS_URL` and `snippet` to `routes.py`'s `clients` import, then append:
 
 ```python
-def apply_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
-    """Add a NEW entry table at the end of a TOML file, editing no existing byte (Codex, by the
-    owner's ruling: its own add re-serialises the server table and drops what it does not know,
-    and the standard library cannot edit TOML). Only for an absent entry.
-
-    The candidate bytes are parsed BEFORE anything is written, and the write goes ahead only
-    when they read as the old document plus exactly the new entry: an inline
+def appended(client: Client, state: FileState, spec: ServerSpec,
+             text: str | None = None) -> bytes | None:
+    """The bytes an append would write: the file as it is, then a new entry table. `None` when
+    they would not read as the old document plus exactly the new entry: an inline
     `mcp_servers = {...}` table, for one, makes an appended table invalid TOML, and writing it
-    would leave the user's file unreadable to Codex. Then the copy, compare-and-set and
-    readback every other write has."""
+    would leave the user's file unreadable to Codex. Pure, so `--dry-run` asks the same question
+    the write does."""
     old = state.raw or b""
     gap = b"" if not old else (b"\n" if old.endswith(b"\n") else b"\n\n")
-    data = old + gap + clients_snippet_bytes(client, spec)
+    table = snippet(client, spec) if text is None else text
+    data = old + gap + (table + "\n").encode("utf-8")
     expected = _copy.deepcopy(state.doc)
     node = expected
     for key in client.table:
         node = node.setdefault(key, {})
     node[SERVER_NAME] = entry_value(client, spec)
     try:
-        fits = _load(client, data) == expected
+        after = _load(client, data)
     except jsonc.ReadError:
-        fits = False
-    if not fits:
-        return Outcome(client.name, "manual",
-                       f"appending an entry would change more of {deps.display(state.path)} "
-                       "than the entry itself, so nothing was written")
-    copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
-    if failure:
-        return Outcome(client.name, "failed", failure)
-    fresh = None if state.raw is None else (lambda current: current == state.raw)
-    try:
-        wrote = replace_if(state.path, data, fresh=fresh, tmp_prefix=_TMP_PREFIX)
-    except OSError:
-        return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
-                       _kept(copy, state.path, deps))
-    if not wrote:
-        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
-    return _verify(client, state, spec, copy, deps, "registered")
+        return None
+    return data if _canon(after) == _canon(expected) else None
 
 
-def clients_snippet_bytes(client: Client, spec: ServerSpec) -> bytes:
-    return (snippet(client, spec) + "\n").encode("utf-8")
+def cannot_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    where = deps.display(state.path)
+    return Outcome(
+        client.name, "manual",
+        f"a table appended to {where} would not read as just the job-sluice entry "
+        "(`mcp_servers` written as an inline table, for one), so nothing was written",
+        paste=(f"add this inside the `mcp_servers` table in {where} by hand "
+               f"(see {DOCS_URL}#{client.anchor})", snippet(client, spec, inline=True)))
+
+
+def edit_by_hand(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    """An existing entry that differs: install appends, it never edits TOML in place. The other
+    env keys and settings are NAMED, so a user pasting the values does not drop them; their
+    values are never printed (a key can hold a token)."""
+    where = deps.display(state.path)
+    other_env = sorted(k for k, _ in state.current.env if k not in PINNED_ENV)
+    fields = extra_fields(client, state.table.get(SERVER_NAME, {}))
+    details = ()
+    if other_env:
+        details += ("keep its other environment keys: " + ", ".join(other_env),)
+    if fields:
+        details += ("keep its other settings: " + ", ".join(fields),)
+    return Outcome(
+        client.name, "manual",
+        f"install adds a {client.title} entry but does not edit an existing one", details,
+        paste=(f"in {where}'s job-sluice entry, set these values by hand and keep the rest "
+               f"(see {DOCS_URL}#{client.anchor})", snippet(client, spec)))
+
+
+def apply_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    """Add a NEW entry table at the end of a TOML file, editing no existing byte (Codex, by the
+    owner's ruling: its own add re-serialises the server table and drops what it does not know,
+    and the standard library cannot edit TOML). Only for an absent entry; then the copy,
+    compare-and-set and readback every other write has."""
+    data = appended(client, state, spec)
+    if data is None:
+        return cannot_append(client, state, spec, deps)
+    return _write_checked(client, state, data, spec, deps, "registered")
 ```
 
 - [ ] **Step 4: Run the tests to verify they pass**
@@ -2376,7 +2580,7 @@ def clients_snippet_bytes(client: Client, spec: ServerSpec) -> bytes:
 Run: `.venv/bin/python -m pytest tests/mcpinstall -rA 2>&1 | grep -E "^(FAILED|ERROR)|passed|failed"`
 Expected: all passed.
 
-- [ ] **Step 5: Commit, then witness spec mutant 12**
+- [ ] **Step 5: Commit, then witness spec mutants 12 and 13**
 
 ```bash
 git add sluice/mcpinstall/routes.py tests/mcpinstall/test_append_route.py
@@ -2388,7 +2592,10 @@ EOF
 .venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
 ```
 
-Witness 12: in `apply_append`, replace the `try: fits = ... except ...: fits = False` block with `fits = True` → `test_an_inline_server_table_is_manual_and_nothing_is_written` FAILS (the file is written and left invalid; the outcome is `failed`, not `manual`). Restore.
+Witness 12: in `appended`, delete the `try: after = ... except ...: return None` block and make the last line `return data` → `test_an_inline_server_table_is_manual_and_nothing_is_written` FAILS (the file is written and left invalid; the outcome is `failed`, not `manual`). Restore.
+Witness 13: in `appended`, change the last line to `return data` (the parse stays, the comparison goes) → `test_an_appended_text_that_changes_anything_else_is_refused` FAILS while the inline test stays green. Restore.
+Witness 14: in `_canon`, return `value` instead of the `json.dumps(...)` text → `test_a_nan_elsewhere_does_not_block_the_append` FAILS. Restore.
+Witness 15: in `edit_by_hand`, delete the `if other_env:` line and the line under it → `test_an_existing_entry_is_edited_by_hand_with_its_other_keys_named` FAILS. Restore.
 
 ---
 
@@ -2563,9 +2770,49 @@ def test_a_different_codex_entry_is_manual_and_fails_only_when_named(tmp_path):
     before = toml.read_bytes()
     rc, out, _ = install(rig, "--yes", "--replace")
     assert rc == 0 and "codex: manual" in out and "[mcp_servers.job-sluice]" in out
-    assert toml.read_bytes() == before
+    # The flow's own arm, not apply_append's duplicate-table refusal reached by accident.
+    assert "does not edit an existing one" in out and "keep the rest" in out
+    assert toml.read_bytes() == before and rig.copies_written == []
     rc, _, _ = install(rig, "--yes", "--client", "codex")
     assert rc == 1
+
+
+def test_an_existing_codex_entry_is_not_offered_in_the_pick_list(tmp_path):
+    rig = Rig(tmp_path)
+    rig.cli("gemini")
+    toml = tmp_path / "home" / ".codex" / "config.toml"
+    toml.parent.mkdir(parents=True)
+    toml.write_text('[mcp_servers.job-sluice]\ncommand = "/old/job-sluice"\n')
+    _, out, _ = install(rig, stdin="\n\n", interactive=True)
+    listed = out.split("Register job-sluice in:")[1].split("Press Enter")[0]
+    assert "gemini" in listed and "codex" not in listed
+    assert "codex: manual" in out
+
+
+def test_codex_dry_run_previews_the_append_and_writes_nothing(tmp_path):
+    rig = Rig(tmp_path)
+    toml = tmp_path / "home" / ".codex" / "config.toml"
+    toml.parent.mkdir(parents=True)
+    toml.write_text('model = "example-model"\n')
+    rc, out, _ = install(rig, "--yes", "--dry-run")
+    assert rc == 0 and "codex: would append to ~/.codex/config.toml" in out
+    assert "    [mcp_servers.job-sluice]" in out
+    assert toml.read_text() == 'model = "example-model"\n' and rig.copies_written == []
+
+
+def test_codex_dry_run_previews_an_inline_table_as_the_run_would(tmp_path):
+    rig = Rig(tmp_path)
+    toml = tmp_path / "home" / ".codex" / "config.toml"
+    toml.parent.mkdir(parents=True)
+    toml.write_text('mcp_servers = { other = { command = "x" } }\n')
+    rc, out, _ = install(rig, "--yes", "--dry-run", "--client", "codex")
+    assert rc == 1 and "codex: manual" in out and "would append" not in out
+    assert "inside the `mcp_servers` table" in out and "[mcp_servers.job-sluice]" not in out
+
+
+def test_every_route_has_a_writer_and_a_preview():
+    assert set(flow._APPLY) == set(flow._PREVIEW) == set(clients.ROUTES)
+    assert {c.route for c in clients.ROSTER} <= set(clients.ROUTES)
 
 
 def test_codex_with_a_matching_entry_is_unchanged(tmp_path):
@@ -2648,6 +2895,11 @@ def _planted(rig):
         "other": {"command": "/o", "env": {"OTHER_KEY": SENTINEL}},
         "job-sluice": {"command": "/old/job-sluice", "args": ["mcp", "--token", SENTINEL],
                        "env": {"PLANTED_KEY": SENTINEL}}}})
+    # Codex's config.toml holds tokens the same way, and its `manual` arm is a route of its own.
+    rig.write("codex", '[mcp_servers.other]\ncommand = "/o"\n\n[mcp_servers.other.env]\n'
+              f'OTHER_KEY = "{SENTINEL}"\n\n[mcp_servers.job-sluice]\n'
+              f'command = "/old/job-sluice"\nargs = ["mcp", "--token", "{SENTINEL}"]\n\n'
+              f'[mcp_servers.job-sluice.env]\nPLANTED_CODEX_KEY = "{SENTINEL}"\n')
 
 
 def test_a_command_shaped_like_a_setting_is_not_printed(tmp_path):
@@ -2665,6 +2917,7 @@ def test_no_planted_value_reaches_any_output(tmp_path, args):
     rc, out, err = install(rig, *args)
     assert SENTINEL not in out + err
     assert "PLANTED_KEY" in out            # control: the planted entry WAS read and reported
+    assert "codex: manual" in out and "PLANTED_CODEX_KEY" in out    # and Codex's too
 
 
 def test_the_interactive_comparison_shows_no_planted_value(tmp_path):
@@ -2672,6 +2925,7 @@ def test_the_interactive_comparison_shows_no_planted_value(tmp_path):
     _planted(rig)
     _, out, err = install(rig, stdin="\n\nn\n", interactive=True)
     assert SENTINEL not in out + err and "PLANTED_KEY" in out and "<other argument>" in out
+    assert "PLANTED_CODEX_KEY" in out
 
 
 def test_the_cli_command_is_wired(tmp_path, monkeypatch, capsys):
@@ -2824,9 +3078,7 @@ def run(opts: Options, *, host, deps, argv0, stdin, out, err, interactive, find_
         elif _same(state, spec):
             outcomes.append(routes.Outcome(c.name, "unchanged"))
         elif c.route == "append" and isinstance(state.current, routes.Entry):
-            outcomes.append(routes.Outcome(
-                c.name, "manual", f"install adds a {c.title} entry but does not edit an "
-                "existing one; replace it by hand"))
+            outcomes.append(routes.edit_by_hand(c, state, spec, deps))
         elif c.name in selected:
             outcomes.append(_one(c, state, spec, opts, ask, deps, host, out))
         if isinstance(state, routes.FileState) and outcomes and outcomes[-1].client == c.name:
@@ -2864,27 +3116,47 @@ def _one(c, state, spec, opts, ask, deps, host, out) -> routes.Outcome:
         refused = routes.refusal(c, state)
         if refused:
             return refused
+    # Keyed by route, never an if/else chain ending in a default: a route with no writer is a
+    # KeyError here (and `clients.Client` refuses an unknown one at import), not some other
+    # route's writer run on this client's file.
     if opts.dry_run:
-        if c.route == "command":
-            argv = clients.add_argv(c, spec)
-            print(f"{c.name}: would run: " + " ".join(argv), file=out)
-        elif c.route == "append":
-            print(f"{c.name}: would append to {deps.display(state.path)}:", file=out)
-            for line in clients.snippet(c, spec).splitlines():
-                print("    " + line, file=out)
-        else:
-            print(f"{c.name}: would write {deps.display(state.path)}: "
-                  + json_one_line(clients.entry_value(c, spec)), file=out)
-        return routes.Outcome(c.name, "dry-run")
-    if c.route == "json":
-        return routes.apply_json(c, state, spec, deps)
-    if c.route == "append":
-        return routes.apply_append(c, state, spec, deps)
-    return routes.apply_command(c, state, spec, deps, host.which)
+        return _PREVIEW[c.route](c, state, spec, deps, out)
+    return _APPLY[c.route](c, state, spec, deps, host)
 
 
 def json_one_line(value) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _preview_command(c, state, spec, deps, out) -> routes.Outcome:
+    print(f"{c.name}: would run: " + " ".join(clients.add_argv(c, spec)), file=out)
+    return routes.Outcome(c.name, "dry-run")
+
+
+def _preview_json(c, state, spec, deps, out) -> routes.Outcome:
+    print(f"{c.name}: would write {deps.display(state.path)}: "
+          + json_one_line(clients.entry_value(c, spec)), file=out)
+    return routes.Outcome(c.name, "dry-run")
+
+
+def _preview_append(c, state, spec, deps, out) -> routes.Outcome:
+    # The same pre-parse the write makes, so the preview never promises an append the run
+    # would refuse.
+    if routes.appended(c, state, spec) is None:
+        return routes.cannot_append(c, state, spec, deps)
+    print(f"{c.name}: would append to {deps.display(state.path)}:", file=out)
+    for line in clients.snippet(c, spec).splitlines():
+        print("    " + line, file=out)
+    return routes.Outcome(c.name, "dry-run")
+
+
+_PREVIEW = {"command": _preview_command, "json": _preview_json, "append": _preview_append}
+_APPLY = {
+    "command": lambda c, state, spec, deps, host: routes.apply_command(c, state, spec, deps,
+                                                                       host.which),
+    "json": lambda c, state, spec, deps, host: routes.apply_json(c, state, spec, deps),
+    "append": lambda c, state, spec, deps, host: routes.apply_append(c, state, spec, deps),
+}
 
 
 def _report(outcomes, paths, spec, host, out) -> None:
@@ -2900,10 +3172,14 @@ def _report(outcomes, paths, spec, host, out) -> None:
         if o.kind in ("registered", "replaced", "unchanged"):
             print("  next: " + c.next_step, file=out)
         elif o.kind in ("failed", "manual") and spec is not None and o.client in paths:
-            where = clients.display_path(paths[o.client], host)
-            print(f"  paste this into {where} instead (see {clients.DOCS_URL}#{c.anchor}):",
-                  file=out)
-            for line in clients.snippet(c, spec).splitlines():
+            if o.paste:
+                instruction, text = o.paste
+            else:
+                where = clients.display_path(paths[o.client], host)
+                instruction = f"paste this into {where} instead (see {clients.DOCS_URL}#{c.anchor})"
+                text = clients.snippet(c, spec)
+            print(f"  {instruction}:", file=out)
+            for line in text.splitlines():
                 print("    " + line, file=out)
 
 
@@ -2999,6 +3275,9 @@ EOF
 ```
 
 Witness 6: in `flow._env_lines`, change `other = sorted(k for k in env if k not in PINNED_ENV)` to `other = sorted(f"{k}={env[k]}" for k in env if k not in PINNED_ENV)` → `test_no_planted_value_reaches_any_output` FAILS. Restore.
+Witness 16: in `run`, delete the `elif c.route == "append" and isinstance(state.current, routes.Entry):` arm and the line under it → `test_a_different_codex_entry_is_manual_and_fails_only_when_named` FAILS (no Codex outcome at all). Restore.
+Witness 17: in `_preview_append`, delete the `if routes.appended(...) is None:` check and its return → `test_codex_dry_run_previews_an_inline_table_as_the_run_would` FAILS. Restore.
+Witness 18: in `_report`, delete the `if o.paste:` arm (keep the `else` body, unindented) → `test_codex_dry_run_previews_an_inline_table_as_the_run_would` FAILS (the table form is printed). Restore.
 
 ---
 
@@ -3084,8 +3363,10 @@ from the installed `job-sluice` (it stops, exit 2, when started any other way or
 `mcp` extra). `--client NAME` (repeatable) narrows the list, `--yes` asks nothing,
 `--read-only` drops the write tools, `--replace` replaces an entry with different settings, and
 `--dry-run` prints what it would do. For Codex, install appends a new entry to the end of
-`config.toml` and edits nothing else (its own add command drops fields of other servers); an
-existing Codex entry that differs is printed as a snippet to paste instead. A client's add command rewrites its file while it runs, so an
+`config.toml` and edits nothing else (its own add command drops fields of other servers). It
+writes nothing, and prints what to add by hand instead, when Codex already has an entry that
+differs (set its values and keep its other settings) or when `mcp_servers` is written as an
+inline table (add the entry inside it). A client's add command rewrites its file while it runs, so an
 edit you make to that file in that moment can be lost; install checks the file just before.
 
 The entries below are the manual route.
@@ -3123,7 +3404,8 @@ vault apply."
 ...] [--read-only] [--replace] [--yes] [--dry-run]\`` section summarising: what it detects
 (the roster), user scope only, readback, copy-and-delete, the outcomes and exit codes (copy the
 Global Constraints lines), non-interactive rules, `--dry-run`, Codex appended when absent and
-manual when an entry exists.
+manual (nothing written, the values to set printed) when an entry exists or when `mcp_servers`
+is an inline table an appended table cannot extend.
 
 `README.md` Commands table: the `job-sluice mcp` row becomes
 `run a Model Context Protocol server over stdio (\`serve\`, plus \`--write\` for the write tools),
@@ -3133,8 +3415,10 @@ manual line after "or by hand:".
 
 `docs/ARCHITECTURE.md`: a `sluice/mcpinstall/` paragraph beside the mcpserver one: it writes
 OTHER tools' config files (user scope only); copy first via `core/backup.py::write_copy`,
-deleted on a clean write; JSON route through `core/atomicfile.py::replace_if`; command route
-re-reads the table before the add; every registration read from the file; stdlib only and no
+deleted on a clean write; the JSON and append routes through `core/atomicfile.py::replace_if`
+(the append route, Codex, adds a table after the last byte, written only when the bytes parse
+as the old document plus exactly the new entry, and never edits an existing entry); command
+route re-reads the table before the add; every registration read from the file; stdlib only and no
 `mcp` import; `clients.py` loads on every invocation for `--client`'s choices, the rest only in
 `cli.py::cmd_mcp_install`.
 
