@@ -265,8 +265,13 @@ def _approved_keys(content) -> set:
     return {k for k, v in content.items() if v is True}
 
 
+# The top-level modules `build_server()` imports, every one installed by the `mcp` extra (`mcp`
+# pulls in `anyio` and `mcp-types`), so any of them missing means the extra is missing.
+_MCP_EXTRA_MODULES = frozenset({"anyio", "mcp", "mcp_types"})
+
+
 class McpNotInstalled(RuntimeError):
-    """Raised by `build_server()` when the `mcp` package's import fails.
+    """Raised by `build_server()` when a module the `mcp` extra installs is missing.
     `cmd_mcp_serve` (cli.py) catches this specifically and turns it into a usage
     error naming the extra to install -- never a bare `except ImportError`, which
     could misattribute an unrelated import failure deep inside a later tool call."""
@@ -1240,7 +1245,16 @@ def build_server(config, write: bool = False):
             InputRequiredResult,
             TextContent,
         )
-    except ImportError as e:
+    except ModuleNotFoundError as e:
+        # Only a missing module this block imports by name is the extra missing: all three come
+        # from it, and anyio is imported first, so a bare install names anyio rather than mcp. A
+        # genuinely absent package names its TOP-LEVEL module exactly, so the match is exact: a
+        # dotted name (`mcp.server.mcpserver`) is a submodule an installed mcp no longer ships.
+        # That, a dependency of mcp gone, or a name mcp no longer defines (a plain ImportError,
+        # not caught here) is a broken install the not-installed message would misdescribe, so
+        # it surfaces as is.
+        if e.name not in _MCP_EXTRA_MODULES:
+            raise
         raise McpNotInstalled(mcpextra.NOT_INSTALLED) from e
 
     holder = _Holder(Sluice(config))

@@ -526,7 +526,9 @@ def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
 
     def _raise_for_mcp(name, *args, **kwargs):
         if name == "mcp" or name.startswith("mcp."):
-            raise ImportError(f"simulated: {name} not installed")
+            # The shape a real absence raises: a ModuleNotFoundError naming the top-level module,
+            # which is what build_server keys its translation on.
+            raise ModuleNotFoundError(f"No module named {name!r}", name="mcp")
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", _raise_for_mcp)
@@ -538,6 +540,86 @@ def test_cmd_mcp_serve_degrades_to_rc2_when_mcp_is_absent(monkeypatch, capsys):
     assert cmd_mcp_serve(args, Config()) == 2
     from sluice import mcpextra
     assert mcpextra.NOT_INSTALLED in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("missing", ["anyio", "mcp", "mcp_types"])
+def test_each_module_the_extra_provides_reads_as_the_extra_missing(monkeypatch, missing):
+    """build_server imports anyio first, so on an install without the extra the error names
+    anyio, not mcp: all three top-level modules it imports come from the extra, and each one
+    missing must read as the extra missing."""
+    import builtins
+    from sluice import mcpserver
+    from sluice.core.config import Config
+
+    real_import = builtins.__import__
+
+    def _missing(name, *args, **kwargs):
+        if name.split(".")[0] == missing:
+            raise ModuleNotFoundError(f"No module named {missing!r}", name=missing)
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _missing)
+    with pytest.raises(mcpserver.McpNotInstalled):
+        mcpserver.build_server(Config())
+
+
+# Each is an install that HAS the extra but is broken, which `pip install job-sluice[mcp]` would
+# not mend: a dependency of mcp gone; a submodule an installed mcp no longer ships (the shape of
+# the fastmcp -> mcpserver rename pyproject.toml records); a name it no longer defines, which
+# CPython raises as a plain ImportError. A genuinely absent package names only its top-level
+# module, so none of these may read as the extra missing. The last row is the one only the
+# except's TYPE separates: `from mcp_types import X` with X gone names exactly `mcp_types`, a
+# member of the extra's set, so the name check alone would misreport it.
+_BROKEN_INSTALLS = [
+    pytest.param(ModuleNotFoundError, "mcp.server.mcpserver", "pydantic",
+                 id="dependency-of-mcp-missing"),
+    pytest.param(ModuleNotFoundError, "mcp.server.mcpserver", "mcp.server.mcpserver",
+                 id="mcp-submodule-missing"),
+    pytest.param(ImportError, "mcp.server.mcpserver", "mcp.server.mcpserver",
+                 id="name-missing-from-mcp"),
+    pytest.param(ImportError, "mcp_types", "mcp_types", id="name-missing-from-mcp-types"),
+]
+
+
+def _break_import(monkeypatch, exc_type, module, name):
+    import builtins
+    real_import = builtins.__import__
+
+    def _broken(mod, *args, **kwargs):
+        if mod == module:
+            raise exc_type(f"simulated: {name}", name=name)
+        return real_import(mod, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken)
+
+
+@pytest.mark.parametrize("exc_type,module,name", _BROKEN_INSTALLS)
+def test_a_broken_install_is_not_reported_as_the_extra_missing(monkeypatch, exc_type, module,
+                                                                name):
+    from sluice import mcpserver
+    from sluice.core.config import Config
+
+    _break_import(monkeypatch, exc_type, module, name)
+    with pytest.raises(ImportError) as exc:
+        mcpserver.build_server(Config())
+    assert type(exc.value) is exc_type
+    assert exc.value.name == name
+
+
+@pytest.mark.parametrize("exc_type,module,name", _BROKEN_INSTALLS)
+def test_mcp_serve_does_not_answer_a_broken_install_with_the_install_hint(
+        monkeypatch, capsys, exc_type, module, name):
+    """The command, not only build_server: a broader except in cmd_mcp_serve would turn a
+    broken install back into rc 2 and the install hint."""
+    from sluice import mcpextra
+    from sluice.cli import _build_parser, cmd_mcp_serve
+    from sluice.core.config import Config
+
+    _break_import(monkeypatch, exc_type, module, name)
+    args = _build_parser().parse_args(["mcp", "serve"])
+    with pytest.raises(exc_type):
+        cmd_mcp_serve(args, Config())
+    assert mcpextra.NOT_INSTALLED not in capsys.readouterr().err
 
 
 def test_the_not_installed_message_names_the_extra():
