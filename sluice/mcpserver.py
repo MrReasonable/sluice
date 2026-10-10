@@ -32,6 +32,7 @@ from typing import Literal
 
 import sluice.onboard.coach as coach
 import sluice.onboard.review as _review
+from sluice import mcpextra
 from sluice.core.app import (Sluice, _reason, config_error_text, evidence_kinds_text,
                              evidence_verify_effects, pending_evidence_detail, verify_outcome_text)
 from sluice.core.leads import (
@@ -1240,9 +1241,7 @@ def build_server(config, write: bool = False):
             TextContent,
         )
     except ImportError as e:
-        raise McpNotInstalled(
-            "the 'mcp' package is not installed -- run `pip install job-sluice[mcp]`"
-        ) from e
+        raise McpNotInstalled(mcpextra.NOT_INSTALLED) from e
 
     holder = _Holder(Sluice(config))
     mcp_server = MCPServer("sluice")
