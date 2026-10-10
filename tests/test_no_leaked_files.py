@@ -162,6 +162,12 @@ _GREP_NAME = r"""[^][:space:]'"`,)<>]"""
 # `test_the_python_parser_sees_every_line_git_can_find` pins it structurally.
 _WIDE_HOME_PATH_RE = re.compile(r"""/(?:Users|home)/[^ \t\n\r\f\v'"`,)<>\]]+""")
 
+# The Windows form, for `mcp install`'s Windows path tables: a drive, Users and the account
+# name, the separators any run of backslashes or slashes (a JSON path in a Python string has
+# four, and a path can mix a backslash with a slash). Nothing is allow-listed: tests join their placeholder from
+# parts, so every hit outside this file is a leak.
+_WIN_GREP = r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/[:space:]'\"<>]"
+
 # The exact home-rooted strings that legitimately appear in this repo, in full.
 #
 # Deliberately whole paths and not a set of placeholder USERNAMES, which is what this
@@ -312,12 +318,14 @@ def test_the_gate_actually_uses_the_declared_pathspec():
     source is crude, but it is the connection between the two that was missing.
     """
     src = pathlib.Path(__file__).read_text(encoding="utf-8")
-    call = src[src.index("out = _git(\"grep\""):]
-    call = call[:call.index("allow=(0, 1))")]
-    assert "_GATE_PATHSPEC" in call, (
-        "the gate no longer derives its pathspec from _GATE_PATHSPEC, so the "
-        "completeness guard below constrains nothing")
-    assert '"--", "' not in call, f"a literal pathspec is hardcoded at the call site: {call}"
+    calls = src.split("out = _git(\"grep\"")[1:]
+    assert len(calls) >= 2, "expected the POSIX gate call and the Windows gate call"
+    for call in calls:
+        call = call[:call.index("allow=(0, 1))")]
+        assert "_GATE_PATHSPEC" in call, (
+            "a gate no longer derives its pathspec from _GATE_PATHSPEC, so the "
+            "completeness guard below constrains nothing")
+        assert '"--", "' not in call, f"a literal pathspec is hardcoded at the call site: {call}"
 
 
 def test_the_gate_leaves_no_tracked_file_unsearched():
@@ -402,6 +410,30 @@ def _is_allowed_hit(line):
 ])
 def test_the_allowance_is_scoped_to_the_file_that_needs_it(line, allowed, why):
     assert _is_allowed_hit(line) is allowed, why
+
+
+def test_no_windows_home_path_is_tracked():
+    out = _git("grep", "-n", "-I", "-i", "-E", _WIN_GREP,
+               *(("--",) + _GATE_PATHSPEC if _GATE_PATHSPEC else ()), allow=(0, 1))
+    hits = [ln for ln in out.splitlines() if not ln.startswith("tests/test_no_leaked_files.py:")]
+    assert not hits, f"absolute Windows home path in tracked files: {hits}"
+
+
+def test_the_windows_gate_catches_every_separator_form_through_git(tmp_path):
+    """Run through the engine the gate uses: a pattern that works in Python `re` and not in
+    `git grep -E` would certify a blind gate (this file's own history)."""
+    import subprocess
+    bs = "\\"
+    planted = [f"C:{bs}Users{bs}one", f"C:{bs * 2}Users{bs * 2}two",
+               f"C:{bs * 4}Users{bs * 4}three", f"C:{bs}Users/four", f"c:{bs}users{bs}five"]
+    control = f"C:{bs}Program Files{bs}x"
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.txt").write_text("\n".join(planted + [control]) + "\n")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "a.txt"], check=True)
+    out = subprocess.run(["git", "-C", str(tmp_path), "grep", "-n", "-I", "-i", "-E", _WIN_GREP],
+                         capture_output=True, text=True).stdout
+    found = {int(line.split(":", 2)[1]) for line in out.splitlines()}
+    assert found == set(range(1, len(planted) + 1)), out
 
 
 @pytest.mark.parametrize("prefix", ["/Users/", "/home/"])
