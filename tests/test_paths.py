@@ -479,9 +479,10 @@ def test_every_resolve_call_site_has_a_legacy_entry_or_is_deliberately_exempt():
     # start from today, which is visible in the report itself.
     # In-session setup's config copies (`core/config.py::config_copy_dir`) are a fifth: a
     # folder new in this release, which nothing ever kept cwd-relative, so there is no
-    # predecessor to warn about.
+    # predecessor to warn about. `mcp install`'s copies (`mcpinstall/routes.py::backup_dir`)
+    # are a sixth, on the same ground.
     exempt = {"config.yaml", "role_type_reverdict_ack.json", "fx-rates.json",
-              "sluice_usage.jsonl", "config_backups"}
+              "sluice_usage.jsonl", "config_backups", "mcp_install_backups"}
     missing = called - set(paths._LEGACY) - exempt
     assert not missing, (
         "these paths resolve through paths.resolve but have no _LEGACY entry, so a user "

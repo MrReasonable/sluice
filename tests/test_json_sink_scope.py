@@ -20,6 +20,7 @@ EXPECTED_SINKS = {
     ("sluice/core/usage.py", "append"): "the usage JSONL file (#308)",
     ("sluice/triage/audit.py", "append"): "the audit JSONL file",
     ("sluice/triage/judge.py", "_build_prompt"): "the judge prompt",
+    ("sluice/mcpinstall/routes.py", "apply_json"): "a client's MCP config file (mcp install)",
 }
 
 
