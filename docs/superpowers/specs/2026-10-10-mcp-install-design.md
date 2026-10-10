@@ -39,6 +39,9 @@ changed.
 | Codex | Snippet only (`manual`): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot write TOML. Its file is still read, so a matching entry reads `unchanged` (author ruling, measurements) |
 | Freshness on the command route | Compares the parsed server TABLE, not raw bytes: a running Claude Code session rewrites `~/.claude.json` constantly, so a byte comparison would fail every run made from inside one, which is the AI-SETUP case; each add command was measured to keep everything outside its table (author ruling, measurements) |
 | Code shape | A package, `sluice/mcpinstall/`, one module per concern, instead of one module (author ruling, planning) |
+| Other fields on an existing entry (`autoApprove`, `cwd`, `trust`, ...) on a replace | Same rule as env keys: the JSON route keeps them and names them; a command route REFUSES the replace and names them, since its add writes a fresh entry (author ruling, plan review) |
+| What the collateral check compares | The whole parsed file except the `job-sluice` entry, for every client but Claude Code, whose `~/.claude.json` a running session rewrites, so there only the server table is compared. A key or server the add REMOVED or CHANGED is a failure; one it ADDED is not (author ruling, plan review) |
+| A Claude Code entry at another scope | Install writes user scope only and cannot see a project's `.mcp.json`; a LOCAL-scope `job-sluice` entry (under `projects` in the same file) takes precedence in its project, so install reports how many exist and how to remove them (author ruling, plan review) |
 
 ## Measurements behind the mechanism (2026-10-10, macOS)
 
@@ -375,7 +378,10 @@ Offline, against the sandbox above.
 5. Remove `Unreadable` and fall through to `Absent` → the unparseable-file test.
 6. Print env values instead of names → the job-sluice-entry sentinel test.
 7. Read the readback from anywhere but the computed file (the same-file check is that
-   readback) → the wrong-file test.
+   readback) → the clean-register test: a stale readback can only fail, so only a test that
+   expects success sees it. The wrong-file test stays as a behaviour pin.
+11. Compare only the server table for a client whose file is checked whole → a test whose
+    fake add drops an unrelated top-level key.
 8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
    `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
 
