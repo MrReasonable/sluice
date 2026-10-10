@@ -1868,7 +1868,7 @@ def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
 # mcpserver.py's own sweep above stops at the import line `sluice.onboard.review`, so it
 # cannot see what review (or the coach) does once loaded. This second sweep covers every
 # onboard module setup reaches, transitively, and bans any write path: store writes, file
-# writes, the facade's apply, and any vault/config import beyond the two pure names.
+# writes, the facade's apply, and any vault/config/atomicfile import beyond the two pure names.
 #
 # Its posture is a TRIPWIRE for the shapes a write would plausibly take here, not a proof that
 # none exists. Matched: the store's write methods and the repo's own write helpers by call name,
@@ -1881,7 +1881,7 @@ def test_isolation_sweep_catches_a_direct_store_write_call_with_no_new_import():
 
 _ONBOARD_VAULT_NAMES = frozenset({"parse_frontmatter", "set_frontmatter_line"})
 _FILE_WRITE_CALLS = frozenset({"_write", "_atomic_write", "_cas_write", "write_config_text",
-                               "apply_setup"})
+                               "replace_if", "apply_setup"})
 # Matched as `os.<name>(...)` only: a bare "replace" would flag str.replace and
 # dataclasses.replace, and an implementer would then narrow the guard until it caught nothing.
 _OS_WRITE_ATTRS = frozenset({"replace", "rename", "remove", "unlink"})
@@ -1901,10 +1901,10 @@ def _onboard_violations(tree) -> list:
             # without knowing the file's package; the onboard modules use full dotted names.
             bad.append(f"relative import from {'.' * node.level}{node.module or ''}")
         elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core" and {
-                a.name for a in node.names} & {"vault", "config"}:
+                a.name for a in node.names} & {"vault", "config", "atomicfile"}:
             # The module form binds the whole module, every write helper included, under a
             # name (or alias) no call-name match below can recognise as a vault import.
-            bad.append("from sluice.core import vault/config")
+            bad.append("from sluice.core import vault/config/atomicfile")
         elif isinstance(node, ast.ImportFrom) and node.module == "os":
             bad += [f"from os import {a.name}" for a in node.names
                     if a.name in _OS_WRITE_ATTRS]
@@ -1914,10 +1914,13 @@ def _onboard_violations(tree) -> list:
                 bad.append(f"from sluice.core.vault import {sorted(extra)}")
         elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core.config":
             bad.append("from sluice.core.config import ...")
+        elif isinstance(node, ast.ImportFrom) and node.module == "sluice.core.atomicfile":
+            bad.append("from sluice.core.atomicfile import ...")
         elif isinstance(node, ast.Import) and any(a.name in ("sluice.core.vault",
-                                                             "sluice.core.config")
+                                                             "sluice.core.config",
+                                                             "sluice.core.atomicfile")
                                                   for a in node.names):
-            bad.append("import of sluice.core.vault/config")
+            bad.append("import of sluice.core.vault/config/atomicfile")
         elif isinstance(node, ast.Call):
             name = (node.func.attr if isinstance(node.func, ast.Attribute)
                     else getattr(node.func, "id", ""))
@@ -1985,7 +1988,10 @@ def test_the_onboard_sweep_catches_planted_writes():
                 "from sluice.core import vault\n",
                 "from sluice.core import config as _c\n",
                 "from ..core import vault\n",
-                "from .edit import set_key\n"):
+                "from .edit import set_key\n",
+                "from sluice.core.atomicfile import replace_if as w\nw('p', b'', fresh=None, tmp_prefix='')\n",
+                "replace_if('p', b'', fresh=None, tmp_prefix='')\n",
+                "import sluice.core.atomicfile\n"):
         assert _onboard_violations(ast.parse(src)), src
 
 
