@@ -1013,7 +1013,10 @@ class Sluice:
                 return outcome("conflict", "the config file changed after setup_status read it")
         try:
             ok = write(path, w.text, expect_sha=w.expect_sha)
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
+            # ValueError: the writer decodes the file it is about to replace, and a hand editor
+            # can save it as bytes that are not UTF-8 after the copy above was taken. Reported
+            # like its read and copy siblings, never raised out of the setup tool.
             return outcome("failed", _reason(exc))
         return outcome("written", kept=kept) if ok else outcome(
             "conflict", "the config file changed, or appeared, after setup_status read it")
