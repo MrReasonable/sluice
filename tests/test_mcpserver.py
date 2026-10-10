@@ -547,20 +547,21 @@ def test_the_not_installed_message_names_the_extra():
 
 
 def test_mcpextra_imports_nothing(tmp_path):
-    """`mcp install` reads the message before deciding anything; importing it must not load
-    the store, the backends or the mcp package. Run in a fresh interpreter so this file's own
-    imports cannot satisfy it."""
+    """A command that must say the message before deciding anything imports this module, so
+    importing it loads no other part of sluice and not the mcp package: the only sluice modules
+    afterwards are the package and this one. Asserted as that exact set, not as a list of
+    forbidden prefixes, which a new import of any unlisted sub-app would walk past. Run in a
+    fresh interpreter so this file's own imports cannot satisfy it."""
     import subprocess
     import sys
     code = ("import sys, sluice.mcpextra; "
-            "bad = sorted(m for m in sys.modules if m.startswith(('sluice.core', 'sluice.onboard',"
-            " 'mcp')) or m == 'sluice.mcpserver'); print(bad); sys.exit(1 if bad else 0)")
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('sluice', 'mcp')))")
     # cwd is a temp dir so `python -c` (which puts the cwd on sys.path) imports the installed
     # package, not whatever checkout pytest was launched from.
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
                        cwd=tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert r.stdout.strip() == "[]"
+    assert r.stdout.strip() == "['sluice', 'sluice.mcpextra']"
 
 
 # ── serve() coverage (important finding #1) ───────────────────────────────────
