@@ -28,7 +28,8 @@ added from the measurements and they change the routes.
 - Server name `job-sluice`. Roster names, exactly: `claude-code`, `vscode`, `opencode`, `cursor`,
   `claude-desktop`, `codex`, `gemini`.
 - Routes: command = claude-code, opencode, gemini; JSON = vscode, cursor, claude-desktop;
-  manual (snippet only) = codex.
+  append = codex (a new table appended to `config.toml` when it has no entry; an existing
+  entry that differs is `manual`, the snippet printed and nothing written).
 - Every registration is READ from the client's config file; a client command only writes.
 - Outcomes, exactly: `registered`, `replaced`, `unchanged`, `refused`, `failed`, `manual`.
 - Exit codes: 2 when the `mcp` extra is missing or the launcher is not an installed `job-sluice`
@@ -62,7 +63,7 @@ added from the measurements and they change the routes.
    entry intact — Task 4's `test_a_path_with_spaces_and_non_ascii_round_trips` and Task 5's
    `test_the_add_argv_carries_a_spaced_launcher_as_one_element`.
 4. stdin at EOF in an interactive run (a piped empty stdin forced interactive in a test, or Ctrl-D)
-   takes each question's default and never loops — Task 6's
+   takes each question's default and never loops — Task 7's
    `test_eof_takes_every_default`.
 5. opencode with only `opencode.jsonc` present: install reads and the add edits the `.jsonc`;
    with both present, `.json` — Task 3's `test_opencode_picks_jsonc_only_when_it_is_alone`.
@@ -834,9 +835,10 @@ evidence for every value here.
 Not a registered seam: the roster is a plain tuple, and `--client`'s choices derive from it.
 Three routes (see routes.py): `command` runs the client's own add (Claude Code, opencode,
 Gemini); `json` edits a strict-JSON file (VS Code, whose add drops keys and comments; Cursor,
-whose add writes nothing; Claude Desktop, which has none); `manual` prints a snippet (Codex,
-whose add drops other servers' unknown fields, in a TOML file the standard library cannot
-write). Every route READS the client's file, never a client command.
+whose add writes nothing; Claude Desktop, which has none); `append` adds a NEW table at the end
+of a TOML file and edits nothing (Codex, whose add drops other servers' unknown fields, in a
+file the standard library cannot edit). Every route READS the client's file, never a client
+command.
 
 Every path is built from an injected `Host`, never from the process, so one test run covers the
 macOS, Linux and Windows tables."""
@@ -882,7 +884,7 @@ class Client:
     name: str                 # the `--client` value
     title: str                # its docs/MCP.md heading
     anchor: str               # that heading's anchor
-    route: str                # "command", "json" or "manual"
+    route: str                # "command", "json" or "append"
     executable: str           # its CLI ("" for none): run by the command route, looked for by detect
     reader: str               # "json", "jsonc" or "toml"
     table: tuple[str, ...]    # keys from the file's top level to its server table
@@ -914,7 +916,7 @@ ROSTER = (
            "Quit and reopen Claude Desktop; the coach is in the + menu as "
            "`career_interview_text`.",
            "Claude Desktop 2.19675.1 on macOS, 2026-10-09"),
-    Client("codex", "Codex", "codex", "manual", "codex", "toml", ("mcp_servers",), False,
+    Client("codex", "Codex", "codex", "append", "codex", "toml", ("mcp_servers",), False,
            "Restart Codex. Codex shows no MCP prompts, so run the coach as AI-SETUP.md's "
            "appendix describes.",
            "Codex 0.162.1 on macOS, 2026-10-10"),
@@ -992,7 +994,7 @@ def detect(client: Client, host: Host) -> "Found | NotFound | Unsupported":
         return path
     if client.executable and host.which(client.executable):
         return Found(f"`{client.executable}` is on PATH")
-    # A JSON or manual client is written through its file, so its settings folder is evidence
+    # A JSON or append client is written through its file, so its settings folder is evidence
     # enough. A command client needs its CLI: that is what writes.
     if client.route != "command" and host.isdir(host.path.dirname(path)):
         return Found("its settings folder exists")
@@ -2221,7 +2223,176 @@ Each mutant is applied alone, its named test must FAIL, then `git checkout sluic
 
 ---
 
-### Task 6: The flow and the command line (`flow.py`, `cli.py`)
+### Task 6: The append route (Codex)
+
+**Files:**
+- Modify: `sluice/mcpinstall/routes.py` (add `apply_append`; import `snippet` from `clients`)
+- Create: `tests/mcpinstall/test_append_route.py`
+
+**Interfaces:**
+- Consumes: Task 3's `snippet`, `entry_value`; Task 4's `_load`, `_take_copy`, `_verify`, `_kept`, `replace_if`.
+- Produces: `apply_append(client, state, spec, deps) -> Outcome` — called only when `state.current` is `Absent`; outcome `registered`, `failed` or `manual`.
+
+- [ ] **Step 1: Write the failing tests**
+
+```python
+# tests/mcpinstall/test_append_route.py
+"""Codex: install adds a NEW `[mcp_servers.job-sluice]` table at the end of config.toml and edits
+nothing (owner's ruling, 2026-10-10). `codex mcp add` re-serialises the whole server table,
+dropping comments and other servers' unknown fields, so it is not used."""
+import pathlib
+import tomllib
+
+from sluice.mcpinstall import clients, routes, server
+from tests.mcpinstall.fakes import Rig
+
+SPEC = server.ServerSpec(("/opt/x/job-sluice", "mcp", "serve", "--write"),
+                         (("SLUICE_CONFIG", "/cfg/sluice.yaml"),))
+CODEX = clients.by_name("codex")
+
+EXISTING = (
+    '# my settings\n'
+    'model = "example-model"   # a trailing comment\n'
+    '\n'
+    '[mcp_servers.other]\n'
+    'command = "/opt/other/bin/srv"\n'
+    'custom_field = "kept"   # a field codex mcp add would drop\n'
+)
+
+
+def _toml(rig, text=None) -> pathlib.Path:
+    p = pathlib.Path(rig.path("codex"))
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if text is not None:
+        p.write_text(text)
+    return p
+
+
+def _apply(rig):
+    state = routes.read_state(CODEX, rig.path("codex"))
+    assert isinstance(state, routes.FileState) and isinstance(state.current, routes.Absent)
+    return routes.apply_append(CODEX, state, SPEC, rig.deps)
+
+
+def test_an_absent_entry_is_appended_and_every_existing_byte_kept(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, EXISTING)
+    out = _apply(rig)
+    assert out.kind == "registered", out
+    after = p.read_bytes()
+    assert after.startswith(EXISTING.encode())
+    doc = tomllib.loads(after.decode())
+    assert doc["mcp_servers"]["other"]["custom_field"] == "kept"
+    assert doc["mcp_servers"]["job-sluice"] == clients.entry_value(CODEX, SPEC)
+    assert len(rig.copies_written) == 1 and rig.copies() == []
+
+
+def test_a_file_without_a_final_newline_still_appends_cleanly(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, 'model = "example-model"')
+    assert _apply(rig).kind == "registered"
+    assert tomllib.loads(p.read_text())["model"] == "example-model"
+
+
+def test_a_missing_file_is_created(tmp_path):
+    rig = Rig(tmp_path)
+    assert _apply(rig).kind == "registered"
+    doc = tomllib.loads(pathlib.Path(rig.path("codex")).read_text())
+    assert doc == {"mcp_servers": {"job-sluice": clients.entry_value(CODEX, SPEC)}}
+
+
+def test_an_inline_server_table_is_manual_and_nothing_is_written(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, 'mcp_servers = { other = { command = "x" } }\n')
+    before = p.read_bytes()
+    out = _apply(rig)
+    assert out.kind == "manual" and p.read_bytes() == before and rig.copies_written == []
+
+
+def test_a_change_after_the_copy_keeps_the_copy_and_appends_nothing(tmp_path):
+    rig = Rig(tmp_path)
+    p = _toml(rig, EXISTING)
+    state = routes.read_state(CODEX, str(p))
+    rig.after_copy = lambda: p.write_text(EXISTING + 'late = 1\n')
+    out = routes.apply_append(CODEX, state, SPEC, rig.deps)
+    assert (out.kind, out.reason) == ("failed", routes.CHANGED)
+    assert "job-sluice" not in p.read_text() and rig.copies() == rig.copies_written
+```
+
+- [ ] **Step 2: Run them to verify they fail**
+
+Run: `.venv/bin/python -m pytest tests/mcpinstall/test_append_route.py -rA 2>&1 | grep -E "^(PASSED|FAILED|ERROR)|passed|failed|error"`
+Expected: every test FAILS with `AttributeError: module 'sluice.mcpinstall.routes' has no attribute 'apply_append'`.
+
+- [ ] **Step 3: Implement** — add `snippet` to `routes.py`'s `clients` import, then append:
+
+```python
+def apply_append(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    """Add a NEW entry table at the end of a TOML file, editing no existing byte (Codex, by the
+    owner's ruling: its own add re-serialises the server table and drops what it does not know,
+    and the standard library cannot edit TOML). Only for an absent entry.
+
+    The candidate bytes are parsed BEFORE anything is written, and the write goes ahead only
+    when they read as the old document plus exactly the new entry: an inline
+    `mcp_servers = {...}` table, for one, makes an appended table invalid TOML, and writing it
+    would leave the user's file unreadable to Codex. Then the copy, compare-and-set and
+    readback every other write has."""
+    old = state.raw or b""
+    gap = b"" if not old else (b"\n" if old.endswith(b"\n") else b"\n\n")
+    data = old + gap + clients_snippet_bytes(client, spec)
+    expected = _copy.deepcopy(state.doc)
+    node = expected
+    for key in client.table:
+        node = node.setdefault(key, {})
+    node[SERVER_NAME] = entry_value(client, spec)
+    try:
+        fits = _load(client, data) == expected
+    except jsonc.ReadError:
+        fits = False
+    if not fits:
+        return Outcome(client.name, "manual",
+                       f"appending an entry would change more of {deps.display(state.path)} "
+                       "than the entry itself, so nothing was written")
+    copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
+    if failure:
+        return Outcome(client.name, "failed", failure)
+    fresh = None if state.raw is None else (lambda current: current == state.raw)
+    try:
+        wrote = replace_if(state.path, data, fresh=fresh, tmp_prefix=_TMP_PREFIX)
+    except OSError:
+        return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
+                       _kept(copy, state.path, deps))
+    if not wrote:
+        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
+    return _verify(client, state, spec, copy, deps, "registered")
+
+
+def clients_snippet_bytes(client: Client, spec: ServerSpec) -> bytes:
+    return (snippet(client, spec) + "\n").encode("utf-8")
+```
+
+- [ ] **Step 4: Run the tests to verify they pass**
+
+Run: `.venv/bin/python -m pytest tests/mcpinstall -rA 2>&1 | grep -E "^(FAILED|ERROR)|passed|failed"`
+Expected: all passed.
+
+- [ ] **Step 5: Commit, then witness spec mutant 12**
+
+```bash
+git add sluice/mcpinstall/routes.py tests/mcpinstall/test_append_route.py
+git commit -F - <<'EOF'
+feat(mcp): register in Codex by appending a new entry table
+
+MrReasonable <4990954+MrReasonable@users.noreply.github.com>
+EOF
+.venv/bin/python -m compileall -q -f --invalidation-mode checked-hash sluice tests scripts
+```
+
+Witness 12: in `apply_append`, replace the `try: fits = ... except ...: fits = False` block with `fits = True` → `test_an_inline_server_table_is_manual_and_nothing_is_written` FAILS (the file is written and left invalid; the outcome is `failed`, not `manual`). Restore.
+
+---
+
+### Task 7: The flow and the command line (`flow.py`, `cli.py`)
 
 **Files:**
 - Create: `sluice/mcpinstall/flow.py`, `tests/mcpinstall/test_flow.py`
@@ -2377,11 +2548,22 @@ def test_dry_run_asks_nothing_and_writes_nothing(tmp_path):
     assert "write tools" not in out and rc == 0
 
 
-def test_codex_is_manual_with_a_snippet_and_fails_only_when_named(tmp_path):
+def test_codex_without_an_entry_is_appended(tmp_path):
     rig = Rig(tmp_path)
     (tmp_path / "home" / ".codex").mkdir(parents=True)
     rc, out, _ = install(rig, "--yes")
+    assert rc == 0 and "codex: registered" in out
+
+
+def test_a_different_codex_entry_is_manual_and_fails_only_when_named(tmp_path):
+    rig = Rig(tmp_path)
+    toml = tmp_path / "home" / ".codex" / "config.toml"
+    toml.parent.mkdir(parents=True)
+    toml.write_text('[mcp_servers.job-sluice]\ncommand = "/old/job-sluice"\n')
+    before = toml.read_bytes()
+    rc, out, _ = install(rig, "--yes", "--replace")
     assert rc == 0 and "codex: manual" in out and "[mcp_servers.job-sluice]" in out
+    assert toml.read_bytes() == before
     rc, _, _ = install(rig, "--yes", "--client", "codex")
     assert rc == 1
 
@@ -2620,9 +2802,12 @@ def run(opts: Options, *, host, deps, argv0, stdin, out, err, interactive, find_
 
     rows = [(c, clients.config_path(c, host)) for c in found]
     states = {c.name: routes.read_state(c, path) for c, path in rows}
-    writable = [c for c, _ in rows if c.route != "manual"
-                and not isinstance(states[c.name], routes.Unreadable)
-                and not _same(states[c.name], spec)]
+    def _writable(c):
+        st = states[c.name]
+        # Codex's existing entry is never edited (install only appends), so it is not offered.
+        return (isinstance(st, routes.FileState) and not _same(st, spec)
+                and not (c.route == "append" and isinstance(st.current, routes.Entry)))
+    writable = [c for c, _ in rows if _writable(c)]
     selected = {c.name for c in writable}
     if ask and writable:
         selected = ask.pick([(c.name, "different entry" if isinstance(
@@ -2638,9 +2823,10 @@ def run(opts: Options, *, host, deps, argv0, stdin, out, err, interactive, find_
                                            f"{where} could not be read: {state.reason}"))
         elif _same(state, spec):
             outcomes.append(routes.Outcome(c.name, "unchanged"))
-        elif c.route == "manual":
-            outcomes.append(routes.Outcome(c.name, "manual",
-                                           f"install does not write {c.title}'s file"))
+        elif c.route == "append" and isinstance(state.current, routes.Entry):
+            outcomes.append(routes.Outcome(
+                c.name, "manual", f"install adds a {c.title} entry but does not edit an "
+                "existing one; replace it by hand"))
         elif c.name in selected:
             outcomes.append(_one(c, state, spec, opts, ask, deps, host, out))
         if isinstance(state, routes.FileState) and outcomes and outcomes[-1].client == c.name:
@@ -2682,12 +2868,18 @@ def _one(c, state, spec, opts, ask, deps, host, out) -> routes.Outcome:
         if c.route == "command":
             argv = clients.add_argv(c, spec)
             print(f"{c.name}: would run: " + " ".join(argv), file=out)
+        elif c.route == "append":
+            print(f"{c.name}: would append to {deps.display(state.path)}:", file=out)
+            for line in clients.snippet(c, spec).splitlines():
+                print("    " + line, file=out)
         else:
             print(f"{c.name}: would write {deps.display(state.path)}: "
                   + json_one_line(clients.entry_value(c, spec)), file=out)
         return routes.Outcome(c.name, "dry-run")
     if c.route == "json":
         return routes.apply_json(c, state, spec, deps)
+    if c.route == "append":
+        return routes.apply_append(c, state, spec, deps)
     return routes.apply_command(c, state, spec, deps, host.which)
 
 
@@ -2791,7 +2983,7 @@ Run: `.venv/bin/python -m pytest tests/mcpinstall -rA 2>&1 | grep -E "^(FAILED|E
 Expected: all passed. Then the whole suite (CLI guards sweep the parser):
 `.venv/bin/python -m pytest > "$SCRATCH/full.txt" 2>&1; echo rc=$?; grep -E "[0-9]+ passed" "$SCRATCH/full.txt" | tail -1`.
 Expected failures at this point ONLY in the doc guards (`tests/test_docs_claims.py`: USAGE and
-README must document `mcp install`) — Task 7 fixes those. Any other failure is a defect here
+README must document `mcp install`) — Task 8 fixes those. Any other failure is a defect here
 (the path sweeps were satisfied in Task 4, which added `backup_dir`).
 
 - [ ] **Step 6: Commit, then witness spec mutant 6**
@@ -2810,7 +3002,7 @@ Witness 6: in `flow._env_lines`, change `other = sorted(k for k in env if k not 
 
 ---
 
-### Task 7: Docs and their guards
+### Task 8: Docs and their guards
 
 **Files:**
 - Modify: `docs/MCP.md`, `docs/AI-SETUP.md`, `docs/USAGE.md`, `README.md`, `docs/ARCHITECTURE.md`, `.rulesync/rules/CLAUDE.md`
@@ -2891,8 +3083,9 @@ deletes the copy once the change is proven; a failed client keeps its copy and i
 from the installed `job-sluice` (it stops, exit 2, when started any other way or without the
 `mcp` extra). `--client NAME` (repeatable) narrows the list, `--yes` asks nothing,
 `--read-only` drops the write tools, `--replace` replaces an entry with different settings, and
-`--dry-run` prints what it would do. Codex is printed as a snippet to paste: its own add command
-drops fields of other servers. A client's add command rewrites its file while it runs, so an
+`--dry-run` prints what it would do. For Codex, install appends a new entry to the end of
+`config.toml` and edits nothing else (its own add command drops fields of other servers); an
+existing Codex entry that differs is printed as a snippet to paste instead. A client's add command rewrites its file while it runs, so an
 edit you make to that file in that moment can be lost; install checks the file just before.
 
 The entries below are the manual route.
@@ -2929,7 +3122,8 @@ vault apply."
 `docs/USAGE.md`, after the `mcp serve` section, a `### \`job-sluice mcp install [--client NAME
 ...] [--read-only] [--replace] [--yes] [--dry-run]\`` section summarising: what it detects
 (the roster), user scope only, readback, copy-and-delete, the outcomes and exit codes (copy the
-Global Constraints lines), non-interactive rules, `--dry-run`, Codex manual.
+Global Constraints lines), non-interactive rules, `--dry-run`, Codex appended when absent and
+manual when an entry exists.
 
 `README.md` Commands table: the `job-sluice mcp` row becomes
 `run a Model Context Protocol server over stdio (\`serve\`, plus \`--write\` for the write tools),
@@ -2982,7 +3176,7 @@ EOF
 
 ---
 
-### Task 8: Finish
+### Task 9: Finish
 
 - [ ] **Step 1:** Run every commit's suite (`git rebase -x '.venv/bin/python -m pytest -x -q' origin/main` — budget about 2.5 minutes per commit), ruff, and `env PATH=/usr/bin:/bin` at the tip.
 - [ ] **Step 2:** Final whole-branch review (executing-plans' fresh reviewer), then `/review-pr`, fold every finding, then push and open the PR with `feat(mcp)` in the title, push-notify, and take it through CodeRabbit.
