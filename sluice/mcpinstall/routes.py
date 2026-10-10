@@ -1,0 +1,300 @@
+"""Reading and writing one client's `job-sluice` registration.
+
+Every route READS the client's config file, never a client command (`claude mcp get` starts the
+server and prints env values; opencode's list is a stale daemon), so the readback is the same
+file the copy and the collateral check read.
+
+Before any write the file's current bytes are copied (`core/backup.py::write_copy`) into
+`mcp_install_backups/` in sluice's state folder, carrying the file's mode: no copy, no write.
+The copy is deleted once the write is proven clean (readback shows the spec, and no other
+server changed), and kept, and named, only when the client ends `failed`. These files hold other
+tools' credentials, so a copy does not outlive its purpose.
+
+The JSON and append routes write through `core/atomicfile.py::replace_if`, replacing only while
+the file still holds the bytes read. The append route (Codex) adds a new table after the file's
+last byte and edits nothing; the bytes it would write are parsed first, and written only when
+they read as the old document plus exactly the new entry. The command route cannot compare-and-set (the client's add reads and
+writes the file itself), so it re-reads the server table just before running the add and stops
+when it changed; the window while the add runs is the residual no outside check closes, the
+same posture as `core/vault.py::_cas_write`."""
+import copy as _copy
+import json
+import os
+import stat
+import subprocess
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+
+from sluice.core.atomicfile import replace_if
+from sluice.mcpinstall import jsonc
+from sluice.mcpinstall.clients import (Client, check_scope, entry_value, extra_fields,
+                                       parse_entry, server_table)
+from sluice.mcpinstall.server import PINNED_ENV, SERVER_NAME, ServerSpec
+
+BACKUP_FOLDER = "mcp_install_backups"
+CHANGED = "the file changed while install was running"
+_TMP_PREFIX = ".job-sluice-mcp-"
+_GONE = object()
+
+
+@dataclass(frozen=True)
+class Absent:
+    pass
+
+
+@dataclass(frozen=True)
+class Entry:
+    argv: tuple[str, ...]
+    env: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class Unreadable:
+    reason: str
+
+
+@dataclass(frozen=True)
+class FileState:
+    path: str
+    raw: bytes | None
+    doc: dict
+    table: dict
+    current: Absent | Entry
+
+
+@dataclass(frozen=True)
+class Outcome:
+    client: str
+    kind: str          # registered, replaced, unchanged, refused, failed, manual
+    reason: str = ""
+    details: tuple[str, ...] = ()
+    # (instruction, text) when a `manual` outcome needs other hand-guidance than "paste the
+    # snippet": the snippet itself would break some files (the append route).
+    paste: tuple[str, str] | None = None
+
+
+def _no_op() -> None:
+    return None
+
+
+@dataclass
+class Deps:
+    run: Callable[[list[str], float], int]
+    write_copy: Callable[..., str]
+    backup_dir: str
+    display: Callable[[str], str]
+    timeout: float = 60.0
+    # Called between the copy and the freshness re-read on the command route; a test lands a
+    # change there. Production passes nothing.
+    before_recheck: Callable[[], None] = field(default=_no_op)
+
+
+def run_quietly(argv: list[str], timeout: float) -> int:
+    """The production runner: no shell, stdin closed, output discarded unread (a client's output
+    can echo an entry's environment, and those hold other tools' credentials)."""
+    return subprocess.run(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, timeout=timeout, check=False).returncode
+
+
+def backup_dir() -> str:
+    """`mcp_install_backups` in sluice's XDG state folder, the way `core/config.py::
+    config_copy_dir` places `config_backups`. The name is a LITERAL because the path sweeps read
+    `name=` statically; `tests/mcpinstall/test_json_route.py` pins it to `BACKUP_FOLDER`."""
+    from sluice.core.paths import resolve
+    return resolve(env_var=None, config_value="", kind="state", name="mcp_install_backups")
+
+
+def _scoped(client: Client, doc: dict, table: dict):
+    """What freshness and the collateral check compare for this client (`check_scope`)."""
+    return table if check_scope(client) == "table" else doc
+
+
+def _without_entry(client: Client, doc: dict) -> dict:
+    rest = _copy.deepcopy(doc)
+    node = rest
+    for key in client.table:
+        node = node.get(key) if isinstance(node, dict) else None
+    if isinstance(node, dict):
+        node.pop(SERVER_NAME, None)
+    return rest
+
+
+def _load(client: Client, data: bytes) -> dict:
+    if client.reader == "toml":
+        import tomllib
+        try:
+            return tomllib.loads(data.decode("utf-8"))
+        except UnicodeDecodeError:
+            raise jsonc.ReadError("it is not UTF-8") from None
+        except tomllib.TOMLDecodeError:
+            raise jsonc.ReadError("it is not valid TOML") from None
+    return jsonc.load(data, jsonc=client.reader == "jsonc")
+
+
+def _scope_of(client: Client, data: bytes | None):
+    """The part of the file freshness compares, from raw bytes; `_GONE` when it does not parse."""
+    if data is None:
+        return {}
+    try:
+        doc = _load(client, data)
+        return _scoped(client, doc, server_table(client, doc))
+    except jsonc.ReadError:
+        return _GONE
+
+
+def read_state(client: Client, path: str) -> "FileState | Unreadable":
+    if os.path.isdir(path):
+        return Unreadable("it is a folder, not a file")
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except FileNotFoundError:
+        raw = None
+    except OSError:
+        return Unreadable("it cannot be read")
+    try:
+        doc = {} if raw is None else _load(client, raw)
+        table = server_table(client, doc)
+        value = table.get(SERVER_NAME)
+        if value is None:
+            current = Absent()
+        else:
+            argv, env = parse_entry(client, value)
+            current = Entry(argv, tuple(sorted(env.items())))
+    except jsonc.ReadError as exc:
+        return Unreadable(str(exc))
+    return FileState(path, raw, doc, table, current)
+
+
+def matches(entry: Entry, spec: ServerSpec) -> bool:
+    """Same argv, and every pinned key equal on BOTH sides: a key the old entry pins and this
+    run does not would still send the server to the old path."""
+    mine, theirs = spec.env_dict, dict(entry.env)
+    return entry.argv == spec.argv and all(mine.get(k) == theirs.get(k) for k in PINNED_ENV)
+
+
+def _kept(copy: str | None, path: str, deps: Deps) -> tuple[str, ...]:
+    if not copy:
+        return ()
+    return (f"the copy of {deps.display(path)} taken before this run is kept as "
+            f"{BACKUP_FOLDER}/{copy} in sluice's state folder. It holds that tool's "
+            "configuration, credentials included: restore the servers named above from it if "
+            "you need to (not the whole file, which would undo later changes), then delete it.",)
+
+
+def _drop_copy(copy: str | None, deps: Deps) -> tuple[str, ...]:
+    if not copy:
+        return ()
+    try:
+        os.unlink(os.path.join(deps.backup_dir, copy))
+    except OSError:
+        return (f"the copy {BACKUP_FOLDER}/{copy} could not be deleted; it holds that tool's "
+                "configuration, credentials included, so delete it by hand",)
+    return ()
+
+
+def _take_copy(state: FileState, deps: Deps, same: Callable[[bytes], bool]):
+    """Copy the file as it is NOW, after checking it is still the file read. Returns
+    (copy name or None, failure reason or None)."""
+    try:
+        with open(state.path, "rb") as f:
+            now = f.read()
+    except FileNotFoundError:
+        now = None
+    except OSError:
+        return None, "the file could not be read again before the copy"
+    if (now is None) != (state.raw is None) or (now is not None and not same(now)):
+        return None, CHANGED
+    if now is None:
+        return None, None
+    real = os.path.realpath(state.path)
+    try:
+        mode = stat.S_IMODE(os.stat(real).st_mode)
+        os.makedirs(deps.backup_dir, mode=0o700, exist_ok=True)
+        name = deps.write_copy(deps.backup_dir, os.path.basename(real) + ".", ".bak", now, mode)
+    except OSError:
+        return None, "a copy of the file could not be written, so nothing was changed"
+    return name, None
+
+
+def _canon(value) -> str:
+    """A parsed value as comparable text. `==` is wrong here: a TOML or JSON `nan` never equals
+    itself, so a file holding one would read as changed by every write; `default=str` covers
+    TOML's dates."""
+    return json.dumps(value, sort_keys=True, default=str)
+
+
+def _same_value(a, b) -> bool:
+    return a is not _GONE and b is not _GONE and _canon(a) == _canon(b)
+
+
+def _verify(client: Client, state: FileState, spec: ServerSpec, copy: str | None, deps: Deps,
+            kind: str) -> Outcome:
+    after = read_state(client, state.path)
+    where = deps.display(state.path)
+    if isinstance(after, Unreadable):
+        return Outcome(client.name, "failed", f"readback could not read {where}: {after.reason}",
+                       _kept(copy, state.path, deps))
+    if not (isinstance(after.current, Entry) and matches(after.current, spec)):
+        return Outcome(client.name, "failed", f"readback did not show the entry in {where}",
+                       _kept(copy, state.path, deps))
+    # Something the write REMOVED or CHANGED is a failure; something it ADDED is not (a client
+    # may add its own bookkeeping key). Servers are named first; for a file checked whole, the
+    # top-level keys that changed are named when no server did.
+    changed = sorted(k for k in state.table
+                     if k != SERVER_NAME
+                     and not _same_value(after.table.get(k, _GONE), state.table[k]))
+    if not changed and check_scope(client) == "file":
+        before, now = _without_entry(client, state.doc), _without_entry(client, after.doc)
+        changed = sorted(k for k in before if not _same_value(now.get(k, _GONE), before[k]))
+    if changed:
+        return Outcome(client.name, "failed",
+                       "other settings in the file changed: " + ", ".join(changed),
+                       _kept(copy, state.path, deps))
+    return Outcome(client.name, kind, "", _drop_copy(copy, deps))
+
+
+def _write_checked(client: Client, state: FileState, data: bytes, spec: ServerSpec, deps: Deps,
+                   kind: str) -> Outcome:
+    """The write every file-writing route shares (JSON and append): copy, replace only while
+    the file still holds the bytes read, then readback and the collateral check."""
+    copy, failure = _take_copy(state, deps, same=lambda now: now == state.raw)
+    if failure:
+        return Outcome(client.name, "failed", failure)
+    fresh = None if state.raw is None else (lambda current: current == state.raw)
+    try:
+        wrote = replace_if(state.path, data, fresh=fresh, tmp_prefix=_TMP_PREFIX)
+    except OSError:
+        return Outcome(client.name, "failed", f"{deps.display(state.path)} could not be written",
+                       _kept(copy, state.path, deps))
+    if not wrote:
+        return Outcome(client.name, "failed", CHANGED, _kept(copy, state.path, deps))
+    return _verify(client, state, spec, copy, deps, kind)
+
+
+def apply_json(client: Client, state: FileState, spec: ServerSpec, deps: Deps) -> Outcome:
+    replacing = isinstance(state.current, Entry)
+    kind = "replaced" if replacing else "registered"
+    kept_env = {k: v for k, v in state.current.env if k not in PINNED_ENV} if replacing else {}
+    old = state.table.get(SERVER_NAME, {}) if replacing else {}
+    kept_fields = extra_fields(client, old)
+    doc = _copy.deepcopy(state.doc)
+    node = doc
+    for key in client.table:
+        node = node.setdefault(key, {})
+    # Start from the old entry's other fields (`autoApprove`, `cwd`, ...): the user put them
+    # there, and the copy that held them is deleted once this write is proven clean.
+    node[SERVER_NAME] = {**{k: old[k] for k in kept_fields},
+                         **entry_value(client, spec, kept_env)}
+    data = (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+    out = _write_checked(client, state, data, spec, deps, kind)
+    if out.kind == kind:
+        notes = ("the file was re-saved as two-space-indented JSON: its formatting may have "
+                 "changed, its content has not",)
+        if kept_env:
+            notes += ("kept the old entry's other environment keys: "
+                      + ", ".join(sorted(kept_env)),)
+        if kept_fields:
+            notes += ("kept the old entry's other settings: " + ", ".join(kept_fields),)
+        out = replace(out, details=out.details + notes)
+    return out
