@@ -263,23 +263,23 @@ def test_the_doc_names_the_coach_prompt_the_server_registers():
         assert asyncio.run(_names()) == {"career_interview"}, write
 
 
-def test_step_1_registration_is_mcp_md_s_claude_code_entry_verbatim():
+def test_step_1_registers_with_mcp_install():
     from tests.test_docs_claims import _shell_blocks
-    from tests.test_mcp_install_docs import client_entries, ASSIGNMENT
     step1 = _section(_doc(), "### 1. Register")
-    lines = [ln for b in _shell_blocks(step1) for ln in b.split("\n")
-             if ln.startswith("claude mcp add") and '"$JOB_SLUICE"' in ln]
-    assert len(lines) == 1, lines
-    with open(os.path.join(_ROOT, "docs", "MCP.md"), encoding="utf-8") as fh:
-        cc = client_entries(fh.read())["Claude Code"]
-    assert lines[0] in cc and ASSIGNMENT in step1
+    from tests.test_mcp_install_docs import ASSIGNMENT
+    blocks = [b for b in _shell_blocks(step1) if "mcp install" in b]
+    assert len(blocks) == 1, blocks
+    lines = [ln for ln in blocks[0].split("\n") if ln.strip()]
+    # The block sets the variable itself: an agent's shell state does not survive from the
+    # probe block to this one, so an unset $JOB_SLUICE would run `mcp install` as nothing.
+    assert lines == [ASSIGNMENT, '"$JOB_SLUICE" mcp install --client claude-code --yes'], lines
 
 
 def test_step_1_guards_the_registration():
     step1 = _section(_doc(), "### 1. Register").lower()
-    for phrase in ("claude mcp get job-sluice", "claude mcp remove",
-                   "every claude code session", "starts with `/`",
-                   "mcp serve </dev/null", "exits 2"):
+    for phrase in ("claude mcp get job-sluice", "claude mcp remove job-sluice -s <scope>",
+                   "--read-only", "every claude code session", "starts with `/`",
+                   "mcp serve </dev/null", "exits 2", "refused", "--replace", "vault_dir"):
         assert phrase in step1, phrase
 
 

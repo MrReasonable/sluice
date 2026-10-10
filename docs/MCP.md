@@ -16,6 +16,29 @@ command ever imports it. A bare install never loads any of it.
 
 ## Install in your client
 
+The quickest route is to let sluice do it:
+
+```bash
+job-sluice mcp install
+```
+
+It finds the clients below that are installed on this machine, asks which to register in and
+whether to give them the write tools, and registers `job-sluice` at user scope in each,
+reading every client's config file back to prove it. It copies a file before changing it and
+deletes the copy once the change is proven; a failed client keeps its copy and is named. Run it
+from the installed `job-sluice` (it stops, exit 2, when started any other way or without the
+`mcp` extra). `--client NAME` (repeatable) narrows the list, `--yes` asks nothing,
+`--read-only` drops the write tools, `--replace` replaces an entry with different settings, and
+`--dry-run` prints what it would do. For Codex, install appends a new entry to the end of
+`config.toml` and edits nothing else (its own add command drops fields of other servers). It
+writes nothing, and prints what to add by hand instead, when Codex already has an entry that
+differs (set its values and keep its other settings) or when `mcp_servers` is written as an
+inline table (add the entry inside it). A client's add command rewrites its file while it runs,
+so an edit you make to that file in that moment can be lost; install checks the file just
+before.
+
+The entries below are the manual route.
+
 The server command is the same everywhere: `job-sluice mcp serve`, plus `--write` for the write
 tools. Every entry below registers it with `--write`; drop that flag for a read-only server.
 Where an entry shows a config file, replace `<output of: command -v job-sluice>` with what that command prints in

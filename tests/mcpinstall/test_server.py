@@ -111,3 +111,12 @@ def test_pinned_env_is_every_relocating_path_variable_sluice_reads():
 
 def test_no_credential_is_ever_pinned():
     assert not any("KEY" in k or "TOKEN" in k or "TELEGRAM" in k for k in server.PINNED_ENV)
+
+
+def test_a_relative_xdg_root_is_not_pinned():
+    """`core/paths.py` ignores a relative XDG root (the XDG spec), so pinning its abspath would
+    send the registered server to a store the user's own commands never use."""
+    spec = server.build_spec("/x/job-sluice", {"XDG_STATE_HOME": "rel/state",
+                                               "XDG_CACHE_HOME": "~/cache",
+                                               "XDG_CONFIG_HOME": "/abs/cfg"}, write=True)
+    assert spec.env_dict == {"XDG_CONFIG_HOME": "/abs/cfg"}

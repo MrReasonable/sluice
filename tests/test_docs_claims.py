@@ -108,7 +108,8 @@ def test_the_command_tree_walk_is_not_vacuous():
     subcommands -- add/list/verify -- per kind) so a future fourth kind needs no edit here.
 
     The literal is edited by hand ON PURPOSE, and it moves whenever a subcommand does: it was
-    `20` until #241's `leads add` made it 21, and 21 until #201's `track auth` made it 22. Each
+    `20` until #241's `leads add` made it 21, 21 until #201's `track auth` made it 22, and 22 until
+    `mcp install` made it 23. Each
     time, this assertion is what said so. An earlier version of this note
     justified the literal by claiming the count "does NOT grow on its own" -- which read as a
     property of the tree when it is only a property of the LITERAL, and would have invited
@@ -124,9 +125,9 @@ def test_the_command_tree_walk_is_not_vacuous():
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    expected = 22 + 3 * len(EVIDENCE_KINDS)
+    expected = 23 + 3 * len(EVIDENCE_KINDS)
     assert total_subs == expected, (
-        f"expected {expected} subcommands (22 non-evidence + 3 per evidence kind), found "
+        f"expected {expected} subcommands (23 non-evidence + 3 per evidence kind), found "
         f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
         f"this needs updating, along with docs/USAGE.md and README's Commands table")
 

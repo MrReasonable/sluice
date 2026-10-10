@@ -44,8 +44,8 @@ import sluice
 _CORE_DIR = pathlib.Path(sluice.__file__).parent / "core"
 
 # The five PIPELINE sub-apps, per CLAUDE.md's own canonical taxonomy ("Pipeline: ingest
-# -> triage -> cv -> apply -> track... plus two COMMAND packages, neither a sixth
-# sub-app" -- onboard, evidence). This is the repo's documented pipeline definition, not
+# -> triage -> cv -> apply -> track... plus COMMAND packages, none a sixth sub-app" --
+# onboard, evidence, mcpinstall). This is the repo's documented pipeline definition, not
 # an enumeration invented for this test: the seam-implementation packages
 # (backends/, fetchers/, renderers/, stores/) are adapter implementations `core/app.py`
 # resolves BY NAME through its own seam registries, not sub-apps, and `core/` may

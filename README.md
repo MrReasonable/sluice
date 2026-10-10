@@ -335,7 +335,7 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
 | `job-sluice health` | per-source scrape baseline and retire state |
 | `job-sluice usage` | what this install spent on LLM calls, by stage and by model |
-| `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools) |
+| `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools), or register it in the AI clients on this machine (`install`) |
 
 The `leads` passes **report by default** and change nothing until told otherwise (`--merge`,
 `--expire`, `--apply`), because they write over a set the tool computed. `add` and `dismiss`
@@ -350,7 +350,14 @@ Full flag reference, exit codes and which stream each command writes to:
 
 `job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so an agent can
 call `list_leads`/`get_lead`/`doctor`/`health`/`list_evidence` directly instead of parsing CLI
-output. Read-only by default; needs `pip install 'job-sluice[mcp]'`.
+output. Read-only by default; needs `pip install 'job-sluice[mcp]'`. Register it in the AI
+clients on this machine with:
+
+```bash
+job-sluice mcp install
+```
+
+or by hand:
 
 ```bash
 JOB_SLUICE=$(command -v job-sluice)

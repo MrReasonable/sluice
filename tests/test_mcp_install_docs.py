@@ -18,6 +18,7 @@ import tomllib
 
 import pytest
 
+from sluice.mcpinstall import clients as _install_clients
 from tests.test_docs_claims import _DOCS, _shell_blocks
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -166,7 +167,9 @@ def test_the_path_check_rejects_every_absolute_form(value):
 
 _ADD = re.compile(r"claude mcp add(?=\s+[-A-Za-z])")
 # Files expected to carry at least one invocation. Scope: a sweep that found none would pass.
-_CARRIERS = {"README.md", "docs/MCP.md", "docs/AI-SETUP.md"}
+# docs/AI-SETUP.md left the set when its step 1 moved to `job-sluice mcp install`
+# (tests/test_ai_setup_contract.py::test_step_1_registers_with_mcp_install pins that instead).
+_CARRIERS = {"README.md", "docs/MCP.md"}
 
 
 def _invocations(rel):
@@ -203,3 +206,28 @@ def test_every_claude_mcp_add_is_user_scoped_and_uses_one_command_form():
                 assert toks[toks.index("--") + 1] in (SHELL_PLACEHOLDER, "docker"), (rel, inv)
     missing = _CARRIERS - set(found)
     assert not missing, f"no `claude mcp add` invocation found in {sorted(missing)}"
+
+
+# Docker has no adapter: a container is not detectable from the host.
+_NOT_INSTALLABLE = {"Docker (Claude Code)"}
+
+
+def test_the_install_roster_is_mcp_md_s_client_headings():
+    headings = set(client_entries(_doc())) - _NOT_INSTALLABLE
+    assert {c.title for c in _install_clients.ROSTER} == headings
+
+
+@pytest.mark.parametrize("client", _install_clients.ROSTER, ids=lambda c: c.name)
+def test_each_install_anchor_resolves_and_its_slash_command_is_the_doc_s(client):
+    # The repo's heading-anchor rule, the one test_doc_links_from_code.py applies to runtime URLs.
+    from tests.test_doc_links_from_code import _outside_fences, _slug
+    anchors = {_slug(h) for h in re.findall(r"^#+\s+(.+)$", _outside_fences(_doc()), re.M)}
+    assert client.anchor in anchors
+    section = client_entries(_doc())[client.title]
+    for command in re.findall(r"`(/[^`]+)`", client.next_step):
+        assert command in section, (client.name, command)
+
+
+def test_install_is_the_first_route_mcp_md_gives():
+    section = _doc().split("## Install in your client", 1)[1].split("\n### ", 1)[0]
+    assert "job-sluice mcp install" in section

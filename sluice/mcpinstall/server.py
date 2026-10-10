@@ -53,8 +53,16 @@ def resolve_launcher(argv0: str, *, windows: bool) -> str:
     return path
 
 
+def _honoured(name: str, value: str) -> bool:
+    """`core/paths.py` IGNORES a relative XDG root (the XDG base-directory spec: `~` included,
+    since it checks the raw value), so pinning its abspath would point the registered server at
+    a store the user's own commands never use. Every other pinned variable is a path sluice
+    expands and uses as given."""
+    return not name.startswith("XDG_") or os.path.isabs(value)
+
+
 def build_spec(launcher: str, env: Mapping[str, str], write: bool) -> ServerSpec:
     argv = (launcher, "mcp", "serve") + (("--write",) if write else ())
     pinned = tuple(sorted((k, os.path.abspath(os.path.expanduser(env[k])))
-                          for k in PINNED_ENV if env.get(k)))
+                          for k in PINNED_ENV if env.get(k) and _honoured(k, env[k])))
     return ServerSpec(argv, pinned)
