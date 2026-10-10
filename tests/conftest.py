@@ -33,6 +33,23 @@ PATH_ENV_VARS = (
 )
 
 
+# Git's repository-locating variables. `git rebase -x` and git hooks export GIT_DIR to what they
+# run, so a test running `git init`/`git add` in its own tmp folder would act on the repository
+# GIT_DIR names instead: measured 2026-10-10, a per-commit rebase run staged a test's file in this
+# worktree's index and set `core.bare = true` in the shared config, breaking the main checkout.
+# Removing them leaves a git command run in this checkout finding it by discovery, as usual.
+# tests/test_git_env_isolation.py proves it in a child pytest.
+GIT_LOCATION_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                    "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_COMMON_DIR", "GIT_NAMESPACE",
+                    "GIT_PREFIX")
+
+
+@pytest.fixture(autouse=True)
+def _no_inherited_git_location(monkeypatch):
+    for var in GIT_LOCATION_ENV:
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture(autouse=True)
 def _reset_fx_cache():
     """Clear `core/fx`'s in-process rate memo around every test (#305).
