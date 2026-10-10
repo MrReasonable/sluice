@@ -23,12 +23,14 @@ def test_create_is_exclusive_and_makes_the_parent(tmp_path):
 def test_replace_needs_fresh_to_agree_and_keeps_the_mode(tmp_path):
     p = tmp_path / "f.json"
     p.write_bytes(b"one")
-    os.chmod(p, 0o600)
+    # Not 0o600: that is the mode mkstemp gives the temp file, so a replace that forgot to
+    # copy the mode across would still leave 0o600 and this would pass.
+    os.chmod(p, 0o640)
     assert not replace_if(str(p), b"two", fresh=_same(b"other"), tmp_prefix=".t-")
     assert p.read_bytes() == b"one"
     assert replace_if(str(p), b"two", fresh=_same(b"one"), tmp_prefix=".t-")
     assert p.read_bytes() == b"two"
-    assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE(p.stat().st_mode) == 0o640
 
 
 def test_replace_of_a_missing_file_abstains(tmp_path):
@@ -123,7 +125,9 @@ def test_the_lock_serialises_two_writers(tmp_path):
     first."""
     p = tmp_path / "f.json"
     p.write_bytes(b"orig")
-    together = threading.Barrier(2, timeout=0.2)
+    # Long enough that, with the lock removed, a slow runner still gets the second thread
+    # into `fresh` before the first gives up -- otherwise the broken case reads as serialised.
+    together = threading.Barrier(2, timeout=2.0)
     overlaps = []
     start = threading.Barrier(2)
     results = []

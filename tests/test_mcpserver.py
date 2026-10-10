@@ -554,14 +554,19 @@ def test_mcpextra_imports_nothing(tmp_path):
     fresh interpreter so this file's own imports cannot satisfy it."""
     import subprocess
     import sys
+    import sluice
     code = ("import sys, sluice.mcpextra; "
-            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('sluice', 'mcp')))")
+            "print(sorted(m for m in sys.modules if m.split('.')[0] in ('sluice', 'mcp'))); "
+            "print(sluice.__file__)")
     # cwd is a temp dir so `python -c` (which puts the cwd on sys.path) imports the installed
     # package, not whatever checkout pytest was launched from.
     r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                       cwd=tmp_path)
+                       cwd=tmp_path, timeout=60)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert r.stdout.strip() == "['sluice', 'sluice.mcpextra']"
+    modules, imported_from = r.stdout.splitlines()
+    # The child imported the same checkout this test is running, not another install.
+    assert imported_from == sluice.__file__
+    assert modules == "['sluice', 'sluice.mcpextra']"
 
 
 # ── serve() coverage (important finding #1) ───────────────────────────────────
