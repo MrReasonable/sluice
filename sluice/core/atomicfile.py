@@ -1,12 +1,11 @@
-"""The writer for a config file replaced under a freshness check: sluice's own config
-(`core/config.py::write_config_text`), and any other tool's config file replaced under the same
-rules.
+"""The writer for a config file replaced under a freshness check, today sluice's own config
+(`core/config.py::write_config_text`).
 Not the vault's writer -- `core/vault.py::_atomic_write` replaces a symlink itself rather than its
 target, which is right for a note and wrong for a config linked into a dotfiles repository.
 
 Two arms, chosen by `fresh`. `None` creates exclusively -- never-clobber is a property of the
 open, not of a check before it. A callable decides whether the CURRENT bytes are still the ones
-the caller meant to replace (a sha the user was shown, the bytes a backup copied); only then is
+the caller meant to replace (for the config, a sha of the text the user was shown); only then is
 the file replaced, atomically, keeping its mode.
 
 A symlink is resolved and its TARGET replaced in the target's own directory, so a link into a
@@ -62,6 +61,9 @@ def replace_if(path: str, data: bytes, *, fresh: Callable[[bytes], bool] | None,
             return False
         if not fresh(current):
             return False
+        # By path, after `fresh`, not from the descriptor read above: a file deleted in between
+        # makes this raise and nothing is written. A mode taken from that descriptor would let
+        # the replace go ahead and re-create a file someone just removed.
         mode = stat.S_IMODE(os.stat(real).st_mode)
         fd, tmp = tempfile.mkstemp(dir=os.path.dirname(real) or ".", prefix=tmp_prefix,
                                    suffix=".tmp")
