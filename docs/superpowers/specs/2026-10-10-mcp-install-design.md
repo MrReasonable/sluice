@@ -34,6 +34,11 @@ changed.
 | Delivery | Two PRs: the shared writer first, then the command (review ruling, round 2) |
 | Backup retention | A copy is deleted when its client's write ends CLEAN; kept only when the outcome is `failed` (owner, 2026-10-10, on a side agent's note that copies of other tools' configs accumulate their credentials) |
 | A replace over an entry carrying env keys install cannot carry | JSON route keeps them; a command route REFUSES the replace and names the keys, since its add command would drop them (author ruling, round 2) |
+| How a registration is read | From the client's config FILE, for every client; a client command is used only to WRITE. `claude mcp get` starts the server to health-check it, prints env values and answers for the current directory's project scope first; `opencode mcp list` answers from a daemon's stale snapshot; `gemini mcp list` shows no env. So the readback IS the file the copy and the collateral check read, and the same-file check is that readback (author ruling, measurements) |
+| VS Code | JSON route: `code --add-mcp` drops unrelated top-level keys and every comment (author ruling, measurements) |
+| Codex | Snippet only (`manual`): `codex mcp add` drops unknown fields on other servers and comments inside `mcp_servers`, and the standard library cannot write TOML. Its file is still read, so a matching entry reads `unchanged` (author ruling, measurements) |
+| Freshness on the command route | Compares the parsed server TABLE, not raw bytes: a running Claude Code session rewrites `~/.claude.json` constantly, so a byte comparison would fail every run made from inside one, which is the AI-SETUP case; each add command was measured to keep everything outside its table (author ruling, measurements) |
+| Code shape | A package, `sluice/mcpinstall/`, one module per concern, instead of one module (author ruling, planning) |
 
 ## Measurements behind the mechanism (2026-10-10, macOS)
 
@@ -47,19 +52,25 @@ never the real configs.
 | opencode | 2.0.25 | `opencode mcp add --global job-sluice -- <argv>` writes `mcp.servers["job-sluice"]` (`type: local`, `command: [argv]`) | overwrites |
 | Cursor | 3.24.9 | `cursor --add-mcp` **exits 0 and writes nothing**, so Cursor is a JSON edit of `~/.cursor/mcp.json` | — |
 | Claude Desktop | — | no command; JSON edit of its config file | — |
-| Codex | not installed here | `codex mcp add` — measured during implementation | — |
-| Gemini CLI | not installed here | `gemini mcp add -s user` — measured during implementation | — |
+| Codex | 0.162.1 | `codex mcp add job-sluice --env K=V -- <argv>` | overwrites |
+| Gemini CLI | 0.63.0 | `gemini mcp add -e K=V -s user job-sluice <argv>` (no `--`) | overwrites |
 
 The Cursor row is why success is decided by readback.
 
-**Still to measure, before each command adapter ships:** whether the client's add preserves
-other servers, other keys and (VS Code, opencode) comments in the file it rewrites; how each add
-command takes environment values (`-e`/`--env` and the JSON `env` key); how `claude mcp get`
-prints an entry's environment; which variables relocate opencode's config (e.g. an `OPENCODE_CONFIG`
-override), from its docs and a probe. Each result is recorded here as BEHAVIOUR (`keeps other
-servers: yes`, a flag's spelling), never as pasted client output, which can carry home paths and
-env values. A client whose add command drops other entries is moved to the JSON route or the
-snippet route instead.
+**Measured 2026-10-10 against throwaway profiles** (behaviour only; dummy values):
+
+| Client | Env on add | Keeps other servers | Keeps unrelated keys | Keeps comments | Written entry |
+|---|---|---|---|---|---|
+| Claude Code | `-e K=V` after the name, before `--` (variadic: before the name it swallows the name); `--` required | yes | yes | n/a (JSON) | `mcpServers.<name> = {type: "stdio", command, args, env?}` in `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`; default scope is local, so `--scope user` always |
+| VS Code | JSON `env` key | yes | **no** | **no** | `servers.<name> = {command, args, env?}`; adds `inputs: []` |
+| opencode | `--env K=V`, repeatable; `--` required | yes | yes | yes (a trailing one moves) | `mcp.servers.<name> = {type: "local", command: [argv], environment?}`; a malformed file is written INTO, exit 0 |
+| Codex | `--env K=V`; always global | known fields only | yes | outside `mcp_servers` only | `[mcp_servers.<name>]` `command`, `args`, `[...env]` |
+| Gemini CLI | `-e K=V` before `-s user` (an array: swallows bare words); `-s user` exactly once (doubled, it wrote PROJECT scope); NO `--` | yes | yes | yes | `mcpServers.<name> = {command, args, env?}`; a trailing comma is exit 52, file untouched |
+
+Overrides that relocate the file an add writes: `CLAUDE_CONFIG_DIR`; `OPENCODE_CONFIG_DIR`
+(`OPENCODE_CONFIG` does not); `GEMINI_CLI_HOME` (replaces the home, `.gemini/` is appended);
+`CODEX_HOME` (must exist). Remove: `claude mcp remove --scope user <name>` (needed before a
+re-add); opencode has none; Codex and Gemini overwrite, and their remove of an absent name exits 0.
 
 **Windows** ships unmeasured (owner ruling): path rows below come from each client's own
 documentation, the `measured` field on every Windows row says "unmeasured on Windows", and the
@@ -74,13 +85,13 @@ process directly by an adapter.
 
 | Client | macOS | Linux | Windows |
 |---|---|---|---|
-| Claude Code | `claude` on PATH | same | same (`claude.cmd`/`.exe` via `shutil.which`) |
-| VS Code (user `mcp.json`, read-only) | `~/Library/Application Support/Code/User/mcp.json` | `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config`) | `%APPDATA%\Code\User\mcp.json` |
-| opencode (global config, read-only) | `$XDG_CONFIG_HOME/opencode/opencode.json[c]` (default `~/.config`) | same | same rule under the user profile |
+| Claude Code | `claude` on PATH; file `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json` | same | same (`claude.cmd`/`.exe` via `shutil.which`; `%USERPROFILE%\.claude.json`) |
+| VS Code (user `mcp.json`) | `~/Library/Application Support/Code/User/mcp.json` | `$XDG_CONFIG_HOME/Code/User/mcp.json` (default `~/.config`) | `%APPDATA%\Code\User\mcp.json` |
+| opencode (global config) | `$OPENCODE_CONFIG_DIR/opencode.json`, else `$XDG_CONFIG_HOME/opencode/` (default `~/.config`): `opencode.jsonc` when it is the only one there, else `opencode.json` | same | same rule under the user profile |
 | Cursor | `~/.cursor/mcp.json` | same | `%USERPROFILE%\.cursor\mcp.json` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `Unsupported` (no official Linux build) | `%APPDATA%\Claude\claude_desktop_config.json` |
-| Codex | `$CODEX_HOME/config.toml`, default `~/.codex/config.toml` (read-only) | same | same |
-| Gemini CLI | `~/.gemini/settings.json` (read-only) | same | same |
+| Codex | `$CODEX_HOME/config.toml`, default `~/.codex/config.toml` (read; snippet only) | same | same |
+| Gemini CLI | `$GEMINI_CLI_HOME/.gemini/settings.json`, else `~/.gemini/settings.json` | same | same |
 
 VS Code Insiders and VSCodium are out of scope (each a separate user folder and command).
 
@@ -122,9 +133,9 @@ in the roster is considered.
      home and importing it loads nothing heavy.
 2. **Detect** each considered client: `Found(evidence)`, `NotFound`, or `Unsupported(reason)`
    (platform, or a client with no user-level registration), each with its MCP.md anchor.
-3. **Read** each found client's current entry: `Absent`, `Entry(argv, env)`, or
-   `Unreadable(reason)` (unparseable file, wrong shape, a client command that failed for any
-   reason other than its own "not found" text, a timeout). `Unreadable` ends `failed` and nothing
+3. **Read** each found client's current entry from its config file: `Absent`,
+   `Entry(argv, env)`, or `Unreadable(reason)` (an unreadable or unparseable file, or a wrong
+   shape). `Unreadable` ends `failed` and nothing
    runs for that client. `Entry` compares to the spec as `same` (argv equal, and every
    `PINNED_ENV` key equal on BOTH sides: a key the old entry carries and this install does not
    pin makes it `different`, since the server would still open the old path) or `different`.
@@ -138,10 +149,12 @@ in the roster is considered.
    - A client named by `--client` that is `NotFound` or `Unsupported` ends `failed` with the
      reason (it was asked for and cannot be done), not silently skipped.
 5. **Write** through each adapter (see Write safety), then **read back**. Outcome per client:
-   `registered`, `replaced`, `unchanged`, `refused`, or `failed` (reason plus the snippet to
-   paste). A readback that does not show the spec is `failed`, whatever the client's exit code.
+   `registered`, `replaced`, `unchanged`, `refused`, `failed` (reason plus the snippet to
+   paste), or `manual` (a snippet-only client: the snippet, nothing written). A readback that
+   does not show the spec is `failed`, whatever the client's exit code.
 6. **Finish** with each client's restart step and its slash command, the same text MCP.md gives.
-   Exit non-zero when any client ends `failed` or `refused`. Exit 0 when nothing was selected
+   Exit non-zero when any client ends `failed` or `refused`, or `manual` for a client named by
+   `--client` (it was asked for and not done). Exit 0 when nothing was selected
    because nothing was found, with a line saying so and the MCP.md link.
 
 `--dry-run` asks nothing: it runs steps 1–3, applies the flags as a non-interactive run would,
@@ -179,8 +192,9 @@ copy this run created (by the name `write_copy` returned, in sluice's own privat
 secure erase. Nothing in sluice reads a copy back.
 
 **Collateral check.** Before and after each write, the adapter reads the client's whole server
-table (not just `job-sluice`) from its config file, through a reader named per client: JSON
-(`~/.claude.json`, Gemini), JSONC (VS Code, opencode — a read-only reader that drops `//` and
+table (not just `job-sluice`) from its config file, through a reader named per client: strict
+JSON (Claude Code, and the JSON route's Cursor, Claude Desktop and VS Code), JSONC (opencode,
+Gemini — a read-only reader that drops `//` and
 `/* */` comments and trailing commas outside strings, then hands the text to `json.loads`;
 sluice never writes JSONC), or TOML (Codex, stdlib `tomllib`). If any other server's entry was
 removed or changed, the outcome is `failed` with the changed server NAMES, even though
@@ -190,11 +204,11 @@ the report never says to restore the copy wholesale — it says to restore the N
 entries from it, since a whole-file restore would revert unrelated changes made since.
 
 **The file must be the one the client wrote.** After a command adapter's add, `job-sluice`
-must appear, with the spec, in the SAME file the copy and the collateral check read. If the
-command reports success and the readback shows the entry but that file does not, the outcome is
-`failed: wrote somewhere other than <file relative to home>` — the computed path is wrong (an
-unmeasured Windows row, an override variable), so the collateral check checked nothing. This is
-what makes an unmeasured row safe rather than merely labelled.
+must appear, with the spec, in the SAME file the copy and the collateral check read. Since the
+readback reads that file and nothing else, a command that reports success while writing
+somewhere else ends `failed: readback did not show the entry in <file relative to home>` — the
+computed path is wrong (an unmeasured Windows row, an override variable), so the collateral
+check checked nothing. This is what makes an unmeasured row safe rather than merely labelled.
 
 **Env keys on a replace.** The JSON route keeps every env key on the old entry that is not in
 `PINNED_ENV` and names it. A command route cannot carry them (its add command takes only what
@@ -208,7 +222,8 @@ printed", and those names (values never), and the copy that holds the full old e
 
 **Freshness on the command route.** A client's add command does not compare-and-set: it reads the
 file and writes it back. So immediately before running it, the adapter re-reads the file and
-compares it with the bytes it copied; if they differ (someone edited the file after the copy),
+compares its server TABLE with the table it read before the copy (see Decisions for why the
+table and not the bytes); if they differ (someone changed a server after the copy),
 the outcome is `failed: the file changed while install was running`, nothing is run, and the copy
 is kept. A file that was ABSENT at the first read has absence as its expected state: if it exists
 at this re-read, the outcome is the same `failed`, nothing is run, and there is no copy to keep
@@ -259,7 +274,7 @@ its own value), any client not selected.
 
 ## Components
 
-- `sluice/mcpinstall.py` — stdlib only, nothing from the `mcp` package, imported lazily inside
+- `sluice/mcpinstall/` — stdlib only, nothing from the `mcp` package, imported lazily inside
   `cli.py::cmd_mcp_install`.
 - `ServerSpec` — argv plus pinned env. Built once and handed to every adapter.
 - Two mechanisms, `CommandRoute` and `JsonRoute`, and each client as thin DATA over one of them:
@@ -310,7 +325,8 @@ Offline, against the sandbox above.
   - a clean register and a clean replace (JSON route and command route) → the copy taken for
     that write no longer exists afterwards, and the state folder holds no copy for that client;
   - two clients in one run, one clean and one `failed` → only the failed client's copy remains;
-  - a fake `get` that exits 1 with an unrelated error → `Unreadable`, nothing run;
+  - a config file that does not parse → `Unreadable`, nothing run (for opencode, the client
+    whose add writes into a broken file and exits 0);
   - a fake that hangs past an injected sub-second timeout → `failed: timed out`;
   - an edit to the file between the copy and the client run (landed by the injected `write_copy`
     returning after it writes) → `failed: the file changed while install was running`, the fake's
@@ -345,8 +361,10 @@ Offline, against the sandbox above.
 - Env on replace: JSON route keeps and names a non-pinned key; a command route refuses with the
   name even under `--replace`; an old entry pinning `SLUICE_CONFIG` that this install does not
   pin reads `different`.
-- Wrong file: a fake add that writes its entry somewhere other than the computed file, while its
-  `get` shows it → `failed: wrote somewhere other than …`.
+- Wrong file: a fake add that writes its entry somewhere other than the computed file →
+  `failed: readback did not show the entry in …`.
+- Codex: a matching entry in `config.toml` → `unchanged`; otherwise `manual` with the TOML
+  snippet, nothing run; `manual` is non-zero only under `--client codex`.
 
 **Mutation witnesses**, each a named mutant that must turn the named test red:
 1. Delete the readback comparison (treat exit 0 as success) → the exits-0-changes-nothing test.
@@ -354,9 +372,10 @@ Offline, against the sandbox above.
 3. Delete the copy-before-run call → a test asserting the copy exists before the fake's first
    write (the fake records whether the copy was present when it ran).
 4. Delete the collateral comparison → the drops-another-server test.
-5. Remove `Unreadable` and fall through to `Absent` → the unrelated-`get`-error test.
+5. Remove `Unreadable` and fall through to `Absent` → the unparseable-file test.
 6. Print env values instead of names → the job-sluice-entry sentinel test.
-7. Delete the same-file check → the wrong-file test.
+7. Read the readback from anywhere but the computed file (the same-file check is that
+   readback) → the wrong-file test.
 8. Drop one name from `PINNED_ENV` → the roster guard; and stop iterating it (pin only
    `SLUICE_CONFIG`) → a behaviour test setting `SEEN_DB`.
 
@@ -398,11 +417,10 @@ message, imported by `mcpserver.build_server`. No behaviour change.
 
 ## Measured before it ships
 
-Codex and Gemini are installed into a temp prefix and measured as the others were, plus the
-"still to measure" columns for every command adapter. One that cannot be measured on macOS ships
-as a snippet-only entry rather than an unmeasured writer (Windows rows are the owner's stated
-exception, above). After the code lands, one real install against the owner's actual clients,
-checked by opening each.
+Done 2026-10-10 (the tables above): Codex and Gemini were installed into a temp prefix and
+measured with the rest. What remains is one real install against the owner's actual clients
+after the code lands, with the owner's go-ahead (it writes their real configs), checked by
+opening each.
 
 ## Out of scope
 
