@@ -210,7 +210,9 @@ printed", and those names (values never), and the copy that holds the full old e
 file and writes it back. So immediately before running it, the adapter re-reads the file and
 compares it with the bytes it copied; if they differ (someone edited the file after the copy),
 the outcome is `failed: the file changed while install was running`, nothing is run, and the copy
-is kept. What remains is the window while the client's own command runs, which no outside check
+is kept. A file that was ABSENT at the first read has absence as its expected state: if it exists
+at this re-read, the outcome is the same `failed`, nothing is run, and there is no copy to keep
+(the "before" table was empty; the file someone created is left as they wrote it). What remains is the window while the client's own command runs, which no outside check
 can close: an edit landing there may be overwritten by the client's write. The collateral check
 afterwards catches that edit when it touched another server; when it touched the `job-sluice`
 entry itself, the readback shows install's entry, which is the outcome the user asked for. This
@@ -313,6 +315,9 @@ Offline, against the sandbox above.
   - an edit to the file between the copy and the client run (landed by the injected `write_copy`
     returning after it writes) → `failed: the file changed while install was running`, the fake's
     call log shows no add, the copy kept;
+  - a file absent at the first read that appears before the client run (created by an injected
+    hook between the read and the run) → the same `failed`, no add in the fake's call log, the
+    created file left byte-equal, no copy;
   - a fake removed between detect and apply → `failed: not found on PATH`;
   - Claude Code remove-then-add with a failing add → report shows the old argv and env NAMES.
 - JSON route: an unrelated key and a sentinel credential (`SENTINEL-NOT-A-SECRET-…`) survive
