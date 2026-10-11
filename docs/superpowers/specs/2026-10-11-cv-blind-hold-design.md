@@ -117,7 +117,13 @@ both arms, so the supplied arm cannot grow a second copy of the dossier's key se
 A keyword parameter rather than reading `body` inside the cache: the cache is handed frontmatter
 dicts and must not learn what a note is.
 
-**Callers pass the keyword ONLY when a section was found** (rev-102, tst-101):
+**A section counts only when its text is non-empty after `strip()`** (rev-201, inv-201). A
+bare `## Job description` heading with nothing under it is NO section, in cv and in triage
+alike: no keyword, `jd_source` decided by the fetch, the fetch's own blind reason. One
+predicate, `supplied.strip()`, is the only test either caller makes; the heading count is
+used for the duplicate warning and nothing else.
+
+**Callers pass the keyword ONLY when a section counts** (rev-102, tst-101):
 `get_or_build(fm)` exactly as today otherwise. About ten test fakes implement
 `get_or_build(self, fm)`; an unconditional keyword would make each raise `TypeError` inside
 cv's `except Exception` arm, read as a failed fetch, and (under the new default) a blind hold,
@@ -133,7 +139,7 @@ section rows use are widened.
 - `sections > 1` logs a warning naming the note and saying the first section was used.
 - `jd_source` is set alongside `dossier_failed` and says where the TEXT came from, never
   whether it was enough (inv-104):
-  - `"note"`: a section was supplied (whatever its length);
+  - `"note"`: a section counted (non-empty, whatever its length relative to `min_jd_chars`);
   - `"fetched"`: a fetch returned JD text, even text below `min_jd_chars`;
   - `"none"`: no text at all (the fetch raised, or returned an empty JD).
 
@@ -151,7 +157,7 @@ section rows use are widened.
   index as a new `_SectionUnreadable(e)` result, which the caller reports as
   `section <ref>: <error>` (not `dossier <ref>: ...`, the masquerade tst-002 fixed in cv;
   inv-104) and skips, the run continuing.
-- A lead whose section is non-empty is built directly with `supplied_jd` (no fetcher call, no
+- A lead whose section counts (the same `strip()` predicate as cv) is built directly with `supplied_jd` (no fetcher call, no
   pool slot), stored at its own `keeps` index, with a raise caught into `_FetchFailed` like
   every other lead. It is NOT grouped by `cache_key`: two notes sharing a key may carry
   different sections. Leads without a section go through the existing grouped pool unchanged.
@@ -208,6 +214,11 @@ by `append_body_section` and names the same note `read_leads` returns for that s
    retry that lands on `updated` and never writes the JD. The `created` outcome and slug are
    reported unchanged.
 4. No JD given: `job_description_written` False, note empty.
+5. Outcome `created` but `result.ref is None` (a store or fake that does not honour the new
+   contract field; inv-202): the append is NOT attempted, written False, note
+   `the store did not return a reference to the new note`, logged as a warning. Without this
+   arm, `append_body_section(None, ...)` raises `TypeError`, which neither caught exception
+   covers, and a created lead reads as a failed create.
 
 `updated` and `merged` never touch the note body (never-clobber), and no new write function is
 added (no new CodeQL sink).
@@ -215,7 +226,14 @@ added (no new CodeQL sink).
 ### CLI
 
 `leads add --jd-file PATH|-` reads the text (`-` is stdin), matching the evidence commands'
-`--body-file`. When a JD was given and not written, it prints `job_description_note` and tells
+`--body-file` in shape (`sluice/evidence/commands.py::cmd_evidence_add`: read first, in its
+own `try`, a named message and exit 1) and going two steps further (rev-202). The file is read
+BEFORE `create_lead` is called. An `OSError`, and also a `UnicodeDecodeError` (a `ValueError`,
+which the precedent's `except OSError` does not catch), prints a named message and exits 1 with
+nothing written. A file (or stdin) that is empty or whitespace-only is refused the same way,
+which the precedent does not do (an empty evidence body is legitimate; an empty JD is not), since the user asked for a
+JD and silently creating the lead without one is the quiet wrong default. No lead is created
+on either refusal, so a corrected re-run lands on `created`, not `updated`. When a JD was given and not written, it prints `job_description_note` and tells
 the user to add a `## Job description` section to the note by hand. The exit code follows
 today's rules.
 
@@ -304,7 +322,7 @@ The sign-off message for a blind entry names both.
   is not tailored to this role. To tailor it: --discard, add a "## Job description" section
   to the note, and re-run cv run.` Not counted as an unsupported claim. The docstring's tag
   roster gains it.
-- `cli.py::cmd_cv_run`: each result line gains `jd=<note|fetched|none>`. The trailing count
+- `cli.py::cmd_cv_run`: each result line gains `jd_source=<note|fetched|none>`. The trailing count
   line is reworded from `composed blind (dossier fetch failed)` to `composed without a job
   description`, and a second count line reports `N CV(s) used the job description from the
   lead note` when any did.
@@ -321,18 +339,21 @@ The sign-off message for a blind entry names both.
 
 | Case | Behaviour |
 |---|---|
-| Fetch raises, no section | composed; `jd=none`; held, `the job description fetch failed` |
-| Fetch returns an empty JD, or no url, no section | composed; `jd=none`; held, `no job description arrived` |
-| Fetch returns a JD below `min_jd_chars` | composed from it; `jd=fetched`; held, `no job description arrived` |
-| Section present, long enough | no JD fetch; `jd=note`; not held for blindness |
-| Section shorter than `min_jd_chars` | triage: `unjudgeable`, reason names the short note section; cv: composed, `jd=note`, held with the short-section phrase |
+| Fetch raises, no section | composed; `jd_source=none`; held, `the job description fetch failed` |
+| Fetch returns an empty JD, or no url, no section | composed; `jd_source=none`; held, `no job description arrived` |
+| Fetch returns a JD below `min_jd_chars` | composed from it; `jd_source=fetched`; held, `no job description arrived` |
+| Section present, long enough | no JD fetch; `jd_source=note`; not held for blindness |
+| Section shorter than `min_jd_chars` | triage: `unjudgeable`, reason names the short note section; cv: composed, `jd_source=note`, held with the short-section phrase |
 | Two sections | first used; warning names the note (cv and triage) |
+| Empty section (heading, no text) | treated as no section, in cv and triage: the fetch decides `jd_source` and the reason |
 | `jdsection.read` raises | cv: `error` for that lead; triage: `section <ref>: ...`, lead skipped; never "fetch failed" |
 | `blind_hold: false` | today's behaviour: served, `tailored_cv` written, count line printed |
 | Nothing served | no hold, as every hold today |
 | Held blind lead, section added, re-run | `skipped-needs-signoff` until `--discard` (documented) |
 | `create_lead` with a JD, outcome not `created` | note untouched; not written; note says so |
 | Append returns False / raises `VaultConflict` or `OSError` | lead created; not written; note says why; logged |
+| `created` with no `ref` | append not attempted; lead created; not written; no-reference note; warning logged |
+| `--jd-file` unreadable, not UTF-8, empty or whitespace-only | named message, exit 1, no lead created |
 
 ## Testing
 
@@ -341,11 +362,13 @@ text, companies come from the existing synthetic roster, job titles from the see
 `titles`/`cfg_titles` fixtures, and no fixture or doc example carries a contact, salary or city
 line.
 
-**Witnesses.** Every guard below names the mutant that witnesses it, applied by MOVE or DELETE
-after `compileall --invalidation-mode checked-hash`; the row must go red for the named reason.
+**Witnesses.** Every row that guards a NEW branch carries a `Witness:` naming its mutant
+(tst-202), applied by MOVE or DELETE after `compileall --invalidation-mode checked-hash`; the
+row must go red for the named reason. A row without one is a plain behaviour row over
+unchanged code, and the plan keeps that distinction rather than claiming more.
 
 **`core/jdsection.py`**
-- `read`: no section; empty section; heading case variants, trailing whitespace, with and
+- `read`: no section; empty section (`("", 1)`); heading case variants, trailing whitespace, with and
   without `TAG`; ends at `#`, `##`, `#\tX`, `  ## X` and a bare `##`; does NOT end at `###`,
   `#tag`, four-space indent; CRLF and lone-CR bodies; end of body; two sections returns the
   first text and count 2.
@@ -368,23 +391,37 @@ after `compileall --invalidation-mode checked-hash`; the row must go red for the
 - Existing fakes are untouched by conditional passing. A sweep test asserts the claim: a
   lead with no section calls `get_or_build` with exactly one positional argument and no
   keyword (a recording fake). Witness: pass `supplied_jd=""` unconditionally; row red.
-- Blind lead × `blind_hold` on/off × `require_signoff` on/off: held with a `blind\t` entry and
-  no `tailored_cv` exactly when `blind_hold` is on, whatever `require_signoff` says.
-- Each of the three producers gives its own `blind_reason`.
+- Blind lead × `blind_hold` on/off × `require_signoff` on/off, with the audit RUNNING CLEAN
+  (no flags) in every cell (tst-202): held with a `blind\t` entry and no `tailored_cv` exactly
+  when `blind_hold` is on, whatever `require_signoff` says; with `blind_hold` off the CV is
+  served in all four cells. A clean audit is what separates "not held" from "held because the
+  audit did not run". Witness: move `blind` inside the `require_signoff` conditional; the
+  `blind_hold` on / `require_signoff` off cell goes red.
+- Each of the three producers gives its own `blind_reason`, asserted by exact phrase. Witness:
+  delete the fetch-raised arm's assignment so it falls through to `no job description
+  arrived`; that row red.
 - `jd_source` VALUES (tst-107): `fetched` on a healthy fetch, `fetched` on a too-short fetched
   JD, `none` on a raise and on an empty JD, `note` on a section; and on an `error` result
-  rebuilt from the exception stamp.
+  rebuilt from the exception stamp. Witness: delete the `fetched` assignment; the too-short
+  row reads `none`. Second witness: delete the stamp; the `error` row reads `""`.
+- An EMPTY section (heading, no text) with a fetch that returns a JD (rev-201, inv-201):
+  `get_or_build` called with no keyword, `jd_source == "fetched"`, not held. With a fetch that
+  raises: `jd_source == "none"`, held with `the job description fetch failed`, never the
+  short-section phrase. Witness: test `sections` instead of `supplied.strip()`; both rows red.
+- `run.json` carries `jd_source` on a rendered result AND on an `error` result (arc-201).
+  Witness: drop the key from the artefact writer; row red.
 - A section lead is `rendered`, `jd_source == "note"`, fetcher never called, not held.
 - A `jdsection.read` that raises surfaces as `error`, and the log does not say "fetch failed"
   (tst-002). Witness: move the call inside the `try`; row red.
 - Duplicate sections log the warning naming the note (tst-107).
 - Dry run: no hold, `jd_source` reported.
 - Hold → add section → re-run is `skipped-needs-signoff`; `--discard` → re-run renders with
-  `jd=note` (rev-001).
-- Existing engine tests that break under the new default are fixed one by one. Each first
-  asserts the lead's `jd_source` (so a broken fake cannot hide behind the fix), then sets
-  `blind_hold` explicitly or supplies a JD; `_cfg()`'s default is NOT flipped (tst-003,
-  tst-101).
+  `jd_source == "note"` (rev-001).
+- Existing tests that break under the new default are fixed one by one, in ANY file, not only
+  the engine tests (tst-203): `tests/test_config_paths.py`'s `_NullCache` and every other stand-in
+  cache a red row turns up. Each first asserts the lead's `jd_source` (so a broken fake cannot
+  hide behind the fix), then sets `blind_hold` explicitly or supplies a JD; `_cfg()`'s default
+  is NOT flipped (tst-003, tst-101).
 
 **Config** (inv-001, rev-005, tst-003)
 - `CvConfig().blind_hold is True`, as a named row in `tests/test_sluice_neutral_defaults.py`
@@ -399,9 +436,19 @@ after `compileall --invalidation-mode checked-hash`; the row must go red for the
   direction, so a row asserts `sluice.yaml.example` mentions `blind_hold`, and that it is not
   ACTIVE (the example is a catalogue whose active values matter).
 
-**triage**
-- A lead with a section and no url is judged, not `unjudgeable`.
-- A url-bearing lead with a section: zero fetcher calls from the prefetch (tst-104).
+**triage** (tst-201). The existing stand-in caches (`_RecordingCache`, `_CacheWhere`, the
+resolve-test double) return a JD whatever the lead holds, so a section row run on them goes
+green with the feature deleted. The section rows therefore use a REAL `DossierCache` in
+`tmp_path` with a COUNTING fetcher that returns an EMPTY JD, on leads whose `company` is
+already set, so company resolution never fetches and every fetcher call is the prefetch's.
+- A lead with a section and no url is judged, not `unjudgeable`, and a sentinel string from
+  the section appears in the judge's prompt. Witness: drop the supplied arm in
+  `_prefetch_dossiers`; the lead goes `unjudgeable` and the sentinel is absent.
+- A url-bearing lead with a section: zero fetcher calls, the sentinel in the prompt (tst-104).
+  Without the section, the same lead makes one call and is `unjudgeable` (the control showing
+  the counter counts).
+- An empty section on a url-bearing lead: one fetcher call, `unjudgeable` with the fetched
+  reason, not the note-section reason (rev-201).
 - Two notes whose `cache_key` is ASSERTED equal first (tst-007), with different sections, each
   get their own JD, at concurrency 1 and at concurrency > 1. Witness: group section notes by
   key; row red.
@@ -421,27 +468,41 @@ after `compileall --invalidation-mode checked-hash`; the row must go red for the
 - Append returning False, raising `VaultConflict`, raising `FileNotFoundError`: outcome
   `created` with its slug, written False, the matching note. Witness: narrow the `except` to
   `VaultConflict`; the `FileNotFoundError` row raises.
-- Store conformance row for `UpsertResult.ref` (§3).
+- Witness for the spy row: delete the `created` check; the `updated` row sees a call.
+- `created` with `ref=None` from a fake store (inv-202): no append attempted, written False,
+  the no-reference note, outcome `created`. Witness: delete the `ref is None` arm; the row
+  raises `TypeError`.
+- Store conformance row for `UpsertResult.ref` (§3). Witness: drop `ref=` from the vault's
+  `created` return; row red.
 - `leads add --jd-file -` reads stdin; `--jd-file PATH` reads a file; the not-written note
   prints on `updated`.
+- `--jd-file` naming a missing file, a non-UTF-8 file, an empty file and whitespace-only stdin
+  (rev-202): exit 1, a named message, and NO note created (the store is read back empty).
+  Witness: move the read after `create_lead`; the missing-file row finds a note.
 - MCP: `create_lead`'s pinned input set gains `job_description`; the result carries both
   fields.
 
 **Reporting**
-- `cmd_cv_run` prints the right `jd=` value per line, the reworded count line, and the note-JD
-  count line (no test pins either wording today, tst-004).
+- `cmd_cv_run` prints the right `jd_source=` value per line, the reworded count line, and the
+  note-JD count line (no test pins either wording today, tst-004). The key is spelled as its
+  field, like every other key on the line (arc-202), and
+  `tests/test_docs_claims.py::test_the_cv_summary_key_extraction_is_not_vacuous`'s exact set
+  gains `jd_source`.
 - `_print_signoff_claims` prints the blind group with both routes and does not count it as an
   unsupported claim.
 - MCP `cv_signoff` returns `blind` separately and excludes it from `claims` at EACH of its
   three return arms, one row per arm (tst-105). Witness: drop the split from one arm; that
   arm's row red.
+- The `cv_signoff` confirm token still binds a blind entry (tst-203): changing ONLY the blind
+  entry in `needs_signoff` makes the old token return `stale_confirmation`.
 - `_GET_LEAD_CONTENT_WARNING` names `blind` entries as sluice's own text (neu-101).
 
 ## Docs
 
 - `docs/CONFIGURATION.md`: `cv.blind_hold`.
 - `docs/USAGE.md`: `leads add --jd-file`, the section convention (synthetic example), the
-  `jd=` field, and the reworded line that replaces "when any dossier fetch failed and
+  `jd_source=` key in the per-result line paragraph, `jd_source` in the `run.json` table row
+  (arc-201), and the reworded line that replaces "when any dossier fetch failed and
   composition proceeded blind" (rev-009).
 - `docs/ARCHITECTURE.md`: the dossier's supplied arm and `core/jdsection.py`; its "a thin JD
   costs only quality" reasoning extended to say the CV is held (arc-005); `UpsertResult.ref`
