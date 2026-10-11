@@ -629,6 +629,24 @@ def test_call_tool_concurrency_sanity_check_reaches_dismiss_lead_under_overlap(t
     assert outcomes.count("dismissed") == 1, outcomes
 
 
+def test_initialize_reports_the_installed_version():
+    """`serverInfo.version` is what a client shows beside the server, and the SDK's
+    default is an empty string (2026-10-11, measured on the first real `mcp install`: a
+    v4.4.0 server answered `version: ''`). Asserted against `sluice.__version__`, the
+    version's one home, rather than a literal that a release bump would turn red."""
+    from sluice import __version__
+
+    async def _run():
+        from mcp import Client
+        server = build_server(Config())
+        async with Client(server, raise_exceptions=True) as client:
+            return client.server_info
+
+    info = asyncio.run(_run())
+    assert info.version == __version__
+    assert __version__
+
+
 def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
     """The coach is a PROMPT, not a tool, so `tools/list` never shows it: this drives
     `prompts/list` and `prompts/get` through the real SDK. Registered at the DEFAULT
