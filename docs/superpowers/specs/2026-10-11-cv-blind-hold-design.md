@@ -1,8 +1,7 @@
 # Blind CV hold and a lead-supplied job description (#369) — design
 
-Approved in brainstorming on 2026-10-11; revised the same day after two `/review-plan` rounds
-(round 1: 0 Critical / 4 High / 18 Medium / 10 Low; round 2: 0 Critical / 4 High / 9 Medium /
-7 Low), every finding folded in below. Rulings are recorded under Decisions.
+Approved in brainstorming on 2026-10-11 and revised the same day through `/review-plan`, every
+finding folded in below. Rulings are recorded under Decisions.
 
 ## Goal
 
@@ -193,16 +192,26 @@ vault's `upsert` sets it from the path it just resolved. A conformance row in
 by `append_body_section` and names the same note `read_leads` returns for that slug, and that
 `ref` is `None` on `refused` / `merged_away` / `merged_away_unproven`.
 
-### `Sluice.create_lead(..., job_description: str = "")`
+### `Sluice.create_lead(..., job_description: str | None = None)`
 
+`None` means no JD was given; a string is a JD the caller asked to write (arc-301).
+
+0. A non-`None` `job_description` that is empty or whitespace-only joins `create_lead`'s
+   EXISTING up-front `ValueError` (the one that already names every invalid field before any
+   write), so it is refused before `upsert` and no lead is created. This is the ONE home of the
+   empty-JD refusal: the CLI and the MCP tool both reach it, because both drive this facade,
+   and neither restates it. A caller that asked for a JD and silently got a lead without one
+   is the quiet wrong default.
 1. Calls `store.upsert` exactly as today.
-2. Only when the outcome is `created` AND `job_description.strip()` is non-empty: calls
+2. Only when the outcome is `created`, `job_description` is not `None`, AND `result.ref` is
+   not `None` (step 5): calls
    `store.append_body_section(result.ref, jdsection.TAG, jdsection.render(job_description))`.
 3. `CreateLeadResult` gains `job_description_written: bool` and
    `job_description_note: str`. Written is True only when step 2 ran and returned True. Every
    other case leaves it False, with the note saying why, from a fixed set:
    - outcome not `created` (`updated`, `merged`, `refused`, `merged_away`,
      `merged_away_unproven`): `the lead already existed, or was not created`;
+   - `created` with no `ref` (step 5): `the store did not return a reference to the new note`;
    - the append returned False: `a job description section was already present`;
    - the append raised `VaultConflict` or `OSError` (the note was edited, moved or renamed
      between create and append: `leads reconcile`, Obsidian, Syncthing; inv-102):
@@ -213,7 +222,7 @@ by `append_body_section` and names the same note `read_leads` returns for that s
    letting the error escape would report a failed create for a note that exists, inviting a
    retry that lands on `updated` and never writes the JD. The `created` outcome and slug are
    reported unchanged.
-4. No JD given: `job_description_written` False, note empty.
+4. No JD given (`None`): `job_description_written` False, note empty.
 5. Outcome `created` but `result.ref is None` (a store or fake that does not honour the new
    contract field; inv-202): the append is NOT attempted, written False, note
    `the store did not return a reference to the new note`, logged as a warning. Without this
@@ -230,10 +239,12 @@ added (no new CodeQL sink).
 own `try`, a named message and exit 1) and going two steps further (rev-202). The file is read
 BEFORE `create_lead` is called. An `OSError`, and also a `UnicodeDecodeError` (a `ValueError`,
 which the precedent's `except OSError` does not catch), prints a named message and exits 1 with
-nothing written. A file (or stdin) that is empty or whitespace-only is refused the same way,
-which the precedent does not do (an empty evidence body is legitimate; an empty JD is not), since the user asked for a
-JD and silently creating the lead without one is the quiet wrong default. No lead is created
-on either refusal, so a corrected re-run lands on `created`, not `updated`. When a JD was given and not written, it prints `job_description_note` and tells
+nothing written. The text read is passed as `job_description` (never `None` once the flag is
+given), so an empty or whitespace-only file reaches `create_lead`'s own refusal (step 0) and
+propagates as a `ValueError` to `main`'s own handler, exactly as an invalid `--url` does today
+(`cli.py::cmd_leads_add`'s docstring): printed, exit 2, no lead. No lead is
+created on any refusal, so a corrected re-run lands on `created`, not `updated`. Without
+`--jd-file` the CLI passes `None`. When a JD was given and not written, it prints `job_description_note` and tells
 the user to add a `## Job description` section to the note by hand. The exit code follows
 today's rules.
 
@@ -243,6 +254,8 @@ today's rules.
   `create_lead_tool` inside `build_server`, which is what the client reads. The registered
   tool's docstring says `job_description` is written only when the lead is CREATED, and that
   the text is treated as untrusted page text by the triage judge and the CV composer (neu-003).
+- The tool's `job_description` parameter defaults to `None` and is passed through as given, so
+  a blank string reaches step 0's refusal exactly as the CLI's does.
 - The result carries `job_description_written` and `job_description_note`.
 - `tests/functional/test_mcp_contract.py` pins `create_lead`'s input properties by exact
   equality; that set gains `job_description`.
@@ -353,7 +366,8 @@ The sign-off message for a blind entry names both.
 | `create_lead` with a JD, outcome not `created` | note untouched; not written; note says so |
 | Append returns False / raises `VaultConflict` or `OSError` | lead created; not written; note says why; logged |
 | `created` with no `ref` | append not attempted; lead created; not written; no-reference note; warning logged |
-| `--jd-file` unreadable, not UTF-8, empty or whitespace-only | named message, exit 1, no lead created |
+| `--jd-file` unreadable or not UTF-8 | named read message, exit 1, no lead created |
+| JD given but empty or whitespace-only (CLI file/stdin, MCP, facade) | `ValueError` naming `job_description` before any write; CLI exit 2; no lead created |
 
 ## Testing
 
@@ -394,7 +408,7 @@ unchanged code, and the plan keeps that distinction rather than claiming more.
 - Blind lead × `blind_hold` on/off × `require_signoff` on/off, with the audit RUNNING CLEAN
   (no flags) in every cell (tst-202): held with a `blind\t` entry and no `tailored_cv` exactly
   when `blind_hold` is on, whatever `require_signoff` says; with `blind_hold` off the CV is
-  served in all four cells. A clean audit is what separates "not held" from "held because the
+  served in both of its cells. A clean audit is what separates "not held" from "held because the
   audit did not run". Witness: move `blind` inside the `require_signoff` conditional; the
   `blind_hold` on / `require_signoff` off cell goes red.
 - Each of the three producers gives its own `blind_reason`, asserted by exact phrase. Witness:
@@ -448,7 +462,9 @@ already set, so company resolution never fetches and every fetcher call is the p
   Without the section, the same lead makes one call and is `unjudgeable` (the control showing
   the counter counts).
 - An empty section on a url-bearing lead: one fetcher call, `unjudgeable` with the fetched
-  reason, not the note-section reason (rev-201).
+  reason, not the note-section reason (rev-201). Witness: test the heading count instead of
+  `supplied.strip()` in `_prefetch_dossiers`; zero fetcher calls and the note-section reason,
+  row red (tst-302).
 - Two notes whose `cache_key` is ASSERTED equal first (tst-007), with different sections, each
   get their own JD, at concurrency 1 and at concurrency > 1. Witness: group section notes by
   key; row red.
@@ -469,16 +485,25 @@ already set, so company resolution never fetches and every fetcher call is the p
   `created` with its slug, written False, the matching note. Witness: narrow the `except` to
   `VaultConflict`; the `FileNotFoundError` row raises.
 - Witness for the spy row: delete the `created` check; the `updated` row sees a call.
-- `created` with `ref=None` from a fake store (inv-202): no append attempted, written False,
-  the no-reference note, outcome `created`. Witness: delete the `ref is None` arm; the row
-  raises `TypeError`.
+- `created` with `ref=None` from a fake store (inv-202) whose `append_body_section` RAISES
+  `TypeError` on a `None` ref (as the vault's `_cas_write` path would), and records every
+  call: no append attempted, written False, the no-reference note, outcome `created`. Witness:
+  delete the `ref` condition from step 2; the call is recorded and the `TypeError` escapes
+  `create_lead`, row red for the stated reason (rev-302, tst-302).
 - Store conformance row for `UpsertResult.ref` (§3). Witness: drop `ref=` from the vault's
   `created` return; row red.
 - `leads add --jd-file -` reads stdin; `--jd-file PATH` reads a file; the not-written note
   prints on `updated`.
-- `--jd-file` naming a missing file, a non-UTF-8 file, an empty file and whitespace-only stdin
-  (rev-202): exit 1, a named message, and NO note created (the store is read back empty).
-  Witness: move the read after `create_lead`; the missing-file row finds a note.
+- `--jd-file` naming a missing file and a non-UTF-8 file (rev-202): exit 1, the named read
+  message, NO note created (the store read back empty). Witness: delete the `try` around the
+  read; the rows show a traceback in place of the named message (rev-301).
+- `--jd-file` naming an empty file, and whitespace-only stdin: exit 2 (the `ValueError` path
+  an invalid `--url` already takes), the field named in the message, no note. `Sluice.create_lead(job_description="  ")` raises `ValueError` naming
+  `job_description` with the store read back empty, and the MCP `create_lead` tool with a blank
+  `job_description` likewise creates nothing (arc-301). Witness: delete step 0's check; each
+  row finds a lead created at success with no section (rev-301).
+- `create_lead(job_description=None)` and the CLI without `--jd-file`: today's behaviour, no
+  append attempted.
 - MCP: `create_lead`'s pinned input set gains `job_description`; the result carries both
   fields.
 
