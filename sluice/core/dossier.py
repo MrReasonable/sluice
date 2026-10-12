@@ -219,13 +219,11 @@ class DossierCache:
         # which is the exact shape that disarmed the #81 relocation notice.
         return self.jd_arrived(cached)
 
-    def get_or_build(self, lead: dict) -> dict:
-        path = self._path(lead)
-        if self._fresh(path):
-            return json.loads(open(path, encoding="utf-8").read())
-        enrich = self.fetcher(lead)
+    def _assemble(self, lead: dict, enrich: dict) -> dict:
+        """The ONE builder of a dossier's key set, used by both of `get_or_build`'s arms,
+        so the supplied arm (#369) cannot grow a second copy that drifts from this one."""
         jd = enrich.get("jd", {})
-        dossier = {
+        return {
             "schema_version": 2,
             "lead_id": self.cache_key(lead),
             "company": lead.get("company", ""),
@@ -254,6 +252,21 @@ class DossierCache:
             "structured_data": enrich.get("structured_data", ""),
             "built_at": self.clock().isoformat(),
         }
+
+    def get_or_build(self, lead: dict, *, supplied_jd: str = "") -> dict:
+        # #369: a job description the lead note carries wins over the cache AND the
+        # fetcher, and is never written to the cache -- checked FIRST, before `_path` and
+        # `_fresh`, so an edit to the section takes effect on the next run and a stale
+        # cached fetch can never shadow it. A keyword rather than reading the note here:
+        # this cache is handed frontmatter dicts and must not learn what a note is.
+        # `jd_arrived` judges the result exactly as it judges a fetch, so `min_jd_chars`
+        # applies to a supplied JD too.
+        if supplied_jd:
+            return self._assemble(lead, {"jd": {"markdown": supplied_jd}})
+        path = self._path(lead)
+        if self._fresh(path):
+            return json.loads(open(path, encoding="utf-8").read())
+        dossier = self._assemble(lead, self.fetcher(lead))
         # Do NOT persist a fetch that produced no JD (#169). Caching one made every later
         # run serve the failure for the whole TTL: triage judged the lead on a document
         # nobody read, and because "unjudgeable" collapsed into `research`, the nightly
