@@ -65,6 +65,12 @@ def slim(dossier: dict, *, jd_limit: int = 4000) -> dict:
     if "markdown" in jd:
         jd["markdown"] = jd["markdown"][:jd_limit]
     out["jd"] = jd
+    # #378: the user's recorded replies ride into every judge prompt too, and grow with each
+    # answer, so they take the JD's bound. The TAIL is kept -- answers are in body order, so
+    # the newest come last -- and the cut is marked, so the judge knows earlier replies exist.
+    answers = out.get("followup_answers")
+    if isinstance(answers, str) and len(answers) > jd_limit:
+        out["followup_answers"] = "[earlier answers truncated]\n" + answers[-jd_limit:]
     return out
 
 

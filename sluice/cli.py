@@ -607,6 +607,10 @@ _TRIAGE_FILTERED_WORDS = (
     ("dismiss", "{n} dismissed"),
     ("needs_review", "{n} need{s} review"),
     ("skipped", "{n} skipped"),
+    # #378: THIS run's skips of leads marked asked. Worded apart from the standing
+    # "Research queue" line, which counts the whole queue, so the two never read as one
+    # number disagreeing with itself.
+    ("awaiting_reply", "{n} skipped while you wait for a reply"),
     # #300: names the OUTCOME rather than one cause of it. `unjudgeable` has two producers
     # now -- the `jd_arrived` pre-gate, where nothing came back at all, and a judge verdict
     # of `unjudgeable`, where a page came back and was not a posting (a bot-check, a

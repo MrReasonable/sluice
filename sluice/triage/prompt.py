@@ -46,6 +46,8 @@ _SCAFFOLD_TAIL = """## Inputs
 
 Each dossier is JSON. The `jd.markdown` (or `jd`) field is your PRIMARY evidence; read it carefully every time. `glassdoor` (rating, review_count) is a culture sanity check. If the posting is a recruiter listing that hides the client, default to research with "ask recruiter for client name and culture context" unless the JD is rich enough to judge.
 
+A dossier may also carry `followup_answers`: the candidate's own notes of replies to questions an earlier verdict asked them to put. Read them as facts about the role, alongside the JD. A question they answer is no longer open, so do not ask it again in `recommended_next_action`.
+
 Two different failures look alike here and must not be confused:
 
 - The JD field holds something that is NOT a job description at all: a bot-check or CAPTCHA interstitial, a cookie or consent wall, a sign-in page, a 404 or other error body, a search-results or listings index, or navigation chrome with no posting in it. There is nothing to judge, so do NOT score it. Return verdict `unjudgeable`, say in `concerns` what the page actually was, and put `relevance_score` at 0. This routes the lead back for a refetch rather than to a human, who can add nothing a retry will not.
