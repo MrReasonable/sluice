@@ -81,10 +81,13 @@ def cfg(**over):
 
 class Note:
     def __init__(self, fm=None,
-                 path="Job Applications/Job Leads/Example Alpha - SYNTHETIC-ROLE.md"):
+                 path="Job Applications/Job Leads/Example Alpha - SYNTHETIC-ROLE.md", body=""):
         self.fm = {"status": "shortlist", "company": "Example Alpha",
                    "role": "SYNTHETIC-ROLE", **(fm or {})}
         self.ref, self.slug = path, path.split("/")[-1][:-3]
+        # `body` is a LeadNote member, read by cv/engine.py for the note's own job
+        # description (#369).
+        self.body = body
 
 
 class FakeVault:

@@ -253,7 +253,8 @@ locations, titles, certificates, education, your name and contact block) and ren
 
 Per-result line to stderr: `cv: <status> <lead> served=<path> violations=<N> audit_flags=<N>
 slop=<N> voice_flags=<N> terms=<N> skills_dropped=<N> bullets_trimmed=<N> dossier_failed=<bool>
-skills_unreadable=<bool> attribution_check_off=<bool> artefacts_failed=<bool>`, followed by one
+jd_source=<note|fetched|none> skills_unreadable=<bool> attribution_check_off=<bool>
+artefacts_failed=<bool>`, followed by one
 indented line per finding, in that line's own field order and empty on a clean run (so
 nothing extra prints):
 
@@ -267,6 +268,10 @@ nothing extra prints):
 | `skills_dropped` | `DROPPED: '<pick>': <why>` | a skill pick that was not rendered: not one of your verified skill names or entry tools or skills, listed twice, or beyond the CV Layout's `skills_max`. Never a refusal; quoted from the model, so treat it as untrusted text |
 | `bullets_trimmed` | `TRIMMED: <slot> (<heading>): kept <N> of <M>` | bullets beyond a role's `bullets_max`, the first N kept. A trimmed bullet is never checked, so it never costs a retry |
 
+`jd_source` says where the job description came from; `note` is the lead note's own `## Job
+description` section (see "A job description in the lead note" below). It is empty for a lead
+refused before its job description was looked at.
+
 `attribution_check_off=True` means no verified experience entry declares `Tools:`, so the
 misattributed-tool check did not run. On a vault where some verified entry declares `Skills:`
 but none declares `Tools:`, `doctor --verbose` also lists a notice saying so; it is not a
@@ -275,7 +280,7 @@ warning, blocks nothing and does not fail `--strict`.
 A summary line follows when any dossier fetch failed and composition proceeded blind, a
 second when any CV was composed without the Skills Inventory because the corpus could
 not be read, and a third when any run's diagnostic artefacts (below) could not all be written
-or cleared.
+or cleared, and a fourth when any CV used the job description from the lead note.
 **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; the `--lead` result is `error`
 (the lead's own failure, such as a truncated reply, printed with its reason); any result is
@@ -297,6 +302,18 @@ and it reports through `main`'s usage-error path like a malformed config key. Ot
 including when a result is `needs-signoff` (the advisory audit withheld the send-ready pointer,
 or could not run at all -- see `cv signoff` below and #60 in `docs/ARCHITECTURE.md`).
 
+**A job description in the lead note.** A lead with no posting to fetch (a referral, an InMail)
+can carry its job description in its note, under a heading spelled exactly `## Job description`
+(any letter case; nothing else on the line). Everything below it, up to the next `#` or `##`
+heading, is used by `cv run` in place of a fetch:
+
+```markdown
+## Job description
+We are hiring a placeholder engineer to build example services.
+```
+
+A heading with anything else on its line, such as `## Job description:`, is not recognised.
+
 **Diagnostic artefacts.** Every run that reaches composition leaves what it needs to be
 diagnosed later in the lead's working directory, `<cv.output_dir>/<slug>/`, beside the PDF and
 never in `served_dir`. That includes a `--dry-run` and a run that renders nothing
@@ -309,7 +326,7 @@ role, lowercased, with each run of characters other than `a-z` and `0-9` turned 
 | `prompt.attempt-N.txt` | the exact prompt sent to the composer for attempt N: everything the composer was shown, of which only the source bundle is citable. Attempt 2 is the retry, so its prompt ends with attempt 1's findings |
 | `reply.attempt-N.txt` | attempt N's reply exactly as the backend returned it, before anything read it. `.txt` because a reply can carry chat around its JSON |
 | `cv.rendered.md` | the CV sluice built, in the canonical text form, each bullet ending with its ` [ID]` citations. Written before the audit, so a dry run has one too; the PDF itself comes from the renderer |
-| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `skills_dropped`, `bullets_trimmed`, `attribution_check_off`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
+| `run.json` | `status` (the statuses above, or `error` when the run raised), `dry_run`, `attempt_count`, `attempts` (each with any `compose_error`), `retained_attempt` (the draft that was rendered, or would have been), `backend`, `dossier_failed`, `jd_source`, `skills_unreadable`, `bundle_entry_ids`, `violations`, `audit_flags`, `slop`, `voice_flags`, `terms`, `skills_dropped`, `bullets_trimmed`, `attribution_check_off`, `rendered_pdf`, `served`, `error`, `started_at`/`finished_at`, `run_id`, `files` and `artefact_errors` |
 
 A directory holding a 3.x run's `cv.attempt-N.md` files has them cleared by the next run, like the rest of the set.
 

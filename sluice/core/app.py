@@ -2265,6 +2265,7 @@ class Sluice:
                              "backend-unavailable" if e.transient else "error",
                              error=str(e),
                              dossier_failed=getattr(e, "dossier_failed", False),
+                             jd_source=getattr(e, "jd_source", ""),
                              artefacts_failed=getattr(e, "artefacts_failed", False))]
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
@@ -2279,6 +2280,7 @@ class Sluice:
             # wrapper) and read back here for the same reason.
             return [CvResult(notes[0].ref, "error",
                              dossier_failed=getattr(e, "dossier_failed", False),
+                             jd_source=getattr(e, "jd_source", ""),
                              artefacts_failed=getattr(e, "artefacts_failed", False))]
 
     def sign_off_cv(self, *, lead, accept=True, confirm=None, require_pending=None):

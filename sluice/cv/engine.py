@@ -36,9 +36,11 @@ from dataclasses import dataclass, field
 from datetime import date
 from functools import partial
 
+from sluice.core import jdsection
 from sluice.core import status as _status
 from sluice.core.backends import BackendError
 from sluice.core.candidate import contact_block, full_name
+from sluice.core.dossier import jd_text
 from sluice.core.leads import (FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
                                framing_entries, index_by_slug)
 from sluice.core.layout import asks_for_bullets, build_slots, no_citable_slot
@@ -137,6 +139,13 @@ class CvResult:
     # visibility: without it, "status: rendered" is indistinguishable from a CV genuinely
     # tailored to a real job description.
     dossier_failed: bool = False
+    # #369: where this CV's job description TEXT came from -- "note" (the lead note's own
+    # `## Job description` section, sluice/core/jdsection.py), "fetched" (a fetch returned
+    # text, even text below `min_jd_chars`), "none" (no text at all) -- or "" when the lead
+    # never reached the dossier step (an early refusal). Whether the text SUFFICED is
+    # `dossier_failed`'s job, not this one's. Reported so a JD taken from the note is never
+    # invisible. Stamped onto the exception like `dossier_failed`, for the same reason.
+    jd_source: str = ""
     # #165: the Skills Inventory could not be READ (a symlinked corpus, a non-UTF-8 entry)
     # and the CV was composed without its framing section. Visibility, never control flow --
     # the shape `dossier_failed` above established, and it carries the same obligation: a
@@ -264,10 +273,24 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
     # shown exactly what the composer was given. The roster of keys is
     # `sluice.core.leads.FRAMING_KEYS`, never hand-typed again here.
     framing = _compose.framing_lines(*(fm.get(key, "") for key in FRAMING_KEYS))
+    # #369: the note's own job description, read BEFORE the dossier try. Inside it, a
+    # reader bug would be swallowed and reported as "the job description fetch failed";
+    # out here it reaches run_batch's per-lead catch-all as `error`, which is what it is.
+    supplied, sections = jdsection.read(note.body)
+    if sections > 1:
+        _log.warning("cv: %s has %d %r sections; the first was used",
+                     note.ref, sections, jdsection.HEADING)
+    # A section counts only when it has text (rev-201): a bare heading is no section, and
+    # the keyword is passed ONLY then, so every cache double written as
+    # `get_or_build(self, fm)` keeps receiving today's exact call.
     jd, dossier_failed = "", False
+    jd_source = "note" if supplied else "none"
     try:
-        d = dossier_cache.get_or_build(fm)
+        d = (dossier_cache.get_or_build(fm, supplied_jd=supplied) if supplied
+             else dossier_cache.get_or_build(fm))
         jd = (d.get("jd") or {}).get("markdown", "")
+        if not supplied and jd_text(d):
+            jd_source = "fetched"
         # A fetch that SUCCEEDED and produced no JD is the same fact as one that raised
         # (#18), so it earns the same flag: a CV built from the verified bundle alone is
         # degraded rather than fabricated, and the flag is what tells the user which. It is
@@ -277,6 +300,12 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # has no text at all. Triage abstains on the same predicate because judging page
         # chrome spends a judge call and writes a verdict nobody can trust; composition has
         # already decided to build a CV.
+        #
+        # #369: the gate still checks every bullet against the bundle either way, so a
+        # short JD costs tailoring QUALITY, not correctness -- which is why the CV is
+        # composed. It is HELD rather than served under `cv.blind_hold` (see the blockers
+        # below), because a blind CV looks exactly like a tailored one at the moment it
+        # is sent.
         if not dossier_cache.jd_arrived(d):
             dossier_failed = True
     except Exception as e:
@@ -286,7 +315,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
     # Everything from here on can raise for reasons unrelated to the dossier (a render
     # failure, a backend timeout mid-compose, a store write conflict), and run_batch's
     # per-lead catch-all then builds the result from the exception alone. `dossier_failed`
-    # is a LOCAL, gone once the stack unwinds, so the handler at the bottom stamps it onto
+    # and `jd_source` are LOCALS, gone once the stack unwinds, so the handler at the bottom stamps it onto
     # the exception -- the one place both are in scope -- and re-raises unchanged.
     try:
         # The experience read is deliberately NOT wrapped: it is the gate's only citable
@@ -348,7 +377,8 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # (tests/test_cv_run_artefacts.py::test_a_run_that_fails_before_composing_leaves_the_last_diagnosis_alone).
         out_dir = f"{cvcfg.output_dir}/{_slug(company, role)}"
         record.begin(out_dir, lead=note.slug, entry_ids=[e["id"] for e in b["entries"]],
-                     dossier_failed=dossier_failed, skills_unreadable=skills_unreadable)
+                     dossier_failed=dossier_failed, jd_source=jd_source,
+                     skills_unreadable=skills_unreadable)
 
         retry_findings = retry_drops = None
         violations, slop_err, slop_msgs, term_msgs, voice_flags = [], [], [], [], []
@@ -494,7 +524,8 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             return CvResult(
                 note.ref, "skipped-gate", violations=violations, slop=slop_err + slop_msgs,
                 terms=term_msgs, voice_flags=voice_flags, backend=backend_used,
-                dossier_failed=dossier_failed, skills_unreadable=skills_unreadable,
+                dossier_failed=dossier_failed, jd_source=jd_source,
+                skills_unreadable=skills_unreadable,
                 skills_dropped=list(selection.skills_dropped) if selection else [],
                 bullets_trimmed=list(selection.bullets_trimmed) if selection else [],
                 attribution_check_off=attribution_off)
@@ -510,7 +541,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         selection, slop_msgs, term_msgs, voice_flags = best
         report = dict(slop=slop_msgs, terms=term_msgs, voice_flags=voice_flags,
                       backend=backend_used, dossier_failed=dossier_failed,
-                      skills_unreadable=skills_unreadable,
+                      jd_source=jd_source, skills_unreadable=skills_unreadable,
                       skills_dropped=list(selection.skills_dropped),
                       bullets_trimmed=list(selection.bullets_trimmed),
                       attribution_check_off=attribution_off)
@@ -597,6 +628,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
                         **report)
     except Exception as e:
         e.dossier_failed = dossier_failed
+        e.jd_source = jd_source
         raise
 
 
@@ -723,6 +755,7 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
                              note.ref, e)
                 results.append(CvResult(note.ref, "backend-unavailable", error=str(e),
                                         dossier_failed=getattr(e, "dossier_failed", False),
+                                        jd_source=getattr(e, "jd_source", ""),
                                         artefacts_failed=getattr(e, "artefacts_failed",
                                                                  False)))
                 break
@@ -735,8 +768,10 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
             # unrelated reason. `getattr(..., False)` also covers an exception raised
             # by code that predates #18 and so never carries the attribute.
             # `artefacts_failed` crosses the same way, stamped by run_one's wrapper.
+            # `jd_source` crosses the same way.
             results.append(CvResult(note.ref, "error",
                                     dossier_failed=getattr(e, "dossier_failed", False),
+                                    jd_source=getattr(e, "jd_source", ""),
                                     artefacts_failed=getattr(e, "artefacts_failed", False)))
         # needs-signoff counts toward --limit alongside rendered/dry-run: a held lead did
         # the full (expensive) compose + render + serve; only the pointer was withheld, so

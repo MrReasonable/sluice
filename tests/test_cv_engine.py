@@ -29,10 +29,12 @@ _COMPOSE = "Compose a tailored CV for"
 
 
 class Note:
-    def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md"):
+    def __init__(self, fm, path="Job Applications/Job Leads/Acme - Analyst.md", body=""):
         # A store hands back an opaque `ref` and the slug it issued; it never hands
-        # back a path for the caller to parse.
+        # back a path for the caller to parse. `body` is a LeadNote member, read by
+        # cv/engine.py for the note's own job description (#369).
         self.fm = fm; self.ref = path; self.slug = path.split("/")[-1][:-3]
+        self.body = body
 
 class FakeVault:
     def __init__(self, entries, notes=None, candidate=DEFAULT_CANDIDATE,

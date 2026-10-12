@@ -1119,6 +1119,16 @@ def test_cv_run_tool_reports_whether_the_runs_artefacts_were_written(
     assert out["artefacts_failed"] is failed
 
 
+@pytest.mark.parametrize("source", ["note", "fetched", "none", ""])
+def test_cv_run_tool_reports_jd_source(monkeypatch, tmp_path, source):
+    from sluice.cv.engine import CvResult
+    result = CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+                      served="Example_CV_deadbeef.pdf", jd_source=source)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+    out = cv_run(_cv_app(Vault(str(tmp_path))), "Example Foundry - Analyst")
+    assert out["jd_source"] == source
+
+
 def test_cv_run_tool_bad_backend_raises_value_error_naming_valid_choices(tmp_path):
     """decision 14: `backend` is unvalidated a SECOND time in this module (no
     duplicate copy of the choice set), but the resulting `BackendError` from

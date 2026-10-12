@@ -12,6 +12,8 @@ Mirrors this repo's `test_<command>_cli.py` convention (`test_apply_record_cli.p
 a canned result so this file tests `cmd_cv_run`'s OWN printing, not cv/engine.py's retry
 machinery -- that is already pinned directly against `run_one` in tests/test_cv_engine.py.
 """
+import pytest
+
 from sluice.cli import _build_parser, cmd_cv_run
 from sluice.core.app import Sluice
 from sluice.core.config import Config
@@ -322,3 +324,18 @@ def test_a_batch_that_rendered_a_lead_and_then_refused_one_still_exits_1(monkeyp
     args = _build_parser().parse_args(["cv", "run", "--all-shortlist"])
     assert cmd_cv_run(args, Config()) == 1
     assert f"cv: {_LAYOUT_REFUSAL}" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("source, counted", [("note", True), ("fetched", False),
+                                             ("none", False)])
+def test_cmd_cv_run_prints_jd_source_and_counts_note_jds(monkeypatch, tmp_path, capsys,
+                                                         source, counted):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    result = CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md", "rendered",
+                      served="Example_CV_deadbeef.pdf", jd_source=source)
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: [result])
+    assert cmd_cv_run(_args(), Config()) == 0
+    err = capsys.readouterr().err
+    assert f"jd_source={source} " in err
+    line = "cv: 1 CV(s) used the job description from the lead note"
+    assert (line in err) is counted

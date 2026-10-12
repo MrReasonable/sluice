@@ -606,9 +606,8 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> di
     (non-dry-run) compose: this tool's contract deliberately excludes `dry_run`
     (decision 14). The composed CV text itself is never returned in the response,
     only violations/audit_flags/slop/voice_flags/terms/skills_dropped/bullets_trimmed/
-    served/dossier_failed/skills_unreadable/attribution_check_off/artefacts_failed -- it's
-    an LLM
-    document derived from an attacker-controlled job description, and echoing it back
+    served/dossier_failed/jd_source/skills_unreadable/attribution_check_off/artefacts_failed
+    -- it's an LLM document derived from an attacker-controlled job description, and echoing it back
     would be a large, unnecessary step past what the response needs to convey. Write
     tool.
 
@@ -647,6 +646,7 @@ def cv_run(sluice: Sluice, lead: str, backend: _BackendName | None = None) -> di
     # below: it is a verdict about this run, and a client told nothing would assume the
     # per-lead diagnostic files (cv/artefacts.py) exist.
     out = {"outcome": r.status, "served": r.served, "dossier_failed": r.dossier_failed,
+           "jd_source": r.jd_source,
            "skills_unreadable": r.skills_unreadable,
            # #364 spec §6.6: whether the misattributed-tool check ran is REPORTED, never left
            # to infer -- a boolean verdict about this run, like the two beside it.
@@ -1352,8 +1352,8 @@ def build_server(config, write: bool = False):
             configured provider for this call only; omit it to use the configured one.
             There is no fallback provider. The composed text
             itself is never returned, only violations/audit_flags/slop/voice_flags/
-            terms/skills_dropped/bullets_trimmed/served/dossier_failed/skills_unreadable/
-            attribution_check_off/artefacts_failed."""
+            terms/skills_dropped/bullets_trimmed/served/dossier_failed/jd_source/
+            skills_unreadable/attribution_check_off/artefacts_failed."""
             return cv_run(holder.sluice, lead, backend=backend)
 
         @mcp_server.tool(name="cv_signoff")

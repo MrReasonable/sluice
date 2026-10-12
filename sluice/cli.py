@@ -1328,6 +1328,7 @@ def cmd_cv_run(args, config) -> int:
               f"skills_dropped={len(r.skills_dropped)} "
               f"bullets_trimmed={len(r.bullets_trimmed)} "
               f"dossier_failed={r.dossier_failed} "
+              f"jd_source={r.jd_source} "
               f"skills_unreadable={r.skills_unreadable} "
               f"attribution_check_off={r.attribution_check_off} "
               f"artefacts_failed={r.artefacts_failed}",
@@ -1411,6 +1412,11 @@ def cmd_cv_run(args, config) -> int:
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
         print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
+    # #369: a JD taken from the lead note is reported, never invisible.
+    from_note = sum(1 for r in results if r.jd_source == "note")
+    if from_note:
+        print(f"cv: {from_note} CV(s) used the job description from the lead note",
+              file=sys.stderr)
     # #165, the same shape one line down: a broken Skills Inventory degrades rather than
     # binning the lead, so `status: rendered` would otherwise be indistinguishable from a
     # CV genuinely framed by the candidate's own skills.
