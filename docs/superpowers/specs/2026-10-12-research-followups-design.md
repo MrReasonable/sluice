@@ -8,7 +8,8 @@ name, comp band`). Nothing delivers those instructions as a list, nothing record
 carried out, and the nightly `triage run` (whose default statuses include `research`) re-judges
 each lead to the same verdict because nobody asked. The triage push names at most
 `cli._PUSH_NAME_CAP` leads per run, shortlist first, so a growing research queue is seen as a small
-shifting sample and never as a total. The owner's vault held 118 such leads, the oldest 50 days.
+shifting sample and never as a total. The owner's vault held over a hundred such leads, the oldest
+seven weeks old.
 
 ## Decisions (owner, 2026-10-12)
 
@@ -25,104 +26,176 @@ shifting sample and never as a total. The owner's vault held 118 such leads, the
 
 | What | Where | Written by |
 | --- | --- | --- |
-| The verdict's `Next:` instruction | frontmatter `triage_next` | `triage/apply.py`, replaced on every verdict |
-| Asked, awaiting a reply | frontmatter `followup_asked: YYYY-MM-DD` | `leads asked`; cleared by `leads answer` |
+| The verdict's `Next:` instruction | frontmatter `triage_next` | `triage/apply.py`, on every verdict |
+| Asked, awaiting a reply | frontmatter `followup_asked: YYYY-MM-DD` | `leads asked`; blanked by `leads answer` and by every verdict |
 | The reply | body section(s) `## Follow-up answers` | `leads answer`, or by hand |
 
-`triage_next` follows `triage_concerns` (#329) exactly: its own key, `triage_`-prefixed because it
+**`triage_next`** sits beside `triage_concerns` (#329): its own key, `triage_`-prefixed because it
 is replaced on every verdict and must not collide with a key a person might use, written through
-`frontmatter_safe` and `preserve_block_values` like its sibling. It is written for every verdict,
-blank when the model gave no action, so a stale instruction never outlives the verdict that
-produced it. `relevance_notes` keeps its `Next:` prose unchanged. Existing leads carry the text
-only in that prose; no parser backfills it. Every `research` lead is re-judged by the next default
-`triage run`, which writes the key; until then the worklist prints `(no Next: recorded yet)`.
+`frontmatter_safe`. It is written on every verdict, blank when the model gave no action, so a stale
+instruction never outlives the verdict that produced it. `relevance_notes` keeps its `Next:` prose
+unchanged. Existing leads carry the text only in that prose; no parser backfills it. Every
+`research` lead is re-judged by the next default `triage run`, which writes the key; until then the
+worklist prints `(no Next: recorded yet)`.
 
-The answers section is read by a reader in `core/followups.py` that shares `core/jdsection.py`'s
-fence handling and `breaks_section` rule (the same grammar, generalised to take the heading, so a
-fence or a level-1/2 heading means the same thing in both sections). Unlike the job description,
-which takes the FIRST section, answers concatenate EVERY `## Follow-up answers` section in body
-order: each `leads answer` appends its own section, and a reader that took one would silently
-drop every later reply.
+Block-value preservation for the two new keys is NOT obtained by adding them to
+`core/leads.py::FRAMING_KEYS`. That roster is the CV composer's framing (`cv/engine.py`), the
+`needs_signoff` framing entries and MCP's framing label, so a research instruction would reach every
+CV compose prompt. `triage/apply.py::_HAND_EDITABLE_KEYS` becomes `frozenset(FRAMING_KEYS) |
+{"triage_next", "followup_asked"}`, its comment is corrected to say it is the framing roster PLUS
+triage-only keys, and `FRAMING_KEYS` is unchanged.
 
-### Commands (all under `leads`)
+**`followup_asked` is blanked by every verdict** `apply_verdict` writes. An asked `research` lead is
+never judged (see Triage), so a verdict landing on a stamped lead means a human moved it off
+`research` and triage judged it afresh; without the blank, a later `research` verdict would leave
+the old stamp in place and hide the lead again with nobody having asked.
 
-**`leads followups [--json]`** -- read-only. Every lead at `research`, in two groups: `Never
-asked` and `Asked, waiting`. Each row: slug, company and role, age in days from `first_seen`, and
-`triage_next`; waiting rows add days since `followup_asked`. Newest first within a group. The
-footer names the total and, when `lead_ttl_days` is 0, says `leads expire` with `lead_ttl_days`
-ages these out. No `--dry-run` (it writes nothing) and no flag to act, matching the leads-pass
-rule that a report needs no preview flag. The facade method behind it, `Sluice.followups()`, is
-the ONE reader the digest uses too, so the command and the push cannot count differently.
+**The answers section.** Each `leads answer` appends:
 
-**`leads asked <slug>`** -- stamps `followup_asked` with today's date. Writes unconditionally on
-every call (like `leads dismiss`): what it writes is the user's own action. `require_status`
-`{"research"}` inside the CAS transform; a lead at any other status is refused by name and
-nothing is written. Re-stamping an asked lead updates the date (asked again).
+```
+## Follow-up answers
 
-**`leads answer <slug> --text TEXT`** -- records a reply and returns the lead to the queue. Two
-writes, in this order:
+<!-- sluice:followup-answer <sha256 of the text, first 12 hex> -->
+YYYY-MM-DD: <text, breaking lines demoted to ###>
+```
 
-1. `Store.append_body_section(ref, tag, section)` -- the existing idempotent body writer. The
-   section is `## Follow-up answers <tag>` then the date and the text, rendered with the same
-   heading demotion as `jdsection.render` so pasted text cannot end the section early. `tag` is
-   `<!-- sluice:followup-answer <sha256 of the text, 12 hex> -->`, so re-running the same
-   command appends nothing.
-2. `update_fields(ref, {"followup_asked": ""}, require_status={"research"})`.
+The heading line is bare, exactly like a hand-typed one, and the per-answer tag sits on its own
+line inside the section. `Store.append_body_section`'s idempotence only needs the tag somewhere in
+the fresh file, so re-running the same answer appends nothing.
 
-Not one CAS write: that would need a body-append parameter on `update_fields`, a new write shape
-for a case the two existing writers already cover. The order makes every partial state safe and
-recoverable by re-running the same command: if (2) fails, the answer is in the note, the lead
-stays skipped, the command exits non-zero naming the step, and a re-run appends nothing and
-retries the clear. The status guard is checked before (1) from the snapshot to give a clean
-refusal, and enforced CAS-fresh in (2). Text is required and non-empty; a blank `--text` is a
-usage error.
+The reader is a generalisation of `core/jdsection.py`, not a copy: a public
+`jdsection.sections(body, heading, tag="") -> list[str]` returns the text of EVERY section whose
+heading line is `heading` (optionally followed by the fixed `tag`), with the existing fence and
+`breaks_section` rules. `read()` becomes `sections(body, HEADING, TAG)` reduced to the first text
+and the count, its behaviour unchanged and pinned by the existing jdsection tests. The module
+docstring changes from "the ONE grammar of `## Job description`" to "the one grammar of a lead
+note's body sections". `core/followups.py::answers(body)` calls `sections(body, ANSWERS_HEADING)`,
+drops the tag lines (`^<!-- sluice:followup-answer [0-9a-f]{12} -->$`), and joins every section in
+body order: each answer is its own section, and taking the first would silently drop every later
+reply. `render_answer(text, date)` lives beside it and uses `jdsection`'s demotion, so the writer
+and the reader share one grammar.
 
-An unknown slug to `asked` or `answer` is refused by name, and nothing is written.
+**One predicate.** `core/followups.py::awaiting_reply(fm) -> bool` is status `research` (after
+`status.normalize`) and `followup_asked` non-blank after stripping. Both the worklist grouping and
+the triage skip call it, so the two cannot disagree. Residual, stated: a hand-typed BLOCK value
+under `followup_asked` reads blank (the store's single-line read), so such a lead is judged rather
+than skipped. That is the visible direction; nothing writes over the block value, since every
+writer of the key passes it in `preserve_block_values`.
+
+### Facade and commands
+
+The writers live on `Sluice`, like `dismiss_lead` and `create_lead`, so a later MCP tool drives the
+same code. Both resolve `lead` by EXACT store-issued slug the way `dismiss_lead` does, refusing an
+unknown slug and an ambiguous one by name. Dates come from `Sluice`'s injected `today` callable
+(`core/app.py::_today` by default), never the wall clock directly.
+
+**`Sluice.mark_asked(lead) -> outcome`** writes `followup_asked = today` via `update_fields` with
+`require_status={"research"}` and `preserve_block_values={"followup_asked"}`. On `False` the fresh
+note is re-read and classified: status no longer `research` -> `refused` (names the status);
+`followup_asked` already today -> `unchanged` (success); a block value -> `refused` (names the key).
+A different earlier date is overwritten: asked again.
+
+**`Sluice.record_answer(lead, text) -> outcome`** refuses a blank `text` and, from the snapshot, a
+lead not at `research`, writing nothing in either case. Then two writes, in this order:
+
+1. `Store.append_body_section(ref, tag, render_answer(text, today))`. `False` means the tag is
+   already in the note (this answer was recorded before) and is not an error.
+2. `update_fields(ref, {"followup_asked": ""}, require_status={"research"},
+   preserve_block_values={"followup_asked"})`. On `False` the fresh note is re-read: blank
+   `followup_asked` -> success (a re-run, or a lead never asked); status no longer `research` ->
+   `answered-not-cleared`, a non-zero outcome naming the status, with the answer kept in the note.
+
+Not one compare-and-set write: that would need a body-append parameter on `update_fields`, a new
+write shape for a case the two existing writers already cover. Every partial state is safe and a
+re-run of the same command completes it. Residual, stated: step 1 is guarded by the snapshot only
+(`append_body_section` has no status guard), so a lead that enters the application lifecycle in the
+instant between the snapshot and step 1 gets the user's own answer appended to its body. No status
+changes and step 2 abstains; the outcome names the status the lead moved to.
+
+**`leads followups [--json]`** -- read-only, over `Sluice.followups()`. Every lead at `research`,
+in two groups, `Never asked` and `Asked, waiting` (by `awaiting_reply`). Each row: slug, company and
+role, age in days from `first_seen`, and `triage_next`; waiting rows add days since
+`followup_asked`. An unparseable date prints its age as `?` and is never raised. Newest first
+within a group. The footer gives the total and, when `lead_ttl_days` is 0, says `leads expire` with
+`lead_ttl_days` ages these out. No `--dry-run` (it writes nothing), matching the rule that a
+report needs no preview flag.
+
+**`leads asked --lead SLUG`** and **`leads answer --lead SLUG --text TEXT`** -- thin front-ends over
+the two facade methods, `--lead` with the same help text as `leads dismiss` (required, exact
+store-issued slug). Both write unconditionally on every call, like `leads dismiss` and `leads add`:
+what they write is the user's own action or words. Each prints its outcome and exits non-zero on
+`refused` and `answered-not-cleared`.
 
 ### Triage
 
-- **Skip.** In the triage engine's selection, a lead at `research` whose `followup_asked` is
-  non-blank is not sent to classify or judge. It is counted under a new `counts` key,
-  `awaiting_reply`, rendered in `_TRIAGE_FILTERED_WORDS` as `{n} awaiting a reply`. Only
-  `research` is skipped: a stale stamp on a lead whose status a human changed by hand does not
-  hide it from triage.
-- **Answers reach the judge.** When a lead's body has answers, the engine adds
-  `followup_answers` (the concatenated text) to that lead's dossier COPY after the cache, the same
-  place per-lead fields are added, so the cache key and cached JD are unchanged. `slim()` keeps
-  the field. The system prompt gains one paragraph: `followup_answers`, when present, are the
-  candidate's own notes of replies to earlier research questions; treat them as facts about the
-  role alongside the JD. The paragraph names no role, culture or preference
-  (`test_shipped_prompt_expresses_no_role_or_culture_preference` still applies).
+- **Skip.** In the engine's selection, a lead for which `awaiting_reply(fm)` holds is not sent to
+  classify or judge. It is counted under a new `counts` key, `awaiting_reply`, rendered in
+  `_TRIAGE_FILTERED_WORDS` as `{n} awaiting a reply`. Only `research` is skipped.
+- **Answers reach the judge.** For a lead whose body has answers, the engine adds
+  `followup_answers` to THAT LEAD'S OWN dossier copy, after `get_or_build` and after `_fan`, on
+  both paths (fetched and section-sourced). Never before `get_or_build`, which would persist the
+  answers into the shared cache file, and never onto a result shared between leads with one cache
+  key. `slim()` keeps the field. The system prompt gains one paragraph stating the mechanics only:
+  `followup_answers`, when present, are the candidate's own notes of replies to earlier research
+  questions, to be read as facts about the role alongside the JD. It carries no example answer
+  content -- no rate, location, contract type or role -- since the prompt-neutrality guard's term
+  list is narrow and would not catch one.
 - **Digest.** After a run, `cmd_triage_run` calls `Sluice.followups()` and, when the research
-  queue is non-empty, adds one line separate from the per-run names:
-  `118 research leads awaiting follow-up (40 asked), oldest 50 days.` It is computed from the
-  vault, not from the run, so the name cap cannot hide it and a run with `--status new` still
-  reports it. It prints on `--dry-run` too: the queue is a fact about the vault, and reading
-  it writes nothing. A failure to read it is logged and the line omitted; it
-  never fails the run, which has already written.
+  queue is non-empty, adds one line separate from the per-run names, e.g. `12 research leads
+  awaiting follow-up (5 asked), oldest 31 days.` It is computed from the vault, not the run, so the
+  name cap cannot hide it and a run with `--status new` still reports it. It prints on `--dry-run`
+  too: the queue is a fact about the vault, and reading it writes nothing. A failure to read it is
+  logged and the line omitted; it never fails the run, which has already written.
+
+### MCP
+
+No new tools. `get_lead` already returns the keys and the body, but
+`mcpserver.py::_GET_LEAD_CONTENT_WARNING` labels everything outside `FRAMING_KEYS` as third-party
+scraped content; it gains one sentence naming the `## Follow-up answers` section as the user's own
+notes, the mislabel #329 treated as a defect.
 
 ### Out of scope
 
-- MCP tools for asked/answer (the CLI covers the owner's workflow; `get_lead` already shows the
-  frontmatter keys).
+- MCP tools for asked/answer (the facade methods make them a thin addition later).
 - A research-specific TTL (existing `lead_ttl_days` covers ageing).
 - Backfilling `triage_next` from `relevance_notes` prose.
 
 ## Testing
 
+Fixtures are synthetic: titles from the seeded-faker `titles` fixture, synthetic company names, and
+every count asserted is built by the test itself.
+
 - `triage/apply.py`: `triage_next` written, replaced, blanked when the action is empty, dropped
-  with a warning when unsafe, preserved when hand-typed as a block value.
-- `core/followups.py`: multiple sections concatenated in order; fenced headings ignored; a `## `
-  heading ends a section; a heading with trailing text is not the section.
-- `leads asked`: stamps; refuses a non-research lead and writes nothing; the CAS re-check holds
-  when status changes between snapshot and write (race test with the existing harness pattern);
+  with a warning when unsafe, preserved when hand-typed as a block value; `followup_asked` blanked
+  by a verdict; `triage_next` and `followup_asked` are NOT in `FRAMING_KEYS` and never reach the
+  compose prompt; the existing write-loop roster guard in `tests/test_apply.py` carries the
+  carve-out.
+- `core/jdsection.py`: `read()` unchanged under the existing tests; `sections()` returns every
+  section in order, honours fences, stops at a level-1/2 heading.
+- `core/followups.py`: a `render_answer` output round-trips through `answers()`; several answers
+  concatenate in body order; tag lines are dropped; a heading with other trailing text is not the
+  section; `awaiting_reply` on each status, blank, whitespace and stamped values.
+- `Sluice.mark_asked`: stamps the injected date; refuses a non-research lead, an unknown slug and an
+  ambiguous slug, writing nothing; same-day re-run is `unchanged`; preserves a block-valued
+  `followup_asked`; status changed between snapshot and write refuses (the monkeypatched shape of
+  `tests/test_leads_dismiss.py::test_cas_proof_refuses_on_a_status_that_changed_between_resolve_and_write`);
   other keys and the body byte-for-byte intact.
-- `leads answer`: appends and clears; a re-run appends nothing; a failed clear exits non-zero
-  with the answer kept; pasted `## ` lines demoted; refusal on a non-research lead writes nothing.
-- Engine: an asked research lead is not judged and is counted `awaiting_reply`; a non-research
-  lead with a stale stamp is judged; answers appear in the judge prompt and not in the cache key.
-- Digest: the standing line renders from `followups()`, with singular/plural, omitted when empty,
+- `Sluice.record_answer`: appends and clears; a re-run appends nothing and succeeds; a never-asked
+  lead succeeds; a blank text and a non-research lead write nothing; pasted `## ` lines demoted;
+  status leaving `research` between step 1 and step 2 gives `answered-not-cleared`, non-zero, the
+  answer kept and `followup_asked` and status untouched (witness: delete step 2's
+  `require_status`).
+- Engine: an awaiting lead is not judged and is counted `awaiting_reply`; a non-research lead with
+  a stale stamp is judged; the stamp -> hand move to `new` -> re-judged `research` sequence leaves
+  the lead judged next run; answers reach the judge prompt for a fetched lead and for a
+  section-sourced lead; `test_followup_answers_never_reach_the_dossier_cache_file` reads the cache
+  JSON on disk (witness: move the insertion ahead of `get_or_build`); two leads sharing a url, only
+  the answered one carries answers.
+- Digest: the standing line renders from `followups()`, singular and plural, omitted when empty,
   present on `--status new` and on a dry run; a read failure omits it without failing the run.
-- `leads followups`: grouping, ordering, ages, the `--json` shape, the `lead_ttl_days` hint.
+- `leads followups`: grouping, ordering, ages from the injected date, `?` for an unparseable date,
+  a non-research lead with a stale stamp excluded, the `--json` shape, the `lead_ttl_days` hint.
 - Docs: USAGE, README commands table, CONFIGURATION (no new config keys -- stated), ARCHITECTURE
-  (the two keys and the section), TROUBLESHOOTING ("research leads keep coming back").
+  (the keys, the section, the jdsection generalisation, and the unconditional-writer paragraph
+  reworded as the property "writes what the user typed" with no count), `.rulesync/rules/CLAUDE.md`
+  (the same reword, then regenerate), TROUBLESHOOTING ("research leads keep coming back").
