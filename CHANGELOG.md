@@ -40,6 +40,48 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.6.0](https://github.com/MrReasonable/sluice/compare/v4.5.0...v4.6.0) (2026-10-12)
+
+
+### Changed
+
+Research leads now come with a worklist (`job-sluice leads followups`, `leads mark-asked`,
+`leads answer`). Three things change on an existing install without you running any of
+the new commands:
+
+- Every triage verdict now writes a new frontmatter key, `triage_next`: the question a
+  `research` verdict asks you to put, or blank. Notes gain the key the next time they are
+  judged. A value you type there over several lines is left alone.
+- The triage digest gains a standing `Research queue:` line counting every research lead,
+  how many you have marked asked, and how long ago the oldest was first seen. It is
+  omitted when there are no research leads.
+- Text written into a lead note's `## Job description` section (`leads add --jd-file`,
+  the MCP `create_lead` tool) now has an unclosed code fence closed for it, so a pasted
+  posting can no longer turn the rest of the note into code.
+
+No config keys are added. A lead you mark asked is skipped by `triage run` until you
+record the answer; nothing is skipped until you do.
+
+
+### Features
+
+* **core:** mark a research lead asked and record its answer ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([a218a69](https://github.com/MrReasonable/sluice/commit/a218a697c5d7ea446cd8efafea45f5792b9d855e))
+* **core:** read and write research follow-up answers ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([41e8443](https://github.com/MrReasonable/sluice/commit/41e8443e0720a046c2ab74a53258af45c1babb42))
+* **leads:** list research follow-ups, mark them asked and record answers ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([b7c9e01](https://github.com/MrReasonable/sluice/commit/b7c9e01382f5f8ba584cda126d47da9ac9e45dc5))
+* **mcp:** label the follow-up answers section as the user's own notes ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([f338d52](https://github.com/MrReasonable/sluice/commit/f338d52d9579bcab27889392a1e9392e21e5efc1))
+* **triage:** record each verdict's next action and clear a stale asked stamp ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([2a3d958](https://github.com/MrReasonable/sluice/commit/2a3d9584a532e5f26a694d0713a9376b9cc28319))
+* **triage:** skip leads awaiting a reply and show the judge recorded answers ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([b5647d3](https://github.com/MrReasonable/sluice/commit/b5647d3a63e5148dd9b190e394985b71e5ff928a))
+
+
+### Documentation
+
+* describe the research follow-up worklist ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([feaa83c](https://github.com/MrReasonable/sluice/commit/feaa83c287c48ee55a271c127e27ee7f496312ad))
+* design the research follow-up worklist ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([c1c732d](https://github.com/MrReasonable/sluice/commit/c1c732dfb49b4261536a5db4648cad2ecd4ec857))
+* fold the second spec review into the follow-up design ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([c87263e](https://github.com/MrReasonable/sluice/commit/c87263e7c92c93085ebcea939d1cd205efc79d18))
+* fold the spec review into the follow-up design ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([d599290](https://github.com/MrReasonable/sluice/commit/d5992906bb9e30c09cee9561eaa22ad8cf8ed64a))
+* fold the third spec review into the follow-up design ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([0a110a9](https://github.com/MrReasonable/sluice/commit/0a110a9b564eb1286819cc55d648065d1d2f8e16))
+* plan the research follow-up worklist ([#378](https://github.com/MrReasonable/sluice/issues/378)) ([7237f3f](https://github.com/MrReasonable/sluice/commit/7237f3fc07339097099bb85da92276d2452976fb))
+
 ## [4.5.0](https://github.com/MrReasonable/sluice/compare/v4.4.1...v4.5.0) (2026-10-12)
 
 
