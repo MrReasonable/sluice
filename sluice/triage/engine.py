@@ -36,6 +36,7 @@ from sluice.core.leads import (
     is_placeholder_company,
 )
 from sluice.core import fx
+from sluice.core import followups
 from sluice.core import jdsection
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
@@ -87,7 +88,7 @@ _FX_MAX_AGE_DAYS = 7
 class TriageReport:
     counts: dict = field(default_factory=lambda: {
         "keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
-        "needs_review": 0, "skipped": 0, "unjudgeable": 0})
+        "needs_review": 0, "skipped": 0, "unjudgeable": 0, "awaiting_reply": 0})
     judged: int = 0
     # How many dossiers were HANDED to the judge, as against `judged`, which counts the
     # verdicts that came back. Two numbers because `triage/judge.py` skips a batch it
@@ -432,6 +433,14 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             fx.refresh(rate_source)
 
     notes = vault.read_leads(set(statuses))
+    # #378: a research lead the user has marked asked is waiting on a third party. Judging
+    # it again would reach the same verdict for the same unanswered reason, so it is left
+    # out BEFORE `--limit` (which would otherwise spend its budget on leads it then skips)
+    # and counted, so the digest says how many were waiting rather than dropping them.
+    awaiting = sum(1 for n in notes if followups.awaiting_reply(n.fm))
+    if awaiting:
+        report.counts["awaiting_reply"] += awaiting
+        notes = [n for n in notes if not followups.awaiting_reply(n.fm)]
     if limit:
         notes = notes[:limit]
 
@@ -1092,6 +1101,14 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                  "position": note.fm.get("role", ""),
                  "location": note.fm.get("location", ""),
                  "role_type": note.fm.get("role_type", "")}
+            # #378: the user's recorded replies to earlier research questions. Added HERE, to
+            # this lead's own copy -- after `get_or_build` (so never into the shared cache
+            # file, which serves later runs and other leads) and after the `{**d, ...}`
+            # rebind above (so never onto a result another lead with the same cache key was
+            # handed). Both the fetched and the section-sourced path pass through this line.
+            answers = followups.answers(note.body)
+            if answers:
+                d["followup_answers"] = answers
             dossiers.append(d)
             # Read back off `d`, never written as `note_by_id[note.slug]`, so this map and
             # the id the judge is actually shown cannot drift apart: whatever ends up in the
