@@ -894,11 +894,13 @@ class Store(Protocol):
         write happened. MAY raise VaultConflict on sustained concurrent edit (#16)."""
         ...
 
-    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> bool:
-        """Stamp a #60 sign-off hold (pending_cv + needs_signoff) ONLY IF the note has no
-        tailored_cv in FRESH content, mirroring set_tailored_cv(only_if_absent=...). Returns
-        whether it stamped -- False means a real send-ready CV already exists, so the caller
-        leaves the flagged CV inert rather than latching the lead behind a redundant hold. A
+    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> str:
+        """Stamp a #60 sign-off hold (pending_cv + needs_signoff) ONLY IF the note has neither
+        a tailored_cv nor a pending_cv in FRESH content, mirroring
+        set_tailored_cv(only_if_absent=...). Returns the outcome: 'held' (stamped); 'has-cv'
+        (a real send-ready CV already exists, so the caller leaves the flagged CV inert rather
+        than latching the lead behind a redundant hold); 'already-held' (another hold landed
+        first, and replacing it would swap the CV and the reasons a human is reviewing). A
         `pending_cv` or `needs_signoff` spread over several lines raises MalformedNoteField
         rather than being stamped over (#329). MAY raise VaultConflict (#16)."""
         ...
