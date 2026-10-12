@@ -890,9 +890,15 @@ class Store(Protocol):
         records to this store; a tombstone id is a handle."""
         ...
 
-    def append_body_section(self, ref, tag: str, section_md: str) -> bool:
+    def append_body_section(self, ref, tag: str, section_md: str, *,
+                            require_status: frozenset | None = None) -> bool:
         """Append a tagged section to the body, idempotently (returns False if `tag` is
-        already present). MAY raise VaultConflict on sustained concurrent edit (#16)."""
+        already present). MAY raise VaultConflict on sustained concurrent edit (#16).
+
+        `require_status` (#378) carries `update_fields`' identical obligation: re-read the
+        status from the FRESH stored note, NORMALIZED, and abstain -- nothing written, returns
+        False -- unless it is in the set. A caller appending to a lead it read at one status
+        cannot see a concurrent entry into the application lifecycle; only the store can."""
         ...
 
     def set_tailored_cv(self, ref, value: str, *, only_if_absent: bool = False) -> bool:
