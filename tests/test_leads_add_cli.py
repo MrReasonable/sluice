@@ -437,3 +437,55 @@ def test_an_unrecognised_store_outcome_does_not_traceback_after_a_write(
                         lambda self, **kw: CreateLeadResult(outcome="something_new"))
     assert _add(tmp_path, monkeypatch) == 1
     assert "something_new" in capsys.readouterr().err
+
+
+_JD_TEXT = "Placeholder posting: build example services."
+
+
+def test_jd_file_writes_the_section(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "jd.md"; f.write_text(_JD_TEXT, encoding="utf-8")
+    assert _add(tmp_path / "v", monkeypatch, "--jd-file", str(f)) == 0
+    from sluice.core.jdsection import read
+    assert read(_notes(tmp_path / "v")[0].body) == (_JD_TEXT, 1)
+
+
+def test_jd_file_dash_reads_stdin(tmp_path, monkeypatch):
+    import io
+    monkeypatch.setattr("sys.stdin", io.StringIO(_JD_TEXT))
+    assert _add(tmp_path / "v", monkeypatch, "--jd-file", "-") == 0
+    from sluice.core.jdsection import read
+    assert read(_notes(tmp_path / "v")[0].body)[0] == _JD_TEXT
+
+
+def test_an_unreadable_jd_file_exits_1_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    rc = _add(tmp_path / "v", monkeypatch, "--jd-file", str(tmp_path / "missing.md"))
+    assert rc == 1
+    assert "could not read --jd-file" in capsys.readouterr().err
+    assert _notes(tmp_path / "v") == []
+
+
+def test_a_non_utf8_jd_file_exits_1_and_creates_nothing(tmp_path, monkeypatch, capsys):
+    f = tmp_path / "jd.md"; f.write_bytes(b"\xff\xfe\x00bad")
+    assert _add(tmp_path / "v", monkeypatch, "--jd-file", str(f)) == 1
+    assert "could not read --jd-file" in capsys.readouterr().err
+    assert _notes(tmp_path / "v") == []
+
+
+@pytest.mark.parametrize("content", ["", "   \n\t"])
+def test_a_blank_jd_file_exits_2_naming_the_field(tmp_path, monkeypatch, capsys, content):
+    f = tmp_path / "jd.md"; f.write_text(content, encoding="utf-8")
+    assert _add(tmp_path / "v", monkeypatch, "--jd-file", str(f)) == 2
+    assert "job_description" in capsys.readouterr().err
+    assert _notes(tmp_path / "v") == []
+
+
+def test_a_jd_for_an_existing_lead_prints_the_not_written_note(tmp_path, monkeypatch, capsys):
+    # Review Focus 5.
+    f = tmp_path / "jd.md"; f.write_text(_JD_TEXT, encoding="utf-8")
+    assert _add(tmp_path / "v", monkeypatch) == 0
+    capsys.readouterr()
+    rc = _add(tmp_path / "v", monkeypatch, "--jd-file", str(f))
+    err = capsys.readouterr().err
+    assert rc == 0
+    assert "the lead already existed, or was not created" in err
+    assert "## Job description" in err

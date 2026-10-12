@@ -267,6 +267,9 @@ the SAME facade that MCP tool drives, not a second writer: never-clobber, the #8
 the decision to leave `seen.db` untouched all live in that facade already, and a sibling write
 function would be a new CodeQL sink with every one of those to re-argue. It reports `Vault.upsert`'s
 six-member vocabulary verbatim and exits non-zero on the three that write nothing.
+`--jd-file` (#369) writes the posting's text as the new note's `## Job description` section,
+through `Store.append_body_section` with the store-issued `UpsertResult.ref`, on `created` only;
+a blank one is refused by `create_lead` itself, so the CLI and MCP share the rule.
 
 It exposes no `--source`, and the reason is the BOARD-NAME GUARD, measured:
 `triage/resolve.py`'s `_is_board_name` discards a resolved company equal to the source id, so

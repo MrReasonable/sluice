@@ -454,7 +454,8 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert "default" in schema_props.get("confirm_token", {})
     assert schema_props["confirm_token"]["default"] is None
     assert set(by_name["create_lead"].input_schema["properties"]) == {
-        "title", "company", "url", "location", "salary", "job_type", "source"}
+        "title", "company", "url", "location", "salary", "job_type", "source",
+        "job_description"}
     # #175. `fields` is the caller-supplied mapping `Store.propose_evidence`'s contract
     # requires a store to reject an undeclared key from BY NAME -- `verified` among
     # them. Pinning the property SET is what turns a `verified` parameter sprouting on

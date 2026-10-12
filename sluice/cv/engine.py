@@ -144,7 +144,8 @@ class CvResult:
     # text, even text below `min_jd_chars`), "none" (no text at all) -- or "" when the lead
     # never reached the dossier step (an early refusal). Whether the text SUFFICED is
     # `dossier_failed`'s job, not this one's. Reported so a JD taken from the note is never
-    # invisible. Stamped onto the exception like `dossier_failed`, for the same reason.
+    # invisible: a model can write that section through MCP create_lead, and that is ruled
+    # report-only (spec Decisions). Stamped onto the exception like `dossier_failed`, for the same reason.
     jd_source: str = ""
     # #165: the Skills Inventory could not be READ (a symlinked corpus, a non-UTF-8 entry)
     # and the CV was composed without its framing section. Visibility, never control flow --
