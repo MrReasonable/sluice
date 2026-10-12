@@ -45,17 +45,26 @@ CV compose prompt. `triage/apply.py::_HAND_EDITABLE_KEYS` becomes `frozenset(FRA
 {"triage_next", "followup_asked"}`, its comment is corrected to say it is the framing roster PLUS
 triage-only keys, and `FRAMING_KEYS` is unchanged.
 
-**A verdict clears a stale stamp, and only a stale one.** When the note `apply_verdict` was handed
-carried a non-blank `followup_asked`, the verdict's write also sets it to blank, guarded by
-`require_unchanged={"followup_asked": <the value read>}` (the guard the engine already uses for
-`role_type`). An awaiting `research` lead is never judged (see Triage), so a judged lead carrying a
-stamp is one a human moved off `research`; without the blank, a later `research` verdict would leave
-the old stamp and hide the lead again with nobody having asked. The guard covers the race the
-rationale alone does not: a `leads mark-asked` landing while that lead's fetch and judge are in
-flight changes the value, the verdict's write is refused whole (the lead keeps its status and the
-fresh stamp, and is skipped next run as awaiting), and the user's action is never erased. A note
-whose snapshot stamp is blank gets no `followup_asked` key from a verdict at all, so judged leads do
-not all grow an empty key, and a stamp added mid-run on such a note is untouched by the write.
+**A verdict clears a stale stamp, and only a stale one.** An awaiting `research` lead is never
+judged (see Triage), so a judged lead carrying a stamp is one a human moved off `research`; without a
+blank, a later `research` verdict would leave the old stamp and hide the lead again with nobody
+having asked. Two rules, each closing its own race:
+
+- **Blank snapshot, no key.** When the note `apply_verdict` was handed has a blank
+  `followup_asked`, the verdict writes no `followup_asked` key at all. This is the realistic race --
+  a `research` lead with no stamp, marked asked while its fetch and judge are in flight -- and it is
+  closed by omission: the verdict lands and the fresh stamp is never touched (the next run skips the
+  lead as awaiting). It also keeps judged leads from all growing an empty key.
+- **Stamped snapshot, guarded blank.** When the snapshot carries a stamp, the verdict's write also
+  sets it to blank, guarded by `require_unchanged={"followup_asked": <the value read>}` (the guard
+  the engine already uses for `role_type`). That guard covers the contrived race: a stale-stamped
+  lead off `research` that a human moves back to `research` and re-stamps on a different date while
+  it is being judged. The verdict is then refused whole -- `apply_verdict` returns `unchanged`,
+  which `triage/engine.py` counts under `skipped` -- and the lead keeps its status and the fresh
+  stamp. Residual, stated: a re-stamp on the SAME date as the stale stamp leaves the value
+  unchanged, so the guard passes and the verdict blanks a stamp the user just re-set; the lead is
+  judged again next run and can be re-marked. The engine comment that calls `unchanged` reachable
+  "only via a benign require_status no-op" gains this second cause.
 
 **The answers section.** Each `leads answer` appends:
 
@@ -104,19 +113,23 @@ names reuse `dismiss_lead`'s where the meaning is the same.
 | --- | --- | --- | --- |
 | `not_found` / `ambiguous` | slug resolves to no note / to several (the candidates named) | same | 1 |
 | `refused_status` | the lead is not at `research` (snapshot, or fresh after a `False`) | not at `research` before step 1, nothing written | 1 |
-| `refused_block_value` | `followup_asked` holds a hand-typed block value | same, at step 2 (the answer is kept) | 1 |
+| `refused_unwritable` | the stored `followup_asked` cannot be replaced on one line: a hand-typed block value, or a note PyYAML says a single-line write would break (`core/vault.py`'s `preserve_block_values` contract) | -- | 1 |
 | `conflict` | `VaultConflict` on the write | `VaultConflict` at step 1 (nothing written) or step 2 (answer kept, stamp not cleared) | 1 |
 | `answered_not_cleared` | -- | the status left `research` between step 1 and step 2; the answer is kept and the outcome names the new status | 1 |
-| `asked` / `answered` | stamp written | answer appended (or already present from a same-day re-run) and the stamp blank | 0 |
+| `asked` / `answered` | stamp written | answer appended (or already present from a same-day re-run) and the lead no longer awaiting a reply | 0 |
 | `unchanged` | already stamped today | -- | 0 |
 
-`refused_block_value` is reached by ELIMINATION, never by reading vault internals from
-`core/app.py`: a block value reads blank through `LeadNote.fm`, so when a write returns `False` and
-the fresh note is still at `research` with a value that is not the one written, the only remaining
-cause is `preserve_block_values` abstaining, and the outcome says so. After any `False`, the FRESH
-STATUS is checked FIRST: a lead that left `research` is `refused_status` (or
-`answered_not_cleared`) whatever `followup_asked` holds, so a never-asked lead that moved to
-`applied` mid-command is never reported as answered.
+`refused_unwritable` is reached by ELIMINATION, never by reading vault internals from
+`core/app.py`: when `mark_asked`'s write returns `False` and the fresh note is still at `research`
+with a value that is not today's date, the only remaining cause is `preserve_block_values`
+abstaining, for either of its two reasons, and the outcome names both rather than guessing one.
+`record_answer` has no such row, and cannot: its step 2 writes a blank, and a block value READS
+blank through `LeadNote.fm`, so an abstention is indistinguishable from success through the Store
+contract. Stated, not hidden: such a lead reports `answered`, its hand-typed value is left exactly as
+typed, and it is not awaiting -- `awaiting_reply` reads the same blank -- so nothing is hidden by it.
+After any `False`, the FRESH STATUS is checked FIRST: a lead that left `research` is
+`refused_status` (or `answered_not_cleared`) whatever `followup_asked` holds, so a never-asked lead
+that moved to `applied` mid-command is never reported as answered.
 
 **`Sluice.mark_asked(lead)`** writes `followup_asked = today` via `update_fields` with
 `require_status={"research"}` and `preserve_block_values={"followup_asked"}`. A different earlier
@@ -147,9 +160,9 @@ report needs no preview flag.
 
 **`leads mark-asked --lead SLUG`** and **`leads answer --lead SLUG --text TEXT`** -- thin
 front-ends over the two facade methods, `--lead` with the same help text as `leads dismiss`
-(required, exact store-issued slug). The verb is `mark-asked`, not `asked`: every other `leads`
-subcommand is an imperative (`add`, `dedupe`, `dismiss`, `answer`), and a bare `ask` would read as
-sluice contacting someone. Both write unconditionally on every call, like `leads dismiss` and `leads
+(required, exact store-issued slug). The verb is `mark-asked`, not `asked` or `ask`: a past
+participle reads as a report rather than an action, and a bare `ask` would read as sluice
+contacting someone. Both write unconditionally on every call, like `leads dismiss` and `leads
 add`: what they write is the user's own action or words. Each prints its outcome and exits per the
 table.
 
@@ -209,19 +222,25 @@ every count asserted is built by the test itself.
   `followup_asked`; status changed between snapshot and write refuses (the monkeypatched shape of
   `tests/test_leads_dismiss.py::test_cas_proof_refuses_on_a_status_that_changed_between_resolve_and_write`);
   other keys and the body byte-for-byte intact.
-- Outcomes: every row of the outcome table for both methods, with the CLI exit code; a
+- Outcomes: every row of the outcome table for both methods, with the CLI exit code (`refused_unwritable` twice: a
+  block value, and a single-line value PyYAML says a rewrite would break); a
   `VaultConflict` at each write; a never-asked lead whose status leaves `research` between the
   snapshot and step 2 is `answered_not_cleared`, not `answered` (witness: swap the status check and
   the blank check); the same text answered on two different days is written twice, and on the
-  same day once.
+  same day once; `record_answer` on a lead with a block-valued `followup_asked` reports `answered`
+  and leaves the value byte-for-byte as typed.
 - `Sluice.record_answer`: appends and clears; a re-run appends nothing and succeeds; a never-asked
   lead succeeds; a blank text and a non-research lead write nothing; pasted `## ` lines demoted;
-  status leaving `research` between step 1 and step 2 gives `answered-not-cleared`, non-zero, the
+  status leaving `research` between step 1 and step 2 gives `answered_not_cleared`, non-zero, the
   answer kept and `followup_asked` and status untouched (witness: delete step 2's
   `require_status`).
 - Verdict and stamp: a verdict on a stamped note blanks the stamp; a verdict on an unstamped note
-  writes no `followup_asked` key; `leads mark-asked` landing between the engine's read and its
-  write survives, with the verdict refused (witness: delete `require_unchanged`); a block-valued
+  writes no `followup_asked` key. Two race tests, each forcing its overlap with a monkeypatched
+  judge that writes to the note before returning its verdict: (a) an unstamped `research` lead
+  stamped inside the judge keeps the stamp and the verdict lands (witness: make the blank
+  unconditional); (b) a stale-stamped `new` lead moved to `research` and re-stamped on a different
+  date inside the judge keeps the fresh stamp and the verdict is refused, counted `skipped`
+  (witness: delete `require_unchanged`). A block-valued
   `followup_asked` survives a verdict (`test_verdict_preserves_a_block_valued_followup_asked`,
   witness: drop `followup_asked` from `_HAND_EDITABLE_KEYS`).
 - `jdsection.sections`: the default empty tag still matches a bare heading.
