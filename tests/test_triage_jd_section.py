@@ -152,3 +152,25 @@ def test_duplicate_sections_log_a_warning(tmp_path, titles, caplog):
     with caplog.at_level(logging.WARNING):
         _run(tmp_path, titles, [("a.md", "Example Alpha", "", body)])
     assert any("sections; the first was used" in r.getMessage() for r in caplog.records)
+
+
+def test_a_section_build_that_raises_is_a_failed_dossier_for_that_lead_only(
+        tmp_path, titles, monkeypatch):
+    # tst-003: get_or_build raising on the SUPPLIED path is reduced to _FetchFailed for that
+    # lead alone -- reported as `dossier <ref>: ...`, the lead left untouched -- and the
+    # next lead is still judged from its own section.
+    real = DossierCache.get_or_build
+
+    def flaky(self, fm, **kw):
+        if "BROKEN" in kw.get("supplied_jd", ""):
+            raise RuntimeError("cache bug")
+        return real(self, fm, **kw)
+    monkeypatch.setattr(DossierCache, "get_or_build", flaky)
+    report, after, fetcher, _ = _run(
+        tmp_path, titles,
+        [("a.md", "Example Alpha", "", _section("BROKEN marker text here.")),
+         ("b.md", "Example Beta", "", _section())])
+    assert any(f.startswith("dossier ") and "cache bug" in f for f in report.failures)
+    assert after["Example Alpha"].status == "new"
+    assert after["Example Beta"].status == "shortlist"
+    assert fetcher.calls == 0

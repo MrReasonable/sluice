@@ -1099,3 +1099,49 @@ def test_verify_interactive_only_still_reports_not_found_for_an_unreducible_valu
                                            today="2026-08-22")
     assert report["not_found"] == ["###"]
     assert report["promoted"] == []
+
+
+@pytest.mark.parametrize("kind, status", [
+    ("vault-conflict", "error"),
+    ("backend-transient", "backend-unavailable"),
+    ("backend-permanent", "error"),
+])
+def test_compose_cv_single_lead_catches_carry_jd_source(monkeypatch, kind, status):
+    """#369 (tst-002): every catch that rebuilds a result from the exception alone must read
+    `jd_source` back off it, as it does `dossier_failed` -- or a lead whose JD came from its
+    note reports "" once a later step fails. compose_cv's single-lead path has two such
+    catches (BackendError, VaultConflict); run_batch's are pinned in test_cv_jd_source.py."""
+    import sluice.cv.engine as cv_engine
+    from sluice.core.backends import BackendError
+    from sluice.core.protocols import VaultConflict
+
+    class _Note:
+        def __init__(self):
+            self.fm = {"status": "shortlist", "company": "Acme", "role": "Engineer"}
+            self.ref = "Job Applications/Job Leads/Acme - Engineer.md"
+            self.slug = "Acme - Engineer"
+            self.body = ""
+
+    class _FakeStore:
+        def read_leads(self, statuses=None):
+            return [_Note()]
+
+        def read_cv_layout(self):
+            from tests.conftest import SYNTHETIC_LAYOUT
+            return SYNTHETIC_LAYOUT
+
+        def read_evidence(self, kind, verified_only=True):
+            return ([{"title": "alpha", "company": "Example Foundry",
+                      "verified": "2026-09-03"}] if kind == "experience" else [])
+
+    def _boom(*a, **k):
+        e = (VaultConflict("lost the write race") if kind == "vault-conflict"
+             else BackendError("backend failed", transient=kind == "backend-transient"))
+        e.jd_source = "note"
+        raise e
+
+    monkeypatch.setattr(cv_engine, "run_one", _boom)
+    app = Sluice(Config(), store=_FakeStore())
+    monkeypatch.setattr(app, "backend", lambda *a, **k: object())  # avoid real creds
+    results = app.compose_cv(lead="Acme", dry_run=True)
+    assert [(r.status, r.jd_source) for r in results] == [(status, "note")]
