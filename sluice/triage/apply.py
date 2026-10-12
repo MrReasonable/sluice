@@ -211,12 +211,17 @@ _DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # `triage/reverdict.py`), not in a nightly cron that does it to them silently.
 _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 
-# The frontmatter keys a person is invited to hand-edit (#329: the CV composer reads each as
-# framing). A multi-line value typed into one of them is left alone by a triage write rather
-# than corrupted by one; see `core/vault.py::_holds_multiline_value`. Derived from
-# `core.leads.FRAMING_KEYS`, the one list of these keys, rather than a second
-# hand-typed set that could drift from it.
-_HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS)
+# The frontmatter keys a person is invited to hand-edit: the CV composer's framing roster
+# (#329, `core.leads.FRAMING_KEYS`, derived rather than re-typed) PLUS the triage-only keys
+# #378 adds. A multi-line value typed into one is left alone by a triage write rather than
+# corrupted by one; see `core/vault.py::_holds_multiline_value`. The #378 keys are added
+# HERE and never to FRAMING_KEYS: that roster is what `cv/engine.py` feeds the composer, so a
+# research question there would reach every CV prompt. A hand-typed block under
+# `triage_next` therefore outlives a newer verdict's action: never-clobber outranks
+# freshness. `followup_asked` is defence in depth: a block value there reads blank, so
+# `apply_verdict` never writes the key over one today (see its stale-stamp rule), and this
+# keeps a later writer from corrupting it either.
+_HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS) | {"triage_next", "followup_asked"}
 
 
 def apply_classification(vault, note, decision, reason) -> str:
@@ -288,6 +293,30 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
             _log.warning("triage: %s dropped for %s -- unsafe for frontmatter", key, note.slug)
             continue
         fields[key] = f'"{safe}"'
+    # #378: the verdict's `Next:` question as its own key, replaced on every verdict, so the
+    # worklist reads it without parsing `relevance_notes`. Blank when the model gave none, AND
+    # blank when the text is unsafe for frontmatter: unlike the list keys above, keeping the
+    # earlier value would leave an instruction the latest verdict no longer gives. The one
+    # exception is a hand-typed multi-line value, which `_HAND_EDITABLE_KEYS` leaves alone.
+    next_action = (verdict["recommended_next_action"] or "").strip()
+    safe_next = frontmatter_safe(next_action) if next_action else ""
+    if next_action and not safe_next:
+        _log.warning("triage: triage_next blanked for %s -- unsafe for frontmatter", note.slug)
+        safe_next = ""
+    fields["triage_next"] = f'"{safe_next}"'
+    # #378: a stale "asked" stamp. An awaiting research lead is never judged, so a judged
+    # lead carrying one is a lead a human moved off `research`; left in place, a later
+    # `research` verdict would hide it again with nobody having asked. Two rules:
+    #   - a BLANK snapshot writes no key, so a stamp added while this lead was being judged
+    #     (the realistic race) is never touched;
+    #   - a STAMPED snapshot blanks it under `require_unchanged`, so a re-stamp on a different
+    #     date during the judge refuses this whole write (`unchanged`) instead of erasing it.
+    #     Residual, stated: a re-stamp on the SAME date as the stale stamp passes the guard.
+    stamp = note.fm.get("followup_asked", "") or ""
+    require_unchanged = None
+    if stamp.strip():
+        fields["followup_asked"] = '""'
+        require_unchanged = {"followup_asked": stamp}
     tag = f"[triage {date.today().isoformat()}]"
     parts = [verdict["fit_reasoning"]]
     if verdict["concerns"]:
@@ -301,5 +330,9 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
                                 require_status=_VERDICT_REQUIRE.get(
                                     status, frozenset(_status.TRIAGE_OWNED)),
+                                require_unchanged=require_unchanged,
                                 preserve_block_values=_HAND_EDITABLE_KEYS)
-    return "applied" if wrote else "unchanged"  # #118: symmetric with apply_classification above
+    # #118: symmetric with apply_classification above, with one cause it lacks (#378): the
+    # stale-stamp `require_unchanged` refusing a re-stamp landed mid-judge. That one IS a
+    # content collision; `unchanged` still fits it, since the newer stamp stands.
+    return "applied" if wrote else "unchanged"

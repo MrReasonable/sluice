@@ -779,6 +779,7 @@ class Store(Protocol):
                       require_status: frozenset | None = None,
                       require_blank: frozenset | None = None,
                       blank_values: frozenset | None = None,
+                      require_unchanged: dict | None = None,
                       preserve_block_values: frozenset | None = None) -> bool:
         """Set exactly the named frontmatter keys, leaving the body byte-for-byte intact.
         This is the sanctioned write path for triage, cv, apply and track. MAY raise
@@ -830,6 +831,14 @@ class Store(Protocol):
         value being written -- never-clobber holds for anything not named here.
         `blank_values` given without `require_blank` is inert and must never become a
         guard of its own.
+
+        `require_unchanged` (#223, #378): a {key: expected} map re-read from the FRESH stored
+        record; abstain -- nothing written, returns False -- unless every key still holds
+        exactly `expected`, compared RAW (the value a caller read from `LeadNote.fm`). It fits
+        a caller REPLACING a value, as `require_blank` fits one filling a hole. A value spread
+        over several lines never compares equal (#329). Same delegation argument as above:
+        triage clears a stale asked stamp under it, and a store that ignored it would let a
+        verdict erase a stamp the user set while the lead was being judged.
 
         `preserve_block_values` (#329): each named key that is also in `fields` MUST be left
         unwritten when its FRESH stored value spans several lines (a block list, nested mapping

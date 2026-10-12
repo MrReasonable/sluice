@@ -1251,8 +1251,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                     continue
             # Symmetric with the classify-pass site above, including #118: `unchanged`
             # is grouped with `skipped` for counting/audit purposes only -- it is never
-            # reported in report.failures, since it is reachable only via a benign
-            # require_status no-op, never a real content collision.
+            # reported in report.failures. Two causes reach it: a benign require_status
+            # no-op, and (#378) apply_verdict's `require_unchanged` refusing because the
+            # user re-marked the lead asked while it was being judged. The second IS a
+            # content collision, and skipping is right for it too: the user's newer stamp
+            # stands and the lead is judged on a later run.
             #
             # #169: clamp_verdict, not the raw model string or a bare _status.normalize.
             # apply_verdict() above already clamps what it WRITES, but counts/audit are
