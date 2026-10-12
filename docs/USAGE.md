@@ -316,6 +316,8 @@ We are hiring a placeholder engineer to build example services.
 ```
 
 A heading with anything else on its line, such as `## Job description:`, is not recognised.
+`leads add --jd-file` and MCP `create_lead`'s `job_description` write this section when they
+create a lead.
 
 **Diagnostic artefacts.** Every run that reaches composition leaves what it needs to be
 diagnosed later in the lead's working directory, `<cv.output_dir>/<slug>/`, beside the PDF and
@@ -532,7 +534,7 @@ decided what to write: `add` and `dismiss` act on what the USER typed (the lead'
 fields; `--lead`/`--reason`), while `dedupe`/`expire`/`reconcile` write over a set the TOOL
 computed. There is no report to preview when the user is the one supplying the content.
 
-### `job-sluice leads add --url URL --company NAME --role TITLE [--location L] [--salary S] [--role-type contract|permanent]`
+### `job-sluice leads add --url URL --company NAME --role TITLE [--location L] [--salary S] [--role-type contract|permanent] [--jd-file PATH|-]`
 
 Adds one lead by hand, for a job no scanner found — the only route into the lead store that
 needs neither a Camofox browser server nor an MCP client (the MCP `create_lead` write tool
@@ -576,6 +578,12 @@ Three consequences worth knowing before you use it:
 `declared` provenance. It accepts `contract` and `permanent` and the usual spellings of each
 (`perm`, `freelance`, `interim`, `fte`, `temp`, `fixed term`, …); anything else is refused
 with the accepted list, rather than quietly stored as no basis at all.
+
+`--jd-file PATH|-` is the job description, written into the new note's `## Job description`
+section (created leads only; a blank file is refused). `-` reads it from stdin. Use it for a
+lead with no posting to fetch, such as a referral or an InMail. When the lead already existed,
+or the section could not be added, a second line says the job description was NOT written and
+why; add the section to the note by hand.
 
 There is no `--source` flag. `source` is not a free-text note about where you found the job —
 it is a key into the ingest source registry, and `triage` reads it as one: a company it

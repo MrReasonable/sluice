@@ -333,6 +333,11 @@ class CreateLeadResult:
     written (refused | merged_away | merged_away_unproven)."""
     outcome: str
     slug: str = ""
+    # #369: whether `job_description` was written as the note's `## Job description`
+    # section, and if not, why -- one of a fixed set of phrases (Sluice.create_lead). The
+    # lead itself is reported by `outcome`/`slug` either way.
+    job_description_written: bool = False
+    job_description_note: str = ""
 
 
 class StoreHasNoLayout(RuntimeError):
@@ -2723,8 +2728,8 @@ class Sluice:
         return report
 
     def create_lead(self, *, title: str, company: str, url: str, location: str = "",
-                    salary: str = "", job_type: str = "", source: str = "manual"
-                    ) -> CreateLeadResult:
+                    salary: str = "", job_type: str = "", source: str = "manual",
+                    job_description: str | None = None) -> CreateLeadResult:
         """Create a lead note directly -- for a job a human found that no scanner
         ingested (#131 decision 9-12). Raises ValueError naming every unsafe/invalid
         field (matching list_leads's "name the full bad set, never silently return
@@ -2774,7 +2779,16 @@ class Sluice:
         method passes search="" rather than expose a parameter for a field that goes
         nowhere. Calls store.upsert() directly, never VaultSink, so seen.db is
         untouched (decision 11) -- a later genuine scrape of the same posting is not
-        silently skipped by this manual entry."""
+        silently skipped by this manual entry.
+
+        `job_description` (#369): `None` means none was given. A string is written as the
+        note's `## Job description` section (`core/jdsection.py`) through
+        `Store.append_body_section`, with the store-issued `UpsertResult.ref`, ONLY when this
+        call CREATED the note -- `updated`/`merged` never touch an existing note's body
+        (never-clobber). A blank string is refused with the other invalid fields, before
+        anything is written: a caller that asked for a job description and silently got a
+        lead without one is the quiet wrong default. Two writes, so a lead can exist without
+        its section; `job_description_written` and `job_description_note` say which."""
         from sluice.core.leads import Lead, is_http_url
         from sluice.core.roletype import DECLARED, normalise_role_type
         from sluice.core.vault import frontmatter_safe
@@ -2790,10 +2804,20 @@ class Sluice:
                     if value.strip() and frontmatter_safe(value) is None)
         if not url or not is_http_url(url) or frontmatter_safe(url) is None:
             bad = sorted(set(bad) | {"url"})
+        if job_description is not None and not job_description.strip():
+            bad = sorted(set(bad) | {"job_description"})
+        if job_description is not None:
+            # A field carrying the section's tag would make the append below a no-op --
+            # `append_body_section`'s idempotence is "the tag appears anywhere in the note",
+            # and these fields are rendered into it -- reported as "already present".
+            from sluice.core.jdsection import TAG
+            bad = sorted(set(bad) | {name for name, value in {**fields, "url": url}.items()
+                                     if TAG in value})
         if bad:
             raise ValueError(
                 f"unsafe or invalid field(s): {bad} (must be printable, contain no "
-                f"\" or \\, and url must be present and http(s))")
+                f"\" or \\, url must be present and http(s), and job_description, when "
+                f"given, must not be blank)")
         store = self.store()
         # #223 §2.1's third origin. This is the case where `job_type` is UNAMBIGUOUSLY
         # the user's -- they typed it into `leads add` or the MCP write tool -- so it
@@ -2814,8 +2838,44 @@ class Sluice:
                                    salary=salary, job_type=job_type,
                                    job_type_source=DECLARED if job_type else ""))
         if result.outcome not in ("created", "updated", "merged"):
-            return CreateLeadResult(outcome=result.outcome)
-        return CreateLeadResult(outcome=result.outcome, slug=result.slug)
+            out = CreateLeadResult(outcome=result.outcome)
+        else:
+            out = CreateLeadResult(outcome=result.outcome, slug=result.slug)
+        if job_description is None:
+            return out
+        out.job_description_note = self._write_job_description(store, result,
+                                                               job_description)
+        out.job_description_written = not out.job_description_note
+        return out
+
+    @staticmethod
+    def _write_job_description(store, result, job_description) -> str:
+        """Append the section to a note this call CREATED; return "" when written, else the
+        fixed reason it was not (#369)."""
+        from sluice.core import jdsection
+        from sluice.core.protocols import VaultConflict
+        if result.outcome != "created":
+            return "the lead already existed, or was not created"
+        if result.ref is None:
+            # A store (or a fake) that does not honour UpsertResult.ref. Without this arm,
+            # append_body_section(None, ...) raises TypeError, which neither caught type
+            # below covers, and a created lead would read as a failed create.
+            _log.warning("create_lead: the store returned no ref for %s; "
+                         "the job description was not written", result.slug)
+            return "the store did not return a reference to the new note"
+        try:
+            written = store.append_body_section(result.ref, jdsection.TAG,
+                                                jdsection.render(job_description))
+        except (VaultConflict, OSError) as e:
+            # Caught HERE, not propagated: the lead WAS created, and letting this escape
+            # would report a failed create for a note that exists, inviting a retry that
+            # lands on `updated` and never writes the job description. OSError covers the
+            # note being moved or renamed between create and append (`leads reconcile`,
+            # Obsidian, Syncthing).
+            _log.warning("create_lead: could not add the job description to %s: %s",
+                         result.slug, e)
+            return "the note changed before the job description could be added"
+        return "" if written else "a job description section was already present"
 
     def prep(self, *, lead=None, all_shortlist=False, limit=None, dry_run=False,
              include_stale=False):

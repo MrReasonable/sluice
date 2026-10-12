@@ -1596,6 +1596,29 @@ def test_dismiss_lead_tool_refused_signoff_hold_remedy_is_valid_json_and_python(
 
 # ── create_lead ──────────────────────────────────────────────────────────────
 
+def test_create_lead_writes_the_job_description_and_reports_it(tmp_path):
+    out = create_lead(_app(tmp_path), "Example Role", "Example Ltd",
+                      "https://example.invalid/1", job_description="Placeholder posting.")
+    assert out["outcome"] == "created"
+    assert (out["job_description_written"], out["job_description_note"]) == (True, "")
+
+
+def test_create_lead_with_a_blank_job_description_creates_nothing(tmp_path):
+    with pytest.raises(ValueError, match="job_description"):
+        create_lead(_app(tmp_path), "Example Role", "Example Ltd",
+                    "https://example.invalid/1", job_description="  ")
+    assert Vault(str(tmp_path)).read_leads() == []
+
+
+def test_create_lead_without_a_job_description_reports_no_jd_keys(tmp_path):
+    # arc-402: the keys appear only when a job description was GIVEN, as the CLI's note
+    # does; `job_description_written: false` beside `outcome: created` would read as a
+    # failed write to a model that never asked for one.
+    out = create_lead(_app(tmp_path), "Example Role", "Example Ltd", "https://example.invalid/1")
+    assert out["outcome"] == "created"
+    assert "job_description_written" not in out and "job_description_note" not in out
+
+
 def test_create_lead_tool_reports_created_with_slug(tmp_path):
     out = create_lead(_app(tmp_path), title="Example Role", company="Example Ltd",
                       url="https://example.invalid/1")

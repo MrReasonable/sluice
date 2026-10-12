@@ -934,9 +934,29 @@ def cmd_leads_add(args, config) -> int:
     """
     from sluice.core.app import Sluice
 
+    job_description = None
+    if args.jd_file:
+        # Read BEFORE create_lead, in its own try, so a bad path or a non-UTF-8 file stops
+        # here with nothing written -- the `--body-file` shape
+        # (sluice/evidence/commands.py::cmd_evidence_add). UnicodeDecodeError is a
+        # ValueError, which that precedent's `except OSError` does not catch. A blank file
+        # is NOT refused here: it is passed through, and create_lead's own validation
+        # refuses it (exit 2 via main), the one home of that rule for the CLI and MCP alike.
+        try:
+            if args.jd_file == "-":
+                job_description = sys.stdin.read()
+            else:
+                with open(args.jd_file, encoding="utf-8") as fh:
+                    job_description = fh.read()
+        except (OSError, UnicodeDecodeError) as e:
+            print(f"leads add: could not read --jd-file {args.jd_file!r}: {e}",
+                  file=sys.stderr)
+            return 1
+
     result = Sluice(config).create_lead(
         title=args.role, company=args.company, url=args.url,
-        location=args.location, salary=args.salary, job_type=args.role_type)
+        location=args.location, salary=args.salary, job_type=args.role_type,
+        job_description=job_description)
     # The slug is the store's OWN report of the note this call touched, never a guess
     # -- and it is what the user types into `cv run --lead` next, so it leads the line
     # when there is one. It is "" for exactly the outcomes that wrote nothing.
@@ -946,6 +966,10 @@ def cmd_leads_add(args, config) -> int:
         f"{result.outcome} -- this version of the CLI does not recognise that outcome, so it "
         f"cannot say whether anything was written; check the note in your vault")
     print(prefix + detail, file=sys.stderr)
+    if job_description is not None and not result.job_description_written:
+        print(f"leads add: the job description was NOT written "
+              f"({result.job_description_note}) -- add a '## Job description' section to "
+              f"the note by hand", file=sys.stderr)
     return 0 if result.outcome in _ADD_WROTE else 1
 
 
@@ -1413,7 +1437,8 @@ def cmd_cv_run(args, config) -> int:
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
         print(f"cv: {blind} CV(s) composed without a job description", file=sys.stderr)
-    # #369: a JD taken from the lead note is reported, never invisible.
+    # #369: a JD taken from the lead note is reported, never invisible -- a model can write
+    # that section through MCP create_lead, which is ruled report-only (spec Decisions).
     from_note = sum(1 for r in results if r.jd_source == "note")
     if from_note:
         print(f"cv: {from_note} CV(s) used the job description from the lead note",
@@ -3047,6 +3072,12 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="pay basis, if the advert states one (contract/permanent and "
                          "their usual spellings; an unrecognised value is refused and "
                          "the accepted ones listed)")
+    # #369: the posting's text, for a lead with no page to fetch (a referral, an InMail).
+    # Written as the note's `## Job description` section on CREATE only; triage and cv read
+    # it in place of a fetch. `-` reads stdin, matching the evidence commands' --body-file.
+    ad.add_argument("--jd-file", metavar="PATH",
+                    help="a file holding the job description (- for stdin), written into "
+                         "the new note's '## Job description' section")
     # No --source, deliberately. `source` is not a free-text provenance note: it is a
     # KEY INTO THE INGEST REGISTRY, and triage/resolve.py reads it as one in two places.
     #

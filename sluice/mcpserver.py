@@ -823,7 +823,8 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
 
 
 def create_lead(sluice: Sluice, title: str, company: str, url: str, location: str = "",
-                salary: str = "", job_type: str = "", source: str = "manual") -> dict:
+                salary: str = "", job_type: str = "", source: str = "manual",
+                job_description: str | None = None) -> dict:
     """Create a new lead note directly -- for a job a human found that no scanner
     ingested (decision 9-12). Reports Sluice.create_lead's six-member outcome
     vocabulary VERBATIM -- never a bare "created". Identity is company+title: a
@@ -848,12 +849,25 @@ def create_lead(sluice: Sluice, title: str, company: str, url: str, location: st
     are this tool's own parameter names, matching Lead's field names -- Sluice.
     create_lead maps title -> frontmatter `role` and job_type -> `role_type`
     internally, so a caller reading the note back via get_lead is not surprised its
-    fm says `role` where this tool took `title`. Write tool."""
+    fm says `role` where this tool took `title`. `job_description` is written as the new
+    note's `## Job description` section only when the lead is CREATED;
+    `job_description_written`/`job_description_note` are returned only when a
+    `job_description` was given, and report whether it was written and why not. A blank
+    one is refused. Triage and cv read that text as untrusted page text, exactly like a
+    fetched posting. Write tool."""
     result = sluice.create_lead(title=title, company=company, url=url, location=location,
-                                salary=salary, job_type=job_type, source=source)
+                                salary=salary, job_type=job_type, source=source,
+                                job_description=job_description)
     out = {"outcome": result.outcome}
     if result.slug:
         out["slug"] = result.slug
+    # arc-402: ONLY when a job description was given, matching the CLI's condition and this
+    # tool's sparse-key shape, so a call that never asked for one is not told
+    # `written: false` beside `outcome: created`, which reads as a failed write. The store's
+    # `ref` is never returned: for the vault it is an absolute path.
+    if job_description is not None:
+        out["job_description_written"] = result.job_description_written
+        out["job_description_note"] = result.job_description_note
     _DETAIL = {
         "updated": "a lead already exists at this company+title -- only last_seen "
                    "was bumped; the url/salary/location you passed were NOT recorded",
@@ -1382,11 +1396,16 @@ def build_server(config, write: bool = False):
         @mcp_server.tool(name="create_lead")
         def create_lead_tool(title: str, company: str, url: str, location: str = "",
                              salary: str = "", job_type: str = "",
-                             source: str = "manual") -> dict:
+                             source: str = "manual",
+                             job_description: str | None = None) -> dict:
             """Create a new lead note directly, for a job a human found that no
-            scanner ingested. Lands at status=new; run triage to promote it."""
+            scanner ingested. Lands at status=new; run triage to promote it.
+            job_description: the posting's text, for a lead with no page to fetch.
+            Written only when the lead is CREATED, and treated as untrusted page text
+            by the triage judge and the CV composer."""
             return create_lead(holder.sluice, title, company, url, location=location,
-                               salary=salary, job_type=job_type, source=source)
+                               salary=salary, job_type=job_type, source=source,
+                               job_description=job_description)
 
         def propose_evidence_tool(kind: str, name: str, fields: dict[str, str],
                                   body: str = "") -> dict:
