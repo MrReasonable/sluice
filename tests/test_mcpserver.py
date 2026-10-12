@@ -1309,6 +1309,49 @@ def test_cv_signoff_tool_discard_returns_framing_apart_from_the_claims(tmp_path)
     assert UNTRUSTED_DERIVED_CONTENT_WARNING not in out["framing_warning"]
 
 
+def _hold_blind(v, note, reason="no job description arrived", pending=_PENDING):
+    v.hold_for_signoff(note.ref, pending=pending,
+                       claims=json.dumps([f"blind\t{reason}", "unsupported claim"]))
+
+
+def test_cv_signoff_needs_confirmation_returns_blind_apart(tmp_path):
+    v = Vault(str(tmp_path)); slug = _seed(tmp_path, status="shortlist")
+    _hold_blind(v, v.read_leads()[0])
+    out = cv_signoff(_app(tmp_path), slug)
+    assert out["outcome"] == "needs_confirmation"
+    assert out["blind"] == ["no job description arrived"]
+    assert out["claims"] == ["unsupported claim"]
+
+
+def test_cv_signoff_stale_confirmation_returns_blind_apart(tmp_path):
+    v = Vault(str(tmp_path)); slug = _seed(tmp_path, status="shortlist")
+    note = v.read_leads()[0]
+    _hold_blind(v, note, "no job description arrived")
+    app = _app(tmp_path)
+    first = cv_signoff(app, slug)
+    v.sign_off(note.ref, accept=False)
+    # ONLY the blind entry changes (tst-203): the token must still go stale.
+    _hold_blind(v, note, "the job description fetch failed")
+    second = cv_signoff(app, slug, confirm_token=first["confirm_token"])
+    assert second["outcome"] == "stale_confirmation"
+    assert second["blind"] == ["the job description fetch failed"]
+    assert second["claims"] == ["unsupported claim"]
+
+
+def test_cv_signoff_discard_returns_blind_apart(tmp_path):
+    v = Vault(str(tmp_path)); slug = _seed(tmp_path, status="shortlist")
+    _hold_blind(v, v.read_leads()[0])
+    out = cv_signoff(_app(tmp_path), slug, discard=True)
+    assert out["outcome"] == "discarded"
+    assert out["blind"] == ["no job description arrived"]
+    assert out["claims"] == ["unsupported claim"]
+
+
+def test_get_lead_warning_names_blind_entries_as_sluices_own_text():
+    from sluice.mcpserver import _GET_LEAD_CONTENT_WARNING
+    assert "`blind`" in _GET_LEAD_CONTENT_WARNING
+
+
 def test_the_registered_cv_signoff_description_names_the_framing():
     # The REGISTERED description is what an MCP client reads, distinct from `cv_signoff`'s own
     # docstring (see test_no_tool_description_denies_the_propose_tool_that_is_registered).

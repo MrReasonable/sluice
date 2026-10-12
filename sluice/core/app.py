@@ -2271,9 +2271,10 @@ class Sluice:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising it (see
             # its own comment) precisely so THIS catch does not under-report "N CV(s)
-            # composed blind" for a lead whose dossier was blocked by the SSRF guard and
-            # which then also lost the write race -- the same defect run_batch's
-            # catch-all was fixed against one commit ago; this is its second call site.
+            # composed without a job description" for a lead whose dossier was blocked by
+            # the SSRF guard and which then also lost the write race -- the same defect
+            # run_batch's catch-all was fixed against one commit ago; this is its second
+            # call site.
             # `getattr(..., False)` also covers a VaultConflict raised by code that
             # predates #18 and so never carries the attribute.
             # `artefacts_failed` is stamped onto the exception the same way (run_one's

@@ -235,7 +235,8 @@ def test_slop_allow_names_every_unknown_entry_in_one_raise(tmp_path):
 # any added later with no extra wiring -- see the loader's own comment.
 
 
-@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff"])
+@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff",
+                                   "blind_hold"])
 def test_a_quoted_false_does_not_silently_enable_a_bool_cv_field(tmp_path, field):
     # require_signoff is the load-bearing row here: it is NOT one of the two fields
     # this task added, so a test covering only voice_check/style_hold cannot tell a
@@ -249,7 +250,8 @@ def test_a_quoted_false_does_not_silently_enable_a_bool_cv_field(tmp_path, field
         load_cv_config(str(p))
 
 
-@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff"])
+@pytest.mark.parametrize("field", ["voice_check", "style_hold", "require_signoff",
+                                   "blind_hold"])
 def test_a_real_yaml_boolean_still_sets_a_bool_cv_field(tmp_path, field):
     # The paired falsifier: a guard that refused every value would be
     # indistinguishable from the loader being broken for these keys entirely.

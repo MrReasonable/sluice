@@ -808,6 +808,28 @@ def test_the_example_config_ships_voice_check_and_style_hold_commented():
     assert "style_hold" not in cv_block, "style_hold must ship COMMENTED, not active"
 
 
+# #369: cv.blind_hold ships ON, deliberately unlike style_hold. It withholds a pointer and
+# filters no lead, so it is a safety valve rather than a preference gate -- require_signoff's
+# reasoning: the failure it prevents (a CV tailored to nothing, sent as if tailored) is
+# invisible at the moment it matters. A bool, so the list-keyed sweep above cannot see it.
+def test_blind_hold_dataclass_default_is_on():
+    assert CvConfig().blind_hold is True
+
+
+def test_blind_hold_loader_default_is_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    assert load_cv_config(None).blind_hold is True
+
+
+def test_the_example_config_ships_blind_hold_commented():
+    import yaml  # this file imports it per row, like the style_hold row; no module-scope import
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    assert "blind_hold:" in text, "blind_hold must be documented at all"
+    doc = yaml.safe_load(text) or {}
+    assert "blind_hold" not in (doc.get("cv") or {}), "blind_hold must ship COMMENTED"
+
+
 # ── #194: cv.term_check ships ON ──────────────────────────────────────────────
 # Unlike voice_check it spends nothing per lead: it is pure and deterministic, and costs
 # one extra compose only when it fires (the slop stems' profile, also on by default). It is

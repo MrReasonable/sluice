@@ -49,7 +49,9 @@ class CvConfig:
     # Whether an `unsupported` profile audit flag WITHHOLDS the send-ready pointer until a
     # human signs off (`sluice cv signoff`), rather than auto-serving a possibly-fabricated
     # CV (#60). A safety valve, not a job preference, so it ships LIVE (True); set False to
-    # restore the old auto-serve. The hard validate gate is unaffected either way.
+    # serve a CV the audit flagged. It governs the FABRICATION hold only: a CV composed
+    # without a job description is held separately under `blind_hold`. The hard validate
+    # gate is unaffected either way.
     require_signoff: bool = True
     # Whether the model-judged VOICE check runs at all (#167). OFF by default: an
     # unconfigured install must never start spending LLM calls the moment it upgrades --
@@ -66,6 +68,15 @@ class CvConfig:
     # source-material vector (the composer is told to reuse the bundle's wording), one
     # phrase in an Experience Library entry would hold EVERY lead composed from it.
     style_hold: bool = False
+    # Whether a CV composed WITHOUT a job description (the fetch failed, none arrived, or
+    # the lead note's own section is under `min_jd_chars`) WITHHOLDS the send-ready pointer
+    # until a human signs off (#369). Its OWN key: `require_signoff` was chosen for
+    # fabrication and `style_hold` for wording, and a blind CV is neither -- it passes the
+    # gate honestly. ON by default for `require_signoff`'s reason: the failure it prevents
+    # is invisible at the moment it matters, since a blind CV looks exactly like a tailored
+    # one when it is sent. It filters no lead (it withholds a pointer), so it is a safety
+    # valve, not a preference gate.
+    blind_hold: bool = True
     # Whether the unbundled-term check runs (#194, cv/terms.py): a term CV prose names that
     # appears nowhere in what the composer was shown drives the one retry. ON by default,
     # deliberately unlike voice_check: it is pure and deterministic and spends nothing
@@ -380,7 +391,7 @@ def _load_cv_config_from_file(path: str | None = None) -> CvConfig:
         # construction instead, this file's house style.
         #
         # Keyed on the default's type rather than on a hardcoded field list
-        # (`voice_check`, `style_hold`, `require_signoff` today) so a bool knob added
+        # (`voice_check`, `style_hold`, `require_signoff`, `blind_hold` today) so a bool knob added
         # later cannot quietly opt out of the check. `getattr(cfg, k)` is still the
         # code default here: a YAML mapping yields each key once, so no earlier
         # iteration of this loop has replaced it.

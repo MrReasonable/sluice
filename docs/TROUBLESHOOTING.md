@@ -243,6 +243,17 @@ fresh invocations points upstream of the model — the composer prompt, the evid
 the Candidate Profile note, or the lead's own `culture_flags`/`triage_concerns` (fixed by editing the
 note) — rather than at a one-off bad draft.
 
+## `cv run` reports `needs-signoff` and `cv signoff` says "composed WITHOUT a job description"
+
+The CV was composed from your evidence alone: the job description fetch failed, nothing came
+back, or the lead note's own `## Job description` section is shorter than `min_jd_chars`. It is
+held under `cv.blind_hold` so it is not sent as if it were tailored. Two ways out:
+
+- Accept the untailored CV: `job-sluice cv signoff --lead SLUG`.
+- Tailor it: `job-sluice cv signoff --lead SLUG --discard`, add a `## Job description` section
+  to the lead note (see `docs/USAGE.md`), then `job-sluice cv run --lead SLUG`. Adding the
+  section without discarding first does nothing: a held lead is not recomposed.
+
 ## Ingest/dossier fetch fails: Camofox unreachable
 
 `ingest run`/`ingest test-source` drive a live Camofox session, and `cv`/`triage` reach it

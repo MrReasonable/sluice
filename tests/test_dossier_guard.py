@@ -491,7 +491,9 @@ def test_the_cv_consumer_proceeds_with_an_empty_jd(role, monkeypatch):
     this consumer a raise and a returned empty dossier are indistinguishable: a CV
     is still composed and the fabrication gate still runs. The raise-vs-return
     argument rests entirely on the TRIAGE side (above). Stating it here stops a
-    reader inferring that cv skips the lead, which it does not.
+    reader inferring that cv skips the lead, which it does not. Since #369 a SERVED
+    CV composed this way is held for sign-off under `cv.blind_hold`; this row runs
+    unserved, so that hold does not apply (tests/test_cv_blind_hold.py covers it).
 
     Wired against tests/test_cv_engine.py's existing fake collaborators (FakeVault/
     FakeBackend/FakeRenderer/_cfg) rather than a bespoke stub -- reusing them is
