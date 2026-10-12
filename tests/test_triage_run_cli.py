@@ -1144,3 +1144,59 @@ def test_a_whitespace_only_company_is_treated_as_absent(monkeypatch, tmp_path):
 
     assert "- Engineering Manager" in body
     assert ", Engineering Manager" not in body
+
+
+def _queue_push(monkeypatch, tmp_path, titles, *argv):
+    from sluice.core.leads import Lead
+    from sluice.core.vault import Vault
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: TriageReport())
+    v = Vault(str(tmp_path))
+    for i, asked in enumerate(("", "2026-10-05", "")):
+        v.upsert(Lead(source="s", search="q", title=titles[0][i].title(), company="Example Ltd",
+                      url=f"https://example.invalid/{i}"))
+        note = next(n for n in v.read_leads() if n.fm["url"].endswith(f"/{i}"))
+        v.update_fields(note.ref, {"status": "research", "followup_asked": asked})
+    assert cmd_triage_run(_build_parser().parse_args(["triage", "run", *argv]), Config()) == 0
+    return sent[0]
+
+
+def test_the_digest_reports_the_standing_research_queue(monkeypatch, tmp_path, titles):
+    assert "Research queue: 3 leads, 1 marked asked" in _queue_push(
+        monkeypatch, tmp_path, titles, "--no-llm")
+
+
+def test_the_queue_line_prints_on_a_status_new_run_and_a_dry_run(monkeypatch, tmp_path, titles):
+    assert "Research queue:" in _queue_push(monkeypatch, tmp_path, titles,
+                                            "--status", "new", "--dry-run")
+
+
+def test_no_queue_line_when_there_are_no_research_leads(monkeypatch, tmp_path):
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: TriageReport())
+    cmd_triage_run(_build_parser().parse_args(["triage", "run", "--no-llm"]), Config())
+    assert "Research queue" not in sent[0]
+
+
+def test_a_queue_read_failure_omits_the_line_and_keeps_the_exit_code(monkeypatch, tmp_path):
+    sent = []
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: TriageReport())
+    monkeypatch.setattr(Sluice, "followups",
+                        lambda self: (_ for _ in ()).throw(OSError("unreadable")))
+    assert cmd_triage_run(_build_parser().parse_args(["triage", "run", "--no-llm"]),
+                          Config()) == 0
+    assert "Research queue" not in sent[0]
+
+
+def test_the_queue_line_is_singular_for_one_lead():
+    from sluice.core.followups import FollowupQueue, FollowupRow
+    row = FollowupRow(slug="a", company="", role="", age_days=1, next_action="", asked="",
+                      waited_days=None)
+    assert cli._research_queue_line(FollowupQueue(rows=(row,))) == (
+        "Research queue: 1 lead, 0 marked asked; oldest first seen 1 day ago.")

@@ -1004,6 +1004,115 @@ def cmd_leads_dismiss(args, config) -> int:
     return 1 if result.outcome == "conflict" else 0
 
 
+def _days(n) -> str:
+    return "?" if n is None else str(n)
+
+
+def cmd_leads_followups(args, config) -> int:
+    """#378: the research worklist. Read-only, so no --dry-run and no flag to act."""
+    import json as _json
+    from sluice.core.app import Sluice
+    queue = Sluice(config).followups()
+    if args.json:
+        print(_json.dumps({
+            "total": len(queue.rows), "asked": len(queue.asked),
+            "oldest_days": queue.oldest_days,
+            "rows": [{"slug": r.slug, "company": r.company, "role": r.role,
+                      "age_days": r.age_days, "next_action": r.next_action,
+                      "asked": r.asked, "waited_days": r.waited_days}
+                     for r in queue.rows]}))
+        return 0
+    if not queue.rows:
+        print("No research leads are waiting on a question.")
+        return 0
+    # The slug alone, not company and role beside it: it is "Company - Role" already, and it
+    # is what `mark-asked`/`answer --lead` take next. `--json` carries both fields.
+    if queue.never_asked:
+        print(f"Never asked ({len(queue.never_asked)}):")
+        for r in queue.never_asked:
+            print(f"- {r.slug} ({_days(r.age_days)}d): "
+                  f"{r.next_action or '(no Next: recorded yet)'}")
+    if queue.asked:
+        print(f"Asked, waiting ({len(queue.asked)}):")
+        for r in queue.asked:
+            print(f"- {r.slug} ({_days(r.age_days)}d, asked {_days(r.waited_days)}d ago): "
+                  f"{r.next_action or '(no Next: recorded yet)'}")
+    tail = (" Set lead_ttl_days and run `job-sluice leads expire` to age out leads left "
+            "waiting too long." if not config.lead_ttl_days else "")
+    print(f"{len(queue.rows)} research lead{'' if len(queue.rows) == 1 else 's'}.{tail}")
+    return 0
+
+
+def _lead_refusal(cmd: str, result, lead: str) -> int | None:
+    """The outcomes `mark-asked` and `answer` share with `leads dismiss`, printed the same
+    way. None when `result` is not one of them."""
+    if result.outcome == "not_found":
+        print(f"leads {cmd}: no lead matching '{lead}'", file=sys.stderr)
+        return 1
+    if result.outcome == "ambiguous":
+        print(f"leads {cmd}: ambiguous: {len(result.candidates)} notes claim the slug "
+              f"'{lead}' ({' | '.join(result.candidates)}) -- rename or merge them "
+              f"first (job-sluice leads dedupe)", file=sys.stderr)
+        return 1
+    if result.outcome == "refused_status":
+        print(f"leads {cmd}: {result.slug}: refused (status={result.status}) -- only a "
+              f"lead at research is waiting on a question", file=sys.stderr)
+        return 1
+    if result.outcome == "conflict":
+        print(f"leads {cmd}: {result.slug}: conflict -- the note changed while this ran; "
+              f"run the same command again", file=sys.stderr)
+        return 1
+    return None
+
+
+def cmd_leads_mark_asked(args, config) -> int:
+    from sluice.core.app import Sluice
+    result = Sluice(config).mark_asked(lead=args.lead)
+    refused = _lead_refusal("mark-asked", result, args.lead)
+    if refused is not None:
+        return refused
+    if result.outcome == "refused_unwritable":
+        print(f"leads mark-asked: {result.slug}: refused -- followup_asked holds a value "
+              f"written over several lines, or one a single-line write would break; edit "
+              f"it in the note by hand", file=sys.stderr)
+        return 1
+    print(f"leads mark-asked: {result.slug}: {result.outcome}", file=sys.stderr)
+    return 0
+
+
+def cmd_leads_answer(args, config) -> int:
+    from sluice.core.app import Sluice
+    if not args.text.strip():
+        print("leads answer: --text must not be blank", file=sys.stderr)
+        return 2
+    result = Sluice(config).record_answer(lead=args.lead, text=args.text)
+    refused = _lead_refusal("answer", result, args.lead)
+    if refused is not None:
+        if result.outcome == "conflict" and result.appended:
+            print(f"leads answer: {result.slug}: the answer WAS recorded; only clearing "
+                  f"the asked mark failed", file=sys.stderr)
+        return refused
+    if result.outcome == "answered_not_cleared":
+        print(f"leads answer: {result.slug}: the answer was recorded, but the lead moved to "
+              f"status={result.status} before the asked mark could be cleared",
+              file=sys.stderr)
+        return 1
+    if result.outcome == "refused_unwritable":
+        print(f"leads answer: {result.slug}: the answer was recorded, but followup_asked "
+              f"could not be cleared safely, so triage still skips the lead; clear it in the "
+              f"note by hand", file=sys.stderr)
+        return 1
+    if result.outcome == "answered_hidden":
+        print(f"leads answer: {result.slug}: the answer was recorded, but a code fence left "
+              f"open earlier in the note hides it from triage; close that fence in the note "
+              f"with a line of the same character (backticks or tildes), at least as many as "
+              f"opened it", file=sys.stderr)
+        return 1
+    print(f"leads answer: {result.slug}: answered"
+          f"{'' if result.appended else ' (already recorded)'}", file=sys.stderr)
+    return 0
+
+
 def cmd_leads_expire(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -1069,15 +1178,39 @@ def cmd_leads_expire(args, config) -> int:
     return 0
 
 
+def _research_queue_line(queue) -> str:
+    """The digest's standing line (#378): the whole research queue, read from the vault
+    rather than the run, so the per-run name cap cannot hide it. "" when the queue is
+    empty."""
+    n = len(queue.rows)
+    if not n:
+        return ""
+    oldest = queue.oldest_days
+    tail = (f"; oldest first seen {oldest} day{'' if oldest == 1 else 's'} ago"
+            if oldest is not None else "")
+    return (f"Research queue: {n} lead{'' if n == 1 else 's'}, "
+            f"{len(queue.asked)} marked asked{tail}.")
+
+
+def _research_queue_line_for(app) -> str:
+    try:
+        return _research_queue_line(app.followups())
+    except Exception as e:  # noqa: BLE001 -- the run has already written; an unreadable
+        # queue costs this one digest line, never the run's exit code or its push.
+        _log.warning("triage: could not read the research queue: %s", e)
+        return ""
+
+
 def cmd_triage_run(args, config) -> int:
     from sluice.core.app import Sluice
 
     statuses = tuple(s.strip() for s in
                      (args.status or ",".join(_status.DEFAULT_TRIAGE_STATUSES)).split(",")
                      if s.strip())
-    report = Sluice(config).triage(statuses=statuses, limit=args.limit,
-                                   dry_run=args.dry_run, no_llm=args.no_llm,
-                                   backend_override=args.backend)
+    app = Sluice(config)
+    report = app.triage(statuses=statuses, limit=args.limit,
+                        dry_run=args.dry_run, no_llm=args.no_llm,
+                        backend_override=args.backend)
     # The engine STOPPED before changing any lead (see `TriageReport.stopped`). Handled
     # first: a stopped report can carry the #223 notice with `reverdict_deferred` False,
     # which is the APPLIED arm's condition below. Exit 1, without a traceback.
@@ -1231,6 +1364,9 @@ def cmd_triage_run(args, config) -> int:
              f"{len(report.reverdict_pending)} lead(s) judged differently (#223)."
              if report.reverdict_pending else "")
     body = _format_triage_digest(report, alert, dry_run=args.dry_run)
+    queue_line = _research_queue_line_for(app)
+    if queue_line:
+        body += "\n" + queue_line
     # ...and the steps the stderr line gives that a user can act on, on the channel an
     # unattended install reads -- this arm repeats on every run while the marker cannot be
     # recorded. Appended as the LAST line rather than built into the alert: the alert is the
@@ -3125,6 +3261,26 @@ def _build_parser() -> argparse.ArgumentParser:
                     help='exact store-issued slug, e.g. --lead "Example Ltd - Example Role"')
     ds.add_argument("--reason", required=True, help="why this lead is being dismissed")
     ds.set_defaults(func=cmd_leads_dismiss)
+
+    fu = leads.add_parser("followups",
+                          help="list research leads and the question each is waiting on")
+    fu.add_argument("--json", action="store_true", help="machine-readable output")
+    fu.set_defaults(func=cmd_leads_followups)
+
+    ma = leads.add_parser("mark-asked",
+                          help="record that you asked a research lead's question; triage "
+                               "skips it until you record the answer")
+    ma.add_argument("--lead", required=True, metavar="SLUG",
+                    help='exact store-issued slug, e.g. --lead "Example Ltd - Example Role"')
+    ma.set_defaults(func=cmd_leads_mark_asked)
+
+    an = leads.add_parser("answer",
+                          help="record the reply to a research lead's question; the next "
+                               "triage run judges the lead with it")
+    an.add_argument("--lead", required=True, metavar="SLUG",
+                    help='exact store-issued slug, e.g. --lead "Example Ltd - Example Role"')
+    an.add_argument("--text", required=True, help="the reply, in your own words")
+    an.set_defaults(func=cmd_leads_answer)
 
     rc = leads.add_parser(
         "reconcile",

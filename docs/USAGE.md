@@ -153,7 +153,9 @@ Classify leads.
 | `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
-entirely under `--no-llm`). A blank/placeholder-company `needs_review` lead gets one resolution
+entirely under `--no-llm`). A `research` lead you have marked asked (`leads mark-asked`) is
+left out and counted, and the digest carries a `Research queue:` line counting every research
+lead, how many are marked asked, and how long ago the oldest was first seen. A blank/placeholder-company `needs_review` lead gets one resolution
 attempt first: a free regex over the role text's own trailing `"<role> at <Company>"`
 clause, tier 0, then a free URL-pattern tier 1, an opt-in real page-visit tier 2
 (`triage.company_resolve_fetch`), then an opt-in LLM read of that SAME page data, tier 3
@@ -529,12 +531,14 @@ seen, so that message names it, which is the whole of what makes it recoverable.
 
 Maintenance passes. **Report by default; none of these offers `--dry-run`, because the
 default *is* the dry run** — a write happens only with the flag named below.
-**Exception: `leads add` (#241) and `leads dismiss` (#131) both write unconditionally on
-every call**, like the pipeline commands (`ingest run`/`triage run`/`cv run`/`apply
-record`/`track run`), not like their `leads` siblings — the distinguishing property is who
-decided what to write: `add` and `dismiss` act on what the USER typed (the lead's own
-fields; `--lead`/`--reason`), while `dedupe`/`expire`/`reconcile` write over a set the TOOL
-computed. There is no report to preview when the user is the one supplying the content.
+**Exception: the `leads` commands that record the user's own words or action on one lead
+they named — `leads add` (#241), `leads dismiss` (#131), `leads mark-asked` and `leads
+answer` (#378) — write unconditionally on every call**, like the pipeline commands (`ingest
+run`/`triage run`/`cv run`/`apply record`/`track run`), not like their `leads` siblings — the
+distinguishing property is who decided what to write: these record the user's (the lead's own
+fields, a dismissal reason, that they asked, the reply), while `dedupe`/`expire`/`reconcile`
+write over a set the TOOL computed. There is nothing to preview when the user is the one
+supplying the content.
 
 ### `job-sluice leads add --url URL --company NAME --role TITLE [--location L] [--salary S] [--role-type contract|permanent] [--jd-file PATH|-]`
 
@@ -633,6 +637,33 @@ moved into the application lifecycle, or it is held by a #60 sign-off
 
 Exit 1 for no match, ambiguous, either refusal, or a lost write race (`conflict`);
 exit 0 for `dismissed` or `unchanged`.
+
+### `job-sluice leads followups [--json]`
+
+The research worklist (#378). Lists every `research` lead in two groups, "Never asked" and
+"Asked, waiting", each with its age in days and the question its latest verdict asked
+(`triage_next`); an age it cannot read prints as `?`. Read-only. `--json` prints `total`,
+`asked`, `oldest_days` and one row per lead. When `lead_ttl_days` is `0` it ends with a
+reminder that `leads expire` can age out leads left waiting.
+
+### `job-sluice leads mark-asked --lead SLUG`
+
+Records that you asked a research lead's question: stamps today's date in `followup_asked`.
+`triage run` skips the lead from then on, counting it in the digest, until you record the
+answer. Resolves by EXACT slug, like `leads dismiss`. Refused (writes nothing, exit 1) for a
+lead not at `research`, an ambiguous slug, or a `followup_asked` you typed over several lines;
+a same-day repeat is `unchanged` (exit 0).
+
+### `job-sluice leads answer --lead SLUG --text TEXT`
+
+Records the reply: appends a dated `## Follow-up answers` section to the note and clears
+`followup_asked`, so the next triage run judges the lead with the answers in front of it. The
+same text on the same day is recorded once; the same words on a later day are a new reply.
+Exit 0 only when the answer is in the note, the judge will read it and the lead is back in
+triage. Exit 1, saying which, when the lead is not at `research`, the slug is unknown or
+ambiguous, the write lost a race, or the answer was written but the lead moved on, the asked
+mark could not be cleared, or a code fence left open earlier in the note hides the answer.
+Blank `--text` is a usage error (exit 2).
 
 ### `job-sluice leads reconcile [--apply] [--json]`
 

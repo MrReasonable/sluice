@@ -329,7 +329,7 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice cv` | compose, gate and render a tailored CV, then sign off on it (`run`, `signoff`) |
 | `job-sluice apply` | stage a CV and a prep packet, then record a submitted application (`prep`, `record`) |
 | `job-sluice track` | reconcile the funnel from email and calendar signals, and mint the Google credential doing so requires (`run`, `confirm`, `dismiss`, `auth`) |
-| `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `dismiss`, `reconcile`, `rename`) |
+| `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `dismiss`, `reconcile`, `rename`), and the research worklist (`followups`, `mark-asked`, `answer`) |
 | `job-sluice experience` | capture and verify experience evidence — the CV gate's only citable source (`add`, `list`, `verify`) |
 | `job-sluice skills` | capture and verify skills: framing for the composer, and a verified note's name can appear in a CV's SKILLS section (`add`, `list`, `verify`) |
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |
@@ -338,10 +338,10 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice mcp` | run a Model Context Protocol server over stdio (`serve`, plus `--write` for the write tools), or register it in the AI clients on this machine (`install`) |
 
 The `leads` passes **report by default** and change nothing until told otherwise (`--merge`,
-`--expire`, `--apply`), because they write over a set the tool computed. `add` and `dismiss`
-are the exceptions: both write on every call, because what they write is what you typed — the
-new lead's own fields, or the dismissal reason. The pipeline commands invert that and write by
-default.
+`--expire`, `--apply`), because they write over a set the tool computed. `add`, `dismiss`,
+`mark-asked` and `answer` are the exceptions: each writes on every call, because what it
+records is your own — the new lead's fields, the dismissal reason, that you asked, or the
+reply. The pipeline commands invert that and write by default.
 
 Full flag reference, exit codes and which stream each command writes to:
 [`docs/USAGE.md`](https://github.com/MrReasonable/sluice/blob/main/docs/USAGE.md).
