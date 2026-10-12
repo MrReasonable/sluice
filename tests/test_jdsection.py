@@ -150,3 +150,48 @@ def test_lines_that_are_not_fences_do_not_open_one(line):
 def test_a_fence_closes_only_on_a_long_enough_bare_run(not_a_close):
     # A closing run shorter than the opener, or one with text after it, is a line of code.
     assert read(f"````\n{not_a_close}\n{HEADING}\n{_JD}\n") == ("", 0)
+
+
+def test_sections_returns_every_section_in_order():
+    body = "## Notes\nx\n## Other\nfirst\n## Other\nsecond\n# End\n"
+    assert jdsection.sections(body, "## Other") == ["first", "second"]
+
+
+def test_sections_default_empty_tag_still_matches_a_bare_heading():
+    # `bare[:-len("")]` is `bare[:0]`, the empty string: an unguarded strip would match nothing.
+    assert jdsection.sections("## Other\nkept\n", "## Other") == ["kept"]
+
+
+def test_sections_honours_fences():
+    body = "```\n## Other\nfenced\n```\n## Other\nreal\n"
+    assert jdsection.sections(body, "## Other") == ["real"]
+
+
+def test_sections_a_heading_with_other_trailing_text_is_not_a_section():
+    assert jdsection.sections("## Other:\nx\n", "## Other") == []
+
+
+def test_read_is_sections_reduced_to_the_first_and_the_count():
+    body = f"{HEADING} {TAG}\nfirst\n{HEADING}\nsecond\n"
+    assert read(body) == ("first", 2)
+    assert jdsection.sections(body, HEADING, TAG) == ["first", "second"]
+
+
+def test_demote_rewrites_only_breaking_lines():
+    assert jdsection.demote("a\n## b\n  # c\n### d") == "a\n### b\n  ### c\n### d"
+
+
+def test_neutralise_closes_a_fence_the_text_leaves_open():
+    # inv-002: an unclosed fence runs to the end of the body, so every LATER section heading
+    # would read as fenced code and be skipped. Witness: return `demote(text)` unclosed.
+    body = "## Other\n" + jdsection.neutralise("x\n~~~~\ny") + "\n## Other\nlater\n"
+    assert jdsection.sections(body, "## Other") == ["x\n~~~~\ny\n~~~~", "later"]
+
+
+def test_neutralise_leaves_a_closed_fence_alone():
+    assert jdsection.neutralise("```\n## a\n```") == "```\n### a\n```"
+
+
+def test_a_job_description_left_open_no_longer_hides_a_later_section():
+    body = render("posting\n```") + "\n\n## Other\nlater\n"
+    assert jdsection.sections(body, "## Other") == ["later"]

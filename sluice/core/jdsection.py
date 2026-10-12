@@ -1,11 +1,13 @@
-"""The ONE grammar of a lead note's `## Job description` section (#369).
+"""The one grammar of a lead note's body sections: `## Job description` (#369) and `## Follow-up answers` (#378).
 
 A lead with no posting to fetch (a referral, an InMail) carries its job description in the
 note body instead, under `HEADING`. Two sides read this grammar -- the reader, deciding where
 the section stops, and the writer (`Sluice.create_lead`), deciding what in pasted text must be
 neutralised so the reader does not stop early. They share `breaks_section` and live in one
 module because two copies of "which line ends the section" would drift, and a drift silently
-truncates the posting the composer and the judge are shown.
+truncates the posting the composer and the judge are shown. `core/followups.py` reads its own
+section through `sections()` below, so a fence or a level-1/2 heading means the same thing in
+both.
 
 Pure and stdlib-only, beside `core/names.py` and `core/tokens.py` for the same reason they
 sit in `core/`: triage and cv both import it, and neither may import the other.
@@ -51,17 +53,11 @@ def breaks_section(line: str) -> bool:
     return bool(_BREAK.match(line))
 
 
-def _is_heading(line: str) -> bool:
-    bare = line.rstrip()
-    if bare.endswith(TAG):
-        bare = bare[: -len(TAG)].rstrip()
-    return bare.casefold() == HEADING.casefold()
-
-
-def _outside_fences(lines: list) -> list:
-    """For each line, False when it is a fence line or inside fenced code. A fence closes on a
-    run of the SAME character at least as long as the opener with nothing after it; an
-    unclosed fence runs to the end of the body, as CommonMark has it."""
+def _scan_fences(lines: list) -> tuple:
+    """`(flags, opener)`: for each line, False when it is a fence line or inside fenced code;
+    and the opener still open at the end ("" when none). A fence closes on a run of the SAME
+    character at least as long as the opener with nothing after it; an unclosed fence runs
+    to the end of the body, as CommonMark has it."""
     flags, opener = [], ""
     for line in lines:
         m = _FENCE.match(line)
@@ -74,7 +70,39 @@ def _outside_fences(lines: list) -> list:
                 and not line[m.end():].strip():
             opener = ""
         flags.append(False)
-    return flags
+    return flags, opener
+
+
+def _outside_fences(lines: list) -> list:
+    return _scan_fences(lines)[0]
+
+
+def _is_heading(line: str, heading: str, tag: str) -> bool:
+    bare = line.rstrip()
+    # Guarded on a non-empty tag: `bare[:-len("")]` is `bare[:0]`, the empty string, so an
+    # unguarded strip of an empty tag would match no heading at all.
+    if tag and bare.endswith(tag):
+        bare = bare[: -len(tag)].rstrip()
+    return bare.casefold() == heading.casefold()
+
+
+def sections(body: str, heading: str, tag: str = "") -> list:
+    """The text of EVERY section headed `heading` (optionally followed by `tag` on the heading
+    line), each stripped, in body order. A section ends at the next level-1 or level-2 heading
+    outside fenced code -- including another `heading`, so consecutive sections stay apart."""
+    lines = _lines(body)
+    outside = _outside_fences(lines)
+    found = []
+    for start, line in enumerate(lines):
+        if not (outside[start] and _is_heading(line, heading, tag)):
+            continue
+        text = []
+        for i in range(start + 1, len(lines)):
+            if outside[i] and breaks_section(lines[i]):
+                break
+            text.append(lines[i])
+        found.append("\n".join(text).strip())
+    return found
 
 
 def read(body: str) -> tuple:
@@ -82,17 +110,26 @@ def read(body: str) -> tuple:
     body holds -- so the CALLER can warn about duplicates. `("", 0)` with no section. A
     hand-typed heading without the tag reads the same as a written one; a heading with any
     other text on its line (`## Job description:`) is not the section."""
-    lines = _lines(body)
-    outside = _outside_fences(lines)
-    starts = [i for i, line in enumerate(lines) if outside[i] and _is_heading(line)]
-    if not starts:
-        return "", 0
-    out = []
-    for i in range(starts[0] + 1, len(lines)):
-        if outside[i] and breaks_section(lines[i]):
-            break
-        out.append(lines[i])
-    return "\n".join(out).strip(), len(starts)
+    found = sections(body, HEADING, TAG)
+    return (found[0], len(found)) if found else ("", 0)
+
+
+def demote(text: str) -> str:
+    """`text` with every breaking line demoted to level 3 (its leading `#` run replaced by
+    `###`, indentation kept), so pasted text cannot end the section it is written into."""
+    return "\n".join(_HASHES.sub(r"\1###", line) if breaks_section(line) else line
+                     for line in _lines(text))
+
+
+def neutralise(text: str) -> str:
+    """`text` made safe to write as one section: `demote`d, then, when it leaves a fence
+    open, closed with that same opener. Without the close, an unclosed fence runs to the end
+    of the BODY, so every later section's heading reads as fenced code and is skipped -- a
+    `## Follow-up answers` written after a pasted job description would never reach the
+    judge (#378)."""
+    out = demote(text)
+    opener = _scan_fences(_lines(out))[1]
+    return f"{out}\n{opener}" if opener else out
 
 
 _SHORT_HEAD = "the job description in the note is shorter than min_jd_chars ("
@@ -116,10 +153,8 @@ def is_short_section_reason(text: str) -> bool:
 
 
 def render(text: str) -> str:
-    """The section to append: the tagged heading, a blank line, then `text` with every
-    breaking line demoted to level 3 (its leading `#` run replaced by `###`, indentation
-    kept). Heading levels change; nothing is refused. A `## Job description` line inside the
-    text is demoted like any other, so a written note carries exactly one section."""
-    demoted = [_HASHES.sub(r"\1###", line) if breaks_section(line) else line
-               for line in _lines(text)]
-    return f"{HEADING} {TAG}\n\n" + "\n".join(demoted)
+    """The section to append: the tagged heading, a blank line, then `text` neutralised (see
+    `neutralise`). Heading levels change and an open fence is closed; nothing is refused. A
+    `## Job description` line inside the text is demoted like any other, so a written note
+    carries exactly one section."""
+    return f"{HEADING} {TAG}\n\n" + neutralise(text)
