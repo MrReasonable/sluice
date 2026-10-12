@@ -115,7 +115,8 @@ class RunArtefacts:
     def failed(self) -> bool:
         return bool(self.errors)
 
-    def begin(self, out_dir, *, lead, entry_ids, dossier_failed, skills_unreadable):
+    def begin(self, out_dir, *, lead, entry_ids, dossier_failed, jd_source,
+              skills_unreadable):
         """Start the record at the point composition starts, and clear the previous run's.
 
         `lead` is the store-issued slug, never the note's `ref`: a ref is an opaque store
@@ -123,7 +124,7 @@ class RunArtefacts:
         rows name the slug."""
         self.out_dir = out_dir
         self._started_at = _now()
-        self._facts = {"lead": lead, "dossier_failed": dossier_failed,
+        self._facts = {"lead": lead, "dossier_failed": dossier_failed, "jd_source": jd_source,
                        "skills_unreadable": skills_unreadable,
                        "bundle_entry_ids": list(entry_ids)}
         try:
@@ -207,6 +208,7 @@ class RunArtefacts:
             "finished_at": _now(),
             "backend": backend,
             "dossier_failed": self._facts["dossier_failed"],
+            "jd_source": self._facts["jd_source"],
             "skills_unreadable": self._facts["skills_unreadable"],
             "bundle_entry_ids": self._facts["bundle_entry_ids"],
             "attempt_count": len(self._attempts),

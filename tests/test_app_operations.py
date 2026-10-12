@@ -403,6 +403,7 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
             self.fm = {"status": "shortlist", "company": "Acme", "role": "Engineer"}
             self.ref = "Job Applications/Job Leads/Acme - Engineer.md"
             self.slug = "Acme - Engineer"
+            self.body = ""
 
     class _FakeStore:
         def read_leads(self, statuses=None):

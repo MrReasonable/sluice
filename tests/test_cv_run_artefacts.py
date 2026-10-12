@@ -541,7 +541,7 @@ def test_a_reply_is_saved_under_a_name_that_promises_nothing_about_its_content(t
     from sluice.cv.artefacts import RunArtefacts
     rec = RunArtefacts(dry_run=True)
     rec.begin(str(tmp_path), lead="x", entry_ids=[], dossier_failed=False,
-              skills_unreadable=False)
+              jd_source="", skills_unreadable=False)
     rec.composed(1, "chat then {}")
     assert (tmp_path / "reply.attempt-1.txt").read_text(encoding="utf-8") == "chat then {}"
 
@@ -554,7 +554,7 @@ def test_a_3x_runs_attempt_files_are_cleared_by_the_next_run(tmp_path):
     # wrote, so the whole-name match must leave it alone.
     (tmp_path / "my cv.attempt-1.md").write_text("the user's", encoding="utf-8")
     RunArtefacts(dry_run=True).begin(str(tmp_path), lead="x", entry_ids=[],
-                                     dossier_failed=False, skills_unreadable=False)
+                                     dossier_failed=False, jd_source="", skills_unreadable=False)
     assert sorted(p.name for p in tmp_path.glob("*cv.attempt-*.md")) == ["my cv.attempt-1.md"]
 
 
@@ -563,7 +563,7 @@ def test_the_run_record_carries_the_selection_report(tmp_path):
     from sluice.cv.engine import CvResult
     rec = RunArtefacts(dry_run=True)
     rec.begin(str(tmp_path), lead="x", entry_ids=[], dossier_failed=False,
-              skills_unreadable=False)
+              jd_source="", skills_unreadable=False)
     rec.finish(CvResult("x", "dry-run", skills_dropped=["'A': not one of your skills"],
                         bullets_trimmed=["R1 (Example Alpha): kept 2 of 3"],
                         attribution_check_off=True))
