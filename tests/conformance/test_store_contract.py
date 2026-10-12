@@ -1001,6 +1001,21 @@ def test_upsert_result_slug_is_not_fooled_by_an_unrelated_notes_matching_url(
         f"reported as landing on {touched_slug!r} -- never-clobber violated")
 
 
+def test_upsert_result_ref_names_the_note_read_leads_issues(store_name, tmp_path, monkeypatch):
+    """#369: `ref` is populated exactly when `slug` is, and is the SAME opaque handle
+    `read_leads` issues for that note -- the form every write method takes. Proven by USING
+    it: append_body_section through the result's ref must land on that slug's note."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    created = store.upsert(_lead())
+    assert created.outcome == "created" and created.ref is not None
+    note = next(n for n in store.read_leads() if n.slug == created.slug)
+    assert created.ref == note.ref
+    assert store.append_body_section(created.ref, "<!-- t -->", "## Probe\nx") is True
+    assert "## Probe" in next(n for n in store.read_leads() if n.slug == created.slug).body
+    again = store.upsert(_lead())
+    assert again.outcome in ("updated", "merged") and again.ref == note.ref
+
+
 def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_path, monkeypatch):
     """refused/merged_away/merged_away_unproven never carry a slug -- confirms the
     negative half of the contract, not just the positive one above.
@@ -1019,6 +1034,7 @@ def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_
     # outcome) is universal.
     if refused.outcome == "refused":
         assert refused.slug == ""
+        assert refused.ref is None
 
     # merged_away / merged_away_unproven: same setup as
     # test_merged_away_lead_is_never_recreated -- merge a loser away, then re-scrape
@@ -1039,6 +1055,7 @@ def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_
     # returns neither -- so assert the slug rule only when one of them is reported.
     if archived.outcome in ("merged_away", "merged_away_unproven"):
         assert archived.slug == ""
+        assert archived.ref is None
 
 
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────

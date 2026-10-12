@@ -3538,7 +3538,8 @@ class Vault:
                 outcome = self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "updated", lead.dedup_key)
                 return UpsertResult(outcome=outcome,
-                                    slug=self._slug_for(path) if outcome != "refused" else "")
+                                    slug=self._slug_for(path) if outcome != "refused" else "",
+                                    ref=path if outcome != "refused" else None)
             if action == "merge":
                 # We could not prove same-or-different, so we do NOT split (that would mint a
                 # note per scrape -- unbounded). Bump last_seen like an update; the difference
@@ -3546,7 +3547,8 @@ class Vault:
                 outcome = self._bump_last_seen_or_refuse(
                     path, lead.last_seen or _today(), "merged", lead.dedup_key)
                 return UpsertResult(outcome=outcome,
-                                    slug=self._slug_for(path) if outcome != "refused" else "")
+                                    slug=self._slug_for(path) if outcome != "refused" else "",
+                                    ref=path if outcome != "refused" else None)
             # The WRITE FOLDER, made HERE and not beside the leads_dir makedirs above, which sits
             # ABOVE the update/merge/create fan-out and therefore runs on every non-refused
             # outcome. Measured: a second upsert of the same lead reaches that line and returns
@@ -3586,7 +3588,7 @@ class Vault:
                 # The SAME string the blank-note guard above ran the read's predicate over --
                 # re-rendering here would put a second, unchecked set of bytes on disk.
                 _write(path, rendered, exclusive=True)
-                return UpsertResult(outcome="created", slug=self._slug_for(path))
+                return UpsertResult(outcome="created", slug=self._slug_for(path), ref=path)
             except FileExistsError:
                 # #16 TOCTOU: a concurrent writer created this note between _resolve_path's
                 # existence check and this exclusive create. Truncating it (the old open("w"))
