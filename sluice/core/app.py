@@ -2275,8 +2275,8 @@ class Sluice:
         except VaultConflict as e:
             _log.warning("cv re-tailor for %s lost the write race: %s", notes[0].ref, e)
             # run_one stamps dossier_failed onto the exception before re-raising it (see
-            # its own comment) precisely so THIS catch does not under-report "N CV(s)
-            # composed without a job description" for a lead whose dossier was blocked by
+            # its own comment) precisely so THIS catch does not under-report "N lead(s)
+            # had no usable job description" for a lead whose dossier was blocked by
             # the SSRF guard and which then also lost the write race -- the same defect
             # run_batch's catch-all was fixed against one commit ago; this is its second
             # call site.

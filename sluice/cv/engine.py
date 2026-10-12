@@ -41,8 +41,9 @@ from sluice.core import status as _status
 from sluice.core.backends import BackendError
 from sluice.core.candidate import contact_block, full_name
 from sluice.core.dossier import jd_text
-from sluice.core.leads import (BLIND_TAG, FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
-                               framing_entries, index_by_slug)
+from sluice.core.leads import (BLIND_FETCH_FAILED, BLIND_NOT_ARRIVED, BLIND_TAG, FRAMING_KEYS,
+                               StalenessPolicy, ambiguous_slug_warnings, framing_entries,
+                               index_by_slug)
 from sluice.core.layout import asks_for_bullets, build_slots, no_citable_slot
 from sluice.core.log import get_logger
 from sluice.core.protocols import (CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH, EVIDENCE_KINDS,
@@ -309,18 +310,15 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # is sent.
         if not dossier_cache.jd_arrived(d):
             dossier_failed = True
-            blind_reason = (
-                f"the job description in the note is shorter than min_jd_chars "
-                f"({dossier_cache.min_jd_chars})" if supplied
-                else "no job description arrived")
+            blind_reason = (jdsection.short_section_reason(dossier_cache.min_jd_chars)
+                            if supplied else BLIND_NOT_ARRIVED)
     except Exception as e:
         _log.warning("dossier for %s failed: %s", note.ref, e)
         dossier_failed = True
         # Fixed phrases only, never `e`: this reason becomes frontmatter in the user's note
         # (needs_signoff), and an exception message can carry a url or page text. The
         # exception itself is logged above.
-        blind_reason = ("no job description arrived" if supplied
-                        else "the job description fetch failed")
+        blind_reason = BLIND_NOT_ARRIVED if supplied else BLIND_FETCH_FAILED
 
     # Everything from here on can raise for reasons unrelated to the dossier (a render
     # failure, a backend timeout mid-compose, a store write conflict), and run_batch's
@@ -781,7 +779,7 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
             # run_one stamps dossier_failed onto the exception before re-raising (see
             # its own comment) precisely so this catch-all -- which must stay a
             # catch-all, for the isolation reason above -- does not silently under-
-            # report "N CV(s) composed without a job description" (cli.py's summary
+            # report "N lead(s) had no usable job description" (cli.py's summary
             # line) for a lead whose dossier WAS blocked but which then also failed
             # downstream for an unrelated reason. `getattr(..., False)` also covers an exception raised
             # by code that predates #18 and so never carries the attribute.

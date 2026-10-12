@@ -780,16 +780,19 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
                 "content_warning": _CV_SIGNOFF_CONTENT_WARNING, **framing_warning,
                 "detail": "NOTHING was written. Relay these claims to a human, showing any "
                           "framing as the triage notes the CV was composed with (context, not "
-                          "claims), get explicit approval, then call again with confirm_token "
+                          "claims) and any blind reason, separately, as the CV having been "
+                          "composed without a job description and so not tailored to this "
+                          "role. Get explicit approval, then call again with confirm_token "
                           "to promote.",
             }
         return {
             "outcome": "stale_confirmation", "slug": slug, "pending_cv": pending,
             "claims": claims, "framing": framing, "blind": blind, "confirm_token": token,
             "content_warning": _CV_SIGNOFF_CONTENT_WARNING, **framing_warning,
-            "detail": "The claims or framing changed since this confirm_token was issued -- "
-                      "nothing was written. Relay the NEW claims and framing and get fresh "
-                      "approval before calling again.",
+            "detail": "The claims, framing or blind reason changed since this confirm_token "
+                      "was issued -- nothing was written. Relay the NEW claims, framing and "
+                      "blind reason (shown separately: the CV was composed without a job "
+                      "description) and get fresh approval before calling again.",
         }
     # promoted | discarded | collision | stale (Vault.sign_off's own vocabulary,
     # threaded through verbatim -- "stale" here is a genuine store-level CAS race

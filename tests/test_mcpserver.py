@@ -1321,6 +1321,9 @@ def test_cv_signoff_needs_confirmation_returns_blind_apart(tmp_path):
     assert out["outcome"] == "needs_confirmation"
     assert out["blind"] == ["no job description arrived"]
     assert out["claims"] == ["unsupported claim"]
+    # CodeRabbit on #394: a hold can carry ONLY a blind entry, so the instruction the caller
+    # follows must name it, or approval can be got without saying the CV is untailored.
+    assert "blind" in out["detail"]
 
 
 def test_cv_signoff_stale_confirmation_returns_blind_apart(tmp_path):
@@ -1336,6 +1339,7 @@ def test_cv_signoff_stale_confirmation_returns_blind_apart(tmp_path):
     assert second["outcome"] == "stale_confirmation"
     assert second["blind"] == ["the job description fetch failed"]
     assert second["claims"] == ["unsupported claim"]
+    assert "blind" in second["detail"]
 
 
 def test_cv_signoff_discard_returns_blind_apart(tmp_path):
@@ -1487,8 +1491,11 @@ def test_cv_signoff_tool_vault_stale_outcome_carries_a_detail(tmp_path, monkeypa
     real_sign_off = Vault.sign_off
 
     def _racing_sign_off(self, ref, *, accept=True, require_pending=None):
+        # Simulated concurrent discard and re-compose. A hold is never stamped over another,
+        # so the first is discarded before the second lands.
+        real_sign_off(self, ref, accept=False)
         self.hold_for_signoff(ref, pending="CV_second.pdf (2026-08-14)",
-                              claims='["claim two"]')   # simulated concurrent re-compose
+                              claims='["claim two"]')
         return real_sign_off(self, ref, accept=accept, require_pending=require_pending)
 
     monkeypatch.setattr(Vault, "sign_off", _racing_sign_off)

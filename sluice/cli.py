@@ -1428,15 +1428,16 @@ def cmd_cv_run(args, config) -> int:
         for t in r.bullets_trimmed:
             print(f"  TRIMMED: {t}", file=sys.stderr)
     # #18: a job description that did not arrive does not stop composition (cv/engine.py
-    # proceeds either way so the fabrication gate still runs), so "rendered" alone would
-    # silently hide that some of these CVs were composed against no real job description
-    # at all. It does not stop composition (the gate still runs), and under
-    # `cv.blind_hold` the CV is held rather than served (#369); this line counts them
-    # either way, including with the hold off. `dossier_failed` covers
-    # both producers -- a fetch that raised and one that returned nothing usable (#169).
+    # proceeds either way so the fabrication gate still runs). Under `cv.blind_hold` (#369,
+    # on by default) such a CV is held and reads `needs-signoff`; with the hold off it reads
+    # `rendered`, indistinguishable from a tailored one. This line counts them either way.
+    # `dossier_failed` covers both producers -- a fetch that raised and one that returned
+    # nothing usable (#169). It counts LEADS, not CVs: run_batch keeps the flag on an
+    # `error` or `backend-unavailable` result too, where nothing was composed, so the line
+    # must not say a CV was (CodeRabbit on #394).
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
-        print(f"cv: {blind} CV(s) composed without a job description", file=sys.stderr)
+        print(f"cv: {blind} lead(s) had no usable job description", file=sys.stderr)
     # #369: a JD taken from the lead note is reported, never invisible -- a model can write
     # that section through MCP create_lead, which is ruled report-only (spec Decisions).
     from_note = sum(1 for r in results if r.jd_source == "note")

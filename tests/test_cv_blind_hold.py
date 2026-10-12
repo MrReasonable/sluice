@@ -125,8 +125,29 @@ def test_the_cv_run_count_line_is_reworded(monkeypatch, tmp_path, capsys):
     args = _build_parser().parse_args(["cv", "run", "--lead", "example-foundry-analyst"])
     cmd_cv_run(args, Config())
     err = capsys.readouterr().err
-    assert "cv: 1 CV(s) composed without a job description" in err
+    assert "cv: 1 lead(s) had no usable job description" in err
     assert "composed blind" not in err
+
+
+def test_the_count_line_counts_a_lead_that_errored_without_claiming_a_cv(monkeypatch,
+                                                                          tmp_path, capsys):
+    # CodeRabbit on #394: run_batch keeps `dossier_failed` on an `error` result (so an operator
+    # still hears the JD never arrived), and no CV was composed for it. The line counts leads,
+    # so it is true of both results here.
+    from sluice.cli import _build_parser, cmd_cv_run
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.cv.engine import CvResult
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    results = [CvResult("Job Applications/Job Leads/Example Foundry - Analyst.md",
+                        "needs-signoff", dossier_failed=True, jd_source="none"),
+               CvResult("Job Applications/Job Leads/Example Analytics - Engineer.md", "error",
+                        dossier_failed=True)]
+    monkeypatch.setattr(Sluice, "compose_cv", lambda self, **kw: results)
+    cmd_cv_run(_build_parser().parse_args(["cv", "run", "--all-shortlist"]), Config())
+    err = capsys.readouterr().err
+    assert "cv: 2 lead(s) had no usable job description" in err
+    assert "composed without a job description" not in err
 
 
 def test_a_blind_hold_is_not_a_gate_finding(monkeypatch):

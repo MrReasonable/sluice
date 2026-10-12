@@ -261,8 +261,9 @@ Shared by every sub-app:
   one that returned sub-floor text keeps it -- identical at the shipped
   `min_jd_chars: 0`, where only a wholly empty JD fails the predicate, and
   divergent above it. Since #369 composing proceeds the same way, but under
-  `cv.blind_hold` (on by default) such a CV is held for sign-off rather than
-  served.
+  `cv.blind_hold` (on by default) such a CV is held for sign-off: the PDF still
+  lands in `served_dir`, having passed the gate, and the `tailored_cv` pointer
+  that marks it send-ready is withheld until `cv signoff`.
 
   A lead note may carry its own job description, under a `## Job description`
   heading (#369; a referral or an InMail has no posting to fetch).

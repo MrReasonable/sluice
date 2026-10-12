@@ -5,6 +5,7 @@ import unicodedata
 from dataclasses import dataclass, field, fields
 from datetime import date
 
+from sluice.core import jdsection
 from sluice.core import status as _status
 
 # The verdict vocabulary, shared with #5's `same_opportunity`. Strings, not an enum -- core/status.py
@@ -97,6 +98,18 @@ def framing_entries(lines):
 # from a page or a model. One constant for the writer (cv/engine.py) and both readers
 # (cli.py, mcpserver.py), which already import the framing tag's helpers from here.
 BLIND_TAG = "blind"
+# The two fixed blind reasons; the third is `jdsection.short_section_reason`. The writer
+# (cv/engine.py) spells them from here so `split_blind`'s check cannot drift from it.
+BLIND_NOT_ARRIVED = "no job description arrived"
+BLIND_FETCH_FAILED = "the job description fetch failed"
+
+
+def is_blind_reason(text) -> bool:
+    """True only for a reason cv/engine.py writes. `needs_signoff` is hand-editable, and MCP
+    `get_lead` tells a client a `blind` entry is sluice's own text, so text typed under the
+    tag must not inherit that label (CodeRabbit on #394)."""
+    return text in (BLIND_NOT_ARRIVED, BLIND_FETCH_FAILED) or \
+        jdsection.is_short_section_reason(text)
 
 
 def _split_tag(entries, tag):
@@ -122,8 +135,17 @@ def split_framing(entries):
 
 
 def split_blind(entries):
-    """`(blind_reasons, other_entries)` from a parsed `needs_signoff` array (#369)."""
-    return _split_tag(entries, BLIND_TAG)
+    """`(blind_reasons, other_entries)` from a parsed `needs_signoff` array (#369). An entry
+    under the tag whose text is not one of sluice's own reasons (`is_blind_reason`) stays in
+    `other_entries`, untouched, so it is shown and warned about as untrusted text."""
+    blind, other = [], []
+    for entry in entries:
+        tagged, _ = _split_tag([entry], BLIND_TAG)
+        if tagged and is_blind_reason(tagged[0]):
+            blind.append(tagged[0])
+        else:
+            other.append(entry)
+    return blind, other
 
 
 def is_http_url(url: str) -> bool:

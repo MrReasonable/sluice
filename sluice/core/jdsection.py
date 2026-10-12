@@ -95,6 +95,26 @@ def read(body: str) -> tuple:
     return "\n".join(out).strip(), len(starts)
 
 
+_SHORT_HEAD = "the job description in the note is shorter than min_jd_chars ("
+_SHORT_TAIL = ")"
+
+
+def short_section_reason(min_jd_chars: int) -> str:
+    """Why a section with text still did not count: it is under `min_jd_chars`. ONE phrase
+    for both readers -- cv records it in `needs_signoff`, triage in its `unjudgeable`
+    reason -- so a reword cannot split two explanations of one fact."""
+    return f"{_SHORT_HEAD}{min_jd_chars}{_SHORT_TAIL}"
+
+
+def is_short_section_reason(text: str) -> bool:
+    """True only for a phrase `short_section_reason` returns: the fixed words around an ASCII
+    integer. `core/leads.py::split_blind` uses it to tell sluice's own reason from text
+    typed under the same tag in a hand-editable `needs_signoff`."""
+    if not (text.startswith(_SHORT_HEAD) and text.endswith(_SHORT_TAIL)):
+        return False
+    return re.fullmatch(r"[0-9]+", text[len(_SHORT_HEAD):-len(_SHORT_TAIL)]) is not None
+
+
 def render(text: str) -> str:
     """The section to append: the tagged heading, a blank line, then `text` with every
     breaking line demoted to level 3 (its leading `#` run replaced by `###`, indentation

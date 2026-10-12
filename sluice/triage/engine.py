@@ -1013,8 +1013,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # still pay for the call this exists to avoid.
             if not dossier_cache.jd_arrived(d):
                 reason = (
-                    f"the job description in the note is shorter than min_jd_chars "
-                    f"({dossier_cache.min_jd_chars})" if i in from_section
+                    jdsection.short_section_reason(dossier_cache.min_jd_chars)
+                    if i in from_section
                     else f"no job description was fetched (floor: "
                          f"{dossier_cache.min_jd_chars} chars)")
                 if dry_run:
