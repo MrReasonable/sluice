@@ -489,3 +489,12 @@ def test_a_jd_for_an_existing_lead_prints_the_not_written_note(tmp_path, monkeyp
     assert rc == 0
     assert "the lead already existed, or was not created" in err
     assert "## Job description" in err
+
+
+def test_no_jd_file_never_prints_the_not_written_note(tmp_path, monkeypatch, capsys):
+    # tst-001: `job_description_written` defaults to False, so only the `job_description is
+    # not None` guard keeps every plain add -- a create AND a second add landing on `updated`
+    # -- from claiming a job description it was never given was not written.
+    assert _add(tmp_path / "v", monkeypatch) == 0
+    assert _add(tmp_path / "v", monkeypatch) == 0
+    assert "job description was NOT written" not in capsys.readouterr().err

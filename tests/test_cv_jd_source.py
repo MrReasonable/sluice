@@ -184,3 +184,37 @@ def test_run_json_carries_jd_source_on_an_error_result():
     run_batch(FakeVault(ENTRIES, notes=[note]), cfg, FakeBackend(CLEAN_REPLY),
               SectionCache(), renderer=_Boom())
     assert _run_json(cfg)["jd_source"] == "fetched"
+
+
+def test_a_backend_outage_result_carries_the_jd_source_stamp(monkeypatch):
+    # tst-002: run_batch's backend-unavailable arm builds its result from the exception,
+    # like the catch-all above, and must read `jd_source` back the same way.
+    import sluice.cv.engine as eng
+    from sluice.core.backends import BackendError
+
+    def _down(*a, **k):
+        e = BackendError("down", transient=True)
+        e.jd_source = "note"
+        raise e
+    monkeypatch.setattr(eng, "run_one", _down)
+    note = Note(dict(_FM), body=_section())
+    results = run_batch(FakeVault(ENTRIES, notes=[note]), _unserved(),
+                        FakeBackend(CLEAN_REPLY), SectionCache(), renderer=FakeRenderer())
+    assert [(r.status, r.jd_source) for r in results] == [("backend-unavailable", "note")]
+
+
+def test_a_section_lead_whose_build_raises_is_blind_with_the_arrival_reason(monkeypatch):
+    # tst-003: get_or_build raising on the SUPPLIED path (a cache bug, not a fetch) is still
+    # blind, sourced from the note, with "no job description arrived" -- never "the fetch
+    # failed", since nothing was fetched.
+    from tests.test_cv_engine import _served
+    _served(monkeypatch)
+
+    class _RaisesOnSupplied(SectionCache):
+        def get_or_build(self, fm, **kw):
+            if kw.get("supplied_jd"):
+                raise RuntimeError("cache bug")
+            return super().get_or_build(fm, **kw)
+    r, note = _run(_RaisesOnSupplied(), body=_section(), cfg=_cfg())
+    assert (r.status, r.jd_source, r.dossier_failed) == ("needs-signoff", "note", True)
+    assert json.loads(note.fm["needs_signoff"]) == ["blind\tno job description arrived"]
