@@ -27,7 +27,7 @@ seven weeks old.
 | What | Where | Written by |
 | --- | --- | --- |
 | The verdict's `Next:` instruction | frontmatter `triage_next` | `triage/apply.py`, on every verdict |
-| Asked, awaiting a reply | frontmatter `followup_asked: YYYY-MM-DD` | `leads asked`; blanked by `leads answer` and by every verdict |
+| Asked, awaiting a reply | frontmatter `followup_asked: YYYY-MM-DD` | `leads mark-asked`; blanked by `leads answer` and by a verdict on a stamped lead |
 | The reply | body section(s) `## Follow-up answers` | `leads answer`, or by hand |
 
 **`triage_next`** sits beside `triage_concerns` (#329): its own key, `triage_`-prefixed because it
@@ -45,28 +45,37 @@ CV compose prompt. `triage/apply.py::_HAND_EDITABLE_KEYS` becomes `frozenset(FRA
 {"triage_next", "followup_asked"}`, its comment is corrected to say it is the framing roster PLUS
 triage-only keys, and `FRAMING_KEYS` is unchanged.
 
-**`followup_asked` is blanked by every verdict** `apply_verdict` writes. An asked `research` lead is
-never judged (see Triage), so a verdict landing on a stamped lead means a human moved it off
-`research` and triage judged it afresh; without the blank, a later `research` verdict would leave
-the old stamp in place and hide the lead again with nobody having asked.
+**A verdict clears a stale stamp, and only a stale one.** When the note `apply_verdict` was handed
+carried a non-blank `followup_asked`, the verdict's write also sets it to blank, guarded by
+`require_unchanged={"followup_asked": <the value read>}` (the guard the engine already uses for
+`role_type`). An awaiting `research` lead is never judged (see Triage), so a judged lead carrying a
+stamp is one a human moved off `research`; without the blank, a later `research` verdict would leave
+the old stamp and hide the lead again with nobody having asked. The guard covers the race the
+rationale alone does not: a `leads mark-asked` landing while that lead's fetch and judge are in
+flight changes the value, the verdict's write is refused whole (the lead keeps its status and the
+fresh stamp, and is skipped next run as awaiting), and the user's action is never erased. A note
+whose snapshot stamp is blank gets no `followup_asked` key from a verdict at all, so judged leads do
+not all grow an empty key, and a stamp added mid-run on such a note is untouched by the write.
 
 **The answers section.** Each `leads answer` appends:
 
 ```
 ## Follow-up answers
 
-<!-- sluice:followup-answer <sha256 of the text, first 12 hex> -->
+<!-- sluice:followup-answer <sha256 of the date and the text, first 12 hex> -->
 YYYY-MM-DD: <text, breaking lines demoted to ###>
 ```
 
 The heading line is bare, exactly like a hand-typed one, and the per-answer tag sits on its own
 line inside the section. `Store.append_body_section`'s idempotence only needs the tag somewhere in
-the fresh file, so re-running the same answer appends nothing.
+the fresh file, so re-running the same answer on the same day appends nothing, while the same
+words given as a reply on a later day (a second "no") are a new answer and are written.
 
 The reader is a generalisation of `core/jdsection.py`, not a copy: a public
 `jdsection.sections(body, heading, tag="") -> list[str]` returns the text of EVERY section whose
 heading line is `heading` (optionally followed by the fixed `tag`), with the existing fence and
-`breaks_section` rules. `read()` becomes `sections(body, HEADING, TAG)` reduced to the first text
+`breaks_section` rules. The tag strip is guarded on a non-empty tag (`bare[:-0]` is the empty
+string, so an unguarded strip would match no heading at all). `read()` becomes `sections(body, HEADING, TAG)` reduced to the first text
 and the count, its behaviour unchanged and pinned by the existing jdsection tests. The module
 docstring changes from "the ONE grammar of `## Job description`" to "the one grammar of a lead
 note's body sections". `core/followups.py::answers(body)` calls `sections(body, ANSWERS_HEADING)`,
@@ -85,32 +94,48 @@ writer of the key passes it in `preserve_block_values`.
 ### Facade and commands
 
 The writers live on `Sluice`, like `dismiss_lead` and `create_lead`, so a later MCP tool drives the
-same code. Both resolve `lead` by EXACT store-issued slug the way `dismiss_lead` does, refusing an
-unknown slug and an ambiguous one by name. Dates come from `Sluice`'s injected `today` callable
-(`core/app.py::_today` by default), never the wall clock directly.
+same code. Both resolve `lead` by EXACT store-issued slug the way `dismiss_lead` does. Dates come from
+`Sluice`'s injected `today` callable (`core/app.py::_today` by default), never the wall clock
+directly. Each returns a frozen result dataclass beside `DismissResult` (`AskResult`,
+`AnswerResult`), carrying `slug`, `outcome` and, where it applies, the fresh `status`. Outcome
+names reuse `dismiss_lead`'s where the meaning is the same.
 
-**`Sluice.mark_asked(lead) -> outcome`** writes `followup_asked = today` via `update_fields` with
-`require_status={"research"}` and `preserve_block_values={"followup_asked"}`. On `False` the fresh
-note is re-read and classified: status no longer `research` -> `refused` (names the status);
-`followup_asked` already today -> `unchanged` (success); a block value -> `refused` (names the key).
-A different earlier date is overwritten: asked again.
+| Outcome | `mark_asked` | `record_answer` | Exit |
+| --- | --- | --- | --- |
+| `not_found` / `ambiguous` | slug resolves to no note / to several (the candidates named) | same | 1 |
+| `refused_status` | the lead is not at `research` (snapshot, or fresh after a `False`) | not at `research` before step 1, nothing written | 1 |
+| `refused_block_value` | `followup_asked` holds a hand-typed block value | same, at step 2 (the answer is kept) | 1 |
+| `conflict` | `VaultConflict` on the write | `VaultConflict` at step 1 (nothing written) or step 2 (answer kept, stamp not cleared) | 1 |
+| `answered_not_cleared` | -- | the status left `research` between step 1 and step 2; the answer is kept and the outcome names the new status | 1 |
+| `asked` / `answered` | stamp written | answer appended (or already present from a same-day re-run) and the stamp blank | 0 |
+| `unchanged` | already stamped today | -- | 0 |
 
-**`Sluice.record_answer(lead, text) -> outcome`** refuses a blank `text` and, from the snapshot, a
-lead not at `research`, writing nothing in either case. Then two writes, in this order:
+`refused_block_value` is reached by ELIMINATION, never by reading vault internals from
+`core/app.py`: a block value reads blank through `LeadNote.fm`, so when a write returns `False` and
+the fresh note is still at `research` with a value that is not the one written, the only remaining
+cause is `preserve_block_values` abstaining, and the outcome says so. After any `False`, the FRESH
+STATUS is checked FIRST: a lead that left `research` is `refused_status` (or
+`answered_not_cleared`) whatever `followup_asked` holds, so a never-asked lead that moved to
+`applied` mid-command is never reported as answered.
 
-1. `Store.append_body_section(ref, tag, render_answer(text, today))`. `False` means the tag is
-   already in the note (this answer was recorded before) and is not an error.
+**`Sluice.mark_asked(lead)`** writes `followup_asked = today` via `update_fields` with
+`require_status={"research"}` and `preserve_block_values={"followup_asked"}`. A different earlier
+date is overwritten: asked again.
+
+**`Sluice.record_answer(lead, text)`** refuses a blank `text` (a usage error at the CLI) and, from
+the snapshot, a lead not at `research`, writing nothing. Then two writes, in this order:
+
+1. `Store.append_body_section(ref, tag, render_answer(text, today))`. `False` means this tag is
+   already in the note -- the same answer recorded the same day -- and is not an error.
 2. `update_fields(ref, {"followup_asked": ""}, require_status={"research"},
-   preserve_block_values={"followup_asked"})`. On `False` the fresh note is re-read: blank
-   `followup_asked` -> success (a re-run, or a lead never asked); status no longer `research` ->
-   `answered-not-cleared`, a non-zero outcome naming the status, with the answer kept in the note.
+   preserve_block_values={"followup_asked"})`, its `False` classified as above.
 
 Not one compare-and-set write: that would need a body-append parameter on `update_fields`, a new
 write shape for a case the two existing writers already cover. Every partial state is safe and a
 re-run of the same command completes it. Residual, stated: step 1 is guarded by the snapshot only
 (`append_body_section` has no status guard), so a lead that enters the application lifecycle in the
 instant between the snapshot and step 1 gets the user's own answer appended to its body. No status
-changes and step 2 abstains; the outcome names the status the lead moved to.
+changes, step 2 abstains, and the outcome is `answered_not_cleared` naming the new status.
 
 **`leads followups [--json]`** -- read-only, over `Sluice.followups()`. Every lead at `research`,
 in two groups, `Never asked` and `Asked, waiting` (by `awaiting_reply`). Each row: slug, company and
@@ -120,17 +145,21 @@ within a group. The footer gives the total and, when `lead_ttl_days` is 0, says 
 `lead_ttl_days` ages these out. No `--dry-run` (it writes nothing), matching the rule that a
 report needs no preview flag.
 
-**`leads asked --lead SLUG`** and **`leads answer --lead SLUG --text TEXT`** -- thin front-ends over
-the two facade methods, `--lead` with the same help text as `leads dismiss` (required, exact
-store-issued slug). Both write unconditionally on every call, like `leads dismiss` and `leads add`:
-what they write is the user's own action or words. Each prints its outcome and exits non-zero on
-`refused` and `answered-not-cleared`.
+**`leads mark-asked --lead SLUG`** and **`leads answer --lead SLUG --text TEXT`** -- thin
+front-ends over the two facade methods, `--lead` with the same help text as `leads dismiss`
+(required, exact store-issued slug). The verb is `mark-asked`, not `asked`: every other `leads`
+subcommand is an imperative (`add`, `dedupe`, `dismiss`, `answer`), and a bare `ask` would read as
+sluice contacting someone. Both write unconditionally on every call, like `leads dismiss` and `leads
+add`: what they write is the user's own action or words. Each prints its outcome and exits per the
+table.
 
 ### Triage
 
 - **Skip.** In the engine's selection, a lead for which `awaiting_reply(fm)` holds is not sent to
   classify or judge. It is counted under a new `counts` key, `awaiting_reply`, rendered in
-  `_TRIAGE_FILTERED_WORDS` as `{n} awaiting a reply`. Only `research` is skipped.
+  `_TRIAGE_FILTERED_WORDS` as `{n} skipped while you wait for a reply`. Only `research` is skipped.
+  That row counts THIS run's skips; the standing line below counts the whole queue, so the two
+  are worded apart rather than both saying "awaiting".
 - **Answers reach the judge.** For a lead whose body has answers, the engine adds
   `followup_answers` to THAT LEAD'S OWN dossier copy, after `get_or_build` and after `_fan`, on
   both paths (fetched and section-sourced). Never before `get_or_build`, which would persist the
@@ -141,8 +170,8 @@ what they write is the user's own action or words. Each prints its outcome and e
   content -- no rate, location, contract type or role -- since the prompt-neutrality guard's term
   list is narrow and would not catch one.
 - **Digest.** After a run, `cmd_triage_run` calls `Sluice.followups()` and, when the research
-  queue is non-empty, adds one line separate from the per-run names, e.g. `12 research leads
-  awaiting follow-up (5 asked), oldest 31 days.` It is computed from the vault, not the run, so the
+  queue is non-empty, adds one line separate from the per-run names, e.g. `Research queue:
+  12 leads, 5 marked asked; oldest 31 days.` It is computed from the vault, not the run, so the
   name cap cannot hide it and a run with `--status new` still reports it. It prints on `--dry-run`
   too: the queue is a fact about the vault, and reading it writes nothing. A failure to read it is
   logged and the line omitted; it never fails the run, which has already written.
@@ -180,11 +209,25 @@ every count asserted is built by the test itself.
   `followup_asked`; status changed between snapshot and write refuses (the monkeypatched shape of
   `tests/test_leads_dismiss.py::test_cas_proof_refuses_on_a_status_that_changed_between_resolve_and_write`);
   other keys and the body byte-for-byte intact.
+- Outcomes: every row of the outcome table for both methods, with the CLI exit code; a
+  `VaultConflict` at each write; a never-asked lead whose status leaves `research` between the
+  snapshot and step 2 is `answered_not_cleared`, not `answered` (witness: swap the status check and
+  the blank check); the same text answered on two different days is written twice, and on the
+  same day once.
 - `Sluice.record_answer`: appends and clears; a re-run appends nothing and succeeds; a never-asked
   lead succeeds; a blank text and a non-research lead write nothing; pasted `## ` lines demoted;
   status leaving `research` between step 1 and step 2 gives `answered-not-cleared`, non-zero, the
   answer kept and `followup_asked` and status untouched (witness: delete step 2's
   `require_status`).
+- Verdict and stamp: a verdict on a stamped note blanks the stamp; a verdict on an unstamped note
+  writes no `followup_asked` key; `leads mark-asked` landing between the engine's read and its
+  write survives, with the verdict refused (witness: delete `require_unchanged`); a block-valued
+  `followup_asked` survives a verdict (`test_verdict_preserves_a_block_valued_followup_asked`,
+  witness: drop `followup_asked` from `_HAND_EDITABLE_KEYS`).
+- `jdsection.sections`: the default empty tag still matches a bare heading.
+- MCP: `get_lead` on a note with a `## Follow-up answers` section returns a warning naming that
+  heading, asserted on the literal heading text rather than against the module constant (witness:
+  delete the new sentence).
 - Engine: an awaiting lead is not judged and is counted `awaiting_reply`; a non-research lead with
   a stale stamp is judged; the stamp -> hand move to `new` -> re-judged `research` sequence leaves
   the lead judged next run; answers reach the judge prompt for a fetched lead and for a
