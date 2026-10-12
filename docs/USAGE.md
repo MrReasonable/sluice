@@ -277,9 +277,10 @@ misattributed-tool check did not run. On a vault where some verified entry decla
 but none declares `Tools:`, `doctor --verbose` also lists a notice saying so; it is not a
 warning, blocks nothing and does not fail `--strict`.
 
-A summary line, `cv: N CV(s) composed without a job description`, follows when any CV's job
-description failed to arrive; under `cv.blind_hold` (on by default) each such CV is held for
-`job-sluice cv signoff` rather than served. A second follows when any CV was composed
+A summary line, `cv: N lead(s) had no usable job description`, follows when any lead's job
+description failed to arrive. It counts a lead whose run then failed too; under
+`cv.blind_hold` (on by default) each CV that was composed is held for `job-sluice cv signoff`:
+its PDF is still written to `served_dir`, but the lead's `tailored_cv` pointer is withheld. A second follows when any CV was composed
 without the Skills Inventory because the corpus could not be read, a third when any run's
 diagnostic artefacts (below) could not all be written or cleared, and a fourth when any CV
 used the job description from the lead note.

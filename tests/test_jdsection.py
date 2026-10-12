@@ -102,6 +102,13 @@ def test_module_is_pure():
         assert banned not in src
 
 
+def test_the_short_section_reason_is_one_phrase():
+    # arc-001: cv records this in needs_signoff and triage in its unjudgeable reason; one
+    # home, so a reword cannot split two explanations of the same fact.
+    assert jdsection.short_section_reason(500) == (
+        "the job description in the note is shorter than min_jd_chars (500)")
+
+
 # A `## Job description` line inside fenced code is code, not the section.
 # Obsidian renders it as code, so reading it as the posting would let a note with no job
 # description skip the blind hold. Both fence characters, a longer closing run, and up to three

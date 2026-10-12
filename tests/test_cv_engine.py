@@ -948,7 +948,7 @@ def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
     # which MUST stay a catch-all, so one bad lead never aborts the batch, see the
     # test above -- used to build CvResult(ref, "error") with no dossier_failed
     # argument at all, silently defaulting it to False. That undercounts cli.py's
-    # "N CV(s) composed without a job description" summary for exactly the lead an operator most needs
+    # "N lead(s) had no usable job description" summary for exactly the lead an operator most needs
     # to see it for: one where the dossier was ALSO refused. run_one now stamps
     # dossier_failed onto the exception before re-raising (its own comment explains
     # why that is the only channel left once the stack unwinds past it); this drives

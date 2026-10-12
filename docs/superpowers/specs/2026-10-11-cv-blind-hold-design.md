@@ -89,10 +89,11 @@ def render(text: str) -> str: ...               # the section to append, heading
   title or a pasted body, turning the append into a no-op on a note that has no section. The
   comment is invisible in Obsidian's reading view and is what `track/reconcile.py`'s tags
   already look like.
-- **Residuals, stated:** setext headings (a line underlined with `===`/`---`) and fenced code
-  are not parsed. Setext is harmless: the reader does not treat it as a break, so nothing is
-  truncated. A `## ` line inside a fence DOES break on read and IS demoted on write; both sides
-  agree, so the writer never produces a section the reader truncates.
+- **Fenced code** is skipped by the reader, as Obsidian renders it (added in review on #394): a
+  `## Job description` line inside a fence is not the section, and a `## ` line inside a fence
+  does not end it. The writer still demotes such a line, which agrees with the reader either way.
+- **Residual, stated:** setext headings (a line underlined with `===`/`---`) are not parsed.
+  That is harmless: the reader does not treat one as a break, so nothing is truncated.
 
 Pure, stdlib only, no I/O.
 

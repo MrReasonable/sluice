@@ -245,9 +245,13 @@ note) — rather than at a one-off bad draft.
 
 ## `cv run` reports `needs-signoff` and `cv signoff` says "composed WITHOUT a job description"
 
-The CV was composed from your evidence alone: the job description fetch failed, nothing came
-back, or the lead note's own `## Job description` section is shorter than `min_jd_chars`. It is
-held under `cv.blind_hold` so it is not sent as if it were tailored. Two ways out:
+The CV was composed without a usable job description. Either the fetch failed or brought back
+nothing, and the CV was composed from your evidence alone, or the text it got (fetched, or the
+lead note's own `## Job description` section) is shorter than `min_jd_chars`, and that short
+text was all the composer had to tailor to. A lead note with no `url` (one written by hand, or
+from a board that gives no link) and no `## Job description` section has nothing to fetch at
+all, so it lands here on every run until you add the section. It is held under `cv.blind_hold` so
+it is not sent as if it were tailored. Two ways out:
 
 - Accept the untailored CV: `job-sluice cv signoff --lead SLUG`.
 - Tailor it: `job-sluice cv signoff --lead SLUG --discard`, add a `## Job description` section
