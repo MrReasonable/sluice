@@ -277,6 +277,36 @@ Shared by every sub-app:
   #223 `role_type` observation included. Triage reads it per lead, outside the
   `cache_key` grouping, since two notes sharing a key may carry different
   sections; cv reports where its text came from as `CvResult.jd_source`.
+  Since #378 `core/jdsection.py` is the grammar of a lead note's body sections
+  generally: `sections()` returns every section under a heading, `read()` is the
+  first of them, and `neutralise()` (demote, then close a fence the text leaves
+  open) is what a writer applies to pasted text -- the text exactly as written,
+  so `core/followups.py::dated_answer` neutralises the dated line rather than the
+  bare text, whose first-line fence the date prefix would otherwise unmake.
+- `core/followups.py` (#378) is the research worklist. A `research` verdict's
+  question is written to its own key, `triage_next`, on every verdict that
+  lands (blanked when the model gave none or the text is unsafe for frontmatter,
+  rather than leaving an earlier question in place; a value a person typed over
+  several lines is left alone, never-clobber outranking freshness). `leads mark-asked` stamps
+  `followup_asked`; `awaiting_reply(fm)` -- at `research` AND stamped -- is the one
+  predicate, so the worklist's grouping and triage's skip cannot disagree. Triage
+  leaves an awaiting lead out before `--limit` and counts it (`awaiting_reply`).
+  `leads answer` appends a dated `## Follow-up answers` section, tagged by a hash
+  of date and text so a re-run appends nothing, then clears the stamp, then reads
+  the answer back as a section of its own (`answered_hidden` when an open fence
+  earlier in the note hides or swallows it); each write
+  re-reads the status inside the store's own compare-and-set
+  (`append_body_section`/`update_fields`' `require_status`). Triage adds
+  `answers(body)` to each lead's OWN dossier copy, after `get_or_build` and after
+  the `{**d, ...}` rebind, so the answers never reach the shared cache file or a
+  twin lead's copy. `core/dossier.py::slim` bounds them like the JD, keeping
+  the newest and marking the cut. Neither key joins `core.leads.FRAMING_KEYS`, which is what the
+  CV composer is fed; both join `triage/apply.py::_HAND_EDITABLE_KEYS`, so a value
+  a person typed over several lines is left alone. A verdict on a lead still
+  carrying a stamp -- one a person moved off `research` by hand -- blanks it under
+  `require_unchanged`, so a re-stamp landing while the lead was being judged
+  refuses that verdict's write (`unchanged`) instead of being erased; a snapshot
+  with no stamp writes no key, so a stamp added mid-judge is never touched.
 - `Sluice.health_report(include_leads=False)` (`core/app.py`) is the
   per-source health REPORT `job-sluice health` and the MCP `health` tool both
   show: `HealthStore`'s baseline/recent counts and stuck-streak reason,
@@ -1458,11 +1488,12 @@ site, so it does not replace checking before applying.
 **`job-sluice leads dismiss --lead SLUG --reason REASON`** (#131) writes `dismiss`
 by the same route as `leads expire` -- `require_status=_DISMISSABLE_FROM` re-read
 inside the CAS transform, `require_blank={"pending_cv"}` refusing a lead holding
-a #60 sign-off hold -- but is one of the TWO `leads` passes that write
-unconditionally on every call rather than reporting by default (`leads add`,
-below, is the other): the verdict it writes is one the USER typed
-(`--lead`/`--reason`), not one this tool computed, matching the pipeline
-commands' contract rather than `dedupe`/`expire`/`reconcile`'s. Resolves
+a #60 sign-off hold -- but, like `leads add` below and `leads mark-asked`/`leads
+answer` (#378), writes unconditionally on every call rather than reporting by
+default: what each records is the user's own words or action on one lead they
+named (a reason, a new lead's fields, that they asked, the reply), not a set this
+tool computed, matching the pipeline commands' contract rather than
+`dedupe`/`expire`/`reconcile`'s. Resolves
 by EXACT slug equality, never substring, and refuses (writes nothing) when the
 slug names two or more notes rather than picking one.
 

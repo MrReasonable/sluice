@@ -376,6 +376,23 @@ sets it itself to read past the first page of 25 results.
 A live (non-`--offline`) `doctor` round-trips one token per distinct backend to confirm it
 actually answers, not just that a key is present.
 
+## Research leads keep coming back every night
+
+Each `triage run` re-judges `research` leads, and a lead waiting on a fact only a person can
+find out (the client behind a recruiter, the pay band) reaches the same verdict for the same
+reason every time. Run `job-sluice leads followups` to see each one with the question its
+verdict asked. Ask it, then `job-sluice leads mark-asked --lead "<slug>"`: triage skips the
+lead until you record the reply with `job-sluice leads answer --lead "<slug>" --text "..."`,
+and the next run judges it with your answer in front of the judge. A lead you will never chase
+can be dismissed (`leads dismiss`), or set `lead_ttl_days` so `leads expire` ages such leads
+out.
+
+If `leads answer` says a code fence earlier in the note hides the answer, the note has a fence
+-- a line opening with three or more backticks, or three or more tildes -- with no closing line
+after it, so everything below reads as code. Close it in Obsidian with a line of the SAME
+character, at least as many as opened it (a fence opened with four backticks is not closed by
+three, nor a tilde fence by backticks), and the recorded answer becomes visible to triage.
+
 ## Store / vault problems
 
 - **vault missing**: the vault directory doesn't exist. Blocks every pipeline command, and the

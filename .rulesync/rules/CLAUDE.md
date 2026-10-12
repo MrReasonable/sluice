@@ -247,14 +247,16 @@ print and change nothing until told otherwise, and none offers `--dry-run` — t
 run, and a flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
 property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
-a list rather than change a hundred notes. **Exception: `leads dismiss` (#131) and `leads add`
-(#241) both write unconditionally on every call**, like the pipeline commands, not like their
-`leads` siblings — what each writes is what the user typed (`--lead`/`--reason`; the new lead's
-own fields), not something the tool computed, so there is no computed set to preview first. Note
+a list rather than change a hundred notes. **Exception: the `leads` commands that record the user's own words or
+action on one lead they named -- `leads dismiss` (#131), `leads add` (#241), `leads mark-asked`
+and `leads answer` (#378) -- write unconditionally on every call**, like the pipeline commands,
+not like their `leads` siblings: what each records is the user's (a reason, a new lead's fields,
+that they asked, the reply), not a set the tool computed, so there is nothing to preview first.
+Do not restate that as "what the user typed": `mark-asked` writes a date sluice supplies. Note
 that is a property of the CONTENT, not of the command acting on one lead the user named:
 `leads expire --expire <slug>` names a single lead too and STILL needs its flag, because the
-verdict it writes there (stale, therefore dismiss) is the tool's derivation and not something the
-user typed. Do not reach for `leads rename` as that example -- it carries only `--apply`/`--json`
+verdict it writes there (stale, therefore dismiss) is the tool's derivation and not the user's
+own words or action. Do not reach for `leads rename` as that example -- it carries only `--apply`/`--json`
 and sweeps the whole vault, so it is not single-lead at all; an earlier cut of this paragraph said
 it was. (`docs/ARCHITECTURE.md` has the per-pass mechanics.)
 
