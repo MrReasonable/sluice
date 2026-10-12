@@ -301,6 +301,30 @@ class DismissResult:
     note_appended: bool = False
 
 
+@dataclass
+class AskResult:
+    """#378: outcome is one of asked | unchanged | refused_status | refused_unwritable |
+    not_found | ambiguous | conflict. `status` is the FRESH status behind a refusal."""
+    outcome: str
+    slug: str = ""
+    status: str = ""
+    candidates: list = field(default_factory=list)
+
+
+@dataclass
+class AnswerResult:
+    """#378: outcome is one of answered | answered_not_cleared | refused_unwritable |
+    answered_hidden | refused_status | not_found | ambiguous | conflict. Only `answered` means
+    the answer reached the note, will be read, and the lead is back in triage. `appended` is
+    False when this exact answer (same date, same text) was already in the note, or when
+    nothing was written."""
+    outcome: str
+    slug: str = ""
+    status: str = ""
+    candidates: list = field(default_factory=list)
+    appended: bool = False
+
+
 def _reread_lead(store, note):
     """`note` as the store holds it after a write attempt, or None when it cannot be found.
     `Sluice.dismiss_lead` calls it after a refused write, to report the fresh status behind the
@@ -2485,6 +2509,130 @@ class Sluice:
                                  outcome="refused_signoff_hold", note_appended=False)
         return DismissResult(slug=note.slug, status=fresh_status, outcome="unchanged",
                              note_appended=False)
+
+    def _resolve_exact(self, lead: str):
+        """`(store, note, candidates)` for `lead` by EXACT store-issued slug over every
+        status, the way `dismiss_lead` resolves (never a substring: the caller may be an
+        LLM). `candidates` is non-empty when the slug names two or more notes; `note` is
+        None when it names none. Every status, so a lead at `applied` is refused by name
+        rather than reported missing."""
+        from sluice.core.leads import index_by_slug
+        store = self.store()
+        index, dropped = index_by_slug(store.read_leads())
+        if lead in dropped:
+            return store, None, sorted(n.slug for n in dropped[lead])
+        return store, index.get(lead), []
+
+    def followups(self):
+        """The research queue (#378): the ONE reader behind `leads followups` and the triage
+        digest's standing line, so the two cannot count differently."""
+        from sluice.core import followups
+        return followups.build_queue(self.store().read_leads(frozenset({"research"})),
+                                     (self._today or _today)())
+
+    def mark_asked(self, *, lead: str) -> AskResult:
+        """Stamp `followup_asked` with today's date on a `research` lead (#378). Writes on
+        every call, like `dismiss_lead`: what it records is the user's own action. A `False`
+        from the write is classified from a FRESH read, status first."""
+        from sluice.core.protocols import VaultConflict
+        store, note, candidates = self._resolve_exact(lead)
+        if candidates:
+            return AskResult(outcome="ambiguous", candidates=candidates)
+        if note is None:
+            return AskResult(outcome="not_found")
+        if _status.normalize(note.status) != "research":
+            return AskResult(outcome="refused_status", slug=note.slug, status=note.status)
+        today = (self._today or _today)()
+        try:
+            wrote = store.update_fields(note.ref, {"followup_asked": today},
+                                        require_status=frozenset({"research"}),
+                                        preserve_block_values=frozenset({"followup_asked"}))
+        except VaultConflict as e:
+            _log.warning("mark_asked: %s lost the write race: %s", note.ref, e)
+            return AskResult(outcome="conflict", slug=note.slug)
+        if wrote:
+            return AskResult(outcome="asked", slug=note.slug, status="research")
+        fresh = _reread_lead(store, note)
+        if fresh is None:
+            return AskResult(outcome="not_found", slug=note.slug)
+        if _status.normalize(fresh.status) != "research":
+            return AskResult(outcome="refused_status", slug=note.slug, status=fresh.status)
+        if (fresh.fm.get("followup_asked", "") or "").strip() == today:
+            return AskResult(outcome="unchanged", slug=note.slug, status="research")
+        # Still at research and still not today's date: by ELIMINATION the store's
+        # `preserve_block_values` abstained -- a hand-typed block value, or a note PyYAML says
+        # a single-line write would break. Named as both rather than guessed as one, and
+        # never read off vault internals from here.
+        return AskResult(outcome="refused_unwritable", slug=note.slug, status="research")
+
+    def record_answer(self, *, lead: str, text: str) -> AnswerResult:
+        """Record the reply to a research lead's question and return it to triage (#378).
+        Two writes in order, each re-reading the status inside the store's own CAS write: the
+        answer section (idempotent by its date+text tag), then the stamp cleared. Every partial
+        state is safe and a re-run completes it. One fresh read afterwards classifies the
+        result, and only `answered` claims all three things the user is relying on: the answer
+        is in the note, the judge will read it, and the lead is back in triage."""
+        from sluice.core import followups
+        from sluice.core.protocols import VaultConflict
+        if not text or not text.strip():
+            raise ValueError("text must not be blank")
+        text = text.strip()
+        store, note, candidates = self._resolve_exact(lead)
+        if candidates:
+            return AnswerResult(outcome="ambiguous", candidates=candidates)
+        if note is None:
+            return AnswerResult(outcome="not_found")
+        if _status.normalize(note.status) != "research":
+            return AnswerResult(outcome="refused_status", slug=note.slug, status=note.status)
+        today = (self._today or _today)()
+        research = frozenset({"research"})
+        try:
+            appended = store.append_body_section(note.ref, followups.answer_tag(text, today),
+                                                 followups.render_answer(text, today),
+                                                 require_status=research)
+        except VaultConflict as e:
+            _log.warning("record_answer: %s lost the write race: %s", note.ref, e)
+            return AnswerResult(outcome="conflict", slug=note.slug)
+        if not appended:
+            # False is either "this exact answer is already there" (a re-run) or "the status
+            # left research before the write" -- told apart by a fresh read, status FIRST.
+            fresh = _reread_lead(store, note)
+            if fresh is None:
+                return AnswerResult(outcome="not_found", slug=note.slug)
+            if _status.normalize(fresh.status) != "research":
+                return AnswerResult(outcome="refused_status", slug=note.slug,
+                                    status=fresh.status)
+        try:
+            store.update_fields(note.ref, {"followup_asked": '""'}, require_status=research,
+                                preserve_block_values=frozenset({"followup_asked"}))
+        except VaultConflict as e:
+            _log.warning("record_answer: %s lost the write race clearing the stamp: %s",
+                         note.ref, e)
+            return AnswerResult(outcome="conflict", slug=note.slug, appended=appended)
+        fresh = _reread_lead(store, note)
+        if fresh is None:
+            return AnswerResult(outcome="not_found", slug=note.slug, appended=appended)
+        # Status FIRST: a never-asked lead's blank stamp must not report `answered` for a lead
+        # that has just moved to `applied`.
+        if _status.normalize(fresh.status) != "research":
+            return AnswerResult(outcome="answered_not_cleared", slug=note.slug,
+                                status=fresh.status, appended=appended)
+        # Still at research with a stamp the store would not clear: by elimination its
+        # single-line-write check abstained (a block value reads blank, so it never gets here).
+        # The lead would stay hidden from triage, so this is not `answered`.
+        if followups.awaiting_reply(fresh.fm):
+            return AnswerResult(outcome="refused_unwritable", slug=note.slug,
+                                status="research", appended=appended)
+        # Read back through the reader the judge uses, as a SECTION of its own. Sluice closes
+        # any fence it writes, but a fence a person left open earlier in the note runs to the
+        # end of the body: it hides every later answer, or folds it into an earlier section's
+        # text, where the judge reads it run together with whatever follows. A substring check
+        # would certify that second case, so the answer must come back as its own section.
+        if followups.dated_answer(text, today) not in followups.answer_sections(fresh.body):
+            return AnswerResult(outcome="answered_hidden", slug=note.slug, status="research",
+                                appended=appended)
+        return AnswerResult(outcome="answered", slug=note.slug, status="research",
+                            appended=appended)
 
     def add_evidence(self, *, kind: str, name: str, fields: dict, body: str = "") -> str:
         """Propose one evidence entry (#164). Returns the store's opaque handle for it --

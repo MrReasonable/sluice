@@ -1869,11 +1869,20 @@ class Vault:
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
 
-    def append_body_section(self, ref, tag: str, section_md: str) -> bool:
+    def append_body_section(self, ref, tag: str, section_md: str, *,
+                            require_status: frozenset | None = None) -> bool:
         """Append a markdown section to the body, idempotently: if `tag` is anywhere in
         the FRESH file, do nothing and return False. Routed through _cas_write, so the
-        tag re-check runs against current content. May raise VaultConflict (#16)."""
+        tag re-check runs against current content. May raise VaultConflict (#16).
+        `require_status` (#378): abstain unless the FRESH normalized status is in the set,
+        decided inside the same transform as `update_fields`' guard."""
         def transform(text: str) -> str:
+            if require_status is not None:
+                inner, _ = _split_frontmatter(text)
+                # Same fresh re-read as update_fields' guard, same reason (#378): the caller's
+                # snapshot predates the window this exists to cover.
+                if _status.normalize(_fm_value(inner or "", "status")) not in require_status:
+                    return text
             if tag in text:
                 return text
             sep = "" if text.endswith("\n") else "\n"

@@ -1551,6 +1551,30 @@ def test_update_fields_require_unchanged_writes_when_the_value_still_matches(
                                require_unchanged={"followup_asked": "2031-03-01"}) is True
 
 
+def test_append_body_section_require_status_abstains_on_a_fresh_status(store_name, tmp_path,
+                                                                        monkeypatch):
+    """#378: the status is re-read inside the store's own write. A caller-side check reads a
+    snapshot, which cannot see a lead entering the application lifecycle."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"status": "applied"})
+    wrote = store.append_body_section(ref, "<!-- t -->", "## S\n<!-- t -->\nx",
+                                      require_status=frozenset({"research"}))
+    assert wrote is False and "<!-- t -->" not in store.read_leads()[0].body
+
+
+def test_append_body_section_require_status_writes_on_a_matching_status(store_name, tmp_path,
+                                                                        monkeypatch):
+    """The other half, normalized: a drifted `Research` still matches."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"status": "Research"})
+    assert store.append_body_section(ref, "<!-- t -->", "## S\n<!-- t -->\nx",
+                                     require_status=frozenset({"research"})) is True
+
+
 def test_update_fields_blank_values_without_require_blank_is_inert(store_name, tmp_path,
                                                                     monkeypatch):
     """`blank_values` given alone gates nothing: it only ever widens what `require_blank`
