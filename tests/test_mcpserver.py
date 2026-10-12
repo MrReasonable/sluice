@@ -1937,6 +1937,9 @@ def test_propose_evidence_tool_raises_value_error_for_an_unknown_kind(tmp_path):
 # IS the protocol stream.
 _ISOLATION_ALLOWED_MODULES = frozenset({
     "sluice.core.app", "sluice.core.leads", "sluice.core.safeout", "sluice.core.status",
+    # The follow-up answers grammar (#378): get_lead's warning names its heading. Pure
+    # section parsing and a queue builder; no write path.
+    "sluice.core.followups",
     # The escaping logger (a stderr StreamHandler; no file, no store): setup_save records an
     # unexpected step error's traceback there before reporting it as a structured outcome.
     "sluice.core.log",
@@ -2420,3 +2423,12 @@ def test_setup_status_reports_a_config_the_loaders_refuse(tmp_path):
     assert str(tmp_path) not in text
     assert os.path.realpath(os.path.dirname(config_file())) not in text
     assert os.path.dirname(config_file()) not in text
+
+
+def test_get_lead_warning_names_the_follow_up_answers_section(tmp_path):
+    # Asserted on the literal heading, never against the module constant, so deleting the
+    # sentence turns this red.
+    slug = _seed(tmp_path, status="research")
+    out = get_lead(_app(tmp_path), slug)
+    assert "## Follow-up answers" in out["content_warning"]
+    assert "own notes" in out["content_warning"]
