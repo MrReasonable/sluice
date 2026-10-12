@@ -840,8 +840,9 @@ def test_paraphrase_only_still_renders_and_sets_pointer(monkeypatch):
 
 
 def test_require_signoff_false_serves_despite_unsupported(monkeypatch):
-    # The off-switch restores the old auto-serve: with require_signoff False, an
-    # `unsupported` flag no longer withholds the pointer.
+    # The off-switch serves a flagged CV: with require_signoff False, an `unsupported`
+    # flag no longer withholds the pointer. (A CV composed without a job description is
+    # held separately, under blind_hold, #369; this row's cache yields a real JD.)
     _served(monkeypatch)
     cfg = _cfg(); cfg.require_signoff = False
     note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
@@ -947,7 +948,7 @@ def test_batch_reports_dossier_failed_when_the_blocked_lead_then_errors():
     # which MUST stay a catch-all, so one bad lead never aborts the batch, see the
     # test above -- used to build CvResult(ref, "error") with no dossier_failed
     # argument at all, silently defaulting it to False. That undercounts cli.py's
-    # "N CV(s) composed blind" summary for exactly the lead an operator most needs
+    # "N CV(s) composed without a job description" summary for exactly the lead an operator most needs
     # to see it for: one where the dossier was ALSO refused. run_one now stamps
     # dossier_failed onto the exception before re-raising (its own comment explains
     # why that is the only channel left once the stack unwinds past it); this drives

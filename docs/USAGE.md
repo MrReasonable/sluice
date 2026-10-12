@@ -315,7 +315,8 @@ itself (a pay basis it states is recorded as the lead's `role_type`):
 We are hiring a placeholder engineer to build example services.
 ```
 
-A heading with anything else on its line, such as `## Job description:`, is not recognised.
+A heading with anything else on its line, such as `## Job description:`, is not recognised,
+and neither is one inside a fenced code block, which is code rather than the section.
 `leads add --jd-file` and MCP `create_lead`'s `job_description` write this section when they
 create a lead.
 

@@ -388,8 +388,8 @@ def test_compose_cv_threads_the_cv_config_into_the_backend(tmp_path, monkeypatch
 
 def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
     """The SAME defect run_batch's catch-all was fixed against one commit ago (a lost
-    write race under-reporting cli.py's "N CV(s) composed blind" summary) had a second,
-    unenumerated call site: the single-lead `cv --lead` path in compose_cv. run_one
+    write race under-reporting cli.py's "N CV(s) composed without a job description"
+    summary) had a second, unenumerated call site: the single-lead `cv --lead` path in compose_cv. run_one
     stamps `dossier_failed` onto the exception it raises before re-raising it (see its
     own comment in cv/engine.py) precisely so a catch further up can read it back;
     compose_cv's `except VaultConflict` must do that too, not default to False."""
@@ -442,7 +442,8 @@ def test_compose_cv_single_lead_write_race_reports_dossier_failed(monkeypatch):
     assert results[0].status == "error"
     assert results[0].dossier_failed is True, (
         "a dossier blocked by the SSRF guard, followed by a lost write race, must "
-        "still surface in the 'N CV(s) composed blind' summary -- not be silently "
+        "still surface in the 'N CV(s) composed without a job description' summary -- "
+        "not be silently "
         "counted as a plain error")
     assert results[0].artefacts_failed is True, (
         "a run whose diagnostic artefacts could not be written, followed by a lost write "

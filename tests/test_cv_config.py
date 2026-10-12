@@ -15,7 +15,8 @@ def test_require_signoff_defaults_true():
     # The profile audit sign-off gate (#60) ships LIVE: an `unsupported` qualitative
     # claim withholds the send-ready pointer until a human signs off. It is a safety
     # valve, not a job preference, so it defaults on (empty-config-abstains does not
-    # bind); set it False to restore the old auto-serve. Pinned so a default flip
+    # bind); set it False to serve a CV the audit flagged (a CV composed without a job
+    # description is held separately, under blind_hold, #369). Pinned so a default flip
     # goes red loudly -- and the #60 mutation witness points here.
     from sluice.cv.config import CvConfig
     assert CvConfig().require_signoff is True
