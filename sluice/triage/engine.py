@@ -36,6 +36,7 @@ from sluice.core.leads import (
     is_placeholder_company,
 )
 from sluice.core import fx
+from sluice.core import jdsection
 from sluice.core.log import get_logger
 from sluice.core.protocols import VaultConflict
 from sluice.core.roletype import DECLARED, OBSERVED, normalise_role_type
@@ -176,6 +177,18 @@ class TriageReport:
     stopped: str = ""
 
 
+class _SectionUnreadable:
+    """A lead note's `## Job description` section that could not be READ (#369): a reader
+    failure, never a fetch. Its own type so the caller reports it as `section <ref>: ...`,
+    not as `dossier <ref>: ...` -- the masquerade cv/engine.py avoids by reading the section
+    outside its dossier `try`. Same shape as `_FetchFailed`, for its reasons."""
+
+    __slots__ = ("message",)
+
+    def __init__(self, exc):
+        self.message = str(exc)
+
+
 class _FetchFailed:
     """A fetch that raised, reduced to the text the caller prints.
 
@@ -201,9 +214,18 @@ class _FetchFailed:
 def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
     """#309: build every kept lead's dossier, up to `concurrency` fetches in flight.
 
-    Returns ``{index into keeps: dossier | _FetchFailed}``. Keyed by index because the
-    caller looks results up by its own `enumerate(keeps)` position -- that, and nothing
-    about slug uniqueness, is why an index is the key.
+    Returns ``({index into keeps: dossier | _FetchFailed | _SectionUnreadable}, from_section)``
+    -- `from_section` is the set of indices whose dossier was built from the lead note's own
+    job description (#369), so the caller can word an `unjudgeable` reason correctly. A set
+    of indices rather than a marker key: a marker would ride `slim()` into the judge prompt.
+    Keyed by index because the caller looks results up by its own `enumerate(keeps)`
+    position -- that, and nothing about slug uniqueness, is why an index is the key.
+
+    THE SECTION ARM (#369) runs first, per lead: a note whose `## Job description` section
+    has text is built from it through `get_or_build(..., supplied_jd=...)` -- no fetcher
+    call, no pool slot, no cache write -- and is NOT grouped by `cache_key` below, because
+    two notes sharing a key may carry different sections. A section that cannot be read is
+    `_SectionUnreadable`. Every other lead takes the grouped path exactly as before.
 
     INVARIANT, and it is load-bearing: the `n.slug not in ambiguous` filter here and the
     caller's `continue` on the same condition must agree. They are two spellings of one
@@ -236,11 +258,33 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
     single unit of work has nothing to overlap with.
     """
     targets = [(i, n) for i, n in enumerate(keeps) if n.slug not in ambiguous]
-    by_key = {}
+    results, from_section, pooled = {}, set(), []
+    # #369: a lead note's own job description wins over a fetch. Read per lead, each in its
+    # own `try` (one bad note must not abort the prefetch), over the SAME twin-filtered
+    # `targets`, so the index contract above is unchanged. A lead whose section has text is
+    # built directly -- no fetcher call, no pool slot -- and NOT grouped by cache_key: two
+    # notes sharing a key may carry different sections. Everything else goes through the
+    # grouped pool exactly as before.
     for i, note in targets:
+        try:
+            supplied, sections = jdsection.read(note.body)
+        except Exception as e:   # noqa: BLE001 -- reported per lead, see _SectionUnreadable
+            results[i] = _SectionUnreadable(e)
+            continue
+        if sections > 1:
+            _log.warning("triage: %s has %d %r sections; the first was used",
+                         note.ref, sections, jdsection.HEADING)
+        if not supplied:
+            pooled.append((i, note))
+            continue
+        from_section.add(i)
+        try:
+            results[i] = dossier_cache.get_or_build(note.fm, supplied_jd=supplied)
+        except Exception as e:   # noqa: BLE001 -- reduced to _FetchFailed, see its docstring
+            results[i] = _FetchFailed(e)
+    by_key = {}
+    for i, note in pooled:
         by_key.setdefault(dossier_cache.cache_key(note.fm), []).append((i, note))
-
-    results = {}
 
     def _one(note):
         try:
@@ -268,7 +312,7 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
     if concurrency <= 1 or len(by_key) <= 1:
         for group in by_key.values():
             _fan(group, _one(group[0][1]))
-        return results
+        return results, from_section
 
     groups = list(by_key.values())
     # Clamped at the CONSUMER as well as the loader, on `lead_layout`'s precedent. The
@@ -324,7 +368,7 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
         # be killed, so the wait is bounded by the fetches in flight rather than by every
         # lead left in the queue. A no-op on the normal path, where all futures are done.
         pool.shutdown(wait=True, cancel_futures=True)
-    return results
+    return results, from_section
 
 
 def run(vault, cfg, backend, dossier_cache, audit, *,
@@ -933,7 +977,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # profile that both sub-apps fetch through), and root keys are resolved at the
         # composition root and handed down -- the same shape `min_jd_chars` takes into
         # `dossier_cache`. Defaulting to 1 keeps every direct `run(...)` caller sequential.
-        prefetched = _prefetch_dossiers(
+        prefetched, from_section = _prefetch_dossiers(
             keeps, ambiguous, dossier_cache, dossier_concurrency)
         for i, note in enumerate(keeps):
             if note.slug in ambiguous:
@@ -950,6 +994,9 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if isinstance(fetched, _FetchFailed):
                 report.failures.append(f"dossier {note.ref}: {fetched.message}")
                 continue
+            if isinstance(fetched, _SectionUnreadable):
+                report.failures.append(f"section {note.ref}: {fetched.message}")
+                continue
             d = fetched
             # The JD never arrived (#169). Spending a judge call here buys a verdict on
             # page chrome -- and because "unjudgeable" used to collapse into `research`,
@@ -965,7 +1012,10 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # placing this check after the append, or filtering the batch later, would
             # still pay for the call this exists to avoid.
             if not dossier_cache.jd_arrived(d):
-                reason = (f"no job description was fetched (floor: "
+                reason = (
+                    f"the job description in the note is shorter than min_jd_chars "
+                    f"({dossier_cache.min_jd_chars})" if i in from_section
+                    else f"no job description was fetched (floor: "
                          f"{dossier_cache.min_jd_chars} chars)")
                 if dry_run:
                     outcome = "skipped"
