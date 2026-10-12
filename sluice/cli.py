@@ -1406,12 +1406,13 @@ def cmd_cv_run(args, config) -> int:
     # #18: a job description that did not arrive does not stop composition (cv/engine.py
     # proceeds either way so the fabrication gate still runs), so "rendered" alone would
     # silently hide that some of these CVs were composed against no real job description
-    # at all. A dedicated summary line makes that countable without changing cv's control
-    # flow, which is a bigger change than this guard should carry. `dossier_failed` covers
+    # at all. It does not stop composition (the gate still runs), and under
+    # `cv.blind_hold` the CV is held rather than served (#369); this line counts them
+    # either way, including with the hold off. `dossier_failed` covers
     # both producers -- a fetch that raised and one that returned nothing usable (#169).
     blind = sum(1 for r in results if r.dossier_failed)
     if blind:
-        print(f"cv: {blind} CV(s) composed blind (dossier fetch failed)", file=sys.stderr)
+        print(f"cv: {blind} CV(s) composed without a job description", file=sys.stderr)
     # #369: a JD taken from the lead note is reported, never invisible.
     from_note = sum(1 for r in results if r.jd_source == "note")
     if from_note:
@@ -1456,7 +1457,9 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     line's own internal tabs from being mistaken for the new tag.
 
     A `framing\\t` entry (#329, `core/leads.py::split_framing`) is printed apart under its
-    own heading. A `term\\t` entry (#194, cv/terms.py) prints under its own "possible
+    own heading. A `blind\\t` entry (#369, `core/leads.py::split_blind`) prints its own
+    group: the CV was composed without a job description, which is neither a claim nor
+    wording. A `term\\t` entry (#194, cv/terms.py) prints under its own "possible
     invention" heading: it is a term nothing in the user's evidence carries, which
     "style/voice" would understate. An entry with no recognised tag keeps EXACTLY today's
     "unsupported claim(s)" wording -- a hold stamped before this change must not be
@@ -1474,7 +1477,7 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
     released) but unclearable. A stringified entry carries no "style" tab-field, so it
     lands in the fabrication group with today's unprefixed entries.
     """
-    from sluice.core.leads import split_framing
+    from sluice.core.leads import split_blind, split_framing
     # #329: the triage notes the composer was given, recorded at hold time. Shown FIRST, as the
     # context the claims below were composed in, and never counted as a claim: a reviewer shown
     # a claim count that includes a triage note would be signing off the wrong number.
@@ -1484,6 +1487,16 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
               file=sys.stderr)
         for line in framing:
             print(f"  - {line}", file=sys.stderr)
+    # #369: a `blind\t<reason>` entry is the CV composed WITHOUT a job description -- not a
+    # claim (nothing was flagged) and not wording. Its own group, never counted as an
+    # unsupported claim, and it names how to get a TAILORED CV, since accepting here
+    # promotes the generalist one as it is.
+    blind, claims = split_blind(claims)
+    if blind:
+        print(f"cv signoff: {slug} was composed WITHOUT a job description ({blind[0]}) -- "
+              f"it is not tailored to this role. To tailor it: --discard, add a "
+              f'"## Job description" section to the note, and re-run cv run.',
+              file=sys.stderr)
     # `unaudited\t<reason>` (#333) is the audit that could not RUN: neither a fabrication
     # finding (nothing was found) nor a style one, so counting it as an "unsupported claim"
     # would tell the reviewer the audit flagged something when it never looked.

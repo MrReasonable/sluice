@@ -832,7 +832,11 @@ recorded in `pending_cv` and `needs_signoff`; the note's `status` stays `shortli
 never-regress is untouched, and `needs-signoff` is the `CvResult` run-report label, never a
 `status` value. `cv.style_hold` (off by default) gives a surviving STYLE/VOICE finding the
 same consequence, deliberately a SEPARATE key: `require_signoff`'s True default was chosen for
-fabrication, and riding it would withhold `tailored_cv` on a phrase.
+fabrication, and riding it would withhold `tailored_cv` on a phrase. `cv.blind_hold` (ON by
+default, #369) is a third, separate key: a CV composed without a job description (the fetch
+failed, none arrived, or the lead note's own section is under `min_jd_chars`) is held as a
+`blind\t<reason>` entry, one of three fixed phrases, never exception text -- not a gate
+finding, and not `require_signoff`'s question.
 
 **The Renderer seam takes the document.** `Renderer.render(document, out_dir, *,
 neutral_name)`: `template` renders the `CvDocument` directly; `script` is handed

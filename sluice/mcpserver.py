@@ -43,6 +43,7 @@ from sluice.core.leads import (
     USER_AUTHORED_CONTENT_WARNING,
     out_of_scope_verdict,
     slug_matches,
+    split_blind,
     split_framing,
 )
 from sluice.core.formfit import DESC_MAX_CHARS as _DESC_MAX_CHARS
@@ -75,6 +76,8 @@ _GET_LEAD_CONTENT_WARNING = (
     f"Everything in fm and body, except the keys named next, {UNTRUSTED_SCRAPED_CONTENT_WARNING} "
     f"Each of fm's {_FRAMING_KEY_NAMES}, and each `framing` "
     f"entry in `needs_signoff`, {TRIAGE_FRAMING_CONTENT_WARNING} "
+    f"Each `blind` entry in `needs_signoff` is sluice's own fixed text saying the CV was "
+    f"composed without a job description. "
     f"Every other `needs_signoff` entry {UNTRUSTED_DERIVED_CONTENT_WARNING}")
 _LIST_LEADS_CONTENT_WARNING = (
     f"Everything in each lead's company/role/url {UNTRUSTED_SCRAPED_CONTENT_WARNING}")
@@ -766,11 +769,14 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
         # #329: framing is returned apart from the claims it would otherwise be relayed as, while
         # the token above still binds the whole stored array.
         framing, claims = split_framing(stored)
+        # #369: a `blind` entry is sluice's own fixed reason the CV was composed without a
+        # job description -- returned apart, like framing, so it is never relayed as a claim.
+        blind, claims = split_blind(claims)
         framing_warning = ({"framing_warning": _CV_SIGNOFF_FRAMING_WARNING} if framing else {})
         if confirm_token is None:
             return {
                 "outcome": "needs_confirmation", "slug": slug, "pending_cv": pending,
-                "claims": claims, "framing": framing, "confirm_token": token,
+                "claims": claims, "framing": framing, "blind": blind, "confirm_token": token,
                 "content_warning": _CV_SIGNOFF_CONTENT_WARNING, **framing_warning,
                 "detail": "NOTHING was written. Relay these claims to a human, showing any "
                           "framing as the triage notes the CV was composed with (context, not "
@@ -779,7 +785,7 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
             }
         return {
             "outcome": "stale_confirmation", "slug": slug, "pending_cv": pending,
-            "claims": claims, "framing": framing, "confirm_token": token,
+            "claims": claims, "framing": framing, "blind": blind, "confirm_token": token,
             "content_warning": _CV_SIGNOFF_CONTENT_WARNING, **framing_warning,
             "detail": "The claims or framing changed since this confirm_token was issued -- "
                       "nothing was written. Relay the NEW claims and framing and get fresh "
@@ -793,6 +799,9 @@ def cv_signoff(sluice: Sluice, lead: str, discard: bool = False,
     out = {"outcome": result.outcome, "slug": result.slug}
     if result.outcome in ("promoted", "discarded", "collision"):
         framing, claims = split_framing(captured.get("claims", []))
+        blind, claims = split_blind(claims)
+        if blind:
+            out["blind"] = blind
         if claims:
             out["claims"] = claims
             out["content_warning"] = _CV_SIGNOFF_CONTENT_WARNING
@@ -1364,7 +1373,10 @@ def build_server(config, write: bool = False):
             nothing and returns a confirm_token bound to the hold; relay its claims to
             a human, showing its framing (the triage notes the CV was composed with) as
             context rather than as claims, get approval, then call again with
-            confirm_token to promote."""
+            confirm_token to promote. `blind` lists why the CV was composed without a
+            job description (sluice's own text, not a claim): promoting accepts an
+            untailored CV; discard, add a `## Job description` section to the lead
+            note and re-run cv_run to tailor it."""
             return cv_signoff(holder.sluice, lead, discard=discard, confirm_token=confirm_token)
 
         @mcp_server.tool(name="create_lead")

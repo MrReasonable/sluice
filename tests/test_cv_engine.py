@@ -1030,9 +1030,10 @@ def test_a_cv_composed_without_a_JD_is_flagged_rather_than_silently_tailored(tmp
     # #18 added dossier_failed for a fetch that RAISED. A fetch that succeeds and
     # returns page chrome is the same fact wearing different clothes: without the
     # flag, "status: rendered" is indistinguishable from a CV genuinely tailored to a
-    # real job description. Control flow is deliberately unchanged -- composing from
-    # the bundle alone is degraded, not wrong, and skipping the lead here would be a
-    # bigger behaviour change than this issue should carry.
+    # real job description. Composing from the bundle alone is degraded, not wrong, so
+    # the lead is still composed. This row runs with no served dir, so the #369 blind
+    # hold, which withholds the served pointer, does not apply;
+    # tests/test_cv_blind_hold.py covers it.
     res = _run_one(tmp_path, jd_markdown="")
     assert res.status == "rendered"
     assert res.dossier_failed is True

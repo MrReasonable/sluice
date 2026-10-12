@@ -277,10 +277,12 @@ misattributed-tool check did not run. On a vault where some verified entry decla
 but none declares `Tools:`, `doctor --verbose` also lists a notice saying so; it is not a
 warning, blocks nothing and does not fail `--strict`.
 
-A summary line follows when any dossier fetch failed and composition proceeded blind, a
-second when any CV was composed without the Skills Inventory because the corpus could
-not be read, and a third when any run's diagnostic artefacts (below) could not all be written
-or cleared, and a fourth when any CV used the job description from the lead note.
+A summary line, `cv: N CV(s) composed without a job description`, follows when any CV's job
+description failed to arrive; under `cv.blind_hold` (on by default) each such CV is held for
+`job-sluice cv signoff` rather than served. A second follows when any CV was composed
+without the Skills Inventory because the corpus could not be read, a third when any run's
+diagnostic artefacts (below) could not all be written or cleared, and a fourth when any CV
+used the job description from the lead note.
 **Exit 1**
 if: `--lead` matched no shortlist lead; `--lead` was ambiguous; the `--lead` result is `error`
 (the lead's own failure, such as a truncated reply, printed with its reason); any result is
@@ -355,13 +357,16 @@ compose a lead without framing.
 ### `job-sluice cv signoff --lead SLUG [--discard] [--yes]`
 
 Releases or discards a CV that composed clean against the hard fabrication gate but was held
-back by the softer advisory audit (`cv.require_signoff`, on by default) or by a style or
-term finding (`cv.style_hold`, off by default). Without `--yes`,
+back by the softer advisory audit (`cv.require_signoff`, on by default), by a style or
+term finding (`cv.style_hold`, off by default), or because it was composed without a job
+description (`cv.blind_hold`, on by default). Without `--yes`,
 prompts interactively: lists the triage notes the CV was composed with (context, not claims)
 and the unsupported claims -- or says the CV was NOT audited, when the audit could not run
 (#333) -- prints the served path, then `sign off <slug>? [y/N] `.
 A hold placed by `cv.style_hold` also lists its style/voice concerns and any "possible
 invention" terms (from `cv.term_check`) under their own headings.
+A hold placed by `cv.blind_hold` says the CV was composed WITHOUT a job description and how to
+tailor it instead.
 `--discard` rejects the held CV instead, freeing a fresh compose.
 The held run's diagnostic artefacts (see `cv run` above) stay in place for as long as the
 hold does: `cv signoff` never touches them, and `cv run` refuses a held lead before composing,

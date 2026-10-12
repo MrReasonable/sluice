@@ -41,7 +41,7 @@ from sluice.core import status as _status
 from sluice.core.backends import BackendError
 from sluice.core.candidate import contact_block, full_name
 from sluice.core.dossier import jd_text
-from sluice.core.leads import (FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
+from sluice.core.leads import (BLIND_TAG, FRAMING_KEYS, StalenessPolicy, ambiguous_slug_warnings,
                                framing_entries, index_by_slug)
 from sluice.core.layout import asks_for_bullets, build_slots, no_citable_slot
 from sluice.core.log import get_logger
@@ -134,10 +134,10 @@ class CvResult:
     # anyway. TWO producers since #169, not one: `get_or_build()` raising (a blocked or
     # failed fetch, which composes with `jd=""`), and a fetch that succeeded while
     # `jd_arrived` says no (which keeps whatever text it got -- see run_one for why the
-    # two arms deliberately differ). This does NOT change control flow (skipping the lead
-    # here would be a bigger behaviour change than the SSRF guard should carry), only
-    # visibility: without it, "status: rendered" is indistinguishable from a CV genuinely
-    # tailored to a real job description.
+    # two arms deliberately differ). Since #369 it also drives a hold: under
+    # `cv.blind_hold` (on by default) a served CV with this set is held for sign-off as a
+    # `blind\t<reason>` entry, never written send-ready -- without that, "status: rendered"
+    # is indistinguishable from a CV genuinely tailored to a real job description.
     dossier_failed: bool = False
     # #369: where this CV's job description TEXT came from -- "note" (the lead note's own
     # `## Job description` section, sluice/core/jdsection.py), "fetched" (a fetch returned
@@ -148,7 +148,7 @@ class CvResult:
     jd_source: str = ""
     # #165: the Skills Inventory could not be READ (a symlinked corpus, a non-UTF-8 entry)
     # and the CV was composed without its framing section. Visibility, never control flow --
-    # the shape `dossier_failed` above established, and it carries the same obligation: a
+    # the shape `dossier_failed` had before #369 made it drive the blind hold, and it carries the same obligation: a
     # field with no reader is the "computed and discarded" defect #167 opened over. Read by
     # cli.py's per-result line and its summary count, and by mcpserver.py's cv_run.
     #
@@ -160,8 +160,8 @@ class CvResult:
     skills_unreadable: bool = False
     # The run's diagnostic artefacts (cv/artefacts.py: the prompt, each attempt's composed
     # text, run.json) could not all be written, or the previous run's could not all be
-    # cleared. Visibility, never control flow -- `dossier_failed`'s shape for the same
-    # reason: an artefact exists to diagnose a CV, and failing to keep one must never cost
+    # cleared. Visibility, never control flow -- the shape `dossier_failed` had before #369
+    # made it drive the blind hold, for the same reason: an artefact exists to diagnose a CV, and failing to keep one must never cost
     # the CV. Set by `run_one` on every way out, including stamped onto the exception for the
     # `error` result a caller builds. Read by cli.py's per-result line and summary count and
     # by mcpserver.py's cv_run. Always False for a lead refused before composition, which
@@ -283,7 +283,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
     # A section counts only when it has text (rev-201): a bare heading is no section, and
     # the keyword is passed ONLY then, so every cache double written as
     # `get_or_build(self, fm)` keeps receiving today's exact call.
-    jd, dossier_failed = "", False
+    jd, dossier_failed, blind_reason = "", False, ""
     jd_source = "note" if supplied else "none"
     try:
         d = (dossier_cache.get_or_build(fm, supplied_jd=supplied) if supplied
@@ -308,9 +308,18 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # is sent.
         if not dossier_cache.jd_arrived(d):
             dossier_failed = True
+            blind_reason = (
+                f"the job description in the note is shorter than min_jd_chars "
+                f"({dossier_cache.min_jd_chars})" if supplied
+                else "no job description arrived")
     except Exception as e:
         _log.warning("dossier for %s failed: %s", note.ref, e)
         dossier_failed = True
+        # Fixed phrases only, never `e`: this reason becomes frontmatter in the user's note
+        # (needs_signoff), and an exception message can carry a url or page text. The
+        # exception itself is logged above.
+        blind_reason = ("no job description arrived" if supplied
+                        else "the job description fetch failed")
 
     # Everything from here on can raise for reasons unrelated to the dossier (a render
     # failure, a backend timeout mid-compose, a store write conflict), and run_batch's
@@ -592,16 +601,24 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # (`style\t`, `term\t` -- #194: a probable INVENTION, which the sign-off prompt must
         # not call a style concern), because the Store protocol's `claims` stays a plain
         # JSON ARRAY and a wrapped object would collapse into one bogus claim string.
-        # `sluice/cli.py::_print_signoff_claims` is the roster of the tags. #329's
+        # `sluice/cli.py::_print_signoff_claims` is the roster of the tags, `blind\t` (#369)
+        # among them. #329's
         # `framing\t` entries -- the triage notes the composer was given, from the same
         # `framing` tuple -- are appended AFTER the blockers and never cause a hold.
         style_blockers = ([f"style\t{msg}" for msg in slop_msgs + voice_flags]
                           + [f"term\t{msg}" for msg in term_msgs]
                           if cvcfg.style_hold else [])
         unaudited = [f"unaudited\t{audit_unavailable}"] if audit_unavailable else []
+        # #369: a CV composed without a job description is HELD under `cv.blind_hold`, as a
+        # `blind\t<reason>` entry whose reason is one of three fixed phrases set beside
+        # `dossier_failed` above. OUTSIDE the `require_signoff` conditional on purpose: that
+        # key answers "hold for a fabrication risk?", and a blind CV passed the gate honestly.
+        # Not a gate finding either -- `violations` stays empty.
+        blind = ([f"{BLIND_TAG}\t{blind_reason}"]
+                 if dossier_failed and cvcfg.blind_hold else [])
         blockers = (
             (unsupported_claims(audit_flags) + unaudited if cvcfg.require_signoff else [])
-            + style_blockers)
+            + blind + style_blockers)
         if served and blockers:
             # Record what to promote (pending_cv) and what to review (needs_signoff); withhold
             # tailored_cv. The served PDF stays in served_dir (it passed the HARD gate) but is
@@ -763,9 +780,9 @@ def run_batch(vault, cvcfg, backend, dossier_cache, *, renderer, limit=None,
             # run_one stamps dossier_failed onto the exception before re-raising (see
             # its own comment) precisely so this catch-all -- which must stay a
             # catch-all, for the isolation reason above -- does not silently under-
-            # report "N CV(s) composed blind" (cli.py's summary line) for a lead whose
-            # dossier WAS blocked but which then also failed downstream for an
-            # unrelated reason. `getattr(..., False)` also covers an exception raised
+            # report "N CV(s) composed without a job description" (cli.py's summary
+            # line) for a lead whose dossier WAS blocked but which then also failed
+            # downstream for an unrelated reason. `getattr(..., False)` also covers an exception raised
             # by code that predates #18 and so never carries the attribute.
             # `artefacts_failed` crosses the same way, stamped by run_one's wrapper.
             # `jd_source` crosses the same way.

@@ -92,20 +92,38 @@ def framing_entries(lines):
     return [f"{FRAMING_TAG}\t{line}" for line in lines]
 
 
+# #369: the tag marking a sign-off hold entry as BLIND -- the CV was composed without a job
+# description. sluice's own fixed text (one of three phrases, cv/engine.py), never derived
+# from a page or a model. One constant for the writer (cv/engine.py) and both readers
+# (cli.py, mcpserver.py), which already import the framing tag's helpers from here.
+BLIND_TAG = "blind"
+
+
+def _split_tag(entries, tag):
+    """`(tagged_rests, other_entries)`: entries tagged `tag` with the tag stripped, and every
+    other entry untouched and in order. The array is hand-editable YAML, so an entry may be
+    any JSON value: a non-string is never tagged and never raises."""
+    tagged, other = [], []
+    for entry in entries:
+        kind, sep, rest = entry.partition("\t") if isinstance(entry, str) else ("", "", "")
+        if sep and kind == tag:
+            tagged.append(rest)
+        else:
+            other.append(entry)
+    return tagged, other
+
+
 def split_framing(entries):
     """`(framing_lines, other_entries)` from a parsed `needs_signoff` array.
 
     Framing lines come back with the tag stripped; every other entry comes back untouched and in
-    order. The array is hand-editable YAML, so an entry may be any JSON value: a non-string is never
-    framing and never raises."""
-    framing, other = [], []
-    for entry in entries:
-        kind, sep, rest = entry.partition("\t") if isinstance(entry, str) else ("", "", "")
-        if sep and kind == FRAMING_TAG:
-            framing.append(rest)
-        else:
-            other.append(entry)
-    return framing, other
+    order (`_split_tag`)."""
+    return _split_tag(entries, FRAMING_TAG)
+
+
+def split_blind(entries):
+    """`(blind_reasons, other_entries)` from a parsed `needs_signoff` array (#369)."""
+    return _split_tag(entries, BLIND_TAG)
 
 
 def is_http_url(url: str) -> bool:

@@ -294,6 +294,14 @@ def test_framing_entries_round_trip_through_split_framing():
     assert split_framing(stored) == (list(lines), [_UNSUPPORTED, "style\tSLOP leverage: x"])
 
 
+def test_split_blind_takes_only_blind_entries_and_keeps_the_rest_in_order():
+    from sluice.core.leads import BLIND_TAG, split_blind
+    entries = [f"{BLIND_TAG}\tno job description arrived", "unsupported\tx\tEF1",
+               "framing\tconcerns: y", 3, "blind"]
+    assert split_blind(entries) == (["no job description arrived"],
+                                    ["unsupported\tx\tEF1", "framing\tconcerns: y", 3, "blind"])
+
+
 def test_split_framing_leaves_everything_else_alone_and_never_raises():
     # `needs_signoff` is hand-editable, so an entry can be anything JSON holds.
     assert split_framing([]) == ([], [])

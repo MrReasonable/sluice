@@ -317,7 +317,8 @@ triage:
 #   render_script: ./scripts/cv_render_v2.py
 #   # An `unsupported` audit claim (anywhere in the CV, not just the profile) WITHHOLDS the
 #   # send-ready pointer until you `job-sluice cv signoff` the lead, rather than auto-serving.
-#   # Ships on (a safety valve, not a preference); set false to restore auto-serve.
+#   # Ships on (a safety valve, not a preference); set false to serve a flagged CV. A CV
+#   # composed without a job description is held separately, under blind_hold.
 #   require_signoff: true
 #   # Whether the model-judged VOICE check runs at all (#167). OFF by default -- an
 #   # unconfigured install must never start spending LLM calls the moment it upgrades,
@@ -331,6 +332,10 @@ triage:
 #   # a hard-clean CV containing any of ~40 case-insensitive AI-tell stems (see
 #   # sluice/cv/slop.py) has tailored_cv withheld until you fix the source wording.
 #   style_hold: false
+#   # Whether a CV composed WITHOUT a job description (the fetch failed, nothing
+#   # arrived, or the note's own "## Job description" section is under min_jd_chars) is
+#   # HELD for `job-sluice cv signoff` instead of served (#369). ON by default.
+#   blind_hold: true
 #   # Whether a term CV prose names but nothing in your evidence carries drives the
 #   # composer's one retry (#194). ON by default; it never bins a lead. Turn it off if a
 #   # thin vault (few verified entries) makes it fire on ordinary words.

@@ -129,3 +129,12 @@ def test_a_hold_with_no_term_entry_prints_exactly_what_it_did_before_194(capsys)
         "  - unsupported\tMotivated by placeholder\tNONE\n"
         "cv signoff: slug has 1 style/voice concern(s):\n"
         "  - SLOP leverage: x\n")
+
+
+def test_a_blind_entry_prints_its_own_group_and_is_not_an_unsupported_claim(capsys):
+    from sluice.cli import _print_signoff_claims
+    _print_signoff_claims("example-slug", ["blind\tno job description arrived"])
+    err = capsys.readouterr().err
+    assert "composed WITHOUT a job description (no job description arrived)" in err
+    assert "--discard" in err and "## Job description" in err
+    assert "unsupported claim" not in err
