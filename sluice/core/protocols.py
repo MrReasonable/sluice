@@ -514,9 +514,16 @@ class UpsertResult:
     concrete reproduction that motivated this fix: three separate "guess after the
     fact" strategies (location-only, a flat url-or-location filter, and a two-tier
     url-then-location priority) each returned a real but WRONG note's slug in some
-    reachable scenario."""
+    reachable scenario.
+
+    `ref` (#369) is populated exactly when `slug` is, and is the same opaque handle
+    `read_leads` would issue for that note -- the form the write methods take, so a caller
+    that must write to the note it just created (`Sluice.create_lead` appending a job
+    description) never reconstructs a handle from the slug, which is wrong under
+    `lead_layout`. `None` for the three no-write outcomes."""
     outcome: str
     slug: str = ""
+    ref: object = None
 
 
 @dataclass
@@ -684,7 +691,8 @@ class Store(Protocol):
 
     def upsert(self, lead) -> "UpsertResult":
         """Reconcile an incoming lead against the stored notes. Returns an
-        UpsertResult whose `outcome` is one of:
+        UpsertResult, which carries `ref` exactly when it carries `slug` -- the handle
+        `read_leads` issues for that note (#369) -- and whose `outcome` is one of:
         "created" (a genuinely new note), "updated" (an existing note identified as the
         same opportunity), "merged" (an existing note we could not prove same-or-different
         from), or "refused" (the store cannot write this lead WITHOUT clobbering a different
