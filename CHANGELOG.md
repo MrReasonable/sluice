@@ -40,6 +40,61 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.5.0](https://github.com/MrReasonable/sluice/compare/v4.4.1...v4.5.0) (2026-10-12)
+
+
+### Changed
+
+A CV composed without a job description is now HELD for `job-sluice cv signoff` by
+default, under a new key, `cv.blind_hold` (`true`). That covers a fetch that failed, one
+that brought back nothing, and a job description (fetched, or from the lead note's own
+`## Job description` section) shorter than `min_jd_chars`. Its PDF is still written to
+`served_dir`, but the lead's `tailored_cv` pointer is withheld until you sign off, so a CV
+that is not tailored to the role is never marked send-ready by itself. What this means for
+you:
+
+* Before this release such a CV was served, and only counted in a `composed blind` summary
+  line. To keep that behaviour, set `cv.blind_hold: false`.
+* `cv.require_signoff: false` does not turn this hold off; it answers a different question
+  (an unsupported claim), and the two keys are independent.
+* `cv signoff` shows the reason separately from any flagged claims and says how to get a
+  tailored CV: `--discard`, add a `## Job description` section to the lead note, then
+  `cv run` again. MCP `cv_signoff` returns it under its own `blind` key.
+* The `cv run` summary line now reads `cv: N lead(s) had no usable job description`, and
+  counts a lead whose run then failed too.
+
+
+### Features
+
+* **cv:** compose from the lead note's job description and report its source ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([3d827fc](https://github.com/MrReasonable/sluice/commit/3d827fc12a03ab1cd4ef1c06a52cdb192224d732))
+* **cv:** hold a CV composed without a job description for sign-off ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([0f9bdc1](https://github.com/MrReasonable/sluice/commit/0f9bdc117199f82e5e5109cd4f8242aaf3badab3))
+* **leads:** write a job description when adding a lead ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([1d81a0b](https://github.com/MrReasonable/sluice/commit/1d81a0ba7371be2b7532b1bd5eb1bbde84f940e2))
+* **triage:** judge a lead from its note's job description ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([53e8d75](https://github.com/MrReasonable/sluice/commit/53e8d754f1487145b7c3db51ea8d88b5e5a5e29a))
+
+
+### Bug Fixes
+
+* **cv:** never replace an existing sign-off hold ([b9b297b](https://github.com/MrReasonable/sluice/commit/b9b297ba96f852921af3224b983a2074491831e4))
+
+
+### Refactoring
+
+* **core:** add the job-description section grammar ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([957e412](https://github.com/MrReasonable/sluice/commit/957e4122b8dd514c9d871990efe7a04944c4cc9e))
+* **core:** give the blind reasons one home and one reader ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([fa283a1](https://github.com/MrReasonable/sluice/commit/fa283a133b63a810e2c3b884ca72d556e1e4c7dc))
+* **core:** let the dossier cache take a job description it is handed ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([43b3681](https://github.com/MrReasonable/sluice/commit/43b3681482e49c8d851fb6bc20d17c05513643ff))
+* **core:** report the note ref from Store.upsert ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([f38a6f5](https://github.com/MrReasonable/sluice/commit/f38a6f56916596c5b6858bf7d911c2f1093cfa84))
+
+
+### Documentation
+
+* describe the lead-supplied job description and the blind hold ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([b1102c6](https://github.com/MrReasonable/sluice/commit/b1102c63dc5aa229f993183364343d5c4f478c10))
+* **plan:** implementation plan for the blind CV hold ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([437d357](https://github.com/MrReasonable/sluice/commit/437d357241e4dcb5c3f1dabc69f90dcc1fa54068))
+* **spec:** blind CV hold and a lead-supplied job description ([#369](https://github.com/MrReasonable/sluice/issues/369)) ([1c2a849](https://github.com/MrReasonable/sluice/commit/1c2a84993b0b70f0e3147e42e8269724c870e51a))
+* **spec:** fold review round 1 into the [#369](https://github.com/MrReasonable/sluice/issues/369) design ([d5372be](https://github.com/MrReasonable/sluice/commit/d5372bedd50ddf11c33960934be3a34f9ae51883))
+* **spec:** fold review round 2 into the [#369](https://github.com/MrReasonable/sluice/issues/369) design ([fd2a899](https://github.com/MrReasonable/sluice/commit/fd2a8992056dfef7f6d5e0abbeeac0fadc8d728f))
+* **spec:** fold review round 3 into the [#369](https://github.com/MrReasonable/sluice/issues/369) design ([610b8c4](https://github.com/MrReasonable/sluice/commit/610b8c41ea49904b4f24aa557a7cf7cf0e2890cf))
+* **spec:** fold review round 4 into the [#369](https://github.com/MrReasonable/sluice/issues/369) design ([f6b2133](https://github.com/MrReasonable/sluice/commit/f6b21336736a7bb6c1dbd3ef1320ae365fe6217f))
+
 ## [4.4.1](https://github.com/MrReasonable/sluice/compare/v4.4.0...v4.4.1) (2026-10-11)
 
 
