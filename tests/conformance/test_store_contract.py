@@ -1511,6 +1511,46 @@ def test_update_fields_blank_values_members_must_already_be_folded(store_name, t
     assert store.read_leads()[0].fm["company"] == "unknown"
 
 
+def test_update_fields_require_unchanged_abstains_on_a_changed_value(store_name, tmp_path,
+                                                                     monkeypatch):
+    """#223/#378: `require_unchanged` is re-read from the FRESH record. Triage clears a stale
+    asked stamp under it, so a store that dropped it would let a verdict erase a fresh one."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"followup_asked": "2031-03-14"})
+    wrote = store.update_fields(ref, {"followup_asked": '""'},
+                                require_unchanged={"followup_asked": "2031-03-01"})
+    assert wrote is False
+    assert store.read_leads()[0].fm["followup_asked"] == "2031-03-14"
+
+
+def test_update_fields_require_unchanged_never_matches_a_multi_line_value(store_name, tmp_path,
+                                                                         monkeypatch):
+    """#329/#378, the Protocol's own sentence: a value spread over several lines never compares
+    equal. A caller's snapshot of such a key reads blank, as the key's own line does, so a store
+    comparing those two would agree and write over what a person typed."""
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    seed(store_name, store, multi_line_key="triage_concerns")
+    ref = store.read_leads()[0].ref
+    before_raw = witness(store_name, store, "triage_concerns")
+    snapshot = store.read_leads()[0].fm.get("triage_concerns", "")
+    wrote = store.update_fields(ref, {"triage_concerns": '"written"'},
+                                require_unchanged={"triage_concerns": snapshot})
+    assert wrote is False, "a multi-line value compared equal to the caller's snapshot"
+    assert witness(store_name, store, "triage_concerns") == before_raw
+
+
+def test_update_fields_require_unchanged_writes_when_the_value_still_matches(
+        store_name, tmp_path, monkeypatch):
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    store.update_fields(ref, {"followup_asked": "2031-03-01"})
+    assert store.update_fields(ref, {"followup_asked": '""'},
+                               require_unchanged={"followup_asked": "2031-03-01"}) is True
+
+
 def test_update_fields_blank_values_without_require_blank_is_inert(store_name, tmp_path,
                                                                     monkeypatch):
     """`blank_values` given alone gates nothing: it only ever widens what `require_blank`

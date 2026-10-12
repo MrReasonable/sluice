@@ -268,3 +268,101 @@ def test_a_verdict_with_no_usable_verdict_field_writes_nothing(tmp_path):
     before = open(note.ref, encoding="utf-8").read()
     assert apply_verdict(v, note, {"verdict": None, "relevance_score": 80}, {}) == "skipped"
     assert open(note.ref, encoding="utf-8").read() == before
+
+
+def _research(v, name, extra=()):
+    _note(v, name, ['company: "Example Ltd"', "status: research", "score: 60",
+                    'relevance_notes: ""', *extra])
+    return v.read_leads()[0]
+
+
+def test_a_verdict_writes_its_next_action_to_triage_next(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _research(v, "N.md")
+    verdict = {"verdict": "research", "relevance_score": 65,
+               "recommended_next_action": "ask recruiter: client name"}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_next"] == "ask recruiter: client name"
+
+
+def test_a_later_verdict_with_no_action_blanks_triage_next(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _research(v, "N.md", ['triage_next: "ask: band"'])
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 61}, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_next"] == ""
+
+
+def test_an_unsafe_next_action_blanks_triage_next_with_a_warning(tmp_path, caplog):
+    v = Vault(str(tmp_path))
+    note = _research(v, "N.md", ['triage_next: "ask: band"'])
+    verdict = {"verdict": "research", "relevance_score": 62,
+               "recommended_next_action": 'ask "them"'}
+    assert apply_verdict(v, note, verdict, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_next"] == ""      # never the stale instruction
+    assert "triage_next" in caplog.text
+
+
+def test_triage_next_and_followup_asked_are_not_cv_framing():
+    assert "triage_next" not in FRAMING_KEYS and "followup_asked" not in FRAMING_KEYS
+
+
+def test_a_verdict_on_a_stamped_note_blanks_the_stamp(tmp_path):
+    v = Vault(str(tmp_path))
+    _note(v, "S.md", ['company: "Example Ltd"', "status: new", "score: 0",
+                      "followup_asked: 2026-09-01", 'relevance_notes: ""'])
+    note = v.read_leads()[0]
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 60}, {}) == "applied"
+    assert v.read_leads()[0].fm["followup_asked"] == ""
+
+
+def test_a_verdict_on_an_unstamped_note_writes_no_followup_asked_key(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _research(v, "U.md")
+    apply_verdict(v, note, {"verdict": "research", "relevance_score": 60}, {})
+    assert "followup_asked" not in open(note.ref, encoding="utf-8").read()
+
+
+def test_a_stamp_landing_mid_judge_on_an_unstamped_note_survives(tmp_path):
+    # Race (a): the realistic one. Witness: make the blank unconditional.
+    v = Vault(str(tmp_path))
+    note = _research(v, "R.md")                      # snapshot: no stamp
+    v.update_fields(note.ref, {"followup_asked": "2026-10-12"})   # marked asked mid-judge
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 60}, {}) == "applied"
+    assert v.read_leads()[0].fm["followup_asked"] == "2026-10-12"
+
+
+def test_a_restamp_landing_mid_judge_on_a_stale_stamp_refuses_the_verdict(tmp_path):
+    # Race (b): the contrived one. Witness: delete `require_unchanged=`.
+    v = Vault(str(tmp_path))
+    _note(v, "R.md", ['company: "Example Ltd"', "status: new", "score: 0",
+                      "followup_asked: 2026-09-01", 'relevance_notes: ""'])
+    note = v.read_leads()[0]                          # snapshot: stale stamp
+    v.update_fields(note.ref, {"status": "research", "followup_asked": "2026-10-12"})
+    assert apply_verdict(v, note, {"verdict": "research", "relevance_score": 60}, {}) == "unchanged"
+    assert v.read_leads()[0].fm["followup_asked"] == "2026-10-12"
+
+
+def test_verdict_preserves_a_block_valued_followup_asked(tmp_path):
+    # The OUTCOME, pinned: a hand-typed block list under followup_asked survives a verdict.
+    # No witness can turn this red today, and the plan says so rather than claiming one: the
+    # block value reads blank, so a verdict writes no followup_asked key at all, and a
+    # snapshot that DID carry a stamp meets `require_unchanged` against the fresh blank and is
+    # refused whole. `followup_asked` in `_HAND_EDITABLE_KEYS` is defence in depth behind those
+    # two, and its comment must say exactly that.
+    v = Vault(str(tmp_path))
+    _note(v, "B.md", ['company: "Example Ltd"', "status: new", "score: 0",
+                      "followup_asked:", "  - asked twice", 'relevance_notes: ""'])
+    note = v.read_leads()[0]
+    apply_verdict(v, note, {"verdict": "research", "relevance_score": 60}, {})
+    assert "followup_asked:\n  - asked twice" in open(note.ref, encoding="utf-8").read()
+
+
+def test_verdict_preserves_a_block_valued_triage_next(tmp_path):
+    # Never-clobber outranks freshness: a hand-typed block list under triage_next survives a
+    # verdict that carries an action. Witness: drop "triage_next" from _HAND_EDITABLE_KEYS.
+    v = Vault(str(tmp_path))
+    note = _research(v, "T.md", ["triage_next:", "  - item"])
+    verdict = {"verdict": "research", "relevance_score": 63,
+               "recommended_next_action": "ask: band"}
+    apply_verdict(v, note, verdict, {})
+    assert "triage_next:\n  - item" in open(note.ref, encoding="utf-8").read()
