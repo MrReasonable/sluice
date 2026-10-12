@@ -100,14 +100,17 @@ class FakeVault:
             fresh.fm.update(fields)
         return True
     def hold_for_signoff(self, ref, *, pending, claims):
-        # Mirrors Vault.hold_for_signoff: stamp only if no tailored_cv on the FRESH note.
+        # Mirrors Vault.hold_for_signoff: stamp only if neither tailored_cv nor pending_cv is
+        # on the FRESH note.
         fresh = self._fresh(ref)
         if fresh is not None and fresh.fm.get("tailored_cv"):
-            return False
+            return "has-cv"
+        if fresh is not None and fresh.fm.get("pending_cv"):
+            return "already-held"
         self.fields.setdefault(ref, {}).update({"pending_cv": pending, "needs_signoff": claims})
         if fresh is not None:
             fresh.fm.update({"pending_cv": pending, "needs_signoff": claims})
-        return True
+        return "held"
     def sign_off(self, ref, *, accept=True, require_pending=None):
         # Mirrors Vault.sign_off's outcome verdict on the fresh note (#60).
         fresh = self._fresh(ref)
@@ -2505,6 +2508,24 @@ def test_a_skipped_has_cv_result_from_a_refused_hold_carries_the_term_finding(mo
     assert res.status == "skipped-has-cv"
     assert "needs_signoff" not in note.fm, "the hold must have abstained, not stamped"
     _assert_term_split(res)
+
+
+def test_a_hold_that_appeared_during_compose_is_kept_and_reported(monkeypatch):
+    """A concurrent run held this lead while this one composed: the snapshot had no
+    pending_cv, the FRESH note does. The existing hold stays exactly as it is and the lead
+    reads skipped-needs-signoff, the same verdict the #60 latch gives (CodeRabbit on #394)."""
+    _served(monkeypatch)
+    be = _SequenceBackend(["unbundled-term", "unbundled-term"])
+    cfg = _cfg(); cfg.style_hold = True
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    fresh = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst",
+                  "pending_cv": "CV_other.pdf (2026-07-10)",
+                  "needs_signoff": '["blind\\tno job description arrived"]'}, path=note.ref)
+    vault = FakeVault(ENTRIES, notes=[fresh])
+    res = run_one(note, vault, cfg, be, FakeCache(), renderer=FakeRenderer())
+    assert res.status == "skipped-needs-signoff"
+    assert fresh.fm["pending_cv"] == "CV_other.pdf (2026-07-10)"
+    assert fresh.fm["needs_signoff"] == '["blind\\tno job description arrived"]'
 
 
 def test_a_skipped_has_cv_result_from_the_render_race_carries_the_term_finding(monkeypatch):

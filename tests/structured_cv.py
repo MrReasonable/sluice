@@ -127,9 +127,11 @@ class FakeVault:
 
     def hold_for_signoff(self, ref, *, pending, claims):
         if ref in self.tailored:
-            return False
+            return "has-cv"
+        if ref in self.holds:
+            return "already-held"
         self.holds[ref] = (pending, json.loads(claims))
-        return True
+        return "held"
 
 
 class Cache:

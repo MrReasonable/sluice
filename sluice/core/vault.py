@@ -2558,38 +2558,45 @@ class Vault:
             return f"---\n{inner}\n---\n{body}"
         return _cas_write(ref, transform)
 
-    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> bool:
-        """Stamp a #60 sign-off hold -- pending_cv + needs_signoff -- ONLY IF the note has no
-        tailored_cv in FRESH content, mirroring set_tailored_cv(only_if_absent=...). Returns
-        whether it stamped: False means a real send-ready CV already exists (a concurrent set,
-        or an intentional single-lead re-tailor of an already-CV'd lead), so the flagged CV is
-        left inert and the caller reports skipped-has-cv rather than latching the lead behind a
-        redundant hold it would then need a manual sign-off to clear. The tailored_cv check is
-        inside the CAS transform, so it sees a pointer that appeared during the compose window
-        (#16), not the caller's stale snapshot. `claims` is written verbatim (the caller
-        json.dumps it). Body byte-intact. May raise VaultConflict (#16)."""
-        stamped = [False]  # reset per transform run so a CAS retry reports the final branch
+    def hold_for_signoff(self, ref, *, pending: str, claims: str) -> str:
+        """Stamp a #60 sign-off hold -- pending_cv + needs_signoff -- ONLY IF the note has
+        neither a tailored_cv nor a pending_cv in FRESH content, mirroring
+        set_tailored_cv(only_if_absent=...). Returns the outcome. 'has-cv': a real send-ready
+        CV already exists (a concurrent set, or an intentional single-lead re-tailor of an
+        already-CV'd lead), so the flagged CV is left inert and the caller reports
+        skipped-has-cv rather than latching the lead behind a redundant hold it would then need
+        a manual sign-off to clear. 'already-held': another run's hold landed during this one's
+        compose window; replacing it would swap the CV and the reasons a human is reviewing
+        (CodeRabbit on #394). 'held': stamped. Both checks are inside the CAS transform, so they
+        see a marker that appeared during the compose window (#16), not the caller's stale
+        snapshot. `claims` is written verbatim (the caller json.dumps it). Body byte-intact.
+        May raise VaultConflict (#16)."""
+        outcome = [""]  # reset per transform run so a CAS retry reports the final branch
         def transform(text: str) -> str:
-            stamped[0] = False
             inner, body = _split_frontmatter(text)
             if inner is None:
                 inner, body = "", text
             if _is_present(inner, "tailored_cv"):
+                outcome[0] = "has-cv"
                 return text  # a real CV already won; do not latch a redundant hold
             # #329: a marker spread over several lines reads blank on its own line, so the
             # engine's snapshot latch misses it; stamping over it would orphan the items. Refuse
-            # by name rather than return False, which the caller reports as skipped-has-cv.
+            # by name rather than return an outcome the caller would report as a skip. BEFORE
+            # the pending_cv check below, which counts such a value as present.
             for key in ("pending_cv", "needs_signoff"):
                 if _holds_multiline_value(inner, key):
                     raise MalformedNoteField(
                         f"{ref}: {key} holds a value spread over several lines; a sign-off hold "
                         "would orphan it -- rewrite it as one line or clear it")
+            if _is_present(inner, "pending_cv"):
+                outcome[0] = "already-held"
+                return text  # never replace a hold a human may be reviewing
             inner = _set_fm(inner, "pending_cv", pending)
             inner = _set_fm(inner, "needs_signoff", claims)
-            stamped[0] = True
+            outcome[0] = "held"
             return f"---\n{inner}\n---\n{body}"
         _cas_write(ref, transform)
-        return stamped[0]
+        return outcome[0]
 
     def sign_off(self, ref, *, accept: bool = True, require_pending: str | None = None) -> str:
         """Resolve a #60 needs-signoff hold and report the OUTCOME derived from FRESH

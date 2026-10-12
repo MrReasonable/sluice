@@ -1061,8 +1061,8 @@ def test_upsert_result_slug_is_blank_for_every_no_write_outcome(store_name, tmp_
 # ── #60: profile-audit sign-off (outcome verdict + never-clobber) ─────────────
 def test_hold_for_signoff_stamps_only_when_no_tailored_cv(store_name, tmp_path, monkeypatch):
     """hold_for_signoff is a CONTRACT property: it stamps pending_cv/needs_signoff ONLY when
-    no tailored_cv exists in FRESH content (returns True), and does NOTHING when a real
-    pointer already exists (returns False) -- so a flagged re-tailor never latches a lead that
+    no tailored_cv exists in FRESH content (returns "held"), and does NOTHING when a real
+    pointer already exists (returns "has-cv") -- so a flagged re-tailor never latches a lead that
     already has a send-ready CV, and never clobbers that pointer. Whole-fm-dict assertions."""
     import json
     store = _make_store(store_name, tmp_path, monkeypatch)
@@ -1071,15 +1071,33 @@ def test_hold_for_signoff_stamps_only_when_no_tailored_cv(store_name, tmp_path, 
     # No tailored_cv -> stamps, True.
     store.upsert(_lead())
     ref = store.read_leads()[0].ref
-    assert store.hold_for_signoff(ref, pending="CV_ab12.pdf (2026-07-24)", claims=claims) is True
+    assert store.hold_for_signoff(ref, pending="CV_ab12.pdf (2026-07-24)", claims=claims) == "held"
     fm = dict(store.read_leads()[0].fm)
     assert fm.get("pending_cv") == "CV_ab12.pdf (2026-07-24)" and "needs_signoff" in fm
 
     # A real tailored_cv present -> does nothing, False, pointer untouched.
     store.sign_off(ref)  # promote -> tailored_cv set, markers cleared
     base = dict(store.read_leads()[0].fm)
-    assert store.hold_for_signoff(ref, pending="CV_STALE.pdf (2026-07-24)", claims=claims) is False
+    assert store.hold_for_signoff(ref, pending="CV_STALE.pdf (2026-07-24)", claims=claims) == "has-cv"
     assert dict(store.read_leads()[0].fm) == base   # nothing stamped, tailored_cv intact
+
+
+def test_hold_for_signoff_never_replaces_an_existing_hold(store_name, tmp_path, monkeypatch):
+    """A hold already on the FRESH note (a concurrent run stamped it during this one's compose
+    window) is left exactly as it is, and the outcome says so -- "already-held", not "has-cv",
+    because no send-ready CV exists. Replacing it would swap the CV a human is about to sign
+    off, and the reasons they were shown, for another (CodeRabbit on #394)."""
+    import json
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    store.upsert(_lead())
+    ref = store.read_leads()[0].ref
+    first = json.dumps(["blind\tno job description arrived"])
+    assert store.hold_for_signoff(ref, pending="CV_first.pdf (2026-07-24)", claims=first) == "held"
+    base = dict(store.read_leads()[0].fm)
+    second = json.dumps(["unsupported\tMotivated by placeholder\tNONE"])
+    assert store.hold_for_signoff(ref, pending="CV_second.pdf (2026-07-24)",
+                                  claims=second) == "already-held"
+    assert dict(store.read_leads()[0].fm) == base
 
 
 def test_sign_off_reports_each_outcome_and_never_clobbers(store_name, tmp_path, monkeypatch):

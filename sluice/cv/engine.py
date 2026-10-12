@@ -627,8 +627,13 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
             held = vault.hold_for_signoff(
                 note.ref, pending=f"{served} ({date.today().isoformat()})",
                 claims=json.dumps(blockers + framing_entries(framing)))
-            if not held:
+            if held == "has-cv":
                 return CvResult(note.ref, "skipped-has-cv", audit_flags=audit_flags, **report)
+            if held == "already-held":
+                # Another run's hold landed during this compose; it stays as it is, and the
+                # lead reads exactly as the #60 latch above would have reported it.
+                return CvResult(note.ref, "skipped-needs-signoff", audit_flags=audit_flags,
+                                **report)
             return CvResult(note.ref, "needs-signoff", audit_flags=audit_flags,
                             served=served, **report)
         if served:

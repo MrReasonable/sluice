@@ -210,13 +210,13 @@ def test_g3_control_set_tailored_cv_fills_a_blank_key(tmp_path):
 def test_g3_hold_for_signoff_counts_a_block_list_as_present(tmp_path):
     v, path = _seed(tmp_path, [*_REQUIRED, "status: shortlist", *_block("tailored_cv")])
     before = _bytes(path)
-    assert v.hold_for_signoff(path, pending="p.pdf", claims="[]") is False
+    assert v.hold_for_signoff(path, pending="p.pdf", claims="[]") == "has-cv"
     assert _bytes(path) == before
 
 
 def test_g3_control_hold_for_signoff_holds_over_a_blank_key(tmp_path):
     v, path = _seed(tmp_path, [*_REQUIRED, "status: shortlist", *_blank("tailored_cv")])
-    assert v.hold_for_signoff(path, pending="p.pdf", claims="[]")
+    assert v.hold_for_signoff(path, pending="p.pdf", claims="[]") == "held"
     assert v.read_leads()[0].fm["pending_cv"] == "p.pdf"
 
 
