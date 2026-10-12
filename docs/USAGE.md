@@ -307,7 +307,8 @@ or could not run at all -- see `cv signoff` below and #60 in `docs/ARCHITECTURE.
 **A job description in the lead note.** A lead with no posting to fetch (a referral, an InMail)
 can carry its job description in its note, under a heading spelled exactly `## Job description`
 (any letter case; nothing else on the line). Everything below it, up to the next `#` or `##`
-heading, is used by `cv run` in place of a fetch:
+heading, is used by `triage run` and `cv run` in place of a fetch, and is read as the posting
+itself (a pay basis it states is recorded as the lead's `role_type`):
 
 ```markdown
 ## Job description

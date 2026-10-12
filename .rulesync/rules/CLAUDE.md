@@ -695,7 +695,11 @@ the identical reason: `min_jd_chars: yes` is the natural spelling to turn it on,
 load as a one-character floor, letting nearly every fetched JD through with no error anywhere. It is
 shared, not per sub-app: `Sluice.dossier_cache()` reads `self.config.min_jd_chars` for both
 `triage()` and `compose_cv()`'s cache, since the two already share one dossier cache directory (#80)
-and must agree on the floor.
+and must agree on the floor. A job description the lead note carries (its `## Job description`
+section, `core/jdsection.py`, #369) obeys the same floor: `DossierCache.get_or_build(...,
+supplied_jd=...)` returns it without a fetch or a cache write, and `jd_arrived` judges it as it
+judges a fetch. It IS the posting for every other reading too, by the owner's ruling: triage's
+#223 `role_type` observation reads it, so a section stating a pay basis is recorded as `observed`.
 
 **A CV is assembled, never parsed (#364/#365/#368).** `cv run` asks the backend for a JSON
 reply -- a profile, cited bullets per role SLOT, and skill picks from a closed list -- and
