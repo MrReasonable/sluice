@@ -260,7 +260,22 @@ Shared by every sub-app:
   bundle. So a fetch that RAISED composes with `jd=""` (there is no text), while
   one that returned sub-floor text keeps it -- identical at the shipped
   `min_jd_chars: 0`, where only a wholly empty JD fails the predicate, and
-  divergent above it.
+  divergent above it. Since #369 composing proceeds the same way, but under
+  `cv.blind_hold` (on by default) such a CV is held for sign-off rather than
+  served.
+
+  A lead note may carry its own job description, under a `## Job description`
+  heading (#369; a referral or an InMail has no posting to fetch).
+  `core/jdsection.py` is the ONE grammar for that section, shared by triage, cv
+  and `Sluice.create_lead`: where it stops (a level-1 or level-2 ATX heading) and
+  what pasted text must be demoted so it cannot stop early. A section with text is
+  handed to `get_or_build(..., supplied_jd=...)`, which builds the dossier from it
+  with no fetch and no cache read or write, so an edit to the section takes effect
+  on the next run; `jd_arrived` judges it exactly as it judges a fetch, so
+  `min_jd_chars` applies. It is the posting for every other reading too, the
+  #223 `role_type` observation included. Triage reads it per lead, outside the
+  `cache_key` grouping, since two notes sharing a key may carry different
+  sections; cv reports where its text came from as `CvResult.jd_source`.
 - `Sluice.health_report(include_leads=False)` (`core/app.py`) is the
   per-source health REPORT `job-sluice health` and the MCP `health` tool both
   show: `HealthStore`'s baseline/recent counts and stuck-streak reason,
@@ -905,8 +920,14 @@ whichever neighbour it was written next to:
    flagged claims; `--discard` rejects it and frees a fresh compose. A hold also records
    the triage notes the composer was given, as `framing\t` entries after the blockers
    (`core/leads.py::framing_entries`); they never cause a hold, and `cv signoff` and MCP
-   `cv_signoff` show them apart from the claims. The default is on for fabrication
-   (`cv.require_signoff`); neither signoff flag touches the pure hard gate.
+   `cv_signoff` show them apart from the claims. `cv.blind_hold` (#369, on by default)
+   is a third, separate key: a CV composed without a job description -- the fetch
+   failed, none arrived, or the note's own section is under `min_jd_chars` -- is held
+   as a `blind\t<reason>` entry, one of three fixed phrases and never exception text.
+   It is not a gate finding (a blind CV passes the gate honestly) and not
+   `require_signoff`'s question, and `cv signoff` shows it apart, with how to tailor
+   the CV instead. The default is on for fabrication (`cv.require_signoff`); none of
+   `require_signoff`, `style_hold` and `blind_hold` touches the pure hard gate.
 
 4. **apply** (`sluice/apply/`): select eligible leads, stage the rendered
    CV file and a prep packet, and record the applied transition
@@ -1356,7 +1377,10 @@ naming it. A url index over the archive would close the gap; it is `#23` territo
 changes `upsert`'s cost model, so it is deliberately out of scope here.
 
 `upsert`'s return vocabulary is six-member: `created`/`updated`/`merged`/`refused` as
-before, plus `merged_away` and `merged_away_unproven`. Both write nothing. `refused`
+before, plus `merged_away` and `merged_away_unproven`. Both write nothing. The returned
+`UpsertResult` carries `slug` and, since #369, `ref` -- the handle `read_leads` issues
+for that note -- populated exactly when `slug` is, so a caller writing to the note it
+just created never rebuilds a handle from the slug (wrong under `lead_layout`). `refused`
 now covers a third cause alongside #5's name collision and #1's ambiguous candidate: a
 lead whose note would read back with neither company nor role, which has no name to be
 seated at and which `_is_lead_note` then hides from every read — so creating it put an
@@ -1470,6 +1494,13 @@ differ in whether the archive match was url-PROVEN, which is the same distinctio
 that decides whether the ingest sink may record the lead, and each names the one
 recovery action (move the note out of `_merged/`) so a #81 refusal is not a
 permanent no with nothing said about the way out.
+
+`--jd-file` (and MCP `create_lead`'s `job_description`, #369) is a SECOND write:
+`Store.append_body_section` through `UpsertResult.ref`, made only when the lead was
+`created`, so `updated`/`merged` never touch an existing note's body. Two writes means
+a lead can exist without its section; `CreateLeadResult.job_description_written` and
+`job_description_note` say which, and a blank job description is refused before
+anything is written.
 
 Two decisions about the flag set are load-bearing.
 
