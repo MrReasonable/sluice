@@ -934,7 +934,20 @@ whichever neighbour it was written next to:
    the gate licenses a tool through `Tools:`, and the guidance; never an entry's
    `Skills:` (tied to no job, so not evidence for a bullet), never the Skills
    Inventory, so a claim resting on a skills line alone stays `unsupported` -- and never
-   sees a date, title, certificate or education line, which are the user's own data. An
+   audits a date, title, certificate or education line, which are the user's own data.
+   It is SHOWN the CV Layout's roles with their dates and the entries the layout places
+   in each (#380, the engine's own slot table), as context for dating the entries: a claim no single entry states is `deduced` when every particular it names
+   (activity, skill, domain, tool, figure, scope) is evidenced somewhere in the bundle and
+   the work it draws on came before or during the role it sits under, and `unsupported`
+   when a particular is evidenced nowhere or the dates rule the combination out. So
+   coaching teams in a technology follows from leadership plus that technology; coaching
+   in a technology the user never worked with does not. `deduced` is reported, with the
+   ids the auditor is asked to list, and like `paraphrase` does not hold -- unless it
+   cites nothing or an id no entry carries, a deduction showing no evidence, which holds
+   like `unsupported`. A stated limit: an entry the layout places in several roles (an
+   `any_role` entry, or one whose company names several employers) is listed under each,
+   so it is dated only to their span and the auditor errs toward `deduced` for it; an
+   entry carries no date of its own. An
    `unsupported` flag still renders and serves the PDF (it passed the hard gate) but
    WITHHOLDS the send-ready `tailored_cv` pointer, so `apply` cannot select it; under
    `cv.require_signoff` an audit that could not run at all holds the same way (#333). `cv.style_hold` (#167, off by

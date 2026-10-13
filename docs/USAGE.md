@@ -263,7 +263,7 @@ nothing extra prints):
 | Kind | Indented line | Notes |
 |---|---|---|
 | `violations` | `<CATEGORY> ...` | the HARD fabrication gate's own findings. Each already opens with its producer's own ALL-CAPS category (`REPLY`, `INVENTED METRIC`, `UNCITED BULLET`, `WRONG EMPLOYER`, `MISATTRIBUTED TOOL`, ...), so no label is added. A `skipped-gate` result rendered no CV, and these are what say why (#258) |
-| `audit_flags` | `AUDIT: <verdict>\t<claim>\t<cited-id>` | the advisory model-judged fabrication audit; `unsupported` is the verdict that withholds the send-ready pointer (`cv.require_signoff`) |
+| `audit_flags` | `AUDIT: <verdict>\t<claim>\t<cited-ids>` | the advisory model-judged fabrication audit. `paraphrase` (one entry's fact, reworded) and `deduced` (no single entry states it, but every part is evidenced somewhere and the dates let them combine; the auditor is asked to list the ids it combined) are shown for you to read; `unsupported`, and a `deduced` line citing nothing or an id no entry carries, withhold the send-ready pointer (`cv.require_signoff`) |
 | `slop` | `SLOP <label>: <snippet>` | the deterministic linter `cv/slop.py`, already prefixed: its HARD tier (`SLOP EM-DASH`, `SLOP DOUBLE-HYPHEN-DASH`), which blocks, as well as the phrase stems |
 | `voice_flags` | `VOICE: <flag>` | opt-in via `cv.voice_check` -- see `docs/CONFIGURATION.md` |
 | `terms` | `UNBUNDLED TERM '<term>': named nowhere in your evidence: <snippet>` | `cv/terms.py`'s check for a term the CV names that no evidence carries, already prefixed (`cv.term_check`, on by default) |

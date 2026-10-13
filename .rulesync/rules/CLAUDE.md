@@ -834,7 +834,14 @@ deterministic check reads (the advisory auditor is shown it, `cv/bundle.py::rend
 role heading for context, and no other vault text (no date, location, title, certificate,
 education line or skill), which it has no truth for -- against
 `cv/bundle.py::render_audit_bundle`, which carries each entry's `Tools:` line so a tool the
-gate licensed does not read as unsupported. An `unsupported` flag, or an audit that could not
+gate licensed does not read as unsupported, and the CV Layout's roles with their dates and the
+entries the engine's slot table places in each (#380): the auditor checks no date, it dates
+the entries. A claim no single entry states is `deduced`
+when every particular it names is evidenced somewhere in the bundle and the timeline lets them
+combine (the work it draws on came before or during the role it sits under), and
+`unsupported` when a particular is evidenced nowhere or the timeline rules it out. `deduced`
+is reported and, like `paraphrase`, does not hold -- unless it cites nothing or an id no entry
+in the bundle carries (`cv/audit.py::unsupported_claims`), which holds like `unsupported`. An `unsupported` flag, or an audit that could not
 run (#333), WITHHOLDS the send-ready `tailored_cv` pointer under `cv.require_signoff` (on by
 default) via `Store.hold_for_signoff`, cleared by `job-sluice cv signoff`. The hold is
 recorded in `pending_cv` and `needs_signoff`; the note's `status` stays `shortlist`, so
