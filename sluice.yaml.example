@@ -205,6 +205,11 @@ relevance_drop: ['sport and exercise psychologist']   # ...then drop any contain
 triage:
   batch_size: 5
   ttl_days: 7
+  # Show the triage judge your VERIFIED experience and skills lines (#196). Off by default:
+  # turning it on sends them to triage's backend -- which may differ from cv.backend --
+  # with every batch, dry runs included. A requirement your record does not cover is
+  # reported as a concern and is never a reason to lower a score.
+  # evidence: true
   # Where the rejected-leads audit log is written. Unset, it resolves per-system under
   # $XDG_STATE_HOME (or ~/.local/state); $TRIAGE_AUDIT still wins over this key. This key
   # was declared but read by nothing before #80 -- setting it did nothing, silently.

@@ -214,3 +214,21 @@ def test_coverage_rule_cites_the_reminder_that_is_the_already_satisfies_line():
     from sluice.triage.prompt import _SCAFFOLD_TAIL_REST
     (line,) = [ln for ln in _SCAFFOLD_TAIL_REST.splitlines() if ln.startswith("4. Never flag")]
     assert "already satisfies" in line
+
+
+def test_evidence_defaults_off(tmp_path):
+    from sluice.triage.config import TriageConfig, load_triage_config
+    assert TriageConfig().evidence is False
+    cfgp = tmp_path / "c.yaml"
+    cfgp.write_text("triage:\n  batch_size: 5\n")
+    assert load_triage_config(str(cfgp)).evidence is False
+
+
+def test_evidence_must_be_a_real_boolean(tmp_path):
+    from sluice.triage.config import load_triage_config
+    cfgp = tmp_path / "c.yaml"
+    cfgp.write_text('triage:\n  evidence: "false"\n')
+    with pytest.raises(ValueError):
+        load_triage_config(str(cfgp))
+    cfgp.write_text("triage:\n  evidence: true\n")
+    assert load_triage_config(str(cfgp)).evidence is True
