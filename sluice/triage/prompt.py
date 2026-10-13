@@ -22,7 +22,7 @@ Judging Profile, and are never committed here."""
 import re
 
 from sluice.core.criteria import DEFAULT_CRITERIA
-from sluice.core.protocols import CRITERIA_RELPATH
+from sluice.core.protocols import CRITERIA_RELPATH, cv_name
 
 # A deliberate DRIFT PIN, not leftover store surface: tests/test_vault_write_document.py asserts
 # this alias and core/vault.py's are the SAME object as core/protocols.py's constant, so the three
@@ -42,7 +42,7 @@ The profile and criteria below are maintained by the candidate and evolve over t
 _DEFAULT_CRITERIA = DEFAULT_CRITERIA
 
 
-_SCAFFOLD_TAIL = """## Inputs
+_SCAFFOLD_TAIL_HEAD = """## Inputs
 
 Each dossier is JSON. The `jd.markdown` (or `jd`) field is your PRIMARY evidence; read it carefully every time. `glassdoor` (rating, review_count) is a culture sanity check. If the posting is a recruiter listing that hides the client, default to research with "ask recruiter for client name and culture context" unless the JD is rich enough to judge.
 
@@ -58,7 +58,9 @@ Two different failures look alike here and must not be confused:
 - 85 to 100: strong evidence-backed fit against the profile's target shape and win patterns, with culture explicit in the JD, healthy or absent-but-not-negative Glassdoor, and comp and location workable. Verdict shortlist.
 - 75 to 84: probable fit. Shortlist if it matches the profile's win patterns with no red flags. Where the JD trips one of the profile's anti-patterns in this band, use research with a specific investigable question.
 - 60 to 74: mixed. Verdict research, with a concrete question that would resolve it.
-- Below 60: dismiss. Be willing to dismiss. Do not park a lead in research as a hedge; if it scores below 60, dismiss it.
+- Below 60: dismiss. Be willing to dismiss. Do not park a lead in research as a hedge; if it scores below 60, dismiss it."""
+
+_SCAFFOLD_TAIL_REST = """
 
 ## Output schema (one JSON object per dossier, in input order)
 
@@ -128,8 +130,59 @@ def _strip_html_comments(text: str) -> str:
     text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
     return re.sub(r"%%.*?%%", "", text, flags=re.DOTALL)
 
+# Split at the two places #196 inserts the candidate record's rules, and rejoined here so
+# every existing reader of the scaffold sees the exact pre-#196 text. Named constants
+# rather than a string splice: a splice on a drifted anchor no-ops silently.
+_SCAFFOLD_TAIL = _SCAFFOLD_TAIL_HEAD + _SCAFFOLD_TAIL_REST
 
-def build_system_prompt_from(criteria: str) -> str:
+# #196. The section is named "Candidate record", not "evidence": the scaffold already uses
+# that word for the JD ("your PRIMARY evidence", "evidence-backed fit"), and the judge must
+# not read a requirement for CANDIDATE evidence into those lines. The closing sentence is
+# scoped to exactly those scaffold lines, because the coverage rule below does use
+# "verified evidence" for the record (the product's term, and the concern string).
+_CANDIDATE_RECORD_HEADER_PROMPT = """## Candidate record
+
+The candidate's own verified record, one line per entry. It describes the CANDIDATE, never the role, so never quote it as JD text. Where the instructions below call the JD your "evidence" (its PRIMARY evidence, an evidence-backed fit), they still mean the JD."""
+
+# D2 of the #196 spec: a gap is a concern, never a score. It names the two existing lines
+# it qualifies, so neither can be read against it.
+_RECORD_COVERAGE_PROMPT = """## Using the candidate record
+
+Where the candidate record supports a requirement the JD states, that supports the fit and may raise the score. Where the JD states a requirement the record does not cover, add "no verified evidence for <requirement>" to `concerns`. Such a gap is never on its own a reason to lower `relevance_score` or to move the verdict down a band, because the record may simply be incomplete. "Be willing to dismiss" applies to what the JD and the profile say, not to gaps in the record. The thin-JD instruction to score conservatively is about what the JD leaves out, not about the record. Final reminder 4 still applies: do not raise a gap concern for anything the profile already says the candidate satisfies."""
+
+# Unnumbered, after the numbered reminders, so the list's numbering is untouched.
+_RECORD_REMINDER_PROMPT = """A requirement the candidate record does not cover is a concern, never a lower score."""
+
+
+def _one_line(value) -> str:
+    # A hand-typed block list or multi-line value must not start a new prompt line: it
+    # could forge a heading. Vault text is the user's own; this guards accidental
+    # structure, not a hostile author.
+    return " ".join(str(value or "").split())
+
+
+def _record_block(record) -> str:
+    """The candidate-record section, or "" when no kind has an entry -- the abstain path.
+    Generic over kinds: heading from the kind's relpath basename (EvidenceKind has no label
+    of its own), name from `cv_name`, then each non-empty `judge_fields` member in order."""
+    sections = []
+    for spec, entries in record or ():
+        if not entries:
+            continue
+        lines = [f"### {spec.relpath.rsplit('/', 1)[-1]}"]
+        for entry in entries:
+            fields = entry.get("fields") or {}
+            parts = [_one_line(cv_name(entry))]
+            parts += [f"{key}: {_one_line(fields.get(key))}" for key in spec.judge_fields
+                      if _one_line(fields.get(key))]
+            lines.append("- " + " | ".join(parts))
+        sections.append("\n".join(lines))
+    if not sections:
+        return ""
+    return _CANDIDATE_RECORD_HEADER_PROMPT + "\n\n" + "\n\n".join(sections)
+
+
+def build_system_prompt_from(criteria: str, record=None) -> str:
     """Compose the judge system prompt around criteria the STORE supplied.
 
     This is the form the engine uses. It takes text, not a directory, because reaching
@@ -138,9 +191,17 @@ def build_system_prompt_from(criteria: str) -> str:
     would have AttributeError'd there. An empty/missing criteria file falls back to the
     shipped default, which states only that nothing is configured and declines to invent
     an opinion.
+
+    `record` (#196) is `(EvidenceKind, entries)` pairs the ENGINE read through the store;
+    this module still does no I/O and reads no registry. With no entries the prompt is the
+    pre-#196 text byte for byte, which is what makes `triage.evidence` abstain.
     """
     body = _strip_html_comments(_strip_frontmatter(criteria or "")).strip() or _DEFAULT_CRITERIA
-    return f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{_SCAFFOLD_TAIL}"
+    block = _record_block(record)
+    if not block:
+        return f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{_SCAFFOLD_TAIL}"
+    return (f"{_SCAFFOLD_INTRO}\n\n{body}\n\n{block}\n\n{_SCAFFOLD_TAIL_HEAD}\n\n"
+            f"{_RECORD_COVERAGE_PROMPT}{_SCAFFOLD_TAIL_REST}\n\n{_RECORD_REMINDER_PROMPT}")
 
 
 # The baked-in default prompt -- `judge()`'s default, and what any caller importing the constant

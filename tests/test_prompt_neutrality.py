@@ -34,7 +34,7 @@ from pathlib import Path
 import pytest
 
 from sluice.core.layout import Slot
-from sluice.core.protocols import LayoutRole
+from sluice.core.protocols import EVIDENCE_KINDS, LayoutRole
 from sluice.cv.slop import _PHRASES
 
 _SLUICE = Path(__file__).resolve().parent.parent / "sluice"
@@ -178,6 +178,16 @@ _SYNTHETIC_ARGS = {
         "triage_framing": ("SYNTHETIC framing",)},
     # The auditor's CV text is the excerpt audit_text builds, not a placeholder string.
     "sluice.cv.audit.build_audit_prompt": {"cv_text": _structured_audit_excerpt()},
+    # #196: `record` is DEFAULTED (None renders no block), so without this override the
+    # sweep never reads the candidate-record header, the coverage rule or the reminder.
+    "sluice.triage.prompt.build_system_prompt_from": {
+        "record": [
+            (EVIDENCE_KINDS["experience"],
+             [{"title": "SYNTHETIC entry", "fields": {"Company": "Example Alpha"}}]),
+            (EVIDENCE_KINDS["skills"],
+             [{"title": "alpha", "fields": {"Domain": "SYNTHETIC"}}]),
+        ],
+    },
 }
 
 # A floor, not a roster: every prompt known when this was written must still be swept, so
@@ -207,6 +217,9 @@ _KNOWN_PROMPTS = frozenset({
     "sluice.cv.compose._TRIAGE_FRAMING_PROMPT_RULE",
     "sluice.cv.compose._TRIAGE_FRAMING_PROMPT_HEADER",
     "sluice.cv.compose._TRIAGE_FRAMING_PROMPT_LABELS",
+    "sluice.triage.prompt._CANDIDATE_RECORD_HEADER_PROMPT",
+    "sluice.triage.prompt._RECORD_COVERAGE_PROMPT",
+    "sluice.triage.prompt._RECORD_REMINDER_PROMPT",
 })
 
 
@@ -416,6 +429,15 @@ def test_the_swept_structured_prompt_carries_every_conditional_block():
     for block in (compose._ROLE_SLOTS_PROMPT_HEADER, compose._SKILLS_POOL_PROMPT_HEADER,
                   compose._RETRY_FINDINGS_PROMPT_HEADER, compose._RETRY_DROPS_PROMPT_HEADER,
                   compose._TRIAGE_FRAMING_PROMPT_HEADER, compose._JSON_SHAPE_PROMPT):
+        assert block in rendered, block
+
+
+def test_the_swept_judge_prompt_carries_every_record_block():
+    # Each reaches the swept render only through the `record` override in _SYNTHETIC_ARGS.
+    from sluice.triage import prompt
+    rendered = _discover_prompts()["sluice.triage.prompt.build_system_prompt_from"]
+    for block in (prompt._CANDIDATE_RECORD_HEADER_PROMPT, prompt._RECORD_COVERAGE_PROMPT,
+                  prompt._RECORD_REMINDER_PROMPT):
         assert block in rendered, block
 
 
