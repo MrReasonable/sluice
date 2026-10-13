@@ -3537,7 +3537,8 @@ class Sluice:
 
             # The skill names the pool would offer, derived by cv/selection.py itself, so
             # this row and the composer agree on what a skill is called (#364 D12, D13).
-            from sluice.cv.selection import cv_name, named_entries, pool_kinds
+            from sluice.core.protocols import cv_name
+            from sluice.cv.selection import named_entries, pool_kinds
             skill_names = None
             try:
                 named = named_entries(store.read_evidence)

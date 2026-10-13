@@ -351,6 +351,24 @@ def verify_outcome(spec, subject: str = "it") -> str:
         return f"make {subject} available to a CV's skills list"
     return f"mark {subject} reviewed"
 
+
+def skill_label(entry) -> str:
+    """A note's `Label:`, stripped, or "" -- the typed name `skills add` keeps because the
+    filename it writes is a slug (#364 D13). ONE home for the blank test, so doctor's
+    upgrade warning and the name a CV/judge shows cannot disagree about what is missing."""
+    return str((entry.get("fields") or {}).get("Label") or "").strip()
+
+
+def cv_name(entry) -> str:
+    """A verified note's display name: its `Label:`, else its title (#364 D13).
+
+    Here, beside `EvidenceKind`, rather than in `cv/selection.py` where it began: it is
+    store vocabulary, not CV logic, and #196's triage judge shows the same name -- a
+    pipeline sub-app may not import another, and `core/doctor.py` could not reach it
+    from `cv/` either, so it used to restate the rule."""
+    return skill_label(entry) or str(entry.get("title") or "").strip()
+
+
 class VaultConflict(RuntimeError):
     """A modify-write refused because the stored note changed since it was read.
 
