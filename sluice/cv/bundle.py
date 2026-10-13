@@ -177,6 +177,8 @@ _INVENTORY_HEADER_PROMPT = ("=== SKILLS INVENTORY (framing for the profile and b
 _GUIDANCE_HEADER_PROMPT = "=== THE CANDIDATE'S GUIDANCE (follow it; it is not a source) ==="
 _AUDIT_ENTRIES_HEADER_PROMPT = ("=== VERIFIED EXPERIENCE ENTRIES (the ONLY truth; cited by "
                                 "id) ===")
+_AUDIT_TIMELINE_HEADER_PROMPT = ("=== CAREER TIMELINE (when each role ran, for dating the "
+                                 "entries by their employer; not a source) ===")
 
 
 def _tools_line(entry: dict) -> list[str]:
@@ -241,12 +243,44 @@ def render_structured_bundle(bundle: dict) -> str:
     return "\n".join(lines + _guidance_section(bundle))
 
 
-def render_audit_bundle(bundle: dict) -> str:
+def _timeline_section(slots) -> list[str]:
+    """The CV Layout's roles with their dates, for the auditor alone (#380): whether a claim
+    combining two entries is `deduced` or `unsupported` turns on whether the work it draws
+    on came before or during the role, and an entry carries no date of its own. Each line
+    names the entries the layout places in that role -- the engine's own slot table
+    (`core/layout.py::build_slots`), the placement the gate's WRONG EMPLOYER check uses -- so the auditor dates an entry by the
+    code's own reading of the layout, not by matching company names itself. An entry the
+    layout places in no role is in no line: undated, though still evidence. A limit, stated
+    and accepted (owner's ruling): an entry the layout places in SEVERAL roles -- an
+    `any_role` entry, or one whose company names several employers -- is listed under each,
+    so the auditor can date it only to their span and errs toward `deduced` there. An entry
+    carries no date of its own to narrow that.
+
+    Not a source of anything: the gate's facts come from `_entry_block` (#174), never from
+    this text, so a date shown here licenses no figure. No `_defang`: every line opens with
+    `- `, and `core/layout.py::_text` refuses a line break in any layout string."""
+    if not slots:
+        return []   # no bare header, as `_guidance_section` emits none
+    lines = [_AUDIT_TIMELINE_HEADER_PROMPT]
+    for slot in slots:
+        role = slot.role
+        line = f"- {role.heading}"
+        if role.title:
+            line += f" | {role.title}"
+        line += f" | {role.start} to {role.end}"
+        if slot.eligible:
+            line += " | entries: " + ", ".join(slot.eligible)
+        lines.append(line)
+    return lines + [""]
+
+
+def render_audit_bundle(bundle: dict, slots) -> str:
     """The advisory auditor's truth: the entries WITH their tools -- the hard gate licenses
     a tool through Tools:, so the auditor must see the same evidence or every tool-naming
-    bullet would read unsupported and be held (#364 spec §6.4) -- and the guidance. No
-    baseline, no inventory, and no entry's `Skills:`, which is tied to no job."""
-    lines = _entries_section(bundle, _AUDIT_ENTRIES_HEADER_PROMPT)
+    bullet would read unsupported and be held (#364 spec §6.4) -- the layout's timeline from
+    the engine's `slots` (#380), and the guidance. No baseline, no inventory, and no entry's `Skills:`, which is
+    tied to no job."""
+    lines = _entries_section(bundle, _AUDIT_ENTRIES_HEADER_PROMPT) + _timeline_section(slots)
     return "\n".join(lines + _guidance_section(bundle))
 
 

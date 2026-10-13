@@ -842,6 +842,55 @@ def test_paraphrase_only_still_renders_and_sets_pointer(monkeypatch):
     assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm
 
 
+def test_deduced_only_still_renders_and_sets_pointer(monkeypatch):
+    # #380: `deduced` is the user's own experience combined (every part evidenced, the
+    # timeline permitting), so citing real entries it is shown in audit_flags and does not
+    # hold the CV.
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_REPLY, audit_out="deduced\tcoached the team\tEF1")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "rendered"
+    assert r.audit_flags == ["deduced\tcoached the team\tEF1"]
+    assert note.ref in v.written                              # pointer SET
+    assert "pending_cv" not in note.fm and "needs_signoff" not in note.fm
+
+
+def test_a_deduction_citing_no_entry_holds(monkeypatch):
+    # #380: a deduction is "every part evidenced somewhere", so one whose ids name no entry
+    # in THIS bundle has shown no evidence and holds like `unsupported`. The engine hands
+    # the bundle's own ids over, so an id that would be real in another vault does not count.
+    _served(monkeypatch)
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_REPLY, audit_out="deduced\tcoached the team\tEF9")
+    r = run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    assert r.status == "needs-signoff"
+    assert "tailored_cv" not in note.fm
+    assert json.loads(note.fm["needs_signoff"]) == ["deduced\tcoached the team\tEF9"]
+
+
+def test_the_auditor_is_shown_the_layouts_timeline(monkeypatch):
+    # #380: deducing a combination needs WHEN each role ran, which only the CV Layout holds.
+    # The composer is not shown it: its prompt is unchanged.
+    _served(monkeypatch)
+    prompts = []
+    note = Note({"status": "shortlist", "company": "Example Foundry", "role": "Analyst"})
+    v = FakeVault(ENTRIES, notes=[note])
+    be = FakeBackend(CLEAN_REPLY)
+    complete = be.complete
+    be.complete = lambda p: (prompts.append(p), complete(p))[1]
+    run_one(note, v, _cfg(), be, FakeCache(), renderer=FakeRenderer())
+    role = SYNTHETIC_LAYOUT.roles[0]
+    dated = f"{role.start} to {role.end}"
+    audit = [p for p in prompts if not p.startswith(_COMPOSE)]
+    compose = [p for p in prompts if p.startswith(_COMPOSE)]
+    assert audit and compose, "control: both calls were made"
+    assert all(dated in p for p in audit)
+    assert not any(dated in p for p in compose)
+
+
 def test_require_signoff_false_serves_despite_unsupported(monkeypatch):
     # The off-switch serves a flagged CV: with require_signoff False, an `unsupported`
     # flag no longer withholds the pointer. (A CV composed without a job description is

@@ -1528,7 +1528,7 @@ def cmd_cv_run(args, config) -> int:
         # `r.slop` entries their own "SLOP <label>: <snippet>" (cv/engine.py), and
         # `r.terms` entries their own "UNBUNDLED TERM ..." (built in cv/engine.py from
         # cv/terms.py's findings, #194);
-        # `audit_flags` (cv/audit.py's raw "<verdict>\t<claim>\t<cited-id>") and
+        # `audit_flags` (cv/audit.py's raw "<verdict>\t<claim>\t<cited-ids>") and
         # `voice_flags` (cv/voice.py's raw "flag\t...") do not, so a label is added here
         # to make every list read alike. Mirrors _print_signoff_claims's
         # content-not-just-count discipline for the same judges at `cv signoff`.
@@ -1545,7 +1545,7 @@ def cmd_cv_run(args, config) -> int:
         # the whole invocation, so no print site opts in and none can opt out.
         #
         # TAB is deliberately NOT escaped, which is what keeps `audit_flags`
-        # ("<verdict>\t<claim>\t<cited-id>") and `voice_flags` ("flag\t<phrase>\t<why>") readable
+        # ("<verdict>\t<claim>\t<cited-ids>") and `voice_flags` ("flag\t<phrase>\t<why>") readable
         # as columns here: a tab advances to the next tab stop and cannot recolour, reposition,
         # hide output or reach the clipboard. NEWLINE is not escaped either, and that one IS a
         # residual: an injected newline forges an extra output line. It is bounded -- hiding or
@@ -1616,7 +1616,9 @@ def _print_signoff_claims(slug: str, claims: list) -> None:
 
     `claims` (sluice/cv/engine.py's `hold_for_signoff` call) is a flat JSON array
     whose entries come in tagged kinds: a raw audit verdict line ("unsupported\\t<claim>\\t
-    <cited-id>", the ONLY shape every hold stamped before this change ever wrote) and a
+    <cited-ids>", the ONLY shape every hold stamped before this change ever wrote, and since
+    #380 also a held "deduced\\t..." line, one showing no evidence -- see
+    `cv/audit.py::unsupported_claims`) and a
     "style\\t<finding>"-tagged one (a `cv.style_hold` consequence -- a slop phrase match
     or a model-judged voice finding that survived the retry). Splitting on the literal
     "style" tab-field, not on the presence of a tab at all, is what keeps a raw audit
