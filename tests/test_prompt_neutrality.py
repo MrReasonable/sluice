@@ -191,6 +191,7 @@ _KNOWN_PROMPTS = frozenset({
     "sluice.cv.bundle._INVENTORY_HEADER_PROMPT",
     "sluice.cv.bundle._GUIDANCE_HEADER_PROMPT",
     "sluice.cv.bundle._AUDIT_ENTRIES_HEADER_PROMPT",
+    "sluice.cv.bundle._AUDIT_TIMELINE_HEADER_PROMPT",
     "sluice.cv.audit.build_audit_prompt",
     "sluice.cv.voice.build_voice_prompt",
     "sluice.triage.prompt.build_system_prompt_from",

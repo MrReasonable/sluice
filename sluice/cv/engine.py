@@ -375,7 +375,7 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         # The COMPOSER's corpus and the ADVISORY audit's are two functions rather than one
         # with a flag (#364 D11): there is no default for a future caller to get wrong.
         bundle_text = _bundle.render_structured_bundle(b)
-        audit_bundle_text = _bundle.render_audit_bundle(b)
+        audit_bundle_text = _bundle.render_audit_bundle(b, slots)
         vocab = _bundle.term_vocabulary(b, layout)
 
         # Composition starts here, and so do the run's diagnostic artefacts. Placed AFTER
@@ -588,8 +588,10 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         served = (_render.serve(pdf, cvcfg.served_dir, served_prefix=cvcfg.served_prefix)
                   if cvcfg.served_dir else None)
         # An `unsupported` audit flag WITHHOLDS the send-ready pointer until a human signs off
-        # (#60); only `unsupported` (never `paraphrase`, which is legitimate tailoring)
-        # blocks. An audit that could not run holds too (#333), as an `unaudited\t<reason>`
+        # (#60). `unsupported` blocks, and so does a `deduced` line (#380) citing nothing or
+        # an id no entry in THIS bundle carries -- a deduction that shows no evidence. Never
+        # `paraphrase`, which is legitimate tailoring, nor a `deduced` line whose ids are all
+        # real: the user's own experience, combined. An audit that could not run holds too (#333), as an `unaudited\t<reason>`
         # entry. A surviving STYLE finding earns the SAME consequence under `cv.style_hold`
         # (#167) -- deliberately a SEPARATE gate from `require_signoff`, whose True default
         # was chosen for FABRICATION: riding it would withhold tailored_cv on ~40 stems out
@@ -616,7 +618,8 @@ def _run_one(note, vault, cvcfg, backend, dossier_cache, *, renderer, dry_run,
         blind = ([f"{BLIND_TAG}\t{blind_reason}"]
                  if dossier_failed and cvcfg.blind_hold else [])
         blockers = (
-            (unsupported_claims(audit_flags) + unaudited if cvcfg.require_signoff else [])
+            (unsupported_claims(audit_flags, [e["id"] for e in b["entries"]]) + unaudited
+             if cvcfg.require_signoff else [])
             + blind + style_blockers)
         if served and blockers:
             # Record what to promote (pending_cv) and what to review (needs_signoff); withhold
