@@ -40,6 +40,33 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.6.1](https://github.com/MrReasonable/sluice/compare/v4.6.0...v4.6.1) (2026-10-13)
+
+
+### Changed
+
+`cv run`'s advisory audit has a fourth verdict, `deduced`, and holds fewer clean CVs for
+sign-off. Nothing in your config changes, and `cv.require_signoff` means what it did:
+
+- A claim no single experience entry states, such as a profile line summing up several
+  roles, is now `deduced` when every part of it is evidenced somewhere in your entries
+  and the dates let them combine (the work it draws on came before or during the role it
+  sits under). It prints as `AUDIT: deduced` with the entries it combined, and does not
+  hold the CV. Before, such a line came back `unsupported` and held it.
+- A claim with a part evidenced nowhere, or one the dates rule out, is still
+  `unsupported` and still holds. So does a `deduced` line that cites no real entry.
+- The auditor is now shown your CV Layout's roles with their dates, to date the entries.
+  An entry the layout places in several roles is dated only to their span.
+
+### Bug Fixes
+
+* **cv:** let the audit deduce a claim from combined experience ([#380](https://github.com/MrReasonable/sluice/issues/380)) ([99c32ac](https://github.com/MrReasonable/sluice/commit/99c32ac972e800a8400dc69abfc732882a5bb996))
+
+
+### Documentation
+
+* describe the audit's deduced verdict and timeline ([#380](https://github.com/MrReasonable/sluice/issues/380)) ([5234eda](https://github.com/MrReasonable/sluice/commit/5234eda50d07c6356e99d4d5e488c0ff7623cb91))
+
 ## [4.6.0](https://github.com/MrReasonable/sluice/compare/v4.5.0...v4.6.0) (2026-10-12)
 
 
