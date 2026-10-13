@@ -59,6 +59,12 @@ class TriageConfig:
     contract_floor_gbp_week: int = 0
     perm_floor_gbp: int = 0
     batch_size: int = 5
+    # #196: show the judge the candidate's VERIFIED experience and skills (EvidenceKind.
+    # judge_fields). OFF, and staying off (owner's ruling D4): turning it on sends that
+    # record to triage's own backend, which can be a different provider from `cv.backend`,
+    # and the "a gap never lowers a score" rule is a prompt instruction. Same opt-in posture
+    # as `company_resolve_llm` and root `record_usage`.
+    evidence: bool = False
     ttl_days: int = 7
     # NB no `dossier_dir` here: it was a DEAD key (declared, read by nothing) and is
     # retired outright by #80 in favour of one root `dossier_dir`. load_triage_config
