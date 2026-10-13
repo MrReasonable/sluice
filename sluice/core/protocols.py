@@ -170,6 +170,12 @@ class EvidenceKind:
     # `Skills:` reach the pool through core/tokens.py::tool_items and ::skill_items whatever
     # this flag says.
     names_in_skills_pool: bool = False
+    # #196: the declared fields the TRIAGE JUDGE is shown, in order, when the user sets
+    # `triage.evidence: true`. Non-empty IS "the judge reads this kind": one attribute, so
+    # "is it read" and "which fields" cannot disagree (a judge-read kind with no fields
+    # would be a line holding only a name). Prose fields stay out by naming only the short
+    # ones; the entry's name comes from `cv_name`, so `Label` is never listed here.
+    judge_fields: tuple = ()
 
     def __post_init__(self):
         """Refuse a `floor_map` entry naming a floor key that is not a floor key, or a
@@ -212,6 +218,11 @@ class EvidenceKind:
                 raise ValueError(
                     f"floor_map maps {floor!r} onto frontmatter key {key!r}, which this "
                     f"kind does not declare; its fields are {', '.join(self.fields)}")
+        for key in self.judge_fields:
+            if key not in self.fields:
+                raise ValueError(
+                    f"judge_fields names {key!r}, which this kind does not declare; its "
+                    f"fields are {', '.join(self.fields)}")
 
     def floor_sources(self) -> dict:
         """`FLOOR_FIELD_SOURCES` with this kind's own overrides applied. One place, so
@@ -306,7 +317,11 @@ EVIDENCE_KINDS = {
     "experience": EvidenceKind("Job Applications/Experience Library",
                                ("Company", "Category", "Best For", "Metrics", "Skills",
                                 "Tools"),
-                               cited_by_gate=True, read_by_composer=True),
+                               cited_by_gate=True, read_by_composer=True,
+                               # Not "Skills": general skills tied to NO job (owner's model);
+                               # beside Company: they would read as that employer's.
+                               judge_fields=("Company", "Category", "Best For", "Metrics",
+                                             "Tools")),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
     # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
     # `best_for` was the empty string for every skill, so a skills entry in domain
@@ -325,7 +340,11 @@ EVIDENCE_KINDS = {
     "skills": EvidenceKind("Job Applications/Skills Inventory",
                            ("Proficiency", "Domain", "Evidence", "Signal Value", "Label"),
                            read_by_composer=True, names_in_skills_pool=True,
-                           floor_map=(("best_for", "Domain"),)),
+                           floor_map=(("best_for", "Domain"),),
+                           # Not Evidence/Signal Value (prose; and "Evidence:" would collide
+                           # with the scaffold's word for the JD), not Label (it is the
+                           # entry's NAME, via cv_name).
+                           judge_fields=("Proficiency", "Domain")),
     # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
     # rank() scores on best_for/category/title, so a future consumer gets that ranker
     # unchanged (#195).

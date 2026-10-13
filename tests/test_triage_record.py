@@ -2,6 +2,8 @@
 import ast
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -58,3 +60,51 @@ def test_the_import_matcher_sees_every_spelling(tmp_path):
                      "import sluice.cv.engine\n")
     mods = _resolved_imports(probe, "sluice.triage")
     assert {"sluice.cv", "sluice.cv.selection", "sluice.cv.engine"} <= set(mods)
+
+
+def test_judge_fields_registry():
+    from sluice.core.protocols import EVIDENCE_KINDS
+    assert EVIDENCE_KINDS["experience"].judge_fields == (
+        "Company", "Category", "Best For", "Metrics", "Tools")
+    assert EVIDENCE_KINDS["skills"].judge_fields == ("Proficiency", "Domain")
+    assert EVIDENCE_KINDS["stories"].judge_fields == ()
+
+
+def test_experience_skills_never_reach_the_judge_beside_a_company():
+    """By the owner's model an entry's `Skills:` are general skills tied to NO job, so a
+    line printing them beside `Company:` would attribute them to that employer."""
+    from sluice.core.protocols import EVIDENCE_KINDS
+    assert "Skills" not in EVIDENCE_KINDS["experience"].judge_fields
+
+
+def test_judge_fields_must_be_declared_fields():
+    from sluice.core.protocols import EvidenceKind
+    with pytest.raises(ValueError, match="judge_fields"):
+        EvidenceKind("Job Applications/X", ("Domain",), judge_fields=("Domian",))
+
+
+def test_doctor_names_triage_evidence_for_a_judge_only_kind(monkeypatch):
+    """`core/doctor.py` binds EVIDENCE_KINDS at import, so THAT binding is the one patched.
+    The stories row is asserted EQUAL to its pre-change text, not by substring: a substring
+    check passes if the judge wording leaked onto every unread kind."""
+    from sluice.core import doctor
+    from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind
+    judge_only = EvidenceKind("Job Applications/Judge Only", ("Domain",),
+                              judge_fields=("Domain",))
+    kinds = {**EVIDENCE_KINDS, "judgeonly": judge_only}
+    monkeypatch.setattr(doctor, "EVIDENCE_KINDS", kinds)
+    facts = {"vault_exists": True, "criteria_present": True}
+    for k in kinds:
+        facts.update({f"{k}_verified": 1, f"{k}_total": 1, f"{k}_pending": 0})
+    rows = {r.subject: r.detail for r in doctor.classify_store(facts)}
+    suffix = "; read by the triage judge when triage.evidence is on"
+    assert rows["Judge Only"] == f"1 verified / 1 total entries -- reviewed{suffix}"
+    assert rows["STAR Stories"] == ("1 verified / 1 total entries -- reviewed, but nothing "
+                                    "reads this corpus yet")
+    # The REAL judge-read kinds are also read by the composer, so an earlier arm writes
+    # their base text: the judge clause must still end each of their rows.
+    judged = {spec.relpath.rsplit("/", 1)[-1]
+              for spec in EVIDENCE_KINDS.values() if spec.judge_fields}
+    assert judged == {"Experience Library", "Skills Inventory"}
+    for subject in judged:
+        assert rows[subject].endswith(suffix), subject

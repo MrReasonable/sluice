@@ -3,6 +3,7 @@
 Field NAMES ship in this repo; example VALUES do not. Fixtures here use neutral
 placeholders only.
 """
+import dataclasses
 import os
 
 import pytest
@@ -72,11 +73,8 @@ def test_every_shipped_kind_passes_its_own_construction_guard():
     assert any(spec.floor_map for spec in EVIDENCE_KINDS.values()), \
         "no shipped kind uses floor_map -- the guard's mapped arm is unexercised"
     for kind, spec in EVIDENCE_KINDS.items():
-        rebuilt = EvidenceKind(spec.relpath, spec.fields,
-                               cited_by_gate=spec.cited_by_gate,
-                               read_by_composer=spec.read_by_composer,
-                               floor_map=spec.floor_map,
-                               names_in_skills_pool=spec.names_in_skills_pool)
+        rebuilt = EvidenceKind(**{f.name: getattr(spec, f.name)
+                                  for f in dataclasses.fields(EvidenceKind)})
         assert rebuilt == spec, kind
 
 
