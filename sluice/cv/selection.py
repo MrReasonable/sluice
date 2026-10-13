@@ -7,6 +7,7 @@ reported, never refused).
 """
 from dataclasses import dataclass
 
+from sluice.core.protocols import cv_name  # its home since #196; used below and by cv/engine.py
 from sluice.core.tokens import find_term, skill_items, tool_items
 
 
@@ -20,13 +21,6 @@ class Selection:
     # The REPLY text findings (cv/reply.py::Reply.bullet_findings) of the bullets KEPT, and
     # only those: a hard finding the engine adds to the attempt's violations.
     findings: tuple = ()
-
-
-def cv_name(entry):
-    """A skill note's name on a CV: its Label:, else its title (#364 D13 -- the filename of a
-    note `skills add` created is a slug, so the typed name lives in Label:)."""
-    label = str((entry.get("fields") or {}).get("Label") or "").strip()
-    return label or str(entry.get("title") or "").strip()
 
 
 def pool_kinds():

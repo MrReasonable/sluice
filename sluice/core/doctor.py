@@ -1166,13 +1166,14 @@ def classify_skill_labels(named_entries, kinds) -> list:
     """An upgrade warning: verified notes whose names a CV's SKILLS section may list
     (`kinds`, the `names_in_skills_pool` kinds) that carry no `Label:`.
 
-    A CV shows such a note under `Label:`, else its title (cv/selection.py::cv_name). Since
+    A CV shows such a note under `Label:`, else its title (core/protocols.py::cv_name). Since
     4.0 `skills add` keeps the typed name in `Label:` because the filename it writes is a
     slug, so a note it made BEFORE 4.0 has no `Label:` and reaches a CV under its slug.
     Nothing is broken -- the CV still composes -- so DEGRADED, blocking nothing, listed by
     default: the user cannot otherwise learn why a skill reads oddly until a CV goes out.
     A COUNT and the listing command only, never a title: a report reaches MCP clients whole.
-    The blank test is cv_name's own, so the two cannot disagree about what is missing.
+    The blank test is `core/protocols.py::skill_label`, the one `cv_name` uses, so the two
+    cannot disagree about what is missing.
 
     Only a SLUG-SHAPED title counts: one `evidence_slug` -- the reduction `skills add` filed
     every pre-4.0 note under -- leaves unchanged. A note made by hand and titled with its
@@ -1181,6 +1182,7 @@ def classify_skill_labels(named_entries, kinds) -> list:
     reduction is IMPORTED, never restated, so this test cannot drift from what `add` wrote.
     A hand title that happens to be slug-shaped (a single lowercase word) is counted too:
     nothing local tells it from an `add` note, and it reaches a CV exactly as a slug would."""
+    from sluice.core.protocols import skill_label
     from sluice.core.vault import evidence_slug
 
     def slug_shaped(title):
@@ -1190,7 +1192,7 @@ def classify_skill_labels(named_entries, kinds) -> list:
             return False
 
     missing = sum(1 for e in named_entries
-                  if not str((e.get("fields") or {}).get("Label") or "").strip()
+                  if not skill_label(e)
                   and slug_shaped(str(e.get("title") or "")))
     if not missing:
         return []
@@ -1244,7 +1246,7 @@ def classify_decoys(decoys, experience_entries, skill_names, layout) -> list:
     the latter since the owner decision of 2026-10-06), a verified skill's CV name, or any CV
     Layout text. The ban contradicts that data: it keeps the tool or skill off every CV's
     skills list, while layout text renders regardless. `skill_names` arrive already derived
-    (Sluice.doctor passes cv/selection.py::cv_name's answers), so this and the pool agree.
+    (Sluice.doctor passes core/protocols.py::cv_name's answers), so this and the pool agree.
     Decoys are named by POSITION, never echoed."""
     from sluice.core.layout import layout_strings
     from sluice.core.tokens import find_term, skill_items, tool_items

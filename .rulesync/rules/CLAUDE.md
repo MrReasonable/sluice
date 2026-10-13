@@ -904,7 +904,7 @@ ship. What makes something a promotion path is that it can stamp `verified:`, no
 `propose_evidence` writes and is not one. `EvidenceKind` carries a flag per question, because the questions stopped having one answer:
 `read_by_composer` says the corpus reaches the composer's prompt, `cited_by_gate` says the
 fabrication gate may LICENSE its content, and `names_in_skills_pool` (#364/#365/#368, D12)
-says a verified note's NAME -- its `Label:`, else its title (`cv/selection.py::cv_name`) -- may
+says a verified note's NAME -- its `Label:`, else its title (`core/protocols.py::cv_name`) -- may
 appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` and `Skills:`
 items reach the skills pool through `tool_items` and `skill_items` whatever that flag says); `skills` is read and named, and is
 RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
