@@ -217,7 +217,8 @@ Still to set up:
 ...
   Experience Library
       0 verified / 0 total entries -- only verified entries are citable by the CV
-      fabrication gate -- cv run refuses to compose without at least one
+      fabrication gate; read by the triage judge when triage.evidence is on -- cv
+      run refuses to compose without at least one
   Candidate Profile
       no name or no contact details -- cv run refuses to compose (skipped-config)
       before any backend call

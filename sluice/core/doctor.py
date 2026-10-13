@@ -624,8 +624,18 @@ def classify_store(facts: dict | None, *, cv_asks_for_bullets: bool = True) -> l
             detail = (f"{verified} verified / {total} total entries -- shown to the CV "
                       f"composer as framing; not a citable source for the gate")
         else:
-            detail = (f"{verified} verified / {total} total entries -- reviewed, but "
-                      f"nothing reads this corpus yet")
+            detail = f"{verified} verified / {total} total entries -- reviewed"
+            # A kind the judge reads is not unread: the suffix below names that reader, so
+            # "nothing reads this corpus" would contradict the same row.
+            if not spec.judge_fields:
+                detail += ", but nothing reads this corpus yet"
+        if spec.judge_fields:
+            # #196: a SUFFIX after the chain, not an arm in it. The kinds the judge really
+            # reads (experience, skills) are also read by the composer, so an `elif` here
+            # sat behind an earlier arm and never fired for them. `classify_store` cannot
+            # see `triage.evidence` (it ships off), so the clause says the condition rather
+            # than claiming a reader that a default install does not have.
+            detail += "; read by the triage judge when triage.evidence is on"
         if pending:
             # The failure mode propose-only writes introduce: entries captured,
             # sitting in `_inbox/`, doing nothing, with no other signal anywhere
