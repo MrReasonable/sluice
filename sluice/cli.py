@@ -1230,6 +1230,45 @@ def cmd_leads_expire(args, config) -> int:
     return 0
 
 
+
+def cmd_leads_unpark(args, config) -> int:
+    """#302: list `research` leads triage could not judge from their page, and with
+    `--apply` move them to `needs_review`. Report-first like every `leads` pass that writes
+    over a set the TOOL computed."""
+    from sluice.core.app import Sluice
+
+    app = Sluice(config)
+
+    def _row(r):
+        return {"slug": r.slug, "company": r.company, "role": r.role,
+                "stamp": r.stamp, "host": r.host}
+
+    if args.apply is not None:       # NOT truthiness: [] is the bulk case and is falsy
+        rows, results = app.unpark(slugs=args.apply)
+        if args.json:
+            print(json.dumps({"leads": [_row(r) for r in rows],
+                              "results": [{"slug": s, "outcome": o} for s, o in results]}))
+        counts = {}
+        for slug, outcome in results:
+            counts[outcome] = counts.get(outcome, 0) + 1
+            if outcome != "moved":
+                print(f"unpark: {slug}: {outcome}", file=sys.stderr)
+        print("unpark: " + (", ".join(f"{n} {o}" for o, n in sorted(counts.items()))
+                            or "nothing to move"), file=sys.stderr)
+        # cmd_leads_expire's rule: any outcome where a write the user asked for did not
+        # happen exits non-zero, so an apply that moved nothing never reads as success.
+        _FAILED = {"abstained", "conflict", "unreadable", "no-match", "ambiguous"}
+        return 1 if any(o in _FAILED for _, o in results) else 0
+
+    report = app.unpark_report()
+    if args.json:
+        print(json.dumps({"leads": [_row(r) for r in report]}))
+        return 0
+    for r in report:
+        print(f"[blocked] {r.slug}  stamped {r.stamp}  {r.host}")
+    print(f"unpark: {len(report)} listed, 0 written (--apply to move)", file=sys.stderr)
+    return 0
+
 def _research_queue_line(queue) -> str:
     """The digest's standing line (#378): the whole research queue, read from the vault
     rather than the run, so the per-run name cap cannot hide it. "" when the queue is
@@ -3339,6 +3378,17 @@ def _build_parser() -> argparse.ArgumentParser:
                          '--expire "Example Ltd - Example Role"')
     ex.add_argument("--json", action="store_true", help="machine-readable report")
     ex.set_defaults(func=cmd_leads_expire)
+
+    up = leads.add_parser("unpark",
+                          help="list research leads triage could not judge from their page; "
+                               "--apply moves them to needs_review")
+    # `nargs="*", default=None` + an `is not None` dispatch, for the reason the `expire`
+    # parser above gives: a bare flag parses to a FALSY [].
+    up.add_argument("--apply", nargs="*", default=None, metavar="SLUG",
+                    help='move the listed leads; name slugs to narrow, e.g. '
+                         '--apply "Example Ltd - Example Role"')
+    up.add_argument("--json", action="store_true", help="machine-readable output")
+    up.set_defaults(func=cmd_leads_unpark)
 
     ds = leads.add_parser("dismiss", help="dismiss one lead by exact slug, with a reason")
     ds.add_argument("--lead", required=True, metavar="SLUG",

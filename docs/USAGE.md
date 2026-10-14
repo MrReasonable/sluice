@@ -194,8 +194,8 @@ takes every lead at `dismiss`, including ones you dismissed yourself.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
 observed_role_types=<by-origin counts> blocked_research=<N> backend=<name> failures=<N> record=<what the judge was shown>` to stderr. `blocked_research=` counts the
-`research` leads this run could not judge from their page and stamped with
-`triage_blocked`. `record=` is `none` when
+`research` leads this run could not judge from their page and stamped for
+`job-sluice leads unpark` to list. `record=` is `none` when
 no judge ran, `off` unless `triage.evidence` is on, and otherwise the verified entries shown per
 kind, with `;unreadable:<kinds>` when a corpus could not be read. It is `empty` when the
 record is on but no kind the judge reads could be read (a readable kind with no verified
@@ -545,7 +545,7 @@ they named — `leads add` (#241), `leads dismiss` (#131), `leads mark-asked` an
 answer` (#378) — write unconditionally on every call**, like the pipeline commands (`ingest
 run`/`triage run`/`cv run`/`apply record`/`track run`), not like their `leads` siblings — the
 distinguishing property is who decided what to write: these record the user's (the lead's own
-fields, a dismissal reason, that they asked, the reply), while `dedupe`/`expire`/`reconcile`
+fields, a dismissal reason, that they asked, the reply), while `dedupe`/`expire`/`unpark`/`reconcile`
 write over a set the TOOL computed. There is nothing to preview when the user is the one
 supplying the content.
 
@@ -630,6 +630,26 @@ unless `--expire` was given, in which case it exits **1**. With `--expire`, also
 outcome is `no-match`/`conflict`/`unreadable`/`skipped`/`ambiguous`. A lead under a
 `pending_cv` sign-off hold is refused rather than dismissed, since that would silently discard
 a composed CV no human has reviewed yet.
+
+### `job-sluice leads unpark [--apply [SLUG ...]] [--json]`
+
+Lists `research` leads that triage could not judge from their page (stdout, one row per
+lead; without `--json`, stderr ends with `unpark: N listed, 0 written (--apply to move)`):
+```
+[blocked] <slug>  stamped <date>  <host>
+```
+When the judge, or the check that a job description arrived, returns `unjudgeable` for a
+`research` lead, triage may not overwrite it (status cannot tell that lead from a research
+task you set yourself), so it records a dated `triage_blocked` stamp instead. The nightly
+digest counts these and names this command. A lead waiting on a follow-up reply is not
+listed, and a `triage_blocked` value that is not a single ISO date is your own text: this
+command never lists it and triage never writes over it.
+
+`--apply` (bare, or naming specific slugs) moves the listed leads to `needs_review`, clears the
+stamp and appends a dated note. Each move re-checks the lead first and abstains if it has been
+re-judged, re-stamped, moved off `research` or marked asked since the listing. With `--apply`,
+exits 1 if any outcome is `abstained`/`conflict`/`unreadable`/`no-match`/`ambiguous`.
+`--json` prints `{"leads": [...]}`, plus `"results"` with `--apply`.
 
 ### `job-sluice leads dismiss --lead SLUG --reason REASON`
 

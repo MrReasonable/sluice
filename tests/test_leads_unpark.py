@@ -1,10 +1,12 @@
 """#302: `leads unpark` -- report-first, human-gated move of stamped research leads to
 needs_review. Fixture notes are built through `Vault.upsert` so their slugs are real
 store-issued filenames, as in tests/test_leads_expire.py."""
+import json
 import pathlib
 
 import pytest
 
+from sluice.cli import _build_parser, cmd_leads_unpark
 from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
@@ -50,8 +52,8 @@ def test_the_report_lists_stamped_research_leads_with_the_raw_stamp(tmp_path):
     slug = _seed(tmp_path, triage_blocked=STAMP)
     _seed(tmp_path, n=1)                                   # unstamped: not listed
     [row] = _app(tmp_path).unpark_report()
-    assert (row.slug, row.stamp, row.host, row.company) == (
-        slug, STAMP, "example.invalid", "Example Ltd")
+    assert (row.slug, row.stamp, row.host, row.company, row.role) == (
+        slug, STAMP, "example.invalid", "Example Ltd", _by_slug(tmp_path, slug).fm["role"])
 
 
 def test_the_report_changes_nothing(tmp_path):
@@ -180,3 +182,101 @@ def test_unpark_with_nothing_listed_writes_nothing(tmp_path):
     before = _bytes(tmp_path)
     assert _app(tmp_path).unpark() == ([], [])
     assert _bytes(tmp_path) == before
+
+
+def test_an_oserror_on_one_lead_is_unreadable_and_the_rest_still_move(tmp_path, monkeypatch):
+    _seed(tmp_path, triage_blocked=STAMP)
+    _seed(tmp_path, n=1, triage_blocked=STAMP)
+    app = _app(tmp_path)
+    store = app.store()
+    real = store.update_fields
+    calls = {"n": 0}
+    def vanished(ref, fields, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("synthetic: note moved mid-sweep")
+        return real(ref, fields, **kw)
+    monkeypatch.setattr(store, "update_fields", vanished)
+    _, results = app.unpark()
+    assert sorted(o for _, o in results) == ["moved", "unreadable"]
+
+
+@pytest.mark.parametrize("url", ["", "https://[bad"])
+def test_the_report_lists_a_lead_whose_url_has_no_usable_host(tmp_path, url):
+    slug = _seed(tmp_path, triage_blocked=STAMP)
+    # Written after seeding: _seed keys the lead on a well-formed url.
+    Vault(str(tmp_path)).update_fields(_by_slug(tmp_path, slug).ref, {"url": f'"{url}"'})
+    [row] = _app(tmp_path).unpark_report()
+    assert (row.slug, row.host) == (slug, "")
+
+
+# ── the command ──────────────────────────────────────────────────────────────
+
+def _cli(tmp_path, monkeypatch, argv):
+    real_init = Sluice.__init__
+    def init(self, config=None, **kw):
+        real_init(self, config or Config(), store=Vault(str(tmp_path)), today=lambda: TODAY)
+    monkeypatch.setattr(Sluice, "__init__", init)
+    args = _build_parser().parse_args(["leads", "unpark", *argv])
+    return cmd_leads_unpark(args, Config())
+
+
+def test_the_bare_command_lists_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    slug = _seed(tmp_path, triage_blocked=STAMP)
+    before = _bytes(tmp_path)
+    assert _cli(tmp_path, monkeypatch, []) == 0
+    out, err = capsys.readouterr()
+    assert slug in out and STAMP in out and "example.invalid" in out
+    assert "0 written (--apply to move)" in err
+    assert _bytes(tmp_path) == before
+
+
+def test_a_bare_apply_moves_every_listed_lead(tmp_path, monkeypatch):
+    a = _seed(tmp_path, triage_blocked=STAMP)
+    b = _seed(tmp_path, n=1, triage_blocked=STAMP)
+    assert _cli(tmp_path, monkeypatch, ["--apply"]) == 0
+    assert {_by_slug(tmp_path, s).status for s in (a, b)} == {"needs_review"}
+
+
+def test_apply_with_an_unknown_slug_moves_the_valid_one_and_exits_1(tmp_path, monkeypatch):
+    a = _seed(tmp_path, triage_blocked=STAMP)
+    assert _cli(tmp_path, monkeypatch, ["--apply", a, "Example Nowhere - Nothing"]) == 1
+    assert _by_slug(tmp_path, a).status == "needs_review"
+
+
+def test_apply_exits_1_when_a_lead_abstains(tmp_path, monkeypatch):
+    slug = _seed(tmp_path, triage_blocked=STAMP)
+    ref = _by_slug(tmp_path, slug).ref
+    racing_read(monkeypatch, ref, lambda: Vault(str(tmp_path)).update_fields(
+        ref, {"triage_blocked": "2031-03-13"}))
+    assert _cli(tmp_path, monkeypatch, ["--apply"]) == 1
+
+
+def test_apply_on_an_empty_report_exits_0(tmp_path, monkeypatch):
+    assert _cli(tmp_path, monkeypatch, ["--apply"]) == 0
+
+
+def test_json_report_shape(tmp_path, monkeypatch, capsys):
+    slug = _seed(tmp_path, triage_blocked=STAMP)
+    assert _cli(tmp_path, monkeypatch, ["--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc == {"leads": [{"slug": slug, "company": "Example Ltd",
+                              "role": _by_slug(tmp_path, slug).fm["role"],
+                              "stamp": STAMP, "host": "example.invalid"}]}
+
+
+def test_json_apply_shape_lists_only_the_named_lead(tmp_path, monkeypatch, capsys):
+    a = _seed(tmp_path, triage_blocked=STAMP)
+    _seed(tmp_path, n=1, triage_blocked=STAMP)
+    assert _cli(tmp_path, monkeypatch, ["--apply", a, "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [r["slug"] for r in doc["leads"]] == [a]
+    assert doc["results"] == [{"slug": a, "outcome": "moved"}]
+
+
+def test_a_slug_named_twice_is_moved_once_and_reads_as_success(tmp_path, monkeypatch):
+    a = _seed(tmp_path, triage_blocked=STAMP)
+    _, results = _app(tmp_path).unpark(slugs=[a, a])
+    assert results == [(a, "moved")]
+    b = _seed(tmp_path, n=1, triage_blocked=STAMP)
+    assert _cli(tmp_path, monkeypatch, ["--apply", b, b]) == 0

@@ -330,7 +330,7 @@ limits — where a guarantee is best-effort, and the one thing the CV gate canno
 | `job-sluice cv` | compose, gate and render a tailored CV, then sign off on it (`run`, `signoff`) |
 | `job-sluice apply` | stage a CV and a prep packet, then record a submitted application (`prep`, `record`) |
 | `job-sluice track` | reconcile the funnel from email and calendar signals, and mint the Google credential doing so requires (`run`, `confirm`, `dismiss`, `auth`) |
-| `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `dismiss`, `reconcile`, `rename`), and the research worklist (`followups`, `mark-asked`, `answer`) |
+| `job-sluice leads` | add a lead by hand, then the maintenance passes over the store (`add`, `dedupe`, `expire`, `unpark`, `dismiss`, `reconcile`, `rename`), and the research worklist (`followups`, `mark-asked`, `answer`) |
 | `job-sluice experience` | capture and verify experience evidence — the CV gate's only citable source (`add`, `list`, `verify`) |
 | `job-sluice skills` | capture and verify skills: framing for the composer, and a verified note's name can appear in a CV's SKILLS section (`add`, `list`, `verify`) |
 | `job-sluice stories` | capture and verify STAR stories (`add`, `list`, `verify`) |

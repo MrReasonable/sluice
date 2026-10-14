@@ -125,9 +125,9 @@ def test_the_command_tree_walk_is_not_vacuous():
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    expected = 26 + 3 * len(EVIDENCE_KINDS)
+    expected = 27 + 3 * len(EVIDENCE_KINDS)
     assert total_subs == expected, (
-        f"expected {expected} subcommands (26 non-evidence + 3 per evidence kind), found "
+        f"expected {expected} subcommands (27 non-evidence + 3 per evidence kind), found "
         f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
         f"this needs updating, along with docs/USAGE.md and README's Commands table")
 

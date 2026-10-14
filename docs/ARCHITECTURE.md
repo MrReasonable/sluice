@@ -1509,6 +1509,32 @@ frozen `StalenessPolicy` built by `Sluice.staleness()`. Staleness is a cheap
 proxy: whether a role is still open can only be answered on the employer's own
 site, so it does not replace checking before applying.
 
+**`job-sluice leads unpark`** (#302) clears leads parked in `research` by the pre-#300
+conservative score. `_VERDICT_REQUIRE` and `_DECISION_REQUIRE` refuse to write `unjudgeable`
+over `research`, because `status` records where a lead is, never how it got there. So the
+refusal is recorded instead: `triage/apply.py::_stamp_blocked` sets `triage_blocked` to the
+date, unquoted like `followup_asked`, through `update_fields` with
+`require_status={"research"}`, `require_blank={"followup_asked"}` and
+`require_unchanged={"triage_blocked": <the snapshot's value>}`, and only for a lead whose
+snapshot is at `research` and holds no `triage_blocked` text of the person's own, so neither
+text already there nor text typed while the lead was being judged is stamped over. A
+classification or verdict write that lands clears a stamp in the same write
+(`require_unchanged` on the stamp; in `apply_verdict`, merged with the `followup_asked` one),
+and so does recording a follow-up answer. That last clear is decided from the snapshot and has
+no `require_unchanged`, so its `preserve_block_values` entry is the only guard against a value
+turned multi-line since the snapshot. Residual, stated: a stamp a person replaces with a
+single-line value between `record_answer`'s read and its write is blanked. A stamp is only a
+one-line ISO date (`core/leads.py::blocked_stamp`); any other value is the person's own text
+and is never listed, and no write but that residual clears or replaces it. The engine counts the outcome
+in `TriageReport.blocked_research`, a cause breakdown like `unjudgeable_by`; the leads
+themselves count under `skipped`. It is never audited. The pass
+reports by default; `--apply` moves each listed lead to `needs_review` with `require_status`,
+`require_blank` and `require_unchanged={"triage_blocked": <listed stamp>}` all re-read fresh,
+so a lead changed since the listing abstains. Residual: a lead moved off `research` by
+`leads dismiss`, `leads expire` or a hand edit keeps its stamp until a classification or
+verdict write clears it, so a lead later hand-set back
+to `research` is listed with that older date.
+
 **`job-sluice leads dismiss --lead SLUG --reason REASON`** (#131) writes `dismiss`
 by the same route as `leads expire` -- `require_status=_DISMISSABLE_FROM` re-read
 inside the CAS transform, `require_blank={"pending_cv"}` refusing a lead holding
@@ -1517,7 +1543,7 @@ answer` (#378), writes unconditionally on every call rather than reporting by
 default: what each records is the user's own words or action on one lead they
 named (a reason, a new lead's fields, that they asked, the reply), not a set this
 tool computed, matching the pipeline commands' contract rather than
-`dedupe`/`expire`/`reconcile`'s. Resolves
+`dedupe`/`expire`/`unpark`/`reconcile`'s. Resolves
 by EXACT slug equality, never substring, and refuses (writes nothing) when the
 slug names two or more notes rather than picking one.
 

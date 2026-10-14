@@ -1798,7 +1798,9 @@ class Sluice:
             for msg in ambiguous_slug_warnings("unpark: blocked lead", dropped):
                 _log.warning("%s", msg)
             chosen = []
-            for s in slugs:
+            # Repeats dropped, order kept: the second sight of a slug would find the lead
+            # already written, abstain, and fail a run whose every requested write landed.
+            for s in dict.fromkeys(slugs):
                 r = by_slug.get(s)
                 if r is not None:
                     chosen.append(r)
@@ -1819,8 +1821,11 @@ class Sluice:
                 # preserve_block_values has no reachable row: require_unchanged is decided
                 # first and compares the raw value (a multi-line value never equals a
                 # one-line date stamp), so a stamp turned into a block since the report
-                # abstains there before the preserve decision is reached. It stays as the
-                # backstop the stamp write carries, so the two writers cannot drift.
+                # abstains there before the preserve decision is reached; the PyYAML
+                # breaks-the-note branch is unreachable for the same reason, since passing
+                # require_unchanged means the fresh value still equals a one-line date. It
+                # stays as the backstop the stamp write carries, so the two writers cannot
+                # drift.
                 wrote = store.update_fields(
                     r.ref, {"status": "needs_review", "triage_blocked": '""'},
                     append_note=note, note_tag=tag,

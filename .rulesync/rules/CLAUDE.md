@@ -242,10 +242,11 @@ every one of these; `XDG_CONFIG_HOME` and `HOME` are consecutive rungs of one ch
 load-bearing and neither substitutes for the other.
 
 **The `leads` passes report by default; the pipeline commands write by default.** `leads dedupe`
-(`--merge ID [ID ...]`), `leads expire` (`--expire [SLUG...]`) and `leads reconcile` (`--apply`, #1)
-print and change nothing until told otherwise, and none offers `--dry-run` — the default IS the dry
-run, and a flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The distinguishing
-property is whose judgement the write encodes: a pipeline command acts on a verdict the user
+(`--merge ID [ID ...]`), `leads expire` (`--expire [SLUG...]`), `leads unpark`
+(`--apply [SLUG ...]`, #302) and `leads reconcile` (`--apply`, #1) print and change nothing
+until told otherwise, and none offers `--dry-run` — the default IS the dry run, and a
+flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The
+distinguishing property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
 a list rather than change a hundred notes. **Exception: the `leads` commands that record the user's own words or
 action on one lead they named -- `leads dismiss` (#131), `leads add` (#241), `leads mark-asked`
