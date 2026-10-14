@@ -40,6 +40,35 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.7.0](https://github.com/MrReasonable/sluice/compare/v4.6.1...v4.7.0) (2026-10-14)
+
+
+### Features
+
+* **core:** declare which evidence fields the triage judge may see ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([7c21e00](https://github.com/MrReasonable/sluice/commit/7c21e007aafd495b39f62614778be0f718121f0e))
+* **triage:** add the opt-in triage.evidence key ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([df4f378](https://github.com/MrReasonable/sluice/commit/df4f3787357613b501a92b78ffa70f248efe3e88))
+* **triage:** render a verified candidate record into the judge prompt ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([45a7294](https://github.com/MrReasonable/sluice/commit/45a7294012c9d439b361ffe6d690b70e5a148a77))
+* **triage:** report what the judge was shown of the candidate record ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([f3f44cb](https://github.com/MrReasonable/sluice/commit/f3f44cbf01d40a82b89c0695fe83af716d579f4f))
+* **triage:** show the judge the verified candidate record when opted in ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([3f5250e](https://github.com/MrReasonable/sluice/commit/3f5250e0ca2be5bdd798f8b1db0d76e71bc0f9b3))
+
+
+### Bug Fixes
+
+* **triage:** exit non-zero when the judge returns no verdicts ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([e234da7](https://github.com/MrReasonable/sluice/commit/e234da703837e7336a39acba5ebdf6679b8693d2))
+
+
+### Refactoring
+
+* **core:** give cv_name and the skill-label test one home in core ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([f02f363](https://github.com/MrReasonable/sluice/commit/f02f3637edb539fff08d93f2758bf374d3ab7e6b))
+
+
+### Documentation
+
+* describe the opt-in candidate record for the triage judge ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([f56dc20](https://github.com/MrReasonable/sluice/commit/f56dc200d401e7bee2157e8e6e8b0ef3a22b8c5c))
+* design evidence-aware triage ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([2bb78d8](https://github.com/MrReasonable/sluice/commit/2bb78d820d5b0048677fbd92a37df10e86e36170))
+* plan evidence-aware triage ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([f799a59](https://github.com/MrReasonable/sluice/commit/f799a59ec0c007105bfb7e5e5ce15b3cafe173f2))
+* record the live eval result for triage.evidence ([#196](https://github.com/MrReasonable/sluice/issues/196)) ([f8c6e50](https://github.com/MrReasonable/sluice/commit/f8c6e509e33bf4026d69acb131f038dd0385e044))
+
 ## [4.6.1](https://github.com/MrReasonable/sluice/compare/v4.6.0...v4.6.1) (2026-10-13)
 
 
