@@ -611,6 +611,15 @@ whichever neighbour it was written next to:
    application-owned, or a status change mid-run) is logged nowhere, so the
    audit never claims a decision that was not applied.
 
+   When `triage.evidence` is on (#196), `triage/engine.py::_read_record` reads every
+   evidence kind with a non-empty `EvidenceKind.judge_fields` through the store
+   (`verified_only=True`), and `triage/prompt.py::build_system_prompt_from` renders it as
+   a "Candidate record" block with a rule that a gap is a concern, never a lower score.
+   With no record the prompt is unchanged.
+
+   Independently of that key, a run that sent leads to the judge and got no usable
+   verdicts back (none at all, or every one malformed) exits 1.
+
    `classify.py`'s pay gate reads a BASIS rather than a role label (#223).
    `_pay_basis` asks the salary's own markers first (`/day`, `per hour`,
    `per annum`, ...), so the posting's own words beat everything; only an
@@ -890,6 +899,8 @@ whichever neighbour it was written next to:
    (`core/protocols.py::verify_outcome`): `read_by_composer` (the corpus reaches the
    prompt), `cited_by_gate` (the gate may license its content -- `experience` alone) and
    `names_in_skills_pool` (a verified entry's name may be listed under SKILLS -- `skills`).
+   `judge_fields` (#196) names the declared fields the triage judge is shown when
+   `triage.evidence` is on; non-empty is what makes a kind judge-read.
    `__post_init__` refuses `cited_by_gate` without `read_by_composer`, since the gate
    cannot license what the composer never saw. `stories` carries none: captured and
    reviewed, consumed by nothing yet.

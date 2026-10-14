@@ -908,7 +908,7 @@ says a verified note's NAME -- its `Label:`, else its title (`core/protocols.py:
 appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` and `Skills:`
 items reach the skills pool through `tool_items` and `skill_items` whatever that flag says); `skills` is read and named, and is
 RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
-declared skill, but nothing LICENSES it; `stories` is neither. `__post_init__` refuses
+declared skill, but nothing LICENSES it; `stories` is neither. `judge_fields` (#196) names the declared fields the TRIAGE judge is shown when the user sets `triage.evidence: true`; non-empty is what makes a kind judge-read, so the two cannot disagree. `experience` shows Company/Category/Best For/Metrics/Tools (not `Skills:`, which belong to no job), `skills` shows Proficiency/Domain, `stories` nothing. `__post_init__` refuses
 `cited_by_gate` without `read_by_composer`, since the gate cannot license what the composer
 never emitted. `add`'s unverified notice, the `init` wizard's
 summary and the MCP `propose_evidence` RESULT say what verifying buys through

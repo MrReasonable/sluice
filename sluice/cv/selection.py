@@ -7,7 +7,7 @@ reported, never refused).
 """
 from dataclasses import dataclass
 
-from sluice.core.protocols import cv_name  # its home since #196; used below and by cv/engine.py
+from sluice.core.protocols import cv_name  # its home since #196; re-exported; used below
 from sluice.core.tokens import find_term, skill_items, tool_items
 
 
