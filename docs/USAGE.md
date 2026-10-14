@@ -193,7 +193,9 @@ names one only when the new verdict would keep it -- one the new verdict rejects
 takes every lead at `dismiss`, including ones you dismissed yourself.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
-observed_role_types=<by-origin counts> backend=<name> failures=<N>` to stderr.
+observed_role_types=<by-origin counts> backend=<name> failures=<N> record=<what the judge was shown>` to stderr. `record=` is `none` when
+no judge ran, `off` unless `triage.evidence` is on, and otherwise the verified entries shown per
+kind, with `;unreadable:<kinds>` when a corpus could not be read.
 `tests/test_docs_claims.py` derives those key names from `cli.py` and fails when this
 line and the real one disagree, because every previous version of this sentence went
 stale silently. If the pre-write check finds that the triage audit log cannot be written,

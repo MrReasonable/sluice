@@ -657,6 +657,21 @@ def _lead_label(company: str, role: str) -> str:
     return ", ".join(parts) or "(unnamed lead)"
 
 
+def _record_field(counts, unreadable, enabled, sent_to_judge) -> str:
+    """The `record=` summary value (#196): what the judge was shown of the candidate
+    record. Wording lives here, not on TriageReport, which carries facts only. The
+    unreadable separator is `:` so the value holds no `=` a reader (or a `key=` regex)
+    could take for a new key."""
+    if not sent_to_judge:
+        return "none"
+    if not enabled:
+        return "off"
+    text = ",".join(f"{k}:{n}" for k, n in counts.items()) or "empty"
+    if unreadable:
+        text += ";unreadable:" + ",".join(unreadable)
+    return text
+
+
 def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> str:
     """The `triage run` notification body, as prose rather than `counts`' `repr`.
 
@@ -778,6 +793,12 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
         # one actionable fact about them.
         lines.append(f"{keep} passed the pre-gate but no judge ran, so they are still "
                      "waiting.")
+
+    if report.record_unreadable:
+        # #196: the one record state a user must act on. Counts are not repeated here (the
+        # stderr line carries them); this is the push channel an unattended install reads.
+        lines.append("Candidate record unreadable for "
+                     f"{', '.join(report.record_unreadable)}; judged without it (see the log).")
 
     if report.failures:
         lines.append(f"{len(report.failures)} failure"
@@ -1341,7 +1362,9 @@ def cmd_triage_run(args, config) -> int:
     print(f"triage: {report.counts} judged={report.judged} "
           f"resolved={report.resolved} llm_calls={report.llm_calls} "
           f"observed_role_types={report.observed_role_types} "
-          f"backend={report.backend} failures={len(report.failures)}", file=sys.stderr)
+          f"backend={report.backend} failures={len(report.failures)} "
+          f"record={_record_field(report.record_counts, report.record_unreadable, report.record_enabled, report.sent_to_judge)}",
+          file=sys.stderr)
     for msg in report.failures:
         print(f"  {msg}", file=sys.stderr)
     # #223 §2.5: printed SEPARATELY from failures, because nothing failed -- the posting

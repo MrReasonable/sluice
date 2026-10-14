@@ -10,13 +10,17 @@ from pathlib import Path
 
 import pytest
 
+from sluice import cli
+from sluice.cli import _build_parser, cmd_triage_run
+from sluice.core.app import Sluice
 from sluice.core.backends import Completion
+from sluice.core.config import Config
 from sluice.core.dossier import DossierCache
 from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.vault import Vault
 from sluice.triage.audit import AuditLog
 from sluice.triage.config import TriageConfig
-from sluice.triage.engine import run
+from sluice.triage.engine import TriageReport, run
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -419,3 +423,39 @@ def test_zero_dossiers_never_call_the_judge_or_read_the_record(tmp_path, monkeyp
     assert b.prompts == [] and reads == []
     assert report.sent_to_judge == 0 and report.judged == 0 and report.backend is None
     assert rendered != [], "the rejected-leads note must still render"
+
+
+_COUNTS = {"keep": 1, "shortlist": 1, "research": 0, "dismiss": 0, "needs_review": 0,
+           "skipped": 0, "unjudgeable": 0, "awaiting_reply": 0}
+
+
+def _cli(monkeypatch, tmp_path, report, argv=("triage", "run")):
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: report)
+    sent = []
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: sent.append(msg))
+    code = cmd_triage_run(_build_parser().parse_args(list(argv)), Config())
+    return code, sent
+
+
+@pytest.mark.parametrize("kw,expected", [
+    (dict(sent_to_judge=0, judged=0), "record=none"),
+    (dict(sent_to_judge=1, judged=1), "record=off"),
+    (dict(sent_to_judge=1, judged=1, record_enabled=True,
+          record_counts={"experience": 2, "skills": 3}), "record=experience:2,skills:3"),
+    (dict(sent_to_judge=1, judged=1, record_enabled=True, record_counts={"experience": 2},
+          record_unreadable=["skills"]), "record=experience:2;unreadable:skills"),
+])
+def test_summary_line_carries_record(monkeypatch, tmp_path, capsys, kw, expected):
+    _cli(monkeypatch, tmp_path, TriageReport(counts=dict(_COUNTS), backend="fake m", **kw))
+    assert expected in capsys.readouterr().err
+
+
+def test_digest_names_an_unreadable_kind_only_when_one_raised(monkeypatch, tmp_path):
+    ok = TriageReport(counts=dict(_COUNTS), sent_to_judge=1, judged=1, backend="fake m",
+                      record_enabled=True, record_counts={"experience": 1, "skills": 1})
+    bad = TriageReport(counts=dict(_COUNTS), sent_to_judge=1, judged=1, backend="fake m",
+                       record_enabled=True, record_counts={"experience": 1},
+                       record_unreadable=["skills"])
+    assert "unreadable" not in cli._format_triage_digest(ok)
+    assert "skills" in cli._format_triage_digest(bad).split("unreadable", 1)[1]
