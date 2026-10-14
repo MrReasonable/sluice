@@ -1,9 +1,22 @@
 """#196: evidence-aware triage -- the candidate record the judge may be shown."""
 import ast
 import hashlib
+import json
+import logging
+import os
+import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
+
+from sluice.core.backends import Completion
+from sluice.core.dossier import DossierCache
+from sluice.core.protocols import EVIDENCE_KINDS
+from sluice.core.vault import Vault
+from sluice.triage.audit import AuditLog
+from sluice.triage.config import TriageConfig
+from sluice.triage.engine import run
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -232,3 +245,177 @@ def test_evidence_must_be_a_real_boolean(tmp_path):
         load_triage_config(str(cfgp))
     cfgp.write_text("triage:\n  evidence: true\n")
     assert load_triage_config(str(cfgp)).evidence is True
+
+
+_DOSSIER_ID = r"Dossier \d+ lead_id: ([^\n]+)"
+_LEAD_CO = "Example Gamma"     # the lead's employer; never used as a record sentinel
+
+
+class _Backend:
+    label = "fake m"
+
+    def __init__(self):
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        ids = re.findall(_DOSSIER_ID, prompt)
+        return Completion(json.dumps([{"lead_id": i, "verdict": "shortlist",
+                                       "relevance_score": 80} for i in ids]))
+
+
+@pytest.fixture
+def role(titles):
+    accept, _ = titles
+    return accept[0].title()
+
+
+def _lead(v, role, name="lead.md", company=_LEAD_CO):
+    leads = os.path.join(v.dir, "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    with open(os.path.join(leads, name), "w", encoding="utf-8") as fh:
+        fh.write(f'---\ncompany: "{company}"\nrole: "{role}"\nlocation: "remote"\n'
+                 'salary: ""\nrole_type: "permanent"\nurl: "https://example.com/1"\n'
+                 "status: new\nscore: 0\n---\n# body\n")
+
+
+def _seed(v, kind, name, inner):
+    base = os.path.join(v.dir, *EVIDENCE_KINDS[kind].relpath.split("/"))
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, f"{name}.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"---\n{inner}\n---\nBody.\n")
+
+
+def _cache(tmp_path, fetcher=None):
+    return DossierCache(str(tmp_path / "dos"), ttl_days=7,
+                        fetcher=fetcher or (lambda lead: {"jd": {"markdown": "j"}}),
+                        clock=lambda: datetime(2026, 7, 7))
+
+
+def _go(tmp_path, v, *, evidence=True, backend=None, cfg=None, cache=None, **kw):
+    cfg = cfg or TriageConfig()
+    cfg.evidence = evidence
+    b = backend or _Backend()
+    report = run(v, cfg, b, cache or _cache(tmp_path),
+                 AuditLog(str(tmp_path / "audit.jsonl")), statuses=("new",), **kw)
+    return report, b
+
+
+def test_off_reads_nothing_even_with_a_populated_store(tmp_path, monkeypatch, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    _seed(v, "experience", "e1", "Company: Example Alpha\nverified: 2026-01-01")
+    calls = []
+    monkeypatch.setattr(v, "read_evidence", lambda *a, **k: calls.append(a) or [])
+    report, b = _go(tmp_path, v, evidence=False)
+    assert calls == [] and report.sent_to_judge == 1 and report.record_enabled is False
+    from sluice.triage.prompt import _CANDIDATE_RECORD_HEADER_PROMPT
+    assert _CANDIDATE_RECORD_HEADER_PROMPT not in b.prompts[0]
+
+
+def test_only_verified_entries_reach_the_judge(tmp_path, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    _seed(v, "experience", "kept", "Company: Example Alpha\nverified: 2026-01-01")
+    _seed(v, "experience", "draft", "Company: Example Beta")
+    # The fixture discriminates: the unverified entry IS there to be read.
+    assert {e["title"] for e in v.read_evidence("experience", verified_only=False)} == {
+        "kept", "draft"}
+    report, b = _go(tmp_path, v)
+    assert "Example Alpha" in b.prompts[0] and "Example Beta" not in b.prompts[0]
+    assert report.record_enabled is True
+    assert report.record_counts == {"experience": 1, "skills": 0}
+
+
+def test_the_kinds_read_follow_judge_fields_at_call_time(tmp_path, monkeypatch, role):
+    import dataclasses
+    from sluice.core import protocols
+    judged = {k for k, s in protocols.EVIDENCE_KINDS.items() if s.judge_fields}
+    assert judged == {"experience", "skills"}           # SCOPE, then behaviour
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    seen = []
+    monkeypatch.setattr(v, "read_evidence",
+                        lambda kind, verified_only=True: seen.append(kind) or [])
+    stories = dataclasses.replace(protocols.EVIDENCE_KINDS["stories"],
+                                  judge_fields=("Company",))
+    monkeypatch.setattr(protocols, "EVIDENCE_KINDS",
+                        {**protocols.EVIDENCE_KINDS, "stories": stories})
+    _go(tmp_path, v)
+    assert sorted(seen) == ["experience", "skills", "stories"]
+
+
+def test_an_unreadable_kind_is_skipped_and_reported(tmp_path, caplog, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    _seed(v, "experience", "e1", "Company: Example Tidal\nverified: 2026-01-01")
+    base = os.path.join(v.dir, *EVIDENCE_KINDS["skills"].relpath.split("/"))
+    os.makedirs(base, exist_ok=True)
+    with open(os.path.join(base, "bad.md"), "wb") as fh:
+        fh.write(b"---\nDomain: \xff\xfe\nverified: 2026-01-01\n---\n")
+    with caplog.at_level(logging.WARNING):
+        report, b = _go(tmp_path, v)
+    assert report.record_unreadable == ["skills"]
+    assert report.record_counts == {"experience": 1}
+    assert "Example Tidal" in b.prompts[0]
+    assert any("skills" in r.getMessage() for r in caplog.records)
+
+
+def test_one_kind_failing_does_not_take_the_next_with_it(tmp_path, monkeypatch, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+
+    def flaky(kind, verified_only=True):
+        if kind == "experience":
+            raise OSError("permission denied")
+        return [{"title": "Example Data Skill", "fields": {"Domain": "d"}}]
+    monkeypatch.setattr(v, "read_evidence", flaky)
+    report, b = _go(tmp_path, v)
+    assert report.record_unreadable == ["experience"]
+    assert "Example Data Skill" in b.prompts[0]
+
+
+def test_a_plain_value_error_propagates(tmp_path, monkeypatch, role):
+    """The arm that discriminates: UnicodeDecodeError subclasses ValueError, so only a
+    plain ValueError (a store refusing an unknown kind) tells the two catches apart."""
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+
+    def refuse(kind, verified_only=True):
+        raise ValueError(f"unknown evidence kind {kind!r}")
+    monkeypatch.setattr(v, "read_evidence", refuse)
+    with pytest.raises(ValueError, match="unknown evidence kind"):
+        _go(tmp_path, v)
+
+
+def test_no_llm_never_reads_the_record(tmp_path, monkeypatch, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    calls = []
+    monkeypatch.setattr(v, "read_evidence", lambda *a, **k: calls.append(a) or [])
+    report, _ = _go(tmp_path, v, no_llm=True)
+    assert calls == [] and report.sent_to_judge == 0
+
+
+def test_zero_dossiers_never_call_the_judge_or_read_the_record(tmp_path, monkeypatch,
+                                                               titles):
+    """Every kept lead's fetch fails, so nothing reaches the judge -- while a second lead
+    that classify dismisses deterministically writes an audit entry, so the rejected-leads
+    note MUST still render. That is what tells a guard from an early `return report`."""
+    accept, reject = titles
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, accept[0].title(), name="kept.md")
+    _lead(v, reject[0].title(), name="dropped.md", company="Example Beta")
+    cfg = TriageConfig()
+    cfg.accept_titles, cfg.reject_titles = list(accept), list(reject)
+    reads, rendered = [], []
+    monkeypatch.setattr(v, "read_evidence", lambda *a, **k: reads.append(a) or [])
+    import sluice.triage.engine as eng
+    monkeypatch.setattr(eng, "render_rejected_note", lambda *a, **k: rendered.append(a))
+
+    def boom(lead):
+        raise OSError("fetch failed")
+    report, b = _go(tmp_path, v, cfg=cfg, cache=_cache(tmp_path, fetcher=boom))
+    assert b.prompts == [] and reads == []
+    assert report.sent_to_judge == 0 and report.judged == 0 and report.backend is None
+    assert rendered != [], "the rejected-leads note must still render"
