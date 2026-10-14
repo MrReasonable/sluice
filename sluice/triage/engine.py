@@ -158,6 +158,10 @@ class TriageReport:
     # number, and provenance is not one. `counts["unjudgeable"]` stays the single outcome
     # total and these two explain it.
     unjudgeable_by: dict = field(default_factory=lambda: {"pre_gate": 0, "judge": 0})
+    # #302: research leads whose `unjudgeable` verdict (judge or pre-judge gate) was refused
+    # and recorded as a `triage_blocked` stamp instead. A cause breakdown like
+    # `unjudgeable_by`, not an outcome row: those leads are counted under `skipped`.
+    blocked_research: int = 0
     # #223 §2.4: how many leads had `role_type` written from the POSTING, split by what
     # the observation replaced. `filled` had nothing; `confirmed` already agreed and only
     # gains the stronger provenance; `corrected` had the tool's own guess; `conflicted`
@@ -1112,8 +1116,12 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 # `unjudgeable` is the only non-skip outcome this branch can produce
                 # (unlike the classify pass, which routes to `dismiss`/`needs_review`
                 # depending on `decision`), so the key has no third case to name.
-                key = "skipped" if outcome in ("skipped", "unchanged") else "unjudgeable"
+                key = ("skipped" if outcome in ("skipped", "unchanged", "blocked")
+                       else "unjudgeable")
                 report.counts[key] = report.counts.get(key, 0) + 1
+                # #302: a refused `unjudgeable` on a `research` lead, recorded as a stamp.
+                if outcome == "blocked":
+                    report.blocked_research += 1
                 # #300: counted off the same `key`, so the provenance split can never claim
                 # a lead the outcome row did not. A refused or dry-run write lands under
                 # `skipped` here exactly as it does above, and contributes to neither
@@ -1354,14 +1362,18 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # verdict that never landed (the #109/#118 bug class this repo has already
             # fixed twice). One shared helper in triage/apply.py, not a second copy of
             # the rule here.
-            key = "skipped" if outcome in ("skipped", "unchanged") else clamp_verdict(
+            key = "skipped" if outcome in ("skipped", "unchanged", "blocked") else clamp_verdict(
                 verdict.get("verdict", ""))
             report.counts[key] = report.counts.get(key, 0) + 1
+            # #302: counted on its own, never under `unjudgeable`: no lead became unjudgeable.
+            if outcome == "blocked":
+                report.blocked_research += 1
             # #300: the judge's own arm of the same split, symmetric with the pre-gate site
             # above and counted off `key` for the identical reason. A `research` lead whose
             # re-judgement returns `unjudgeable` is REFUSED by _VERDICT_REQUIRE and lands
-            # under `skipped`, so it is counted as neither producer -- correctly, since
-            # nothing about that lead changed.
+            # under `skipped` (and in `blocked_research`, where the refusal is recorded as a
+            # stamp), so it is counted as neither producer -- correctly, since the lead's
+            # status did not change.
             if key == "unjudgeable":
                 report.unjudgeable_by["judge"] += 1
             # Recorded off `key`, so this list and the counts row can never disagree about
@@ -1375,7 +1387,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             if key in _status.SURFACED:
                 report.surfaced.append((key, note.fm.get("company", ""),
                                         note.fm.get("role", "")))
-            if outcome not in ("skipped", "unchanged"):
+            if outcome not in ("skipped", "unchanged", "blocked"):
                 _audit({"ts": today, "slug": verdict["lead_id"],
                         "company": note.fm.get("company", ""),
                         "role": note.fm.get("role", ""), "url": note.fm.get("url", ""),

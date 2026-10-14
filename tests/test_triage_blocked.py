@@ -1,14 +1,23 @@
 """#302: the `triage_blocked` stamp -- what counts as one, where triage writes and clears it,
 and how the engine counts a refused `unjudgeable` verdict on a `research` lead."""
+import json
 import os
 import pathlib
+import re
+from datetime import datetime
 
 import pytest
 
 import sluice.triage.apply as apply_mod
+import sluice.triage.engine as eng
+from sluice.core.backends import Completion
+from sluice.core.dossier import DossierCache
 from sluice.core.leads import blocked_stamp
 from sluice.core.vault import Vault
 from sluice.triage.apply import apply_classification, apply_verdict
+from sluice.triage.audit import AuditLog
+from sluice.triage.config import TriageConfig
+from tests.test_triage_engine import _DOSSIER_ID, _fields
 
 
 @pytest.mark.parametrize("value,expected", [
@@ -265,3 +274,69 @@ def test_a_restamp_mid_classify_refuses_the_classification(tmp_path):
     assert apply_classification(v, note, "reject", "out of scope") == "unchanged"
     assert v.read_leads()[0].fm["triage_blocked"] == "2031-03-02"
     assert v.read_leads()[0].status == "new"
+
+
+class _Unjudgeable:
+    """A stub judge that answers `unjudgeable` for every lead it is handed. No network."""
+    last_backend = "primary"
+
+    def __init__(self):
+        self.prompts = []
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        ids = re.findall(_DOSSIER_ID, prompt)
+        return Completion(json.dumps([{"lead_id": i, "verdict": "unjudgeable",
+                                       "relevance_score": 0,
+                                       "fit_reasoning": "a sign-in wall"} for i in ids]))
+
+
+def _engine_run(tmp_path, titles, status, jd):
+    accept, _ = titles
+    v = Vault(str(tmp_path / "vault"))
+    leads = os.path.join(v.dir, "Job Applications", "Job Leads")
+    os.makedirs(leads, exist_ok=True)
+    with open(os.path.join(leads, "a.md"), "w", encoding="utf-8") as f:
+        f.write("---\n" + "\n".join(_fields("Example Ltd", accept[0].title(), status,
+                                            url="https://example.invalid/a"))
+                + "\n---\n# Lead\n")
+    cache = DossierCache(str(tmp_path / "dos"), ttl_days=7,
+                         fetcher=lambda lead: {"jd": {"markdown": jd}},
+                         clock=lambda: datetime(2031, 3, 14))
+    cfg = TriageConfig(); cfg.accept_titles = list(accept)
+    audit_path = tmp_path / "a.jsonl"
+    judge = _Unjudgeable()
+    report = eng.run(v, cfg, judge, cache, AuditLog(str(audit_path)),
+                     statuses=(status,))
+    rows = audit_path.read_text().splitlines() if audit_path.exists() else []
+    return report, v, [json.loads(r) for r in rows], judge
+
+
+def test_a_judge_refusal_counts_as_blocked_and_nothing_else(tmp_path, titles):
+    report, v, rows, _ = _engine_run(tmp_path, titles, "research", "an example posting")
+    assert report.blocked_research == 1
+    assert report.counts["skipped"] == 1
+    assert report.counts["unjudgeable"] == 0
+    assert report.unjudgeable_by["judge"] == 0
+    assert report.surfaced == []
+    assert not any(r.get("stage") == "judge" for r in rows)
+    assert v.read_leads()[0].fm["triage_blocked"] == TODAY
+
+
+def test_a_pre_judge_refusal_counts_as_blocked_and_nothing_else(tmp_path, titles):
+    report, v, _, judge = _engine_run(tmp_path, titles, "research", "")
+    assert report.blocked_research == 1
+    assert report.counts["skipped"] == 1
+    assert report.counts["unjudgeable"] == 0
+    assert report.unjudgeable_by["pre_gate"] == 0
+    assert report.surfaced == []
+    # The empty JD stopped the lead at the pre-judge gate: the stub judge was never asked,
+    # so the stamp came from apply_classification's arm and not from a judge verdict.
+    assert judge.prompts == []
+    assert v.read_leads()[0].fm["triage_blocked"] == TODAY
+
+
+def test_an_unblocked_run_reports_zero(tmp_path, titles):
+    report, _, _, _ = _engine_run(tmp_path, titles, "new", "an example posting")
+    assert report.blocked_research == 0
+    assert report.counts["unjudgeable"] == 1
