@@ -6,7 +6,7 @@ import math
 from datetime import date
 
 from sluice.core import status as _status
-from sluice.core.leads import FRAMING_KEYS
+from sluice.core.leads import FRAMING_KEYS, blocked_stamp
 from sluice.core.log import get_logger
 from sluice.core.vault import frontmatter_safe
 
@@ -223,12 +223,60 @@ _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # keeps a later writer from corrupting it either.
 _HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS) | {"triage_next", "followup_asked"}
 
+_RESEARCH = frozenset({"research"})
+
+
+def _stamp_blocked(vault, note, today: str) -> str:
+    """Record a REFUSED `unjudgeable` on a `research` lead as `triage_blocked: <today>` (#302).
+
+    `_VERDICT_REQUIRE`/`_DECISION_REQUIRE` refuse that write, rightly: `status` cannot tell a
+    conservative-score artifact from a research task a human set. The stamp is what lets
+    `job-sluice leads unpark` list those leads for a human to move. It sets one key and
+    nothing else, and never writes over a person's own text in that key: a `triage_blocked`
+    that is not a stamp (`core/leads.py::blocked_stamp`) is theirs, so a snapshot holding one
+    returns "unchanged" without a write. `preserve_block_values` cannot stand in for that
+    check, since it guards only a value spread over several lines, and a word, a bare `|` or
+    a quoted string all sit on the key's own line. On this write it is a backstop only:
+    `require_unchanged` also compares whether the value spans several lines, so one turned
+    multi-line since the snapshot is refused there first.
+
+    Only a lead whose SNAPSHOT is `research` is tried, so a refusal on `shortlist`,
+    `dismiss` and the rest costs no extra write; a lead hand-moved to `research` while being
+    judged can be stamped on a later run whose verdict is again unjudgeable. The write's own
+    guards are re-read fresh inside the store's CAS: the lead must still be at `research`,
+    must not have been marked asked (a follow-up question outranks the stamp), and its
+    `triage_blocked` must still read what the snapshot read (`require_unchanged`), so text
+    typed into the key while the lead was being judged refuses the stamp. An absent key and a
+    blank one both read as `("", False)` there, which is what lets the first stamp land.
+
+    "blocked" when the stamp landed, or when the snapshot already carried today's stamp (a
+    second run the same day is a byte-identical no-op, so the write returns False). The
+    store has no single-note read, and a whole-vault re-read per refused lead is too dear
+    for the nightly loop, so that second arm reads the snapshot. Residual, stated: a lead
+    stamped earlier today that leaves `research` mid-judge is counted once more in this
+    run's digest. The outcome only feeds a count; `leads unpark` re-reads before acting."""
+    if _status.normalize(note.status) != "research":
+        return "unchanged"
+    raw = note.fm.get("triage_blocked") or ""
+    if raw.strip() and not blocked_stamp(note.fm):
+        return "unchanged"
+    # Written UNQUOTED, like `Sluice.mark_asked`'s `followup_asked`: `today` comes from
+    # `date.isoformat()` and can carry no quote, so it needs no quoting or frontmatter_safe.
+    if vault.update_fields(note.ref, {"triage_blocked": today},
+                           require_status=_RESEARCH,
+                           require_blank=frozenset({"followup_asked"}),
+                           require_unchanged={"triage_blocked": raw},
+                           preserve_block_values=frozenset({"triage_blocked"})):
+        return "blocked"
+    return "blocked" if blocked_stamp(note.fm) == today else "unchanged"
+
 
 def apply_classification(vault, note, decision, reason) -> str:
     if _guarded(note):
         return "skipped"
     new_status = _DECISION_STATUS.get(decision, "needs_review")
-    tag = f"[triage {date.today().isoformat()}]"
+    today = date.today().isoformat()
+    tag = f"[triage {today}]"
     # require_status (#109 inv2-001): the pre-existing _guarded() check above reads
     # note.status, a plain dataclass field frozen at read_leads() time -- byte-identical
     # to no guard at all against a real vault. This re-reads the FRESH status inside the
@@ -244,7 +292,13 @@ def apply_classification(vault, note, decision, reason) -> str:
     # was already current, e.g. a same-day re-triage). A REAL content collision raises
     # VaultConflict instead, caught separately one level up in triage/engine.py.
     # "unchanged" either way, not a failure.
-    return "applied" if wrote else "unchanged"
+    if wrote:
+        return "applied"
+    if decision == "unjudgeable":
+        # #302: the pre-judge gate's refusal on a `research` lead is recorded the same way
+        # the judge's is. See _stamp_blocked.
+        return _stamp_blocked(vault, note, today)
+    return "unchanged"
 
 
 def apply_verdict(vault, note, verdict, dossier) -> str:
@@ -317,7 +371,8 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     if stamp.strip():
         fields["followup_asked"] = '""'
         require_unchanged = {"followup_asked": stamp}
-    tag = f"[triage {date.today().isoformat()}]"
+    today = date.today().isoformat()
+    tag = f"[triage {today}]"
     parts = [verdict["fit_reasoning"]]
     if verdict["concerns"]:
         parts.append("Concerns: " + "; ".join(verdict["concerns"]))
@@ -335,4 +390,8 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # #118: symmetric with apply_classification above, with one cause it lacks (#378): the
     # stale-stamp `require_unchanged` refusing a re-stamp landed mid-judge. That one IS a
     # content collision; `unchanged` still fits it, since the newer stamp stands.
-    return "applied" if wrote else "unchanged"
+    if wrote:
+        return "applied"
+    if status == "unjudgeable":
+        return _stamp_blocked(vault, note, today)
+    return "unchanged"
