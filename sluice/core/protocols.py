@@ -1004,6 +1004,9 @@ class Store(Protocol):
         for an absent corpus would tell a user with no Skills Inventory yet that their
         corpus is unreadable, on every lead of every run. `experience` is deliberately NOT
         wrapped there, being the gate's only citable evidence.
+        `triage/engine.py::_read_record` (#196) relies on it too, catching exactly
+        `(OSError, UnicodeDecodeError)`: an unreadable corpus must raise one of those, and
+        a kind the store does not support raises `ValueError`, which triage lets through.
 
         `tests/conformance/test_store_contract.py::test_an_absent_corpus_reads_as_empty`
         binds this per kind, because a docstring alone is what the vault happened to do

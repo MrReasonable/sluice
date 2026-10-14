@@ -96,6 +96,17 @@ class TriageReport:
     # whether the judge was never called or was called and failed outright. The digest says
     # opposite things in those two cases, and said the wrong one before this existed.
     sent_to_judge: int = 0
+    # #196: what the judge was shown of the candidate record. Facts only; the CLI decides
+    # wording. `record_enabled` is set only where the judge is called, so a run that never
+    # called it reads `none` rather than claiming `off`.
+    record_enabled: bool = False
+    record_counts: dict = field(default_factory=dict)
+    record_unreadable: list = field(default_factory=list)
+
+    @property
+    def record_sent(self) -> bool:
+        # A fact (did any entry ride on the prompt?), like `sent_to_judge` -- not wording.
+        return sum(self.record_counts.values()) > 0
     backend: str | None = None
     # Set when a backend this run depends on stayed unavailable after its own retries
     # (#333): the judge's, or tier 3's once its breaker trips. A RUN failure rather than a
@@ -210,6 +221,38 @@ class _FetchFailed:
 
     def __init__(self, exc):
         self.message = str(exc)
+
+
+def _read_record(vault, cfg, report):
+    """The candidate record for the judge (#196), or None when `triage.evidence` is off.
+
+    The registry is looked up AT CALL TIME (`protocols.EVIDENCE_KINDS`, not a from-import)
+    so a rebound registry governs what is read, as `cv/selection.py::pool_kinds` does.
+    Each kind has its own `try`: one unreadable corpus costs that kind only, is logged and
+    is recorded on the report -- per-item isolation, and losing it reproduces the pre-#196
+    prompt for that kind. Exactly `(OSError, UnicodeDecodeError)`: a plain ValueError is a
+    store refusing a kind it does not support, which must fail loudly, not read as
+    "unreadable"."""
+    from sluice.core import protocols
+    report.record_enabled = bool(cfg.evidence)
+    if not cfg.evidence:
+        return None
+    record = []
+    for kind, spec in protocols.EVIDENCE_KINDS.items():
+        if not spec.judge_fields:
+            continue
+        try:
+            # Explicit although it is the default: it is the citability boundary, and the
+            # #196 tests pin it with a `=False` mutant.
+            entries = vault.read_evidence(kind, verified_only=True)
+        except (OSError, UnicodeDecodeError) as e:
+            _log.warning("candidate record: %s entries unreadable, judging without them: %s",
+                         kind, e)
+            report.record_unreadable.append(kind)
+            continue
+        report.record_counts[kind] = len(entries)
+        record.append((spec, entries))
+    return record
 
 
 def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
@@ -1121,22 +1164,33 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # to it either way and the collision it now cannot have went unseen for exactly
             # that reason.)
             note_by_id[d["lead_id"]] = note
-        # Compose the judge prompt from the candidate's vault-sourced criteria
-        # (their editable source of truth), falling back to the baked-in default
-        # if it is missing.
-        system_prompt = build_system_prompt_from(vault.read_criteria())
-        report.sent_to_judge = len(dossiers)
-        try:
-            verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
-                             system_prompt=system_prompt)
-        except JudgeAborted as e:
-            # The completed batches' verdicts still apply; every lead after the outage is
-            # counted unjudged by the reconciliation below and keeps its status, so the
-            # next run picks it up.
-            verdicts = e.verdicts
-            report.backend_error = str(e.cause)
+        # #196: no dossier survived the fetch, so there is nothing to judge. Skipping the
+        # judge here changes two things: the candidate record is not read when nothing is
+        # judged, so a run that judged nothing prints no "judged without it" digest line,
+        # and `report.backend` stays unset when every fetch failed, since no backend was
+        # called. A guard around these statements, NOT an early
+        # return: verdict reconciliation below and the rejected-leads note render at the
+        # end of `run` still run.
+        if dossiers:
+            # Compose the judge prompt from the candidate's vault-sourced criteria
+            # (their editable source of truth), falling back to the baked-in default
+            # if it is missing -- plus, when the user opted in, their verified record.
+            system_prompt = build_system_prompt_from(vault.read_criteria(),
+                                                     _read_record(vault, cfg, report))
+            report.sent_to_judge = len(dossiers)
+            try:
+                verdicts = judge(dossiers, backend, batch_size=cfg.batch_size,
+                                 system_prompt=system_prompt)
+            except JudgeAborted as e:
+                # The completed batches' verdicts still apply; every lead after the outage is
+                # counted unjudged by the reconciliation below and keeps its status, so the
+                # next run picks it up.
+                verdicts = e.verdicts
+                report.backend_error = str(e.cause)
+            report.backend = getattr(backend, "label", None)
+        else:
+            verdicts = []
         report.judged = len(verdicts)
-        report.backend = getattr(backend, "label", None)
         # #329: every verdict is repaired or rejected HERE, before anything reads it --
         # `judged_ids` below, the apply loop, the counts clamp and the audit entry all used to
         # read the model's raw dict, and one wrong-typed field raised out of this function and
