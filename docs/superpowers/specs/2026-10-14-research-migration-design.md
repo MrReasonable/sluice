@@ -200,8 +200,8 @@ apply that wrote nothing it was asked to write never reads as success. An empty 
 ## Out of scope
 
 - Leads already at `unjudgeable` that never heal are judged every night too. That is the same
-  recurring cost through a different status and its own decision (e.g. a give-up threshold),
-  to be filed separately.
+  recurring cost through a different status and its own decision (e.g. a give-up threshold):
+  #402.
 - The audit log's silence about refused verdicts. The stamp is the record this feature needs;
   auditing refusals in general is a separate change.
 
