@@ -2573,6 +2573,7 @@ class Sluice:
         result, and only `answered` claims all three things the user is relying on: the answer
         is in the note, the judge will read it, and the lead is back in triage."""
         from sluice.core import followups
+        from sluice.core.leads import blocked_stamp
         from sluice.core.protocols import VaultConflict
         if not text or not text.strip():
             raise ValueError("text must not be blank")
@@ -2605,6 +2606,22 @@ class Sluice:
         try:
             store.update_fields(note.ref, {"followup_asked": '""'}, require_status=research,
                                 preserve_block_values=frozenset({"followup_asked"}))
+            # #302: a `triage_blocked` stamp from before the question goes too, or the answered
+            # lead would come back into `leads unpark` as if its board had blocked it. Only a
+            # real date stamp is cleared, so an unstamped lead gains no key and a hand-typed
+            # value is left alone. A SEPARATE write, because it carries `require_unchanged`:
+            # text a person typed over the stamp since the snapshot refuses this clear, and
+            # folded into the write above that refusal would also keep `followup_asked`, hiding
+            # the answered lead from triage. A refused clear leaves the person's text, which
+            # `blocked_stamp` does not read as a stamp, so `leads unpark` never lists it and the
+            # result below is still `answered`. `preserve_block_values` is a backstop only: a
+            # value turned multi-line never equals a one-line stamp, so `require_unchanged`
+            # refuses it first.
+            stamp = blocked_stamp(note.fm)
+            if stamp:
+                store.update_fields(note.ref, {"triage_blocked": '""'}, require_status=research,
+                                    require_unchanged={"triage_blocked": stamp},
+                                    preserve_block_values=frozenset({"triage_blocked"}))
         except VaultConflict as e:
             _log.warning("record_answer: %s lost the write race clearing the stamp: %s",
                          note.ref, e)

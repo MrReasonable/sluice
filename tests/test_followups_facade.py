@@ -320,3 +320,77 @@ def test_followups_reads_research_leads_with_the_injected_date(tmp_path):
     q = _app(tmp_path).followups()
     assert len(q.rows) == 2 and len(q.asked) == 1
     assert q.asked[0].waited_days == 7 and q.oldest_days == 10
+
+
+def _note_text(tmp_path):
+    return pathlib.Path(Vault(str(tmp_path)).read_leads()[0].ref).read_text(encoding="utf-8")
+
+
+def test_an_answer_clears_a_triage_blocked_stamp(tmp_path):
+    # #302: an answered research task is the person's live decision; a stamp from before the
+    # question must not bring it back into `leads unpark`.
+    slug = _seed(tmp_path, followup_asked=_ago(3), triage_blocked=_ago(9))
+    assert _app(tmp_path).record_answer(lead=slug, text="the band is fine").outcome == "answered"
+    assert Vault(str(tmp_path)).read_leads()[0].fm["triage_blocked"] == ""
+
+
+def test_an_answer_on_an_unstamped_lead_adds_no_triage_blocked_key(tmp_path):
+    slug = _seed(tmp_path, followup_asked=_ago(3))
+    _app(tmp_path).record_answer(lead=slug, text="the band is fine")
+    assert "triage_blocked" not in _note_text(tmp_path)
+
+
+def test_an_answer_leaves_a_hand_typed_triage_blocked_alone(tmp_path):
+    slug = _seed(tmp_path, followup_asked=_ago(3), triage_blocked="my own note")
+    _app(tmp_path).record_answer(lead=slug, text="the band is fine")
+    assert "triage_blocked: my own note" in _note_text(tmp_path)
+
+
+def test_a_stamp_turned_into_a_block_list_mid_answer_is_left_intact(tmp_path, monkeypatch):
+    # #302: a snapshot holding a date stamp whose fresh value a person turned multi-line
+    # passes the snapshot check; the clear's fresh re-read must then leave that block alone
+    # while the answer still lands. The racer fires on the ENUMERATION read (it returns
+    # pre-edit bytes), so the snapshot still shows the date and the edit lands before the write.
+    from tests.conftest import racing_read
+    slug = _seed(tmp_path, followup_asked=_ago(3), triage_blocked=_ago(9))
+    ref = Vault(str(tmp_path)).read_leads()[0].ref
+    path = pathlib.Path(ref)
+
+    def _hand_edit():
+        lines = path.read_text(encoding="utf-8").split("\n")
+        out = []
+        for ln in lines:
+            out.append("triage_blocked:\n  - my own note" if ln.startswith("triage_blocked:") else ln)
+        path.write_text("\n".join(out), encoding="utf-8")
+
+    state = racing_read(monkeypatch, ref, _hand_edit)
+    _app(tmp_path).record_answer(lead=slug, text="the band is fine")
+
+    assert state["fired"]
+    text = _note_text(tmp_path)
+    assert "triage_blocked:\n  - my own note" in text
+    assert Vault(str(tmp_path)).read_leads()[0].fm["followup_asked"] == ""
+
+
+def test_a_stamp_replaced_by_one_line_of_text_mid_answer_is_left_intact(tmp_path, monkeypatch):
+    # #302: the clear compares the fresh value to the snapshot's stamp, so a word a person
+    # typed over the stamp after the snapshot survives -- and the answer still lands and
+    # returns the lead to triage, since the stamp clear is a write of its own.
+    from tests.conftest import racing_read
+    slug = _seed(tmp_path, followup_asked=_ago(3), triage_blocked=_ago(9))
+    ref = Vault(str(tmp_path)).read_leads()[0].ref
+    path = pathlib.Path(ref)
+
+    def _hand_edit():
+        lines = path.read_text(encoding="utf-8").split("\n")
+        out = ["triage_blocked: my own note" if ln.startswith("triage_blocked:") else ln
+               for ln in lines]
+        path.write_text("\n".join(out), encoding="utf-8")
+
+    state = racing_read(monkeypatch, ref, _hand_edit)
+    result = _app(tmp_path).record_answer(lead=slug, text="the band is fine")
+
+    assert state["fired"]
+    assert result.outcome == "answered"
+    assert "triage_blocked: my own note" in _note_text(tmp_path)
+    assert Vault(str(tmp_path)).read_leads()[0].fm["followup_asked"] == ""
