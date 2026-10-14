@@ -181,16 +181,17 @@ def test_a_judge_returned_unjudgeable_must_not_overwrite_a_research_lead(tmp_pat
     # byte-identical here. Overwriting on that basis breaks the repo's never-clobber rule
     # against exactly the person the queue belongs to.
     #
-    # The consequence is deliberate and is NOT a silent one: leads already parked in
-    # `research` by the old behaviour stay there, and clearing them is a migration a human
-    # opts into, not something a nightly cron does to their queue behind them.
+    # The consequence is deliberate and is NOT a silent one: the refusal stamps
+    # `triage_blocked`, and `job-sluice leads unpark` lists those leads for a human to move
+    # (#302), rather than a nightly cron moving them behind the person whose queue it is.
     v = Vault(str(tmp_path))
     _note(v, "R2.md", ['company: "Example Northgate"', "status: research", "score: 60",
                        'glassdoor_rating: ""', 'culture_flags: ""', 'relevance_notes: ""'])
     note = v.read_leads({"research"})[0]
     verdict = {"verdict": "unjudgeable", "relevance_score": 0,
                "fit_reasoning": "The JD body is a bot-check page, not a job description."}
-    assert apply_verdict(v, note, verdict, {}) == "unchanged"
+    # #302: the refusal is now recorded as a `triage_blocked` stamp, never a status change.
+    assert apply_verdict(v, note, verdict, {}) == "blocked"
     assert v.read_leads()[0].status == "research"
 
 
