@@ -824,6 +824,13 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
         lines.append("Candidate record unreadable for "
                      f"{', '.join(report.record_unreadable)}; judged without it (see the log).")
 
+    blocked = getattr(report, "blocked_research", 0)
+    if blocked:
+        # #302: the nightly run cannot move these (status cannot tell them from a research
+        # task a person set), so the one useful thing to say is the command that can.
+        lines.append(f"{blocked} research lead{'' if blocked == 1 else 's'} could not be "
+                     f"judged from {'its' if blocked == 1 else 'their'} page; review with: "
+                     "job-sluice leads unpark")
     if report.failures:
         lines.append(f"{len(report.failures)} failure"
                      f"{'' if len(report.failures) == 1 else 's'}, check the run log.")
@@ -1383,9 +1390,13 @@ def cmd_triage_run(args, config) -> int:
             "which takes every lead at `dismiss`, including ones you dismissed yourself.",
             config=config, label="triage-summary")
         return 0
+    # #302: `blocked_research` rides on the stderr summary as well as the digest, because the
+    # digest's `leads unpark` pointer reaches only an install with notifications configured
+    # (`notify` reports "unconfigured" silently), so this line is all a fresh install sees.
     print(f"triage: {report.counts} judged={report.judged} "
           f"resolved={report.resolved} llm_calls={report.llm_calls} "
           f"observed_role_types={report.observed_role_types} "
+          f"blocked_research={report.blocked_research} "
           f"backend={report.backend} failures={len(report.failures)} "
           f"record={_record_field(report.record_counts, report.record_unreadable, report.record_enabled, report.sent_to_judge)}",
           file=sys.stderr)
