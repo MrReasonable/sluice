@@ -1230,7 +1230,6 @@ def cmd_leads_expire(args, config) -> int:
     return 0
 
 
-
 def cmd_leads_unpark(args, config) -> int:
     """#302: list `research` leads triage could not judge from their page, and with
     `--apply` move them to `needs_review`. Report-first like every `leads` pass that writes
@@ -1268,6 +1267,7 @@ def cmd_leads_unpark(args, config) -> int:
         print(f"[blocked] {r.slug}  stamped {r.stamp}  {r.host}")
     print(f"unpark: {len(report)} listed, 0 written (--apply to move)", file=sys.stderr)
     return 0
+
 
 def _research_queue_line(queue) -> str:
     """The digest's standing line (#378): the whole research queue, read from the vault

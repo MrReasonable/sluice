@@ -274,6 +274,33 @@ def test_json_apply_shape_lists_only_the_named_lead(tmp_path, monkeypatch, capsy
     assert doc["results"] == [{"slug": a, "outcome": "moved"}]
 
 
+@pytest.mark.parametrize("outcome", ["conflict", "unreadable", "ambiguous"])
+def test_apply_exits_1_for_each_failed_outcome_the_other_rows_do_not_reach(
+        tmp_path, monkeypatch, outcome):
+    monkeypatch.setattr(Sluice, "unpark", lambda self, slugs=None: ([], [("Example Slug", outcome)]))
+    assert _cli(tmp_path, monkeypatch, ["--apply"]) == 1
+
+
+def test_apply_exits_0_when_every_outcome_is_moved(tmp_path, monkeypatch):
+    monkeypatch.setattr(Sluice, "unpark", lambda self, slugs=None: ([], [("Example Slug", "moved")]))
+    assert _cli(tmp_path, monkeypatch, ["--apply"]) == 0
+
+
+def test_apply_prints_each_non_moved_outcome_and_a_tally(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(Sluice, "unpark", lambda self, slugs=None: (
+        [], [("Example Slug", "abstained"), ("Example Other", "moved")]))
+    _cli(tmp_path, monkeypatch, ["--apply"])
+    err = capsys.readouterr().err
+    assert "unpark: Example Slug: abstained" in err
+    assert "Example Other: moved" not in err
+    assert "unpark: 1 abstained, 1 moved" in err
+
+
+def test_an_empty_apply_says_nothing_to_move(tmp_path, monkeypatch, capsys):
+    _cli(tmp_path, monkeypatch, ["--apply"])
+    assert "unpark: nothing to move" in capsys.readouterr().err
+
+
 def test_a_slug_named_twice_is_moved_once_and_reads_as_success(tmp_path, monkeypatch):
     a = _seed(tmp_path, triage_blocked=STAMP)
     _, results = _app(tmp_path).unpark(slugs=[a, a])
