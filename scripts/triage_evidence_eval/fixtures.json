@@ -1,0 +1,101 @@
+{
+  "profile": "Target: systems developer roles. Location: Alfa or remote. Wrong shape: geoscientist roles. Win pattern: the JD names Examplelang or Example Query work, or Examplemesh work. Most of the role should be the win pattern; a role that is half other duties is a research case.",
+  "record": {
+    "experience": [
+      {
+        "title": "Delivery lead",
+        "fields": {
+          "Company": "Example Alpha",
+          "Category": "delivery",
+          "Best For": "data services",
+          "Metrics": "cut lead time 30%",
+          "Tools": "Examplelang, Examplebus"
+        }
+      },
+      {
+        "title": "Data platform owner",
+        "fields": {
+          "Company": "Example Beta",
+          "Category": "data",
+          "Best For": "query tuning",
+          "Metrics": "halved report time",
+          "Tools": "Examplelang"
+        }
+      }
+    ],
+    "skills": [
+      {
+        "title": "alpha",
+        "fields": {
+          "Label": "Example Query",
+          "Proficiency": "High",
+          "Domain": "data"
+        }
+      },
+      {
+        "title": "Example Data Skill",
+        "fields": {
+          "Proficiency": "Medium",
+          "Domain": "data"
+        }
+      }
+    ]
+  },
+  "leads": [
+    {
+      "id": "gap-1",
+      "company": "Example Foundry",
+      "title": "systems developer",
+      "location": "Alfa",
+      "url": "https://example.com/gap-1",
+      "role": "gap",
+      "expected": "shortlist",
+      "gap_term": "ledger reconciliation",
+      "jd": "This post is mostly Examplelang development, with Example Query data work and Examplebus integrations alongside it. You would run one small service from design to production as part of a distributed team. Typical weeks involve writing and reviewing code, shaping data models and supporting releases. Month-end close support includes hands-on ledger reconciliation. Applicants should be able to explain their work clearly in writing."
+    },
+    {
+      "id": "gap-2",
+      "company": "Example Gamma",
+      "title": "systems developer",
+      "location": "Alfa",
+      "url": "https://example.com/gap-2",
+      "role": "gap",
+      "expected": "shortlist",
+      "gap_term": "tender writing",
+      "jd": "Most of the work here is building in Examplelang and Example Query, integrating services over Examplebus. A distributed team looks after one small service, and this hire shares ownership of it end to end. Code review, data modelling and release support fill most days. Responsibilities include tender writing for public sector bids, alongside the engineering work. The team works to fixed submission deadlines."
+    },
+    {
+      "id": "gap-3",
+      "company": "Example Tidal",
+      "title": "systems developer",
+      "location": "Alfa",
+      "url": "https://example.com/gap-3",
+      "role": "gap",
+      "expected": "shortlist",
+      "gap_term": "field audits",
+      "jd": "Examplelang engineering is the core of this job, together with Example Query data work and Examplebus integration. The successful hire owns a small service end to end inside a team spread across several sites. Writing code, reviewing it, shaping data models and supporting releases make up the day to day. The post includes regular field audits at partner sites, with a short written report after each. Travel within the region is occasional."
+    },
+    {
+      "id": "border-1",
+      "company": "Example Meridian",
+      "title": "systems developer",
+      "location": "Alfa",
+      "url": "https://example.com/border-1",
+      "role": "borderline",
+      "expected": "research",
+      "gap_term": "tender writing",
+      "jd": "This post splits its time. About half the week is Examplelang development and Example Query reporting for an internal data service. The other half is tender writing for public sector bids, ledger reconciliation at month end and supplier field audits. The team is based at Alfa, with two days a week on site. Reports go to the head of operations."
+    },
+    {
+      "id": "nosupport-1",
+      "company": "Example Northgate",
+      "title": "systems developer",
+      "location": "Alfa",
+      "url": "https://example.com/nosupport-1",
+      "role": "no_support",
+      "expected": "shortlist",
+      "gap_term": "ledger reconciliation",
+      "jd": "The role centres on Examplemesh work: building and running the Examplemesh layer that connects a small set of internal services. You will own that layer end to end and work with a distributed team. Day to day you configure Examplemesh routing, write and review the code around it, and support releases. Nearly all of the week is Examplemesh engineering. Requirements: experience of ledger reconciliation for the month-end close. The team is based at Alfa and works in short cycles."
+    }
+  ]
+}
