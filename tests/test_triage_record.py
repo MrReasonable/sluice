@@ -13,7 +13,7 @@ import pytest
 from sluice import cli
 from sluice.cli import _build_parser, cmd_triage_run
 from sluice.core.app import Sluice
-from sluice.core.backends import Completion
+from sluice.core.backends import BackendError, Completion
 from sluice.core.config import Config
 from sluice.core.dossier import DossierCache
 from sluice.core.protocols import EVIDENCE_KINDS
@@ -211,6 +211,27 @@ def test_values_are_flattened_to_one_line():
     assert out.count("\n## Output schema") == 1
 
 
+def test_a_nameless_entry_renders_its_fields_without_an_empty_name_part():
+    from sluice.triage.prompt import build_system_prompt_from as b
+    out = b(_SYNTH, _record(exp=[_exp("", Company="Example Alpha", Tools="Examplelang")]))
+    company = "Example Alpha"
+    assert f"\n- Company: {company}" + " | Tools: Examplelang\n" in out
+    assert "\n- \n" not in out and "\n-  | " not in out
+
+
+def test_an_entry_with_no_name_and_no_field_is_skipped():
+    from sluice.triage.prompt import build_system_prompt_from as b
+    out = b(_SYNTH, _record(exp=[_exp("", Company="  ", Category=""),
+                                 _exp("e1", Company="Example Alpha")]))
+    lines = out.splitlines()
+    i = lines.index("### Experience Library")
+    company = "Example Alpha"
+    assert lines[i + 1] == f"- e1 | Company: {company}"
+    assert lines[i + 2] == ""          # the skipped entry left no line of its own
+    # Every entry skipped: the kind leaves no heading, and the whole record abstains.
+    assert b(_SYNTH, _record(exp=[_exp("", Company="")])) == b(_SYNTH)
+
+
 def test_headings_come_from_relpath_and_skip_empty_kinds():
     from sluice.triage.prompt import build_system_prompt_from as b
     out = b(_SYNTH, _record(skills=[{"title": "s", "fields": {"Domain": "d"}}]))
@@ -305,6 +326,25 @@ def _go(tmp_path, v, *, evidence=True, backend=None, cfg=None, cache=None, **kw)
     return report, b
 
 
+@pytest.mark.parametrize("with_renderable", [False, True])
+def test_record_counts_only_the_entries_the_prompt_carries(tmp_path, monkeypatch, role,
+                                                           with_renderable):
+    """An entry with neither a name nor a judge field renders nothing, so it must not be
+    counted: `record=`, `record_sent` and the size hint all read these counts."""
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    empty = {"title": "", "fields": {"Company": " ", "Evidence": "PROSE-ONLY"}}
+    kept = {"title": "e1", "fields": {"Company": "Example Alpha"}}
+    stored = {"experience": [empty] + ([kept] if with_renderable else [])}
+    monkeypatch.setattr(v, "read_evidence",
+                        lambda kind, **k: list(stored.get(kind, [])))
+    report, b = _go(tmp_path, v)
+    assert report.record_counts == {"experience": int(with_renderable), "skills": 0}
+    assert report.record_sent is with_renderable
+    from sluice.triage.prompt import _CANDIDATE_RECORD_HEADER_PROMPT
+    assert (_CANDIDATE_RECORD_HEADER_PROMPT in b.prompts[0]) is with_renderable
+
+
 def test_off_reads_nothing_even_with_a_populated_store(tmp_path, monkeypatch, role):
     v = Vault(str(tmp_path / "vault"))
     _lead(v, role)
@@ -329,6 +369,9 @@ def test_only_verified_entries_reach_the_judge(tmp_path, role):
     assert "Example Alpha" in b.prompts[0] and "Example Beta" not in b.prompts[0]
     assert report.record_enabled is True
     assert report.record_counts == {"experience": 1, "skills": 0}
+    # The label of the backend that judged: the digest's "via" and the summary's
+    # `backend=` both read it, and a judged run is the one place it must be set.
+    assert report.backend == "fake m"
 
 
 def test_the_kinds_read_follow_judge_fields_at_call_time(tmp_path, monkeypatch, role):
@@ -445,6 +488,11 @@ def _cli(monkeypatch, tmp_path, report, argv=("triage", "run")):
           record_counts={"experience": 2, "skills": 3}), "record=experience:2,skills:3"),
     (dict(sent_to_judge=1, judged=1, record_enabled=True, record_counts={"experience": 2},
           record_unreadable=["skills"]), "record=experience:2;unreadable:skills"),
+    # On, but no judge-read kind was readable: `empty`, never `off`, so the
+    # reader can tell a switched-on record that carried nothing from a switched-off one.
+    (dict(sent_to_judge=1, judged=1, record_enabled=True, record_counts={},
+          record_unreadable=["experience", "skills"]),
+     "record=empty;unreadable:experience,skills"),
 ])
 def test_summary_line_carries_record(monkeypatch, tmp_path, capsys, kw, expected):
     _cli(monkeypatch, tmp_path, TriageReport(counts=dict(_COUNTS), backend="fake m", **kw))
@@ -458,4 +506,181 @@ def test_digest_names_an_unreadable_kind_only_when_one_raised(monkeypatch, tmp_p
                        record_enabled=True, record_counts={"experience": 1},
                        record_unreadable=["skills"])
     assert "unreadable" not in cli._format_triage_digest(ok)
-    assert "skills" in cli._format_triage_digest(bad).split("unreadable", 1)[1]
+    line = "Candidate record unreadable for skills; judged without it (see the log)."
+    assert line in cli._format_triage_digest(bad).splitlines()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_no_verdicts_exits_one_after_pushing_the_digest(monkeypatch, tmp_path, capsys,
+                                                        enabled):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=0, backend="fake m",
+                          record_enabled=enabled)
+    code, sent = _cli(monkeypatch, tmp_path, report)
+    assert code == 1
+    assert sent and "returned NOTHING" in sent[0]          # digest pushed BEFORE exiting
+    assert "judge returned no verdicts" in capsys.readouterr().err
+
+
+def test_some_verdicts_exit_zero(monkeypatch, tmp_path):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=10, judged=5, usable_verdicts=5,
+                          backend="fake m")
+    assert _cli(monkeypatch, tmp_path, report)[0] == 0
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_an_all_malformed_reply_exits_one_with_its_own_line(monkeypatch, tmp_path, capsys,
+                                                            enabled):
+    """`judged` counts verdicts BEFORE normalisation, so a reply whose every verdict was
+    malformed has a non-zero `judged` and wrote no lead. It must fail like an empty reply,
+    and say which of the two happened."""
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=3, usable_verdicts=0,
+                          backend="fake m", record_enabled=enabled)
+    code, sent = _cli(monkeypatch, tmp_path, report)
+    assert code == 1
+    assert sent                                            # digest pushed BEFORE exiting
+    err = capsys.readouterr().err
+    assert "no usable verdicts (every one was malformed)" in err
+    assert "judge returned no verdicts" not in err
+
+
+def test_one_usable_verdict_among_malformed_ones_exits_zero(monkeypatch, tmp_path, capsys):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=3, usable_verdicts=1,
+                          backend="fake m")
+    assert _cli(monkeypatch, tmp_path, report)[0] == 0
+    assert "treat this run as failed" not in capsys.readouterr().err
+
+
+class _Malformed(_Backend):
+    """Answers each batch with one verdict carrying no usable `lead_id` and, when `good`,
+    one well-formed verdict per dossier beside it."""
+
+    def __init__(self, good):
+        super().__init__()
+        self.good = good
+
+    def complete(self, prompt):
+        self.prompts.append(prompt)
+        ids = re.findall(_DOSSIER_ID, prompt) if self.good else []
+        return Completion(json.dumps(
+            [{"lead_id": " ", "verdict": "shortlist", "relevance_score": 80}]
+            + [{"lead_id": i, "verdict": "shortlist", "relevance_score": 80} for i in ids]))
+
+
+@pytest.mark.parametrize("good,usable", [(False, 0), (True, 1)])
+def test_usable_verdicts_counts_only_what_survives_normalisation(tmp_path, role, good,
+                                                                 usable):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    report, _ = _go(tmp_path, v, evidence=False, backend=_Malformed(good))
+    assert report.judged == 1 + usable
+    assert report.usable_verdicts == usable
+
+
+def test_zero_dossiers_exit_zero(monkeypatch, tmp_path):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=0, judged=0, backend=None)
+    assert _cli(monkeypatch, tmp_path, report)[0] == 0
+
+
+def test_a_backend_outage_still_exits_one_by_its_own_path(monkeypatch, tmp_path, capsys):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=0, backend="fake m",
+                          backend_error="503 after retries")
+    assert _cli(monkeypatch, tmp_path, report)[0] == 1
+    err = capsys.readouterr().err
+    assert "backend unavailable" in err and "judge returned no verdicts" not in err
+
+
+@pytest.mark.parametrize("kw,hint", [
+    (dict(record_enabled=False), False),
+    (dict(record_enabled=True, record_counts={"experience": 0, "skills": 0}), False),
+    (dict(record_enabled=True, record_counts={"experience": 4}), True),
+])
+def test_record_size_hint_only_when_a_record_was_sent(monkeypatch, tmp_path, capsys, kw, hint):
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=0, backend="fake m",
+                          **kw)
+    _, sent = _cli(monkeypatch, tmp_path, report)
+    err = capsys.readouterr().err
+    assert ("triage.evidence: false" in err) is hint
+    assert ("triage.evidence: false" in sent[0]) is hint
+
+
+@pytest.mark.parametrize("counts,hint", [
+    ({"experience": 4}, True),
+    ({"experience": 0, "skills": 0}, False),
+])
+def test_the_outage_path_names_the_record_only_when_one_was_sent(monkeypatch, tmp_path,
+                                                                  capsys, counts, hint):
+    """An oversized prompt to `claude-max` is a TRANSIENT failure, retried and then
+    reported as an outage, so the outage line is where the default backend's user learns
+    the record may be the cause -- on stderr AND in the pushed digest."""
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=0, backend="fake m",
+                          backend_error="503 after retries", judge_aborted=True,
+                          record_enabled=True, record_counts=counts)
+    code, sent = _cli(monkeypatch, tmp_path, report)
+    assert code == 1
+    outage = [ln for ln in capsys.readouterr().err.splitlines()
+              if "backend unavailable" in ln]
+    assert len(outage) == 1 and ("triage.evidence: false" in outage[0]) is hint
+    pushed = [ln for ln in sent[0].splitlines() if ln.startswith("Backend unavailable")]
+    assert len(pushed) == 1 and ("triage.evidence: false" in pushed[0]) is hint
+
+
+def test_a_judge_outage_with_nothing_judged_names_the_record_once(monkeypatch, tmp_path):
+    """Both failure arms carry the hint, and a judge outage with nothing judged reaches
+    both: the digest must name the record on the outage line and not again under it."""
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=0, backend="fake m",
+                          backend_error="503 after retries", judge_aborted=True,
+                          record_enabled=True, record_counts={"experience": 4})
+    _, sent = _cli(monkeypatch, tmp_path, report)
+    lines = sent[0].splitlines()
+    assert [ln for ln in lines if "triage.evidence: false" in ln] == [
+        ln for ln in lines if ln.startswith("Backend unavailable")]
+    assert any("returned NOTHING" in ln for ln in lines)
+
+
+def test_a_tier3_outage_never_blames_the_record(monkeypatch, tmp_path, capsys):
+    """Tier 3's breaker sets `backend_error` before judging, on a call that never carries
+    the record; the judge then judged every lead. No record advice anywhere."""
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=3, usable_verdicts=3,
+                          backend="fake m",
+                          backend_error="company-resolve tier 3: breaker tripped",
+                          judge_aborted=False, record_enabled=True,
+                          record_counts={"experience": 4})
+    code, sent = _cli(monkeypatch, tmp_path, report)
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "backend unavailable" in err and "triage.evidence" not in err
+    assert "Backend unavailable" in sent[0] and "triage.evidence" not in sent[0]
+
+
+class _Down:
+    label = "down m"
+
+    def complete(self, prompt):
+        raise BackendError("503 after retries")       # transient by default
+
+
+def test_a_judge_outage_sets_judge_aborted(tmp_path, role):
+    v = Vault(str(tmp_path / "vault"))
+    _lead(v, role)
+    _seed(v, "experience", "kept", "Company: Example Alpha\nverified: 2026-01-01")
+    report, _ = _go(tmp_path, v, backend=_Down())
+    assert report.backend_error and report.judge_aborted is True
+    assert report.record_sent and report.judged == 0
+
+
+@pytest.mark.parametrize("judged", [0, 3])
+def test_a_tier3_outage_with_an_empty_judge_keeps_the_stderr_hint(monkeypatch, tmp_path,
+                                                                   capsys, judged):
+    """The outage arm returns before the D5 arm, so it must carry the hint D5 would have
+    printed when the judge, not tier 3, came back empty. Both rows: a reply of only
+    malformed verdicts (`judged=3`, none usable) is empty to D5 too."""
+    report = TriageReport(counts=dict(_COUNTS), sent_to_judge=3, judged=judged,
+                          usable_verdicts=0, backend="fake m",
+                          backend_error="company-resolve tier 3: breaker tripped",
+                          judge_aborted=False, record_enabled=True,
+                          record_counts={"experience": 4})
+    code, _ = _cli(monkeypatch, tmp_path, report)
+    assert code == 1
+    outage = [ln for ln in capsys.readouterr().err.splitlines()
+              if "backend unavailable" in ln]
+    assert len(outage) == 1 and "triage.evidence: false" in outage[0]

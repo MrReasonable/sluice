@@ -672,6 +672,23 @@ def _record_field(counts, unreadable, enabled, sent_to_judge) -> str:
     return text
 
 
+def _record_hint(report) -> str:
+    """#196: when the judge produced nothing AND a candidate record rode on each batch, the
+    record's size is a likely cause worth naming -- worded as a possibility, since a
+    rejection's real cause is not known here. Used on BOTH failure arms: every batch
+    coming back empty, and the outage arm -- there ONLY when `report.judge_aborted`, i.e.
+    the judge's own backend stopped, since tier 3's breaker also sets `backend_error` on a
+    call that never carries the record. The outage arm is not hypothetical: an oversized
+    prompt to `claude-max` raises a TRANSIENT `BackendError`, is retried, and ends as a
+    judge outage, so a hint on the empty arm alone never named the record for the default
+    backend. The caller gates the outage arm; this helper checks only `record_sent`."""
+    if not report.record_sent:
+        return ""
+    n = sum(report.record_counts.values())
+    return (f" Your candidate record was sent with every batch ({n} entries); if it is too "
+            "large for the provider, set triage.evidence: false.")
+
+
 def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> str:
     """The `triage run` notification body, as prose rather than `counts`' `repr`.
 
@@ -731,9 +748,14 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
              if alert else [f"job-sluice triage: {headline}"])
     # #333: second line, straight under the headline, because it is the one thing in this
     # message that needs doing and there is no fallback provider that already did it.
+    # The record hint goes on the outage line only when the JUDGE's own backend stopped;
+    # tier 3's breaker also sets `backend_error`, on a call that never carries the record.
+    # Computed once because the "returned NOTHING" line below must not repeat it.
+    hint_on_outage = bool(report.backend_error and report.judge_aborted)
     if report.backend_error:
         lines.append(f"Backend unavailable: {report.backend_error}. Unjudged leads keep "
-                     "their status and the next run retries them.")
+                     "their status and the next run retries them."
+                     + (_record_hint(report) if hint_on_outage else ""))
 
     # Every non-empty group is guaranteed ONE name before any group may spend the rest of
     # the budget. A single shared budget plus `SURFACED`'s shortlist-first ordering erased
@@ -786,7 +808,9 @@ def _format_triage_digest(report, alert: str = "", *, dry_run: bool = False) -> 
         # `sent_to_judge` existed this arm said "no judge ran", which is the opposite of
         # what happened, on the one channel an unattended install reads.
         lines.append(f"The judge was called for {report.sent_to_judge} lead(s) and "
-                     "returned NOTHING. Treat this run as failed, not as empty.")
+                     "returned NOTHING. Treat this run as failed, not as empty."
+                     # Once per digest: a judge outage already named the record above.
+                     + ("" if hint_on_outage else _record_hint(report)))
     elif keep:
         # Reached only when no call was made at all (`--no-llm`, or nothing to judge).
         # These leads are neither filtered nor surfaced; they are waiting, and that is the
@@ -1405,7 +1429,31 @@ def cmd_triage_run(args, config) -> int:
     if report.backend_error:
         # After the digest, so the leads that WERE judged before the outage still reach the
         # reader; the exit code is what tells a cron the run did not finish (#333).
-        print(f"triage: backend unavailable -- {report.backend_error}", file=sys.stderr)
+        # The hint also rides here when the judge returned nothing: this arm returns before
+        # the D5 arm below, so a tier-3 outage coinciding with an empty judge would
+        # otherwise drop from stderr the record hint the digest still carries.
+        # Keyed on `usable_verdicts`, the same condition as the D5 arm, so a reply made only
+        # of malformed verdicts keeps the hint here exactly as it does there.
+        record_suspect = report.judge_aborted or (report.sent_to_judge
+                                                  and not report.usable_verdicts)
+        print(f"triage: backend unavailable -- {report.backend_error}."
+              + (_record_hint(report) if record_suspect else ""), file=sys.stderr)
+        return 1
+    if report.sent_to_judge and not report.usable_verdicts:
+        # D5 (#196): the digest above already calls this run failed; the exit code now
+        # agrees, so a cron sees it. AFTER `_notify_reporting`, beside the backend_error
+        # exit, so the digest is still pushed. Derived from the report alone -- judge()'s
+        # verdicts-in, verdicts-out contract is unchanged. Keyed on `usable_verdicts`, not
+        # `judged`: `judged` counts before normalisation, so a reply whose every verdict
+        # was malformed wrote no lead and would otherwise exit 0. The two cases get
+        # different wording because they need different fixes.
+        if report.judged:
+            print("triage: the judge returned no usable verdicts (every one was "
+                  "malformed) -- treat this run as failed." + _record_hint(report),
+                  file=sys.stderr)
+        else:
+            print("triage: the judge returned no verdicts -- treat this run as failed."
+                  + _record_hint(report), file=sys.stderr)
         return 1
     return 0
 

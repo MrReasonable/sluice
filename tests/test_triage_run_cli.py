@@ -579,14 +579,14 @@ def test_an_audit_log_path_naming_a_directory_stops_triage_before_any_lead_chang
 
 
 # ── the push body is read on a phone: prose, not a dict repr ─────────────────
-def _push(monkeypatch, tmp_path, **kw):
+def _push(monkeypatch, tmp_path, *, expect=0, **kw):
     """Run `triage run` over a canned report and return the single push body."""
     sent = []
     monkeypatch.setenv("VAULT_DIR", str(tmp_path))
     monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kwargs: sent.append(msg))
     monkeypatch.setattr(Sluice, "triage", lambda self, **kwargs: _report(**kw))
     assert cmd_triage_run(
-        _build_parser().parse_args(["triage", "run", "--no-llm"]), Config()) == 0
+        _build_parser().parse_args(["triage", "run", "--no-llm"]), Config()) == expect
     assert len(sent) == 1, "the run notified nobody"
     return sent[0]
 
@@ -1058,7 +1058,9 @@ def test_a_judge_outage_does_not_read_as_a_quiet_run(monkeypatch, tmp_path):
     channel an unattended install reads. Distinguishable now, and asserted as a DIFFERENCE
     rather than a phrase, so it cannot pass by both arms happening to say the same thing.
     """
-    outage = _push(monkeypatch, tmp_path,
+    # expect=1: D5 (#196) -- a judge that was called and returned no verdicts now exits 1
+    # (after the digest is pushed), so the exit code agrees with "Treat this run as failed".
+    outage = _push(monkeypatch, tmp_path, expect=1,
                    counts={"keep": 18, "shortlist": 0, "research": 0, "dismiss": 0,
                            "needs_review": 0, "skipped": 0},
                    judged=0, sent_to_judge=18, backend=None,
@@ -1091,13 +1093,15 @@ def test_the_headline_sums_both_surfaced_verdicts(monkeypatch, tmp_path):
     research_only = _push(monkeypatch, tmp_path,
                           counts={"keep": 3, "shortlist": 0, "research": 3, "dismiss": 0,
                                   "needs_review": 0, "skipped": 0},
-                          judged=3, sent_to_judge=3, backend="deepseek-v4-flash",
+                          judged=3, sent_to_judge=3, usable_verdicts=3,
+                          backend="deepseek-v4-flash",
                           surfaced=[("research", f"Co {n}", "Delivery Lead")
                                     for n in range(3)])
     shortlist_only = _push(monkeypatch, tmp_path,
                            counts={"keep": 2, "shortlist": 2, "research": 0, "dismiss": 0,
                                    "needs_review": 0, "skipped": 0},
-                           judged=2, sent_to_judge=2, backend="deepseek-v4-flash",
+                           judged=2, sent_to_judge=2, usable_verdicts=2,
+                           backend="deepseek-v4-flash",
                            surfaced=[("shortlist", f"Co {n}", "EM") for n in range(2)])
 
     assert research_only.startswith("job-sluice triage: 3 to look at")
@@ -1113,7 +1117,8 @@ def test_the_name_budget_holds_with_the_small_group_first(monkeypatch, tmp_path)
     body = _push(monkeypatch, tmp_path,
                  counts={"keep": 8, "shortlist": 2, "research": 6, "dismiss": 0,
                          "needs_review": 0, "skipped": 0},
-                 judged=8, sent_to_judge=8, backend="deepseek-v4-flash",
+                 judged=8, sent_to_judge=8, usable_verdicts=8,
+                 backend="deepseek-v4-flash",
                  surfaced=[("shortlist", f"S{n}", "EM") for n in range(2)] +
                           [("research", f"R{n}", "DL") for n in range(6)])
 
@@ -1139,7 +1144,8 @@ def test_a_whitespace_only_company_is_treated_as_absent(monkeypatch, tmp_path):
     body = _push(monkeypatch, tmp_path,
                  counts={"keep": 1, "shortlist": 1, "research": 0, "dismiss": 0,
                          "needs_review": 0, "skipped": 0},
-                 judged=1, sent_to_judge=1, backend="deepseek-v4-flash",
+                 judged=1, sent_to_judge=1, usable_verdicts=1,
+                 backend="deepseek-v4-flash",
                  surfaced=[("shortlist", "   ", "Engineering Manager")])
 
     assert "- Engineering Manager" in body
