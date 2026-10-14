@@ -206,9 +206,9 @@ _DECISION_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # triage states that carry no decision at all, which is what makes them writable here.
 #
 # The cost is that leads already parked in `research` by the OLD behaviour stay parked.
-# That is correct rather than unfortunate: clearing them rewrites a human's queue in bulk,
-# so it belongs in a migration a human opts into (the one-shot gate pattern in
-# `triage/reverdict.py`), not in a nightly cron that does it to them silently.
+# Clearing them rewrites a human's queue, so it is a pass a human runs: the refusal stamps
+# `triage_blocked` (see _stamp_blocked) and `job-sluice leads unpark` lists those leads and
+# moves them only on `--apply` (#302), never a nightly cron acting on them silently.
 _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 
 # The frontmatter keys a person is invited to hand-edit: the CV composer's framing roster
@@ -220,8 +220,11 @@ _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # `triage_next` therefore outlives a newer verdict's action: never-clobber outranks
 # freshness. `followup_asked` is defence in depth: a block value there reads blank, so
 # `apply_verdict` never writes the key over one today (see its stale-stamp rule), and this
-# keeps a later writer from corrupting it either.
-_HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS) | {"triage_next", "followup_asked"}
+# keeps a later writer from corrupting it either. `triage_blocked` (#302) is defence in depth
+# the same way: a clear runs only when the snapshot holds a date stamp, and a value turned
+# multi-line since then fails the clear's `require_unchanged` first.
+_HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS) | {"triage_next", "followup_asked",
+                                                 "triage_blocked"}
 
 _RESEARCH = frozenset({"research"})
 
@@ -282,16 +285,25 @@ def apply_classification(vault, note, decision, reason) -> str:
     # to no guard at all against a real vault. This re-reads the FRESH status inside the
     # CAS transform, closing the window a #109 tier-2 fetch (real page load, seconds) now
     # opens ahead of this write.
+    # #302: a landed classification clears a `triage_blocked` stamp, as a landed verdict
+    # does (see apply_verdict). Only a real date stamp is cleared; a hand-typed value is left.
+    fields = {"status": new_status}
+    require_unchanged = None
+    stamp = blocked_stamp(note.fm)
+    if stamp:
+        fields["triage_blocked"] = '""'
+        require_unchanged = {"triage_blocked": stamp}
     wrote = vault.update_fields(
-        note.ref, {"status": new_status},
+        note.ref, fields,
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
-        require_status=_DECISION_REQUIRE.get(decision, frozenset(_status.TRIAGE_OWNED)))
-    # #118: `wrote=False` here is always a genuine no-op, never a race -- either
-    # require_status refused on a fresh re-read (the lead already left TRIAGE_OWNED,
-    # someone got there first) or the write was a byte-identical rewrite (the value
-    # was already current, e.g. a same-day re-triage). A REAL content collision raises
-    # VaultConflict instead, caught separately one level up in triage/engine.py.
-    # "unchanged" either way, not a failure.
+        require_status=_DECISION_REQUIRE.get(decision, frozenset(_status.TRIAGE_OWNED)),
+        require_unchanged=require_unchanged,
+        preserve_block_values=_HAND_EDITABLE_KEYS)
+    # #118: `wrote=False` is either a genuine no-op -- require_status refused on a fresh
+    # re-read (the lead already left TRIAGE_OWNED), or a byte-identical rewrite -- or (#302)
+    # the stale-stamp `require_unchanged` refusing a `triage_blocked` re-stamp that landed
+    # mid-classify, where the newer stamp stands. A REAL content collision raises
+    # VaultConflict instead, caught one level up in triage/engine.py. Never a failure.
     if wrote:
         return "applied"
     if decision == "unjudgeable":
@@ -366,11 +378,17 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     #   - a STAMPED snapshot blanks it under `require_unchanged`, so a re-stamp on a different
     #     date during the judge refuses this whole write (`unchanged`) instead of erasing it.
     #     Residual, stated: a re-stamp on the SAME date as the stale stamp passes the guard.
+    require_unchanged = {}
     stamp = note.fm.get("followup_asked", "") or ""
-    require_unchanged = None
     if stamp.strip():
         fields["followup_asked"] = '""'
-        require_unchanged = {"followup_asked": stamp}
+        require_unchanged["followup_asked"] = stamp
+    # #302: the same rule for `triage_blocked`, MERGED into the one dict so neither entry
+    # replaces the other. Only a real date stamp is cleared; a hand-typed value is left.
+    blocked = blocked_stamp(note.fm)
+    if blocked:
+        fields["triage_blocked"] = '""'
+        require_unchanged["triage_blocked"] = blocked
     today = date.today().isoformat()
     tag = f"[triage {today}]"
     parts = [verdict["fit_reasoning"]]
@@ -385,11 +403,12 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
                                 require_status=_VERDICT_REQUIRE.get(
                                     status, frozenset(_status.TRIAGE_OWNED)),
-                                require_unchanged=require_unchanged,
+                                require_unchanged=require_unchanged or None,
                                 preserve_block_values=_HAND_EDITABLE_KEYS)
-    # #118: symmetric with apply_classification above, with one cause it lacks (#378): the
-    # stale-stamp `require_unchanged` refusing a re-stamp landed mid-judge. That one IS a
-    # content collision; `unchanged` still fits it, since the newer stamp stands.
+    # #118: symmetric with apply_classification above. Both writers carry the (#302)
+    # stale-stamp `require_unchanged` refusing a `triage_blocked` re-stamp landed mid-judge;
+    # only this one also carries the (#378) refusal of a `followup_asked` re-stamp. Each is a
+    # refusal where the newer stamp stands and `unchanged` fits; neither is a VaultConflict.
     if wrote:
         return "applied"
     if status == "unjudgeable":
