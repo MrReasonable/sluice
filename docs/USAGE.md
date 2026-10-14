@@ -195,7 +195,10 @@ takes every lead at `dismiss`, including ones you dismissed yourself.
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
 observed_role_types=<by-origin counts> backend=<name> failures=<N> record=<what the judge was shown>` to stderr. `record=` is `none` when
 no judge ran, `off` unless `triage.evidence` is on, and otherwise the verified entries shown per
-kind, with `;unreadable:<kinds>` when a corpus could not be read.
+kind, with `;unreadable:<kinds>` when a corpus could not be read. It is `empty` when the
+record is on but no kind the judge reads could be read (a readable kind with no verified
+entry still prints as `<kind>:0`), for example
+`empty;unreadable:experience,skills`.
 `tests/test_docs_claims.py` derives those key names from `cli.py` and fails when this
 line and the real one disagree, because every previous version of this sentence went
 stale silently. If the pre-write check finds that the triage audit log cannot be written,

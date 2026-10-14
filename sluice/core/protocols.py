@@ -179,10 +179,11 @@ class EvidenceKind:
 
     def __post_init__(self):
         """Refuse a `floor_map` entry naming a floor key that is not a floor key, or a
-        frontmatter key this kind does not declare. Fail loudly at construction, the rule
-        `_select_backend` and `Vault._kind` already follow.
+        frontmatter key this kind does not declare, and a `judge_fields` key this kind does
+        not declare (#196). Fail loudly at construction, the rule `_select_backend` and
+        `Vault._kind` already follow.
 
-        All three close a class rather than an enumerated vector, and none is
+        Each closes a class rather than an enumerated vector, and none is
         reachable from a config file today -- every `EvidenceKind` is shipped code -- so
         this is a guard against the NEXT edit to that literal, in the shape this codebase
         uses for a quiet wrong default.
