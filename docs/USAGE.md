@@ -210,6 +210,8 @@ same backend (root `backend_retries`); if the judge's backend is still down afte
 judge stops -- verdicts from batches that completed are applied, every other lead keeps its
 status for the next run -- and the run prints `triage: backend unavailable -- <reason>` and
 **exits 1**. A tripped tier-3 company-resolution breaker fails the run the same way.
+It also exits 1 when the judge was called and returned no usable verdicts (every batch
+rejected or unparseable, or every verdict malformed), after sending the digest.
 
 The Telegram notification is a **separate, human-readable digest**, not a copy of that
 line: it is read on a phone, where a dict of seven mostly-zero rows names none of the

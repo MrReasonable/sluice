@@ -155,28 +155,47 @@ _RECORD_REMINDER_PROMPT = """A requirement the candidate record does not cover i
 
 
 def _one_line(value) -> str:
-    # A hand-typed block list or multi-line value must not start a new prompt line: it
-    # could forge a heading. Vault text is the user's own; this guards accidental
-    # structure, not a hostile author.
+    # A value carrying a line break must not start a new prompt line: it could forge a
+    # heading. The vault itself reads a hand-typed block list as BLANK (a key's value comes
+    # from its own line), so this is not what catches that case; it matters for an inline
+    # value that still spans lines, and for a second store that returns one. Vault text is
+    # the user's own; this guards accidental structure, not a hostile author.
     return " ".join(str(value or "").split())
+
+
+def _entry_parts(spec, entry) -> list:
+    """The pieces of one entry's record line: its name when it has one, then each
+    non-empty `judge_fields` member in order. Each value is flattened ONCE and filtered on
+    the flattened text, so a value that is only whitespace is omitted as an empty one."""
+    fields = entry.get("fields") or {}
+    values = [(key, _one_line(fields.get(key))) for key in spec.judge_fields]
+    parts = [p for p in [_one_line(cv_name(entry))] if p]
+    return parts + [f"{key}: {value}" for key, value in values if value]
+
+
+def renderable_entries(spec, entries) -> list:
+    """Exactly the entries `_record_block` renders: those with a name or at least one
+    non-empty judge field. The engine counts and passes on THIS list, so `record=`,
+    `record_sent` and the size hint describe what the prompt carried rather than what the
+    store returned; one rule in one place, so the count and the render cannot disagree."""
+    return [entry for entry in entries or () if _entry_parts(spec, entry)]
 
 
 def _record_block(record) -> str:
     """The candidate-record section, or "" when no kind has an entry -- the abstain path.
     Generic over kinds: heading from the kind's relpath basename (EvidenceKind has no label
-    of its own), name from `cv_name`, then each non-empty `judge_fields` member in order."""
+    of its own), name from `cv_name`, then each non-empty `judge_fields` member in order.
+
+    An entry with no name renders its fields alone rather than a bare "- " or "-  | ...",
+    and one with neither a name nor a non-empty field is skipped: an empty bullet tells the
+    judge nothing and reads as a record entry that says nothing. A kind whose every entry
+    is skipped is dropped like an empty one, so it leaves no heading over nothing."""
     sections = []
     for spec, entries in record or ():
-        if not entries:
-            continue
-        lines = [f"### {spec.relpath.rsplit('/', 1)[-1]}"]
-        for entry in entries:
-            fields = entry.get("fields") or {}
-            parts = [_one_line(cv_name(entry))]
-            parts += [f"{key}: {_one_line(fields.get(key))}" for key in spec.judge_fields
-                      if _one_line(fields.get(key))]
-            lines.append("- " + " | ".join(parts))
-        sections.append("\n".join(lines))
+        lines = ["- " + " | ".join(_entry_parts(spec, entry))
+                 for entry in renderable_entries(spec, entries)]
+        if lines:
+            sections.append("\n".join([f"### {spec.relpath.rsplit('/', 1)[-1]}", *lines]))
     if not sections:
         return ""
     return _CANDIDATE_RECORD_HEADER_PROMPT + "\n\n" + "\n\n".join(sections)

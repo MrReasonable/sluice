@@ -49,7 +49,7 @@ from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
 from sluice.core.config import DOSSIER_CONCURRENCY_MAX
 from sluice.triage.judge import JudgeAborted, judge
-from sluice.triage.prompt import build_system_prompt_from
+from sluice.triage.prompt import build_system_prompt_from, renderable_entries
 
 _log = get_logger("triage.engine")
 
@@ -96,9 +96,17 @@ class TriageReport:
     # whether the judge was never called or was called and failed outright. The digest says
     # opposite things in those two cases, and said the wrong one before this existed.
     sent_to_judge: int = 0
+    # #196: how many of the `judged` verdicts survived `normalise_verdict`, counted before
+    # any is matched to a lead. A third number because `judged` counts what `judge()`
+    # returned BEFORE normalisation, so a reply made entirely of malformed verdicts has a
+    # non-zero `judged` and wrote nothing; the CLI's exit code keys on this one, so that
+    # run fails as loudly as one that returned no verdicts at all.
+    usable_verdicts: int = 0
     # #196: what the judge was shown of the candidate record. Facts only; the CLI decides
-    # wording. `record_enabled` is set only where the judge is called, so a run that never
-    # called it reads `none` rather than claiming `off`.
+    # wording. `record_enabled` is set only where the judge is called, and the CLI reads it
+    # beside `sent_to_judge` (`cli.py::_record_field`): a run that sent nothing to the
+    # judge reads `none` whatever this holds, so it never claims `off` for a judge that
+    # was not called.
     record_enabled: bool = False
     record_counts: dict = field(default_factory=dict)
     record_unreadable: list = field(default_factory=list)
@@ -113,6 +121,12 @@ class TriageReport:
     # line in `failures`, because the CLI exits non-zero on it -- there is no fallback
     # provider to have absorbed it, and a cron must see the run fail.
     backend_error: str = ""
+    # #196: True only when the JUDGE itself stopped on an outage. `backend_error` cannot say
+    # which backend failed: tier 3's breaker sets it too, before judging, on a call that
+    # never carries the candidate record and may go to a different provider. A run can
+    # trip tier 3 and then judge every lead, so record advice keyed on `backend_error`
+    # alone would blame the record for a failure it played no part in.
+    judge_aborted: bool = False
     failures: list = field(default_factory=list)
     # #120: which tier actually filled a blank/placeholder company, counted only where the
     # write LANDED (or would have, under dry_run) -- the same discipline `_audit`
@@ -250,6 +264,9 @@ def _read_record(vault, cfg, report):
                          kind, e)
             report.record_unreadable.append(kind)
             continue
+        # Counted AFTER the prompt's own filter: an entry the prompt would not render (no
+        # name, no judge field) must not make `record_sent` true or swell the size hint.
+        entries = renderable_entries(spec, entries)
         report.record_counts[kind] = len(entries)
         record.append((spec, entries))
     return record
@@ -1187,6 +1204,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 # next run picks it up.
                 verdicts = e.verdicts
                 report.backend_error = str(e.cause)
+                report.judge_aborted = True
             report.backend = getattr(backend, "label", None)
         else:
             verdicts = []
@@ -1241,6 +1259,7 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 continue
             usable.append(verdict)
         verdicts = usable
+        report.usable_verdicts = len(usable)
         # `judge()` drops a batch it cannot get a parseable answer for -- every backend
         # exception and every parse failure, twice per batch -- and holds no reference to
         # `report`, so a total outage returned an empty list with `failures` untouched,
