@@ -211,7 +211,8 @@ Every behaviour below starts from a failing test. All offline, with the judge ba
 before anything runs. Fixtures are synthetic: roles from `tests/conftest.py`'s seeded `titles`,
 companies as `Example <Word>` literals from the reviewed roster in
 `tests/test_fixture_name_neutrality.py` (never `faker`'s company generator, whose output no
-roster can review), and only `example.com`/`example.org` hosts in urls and host assertions.
+roster can review), and only the reserved `example.invalid` host (as the neighbouring tests
+use) in urls and host assertions.
 Every date-dependent triage row fixes today by patching `sluice.triage.apply.date`; facade and
 CLI rows inject it with `Sluice(today=...)`, which is where `unpark`'s tag date comes from.
 
