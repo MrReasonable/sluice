@@ -6,7 +6,7 @@ re-running under a debugger."""
 import pytest
 
 from sluice import cli
-from sluice.cli import _build_parser, cmd_triage_run
+from sluice.cli import _build_parser, _format_triage_digest, cmd_triage_run
 from sluice.core import status as _status
 from sluice.core.app import Sluice
 from sluice.core.config import Config
@@ -1206,3 +1206,29 @@ def test_the_queue_line_is_singular_for_one_lead():
                       waited_days=None)
     assert cli._research_queue_line(FollowupQueue(rows=(row,))) == (
         "Research queue: 1 lead, 0 marked asked; oldest first seen 1 day ago.")
+
+
+def test_the_digest_names_blocked_research_leads_and_how_to_review_them():
+    line = ("2 research leads could not be judged from their page; "
+            "review with: job-sluice leads unpark")
+    assert line in _format_triage_digest(_report(blocked_research=2)).splitlines()
+    one = ("1 research lead could not be judged from its page; "
+           "review with: job-sluice leads unpark")
+    assert one in _format_triage_digest(_report(blocked_research=1)).splitlines()
+    zero = _format_triage_digest(_report()).splitlines()
+    assert not any("unpark" in ln or "could not be judged" in ln for ln in zero)
+
+
+def test_the_stderr_summary_counts_blocked_research_leads(monkeypatch, tmp_path, capsys):
+    # The digest's unpark pointer reaches only an install with notifications configured
+    # (`notify` returns "unconfigured" silently otherwise), so the stderr summary is what a
+    # fresh install sees, and it must carry the count too.
+    monkeypatch.setenv("VAULT_DIR", str(tmp_path))
+    monkeypatch.setattr(cli, "_notify_reporting", lambda msg, **kw: None)
+    monkeypatch.setattr(Sluice, "triage", lambda self, **kw: _report(blocked_research=3))
+
+    args = _build_parser().parse_args(["triage", "run", "--no-llm"])
+    assert cmd_triage_run(args, Config()) == 0
+    summary = next(ln for ln in capsys.readouterr().err.splitlines()
+                   if ln.startswith("triage: {"))
+    assert " blocked_research=3 " in summary

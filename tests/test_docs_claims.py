@@ -1617,8 +1617,8 @@ def test_the_summary_key_extraction_is_not_vacuous():
     Pins the known keys rather than a floor, so one key silently replacing another
     cannot pass."""
     assert _printed_summary_keys() == {
-        "judged", "resolved", "llm_calls", "observed_role_types", "backend",
-        "failures", "record"}, (
+        "judged", "resolved", "llm_calls", "observed_role_types", "blocked_research",
+        "backend", "failures", "record"}, (
         "the triage summary line changed. Update this set AND the "
         "`job-sluice triage: ...` sentence in docs/USAGE.md that it guards.")
 

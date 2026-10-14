@@ -193,7 +193,9 @@ names one only when the new verdict would keep it -- one the new verdict rejects
 takes every lead at `dismiss`, including ones you dismissed yourself.
 
 Prints `job-sluice triage: <counts> judged=<N> resolved=<by-tier counts> llm_calls=<N>
-observed_role_types=<by-origin counts> backend=<name> failures=<N> record=<what the judge was shown>` to stderr. `record=` is `none` when
+observed_role_types=<by-origin counts> blocked_research=<N> backend=<name> failures=<N> record=<what the judge was shown>` to stderr. `blocked_research=` counts the
+`research` leads this run could not judge from their page and stamped with
+`triage_blocked`. `record=` is `none` when
 no judge ran, `off` unless `triage.evidence` is on, and otherwise the verified entries shown per
 kind, with `;unreadable:<kinds>` when a corpus could not be read. It is `empty` when the
 record is on but no kind the judge reads could be read (a readable kind with no verified
