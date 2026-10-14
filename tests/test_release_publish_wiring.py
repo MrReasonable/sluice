@@ -2128,8 +2128,8 @@ _TRUSTED_USES = {
 _ACTION_PINS = {
     "actions/checkout": "3d3c42e5aac5ba805825da76410c181273ba90b1",
     "actions/setup-python": "5fda3b95a4ea91299a34e894583c3862153e4b97",
-    "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
-    "actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+    "actions/upload-artifact": "cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+    "actions/download-artifact": "9000827ccba6bdab643e8b6fd33ac0654aef8333",
     "actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
 }
 _BOTTLES_RUN = 'python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py"'
@@ -2327,20 +2327,20 @@ def test_the_untrusted_jobs_run_only_the_rostered_scripts():
 # re-pin can turn a new caching input on by default.
 _ACTIONS_WITHOUT_A_CACHE_RESTORE = {
     "actions/checkout": ("3d3c42e5aac5ba805825da76410c181273ba90b1", "declares no caching input"),
-    "actions/download-artifact": ("3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c", "declares no caching input"),
-    "actions/upload-artifact": ("043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "declares no caching input"),
+    "actions/download-artifact": ("9000827ccba6bdab643e8b6fd33ac0654aef8333", "declares no caching input"),
+    "actions/upload-artifact": ("cf430e030ddbb5b0abf93d22962f4752f3646cd9", "declares no caching input"),
     "actions/create-github-app-token": ("bcd2ba49218906704ab6c1aa796996da409d3eb1", "declares no caching input"),
     "actions/attest-build-provenance": ("4d101475d8b20a2381f78447822ac1eab6504dd8", "declares no caching input"),
     "actions/setup-python": ("5fda3b95a4ea91299a34e894583c3862153e4b97",
                              "caches only through its `cache` input, which has no default"),
-    "actions/setup-node": ("820762786026740c76f36085b0efc47a31fe5020", "`package-manager-cache` defaults to true"),
+    "actions/setup-node": ("949feb2413d6458794dcd2491c4babbbce0c15c1", "`package-manager-cache` defaults to true"),
     "pypa/gh-action-pypi-publish": ("dc37677b2e1c63e2034f94d8a5b11f265b73ba33", "declares no caching input"),
     "googleapis/release-please-action": ("45996ed1f6d02564a971a2fa1b5860e934307cf7", "declares no caching input"),
-    "github/codeql-action/init": ("2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2",
+    "github/codeql-action/init": ("24c54180a607b1449ed407dd24f251e4e9147c8d",
                                   "`trap-caching` and `dependency-caching` follow a server-side flag when unset, "
                                   "and overlay analysis restores a database from the cache under another flag no "
                                   "input controls (src/config-utils.ts::checkOverlayEnablement)"),
-    "github/codeql-action/analyze": ("2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2",
+    "github/codeql-action/analyze": ("24c54180a607b1449ed407dd24f251e4e9147c8d",
                                      "declares no caching input; the overlay mode it caches under is init's"),
     "docker/setup-qemu-action": ("99012661954931238ded8c8b007157a8430204e1", "`cache-image` defaults to true"),
     "docker/setup-buildx-action": ("f87e5991a6d7451dcb8d9637bfbc97413f497069", "`cache-binary` defaults to true"),
