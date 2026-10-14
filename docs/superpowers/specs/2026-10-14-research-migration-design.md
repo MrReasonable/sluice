@@ -22,7 +22,7 @@ the leads sit in the human research queue looking like real decisions.
   `research` leads with no audit row since #301 deployed, whose last recorded scores cluster on
   the conservative value and whose cached dossiers hold page chrome.
 - No lead judged `unjudgeable` since #301 has later received a real verdict, over about four
-  weeks, and most come from one board. The blocks behave as permanent, not transient.
+  weeks. The blocks behave as permanent, not transient.
 
 ## Owner decisions
 
@@ -35,70 +35,121 @@ the leads sit in the human research queue looking like real decisions.
 3. **Opt-in: a `leads` pass, not the #223 two-run gate.** The `leads` passes write over a set the
    TOOL computed, so they report by default and write only on a flag. The two-run gate inside
    `triage run` would apply on the next nightly cron run without the human typing anything.
+4. **Stamp clearing: triage's own writers** (plan review, option a). `apply_verdict` and
+   `apply_classification` clear the stamp on any write that lands. `leads dismiss`, `leads
+   expire` and the reverdict pass do not; that residual is stated in §3.
 
 ## Design
 
 ### 1. Recording the candidate (nightly triage)
 
 In `triage/apply.py::apply_verdict`, when the clamped status is `unjudgeable` and the main
-write returns `unchanged`, a second write runs:
+write returns False, a second write runs:
 
 ```python
-vault.update_fields(note.ref, {"triage_blocked": f'"{today}"'},
-                    require_status=frozenset({"research"}))
+stamped = vault.update_fields(note.ref, {"triage_blocked": f'"{today}"'},
+                              require_status=frozenset({"research"}),
+                              preserve_block_values=frozenset({"triage_blocked"}))
 ```
 
 - It sets one triage-owned key and nothing else: not the status, not the body, no
   `relevance_notes` line. `require_status` is re-read fresh inside the compare-and-set
   transform, so a lead that left `research` while being judged is not stamped.
+- `preserve_block_values` leaves a hand-typed multi-line `triage_blocked` alone (#329).
 - It is the existing writer, so it is not a new CodeQL sink.
-- `new` and `unjudgeable` leads never reach it: their main write lands.
+- `new` and `unjudgeable` leads normally never reach it, because their main write lands. A
+  `new` lead that a human hand-sets to `research` while it is being judged DOES reach it: the
+  main write is refused and the stamp lands. That is correct (the lead is now at `research`
+  and the latest judgement said the page was not a posting) and is pinned by a test.
 - An `applied`-or-later lead is turned away by `_guarded` before any write.
+- An `awaiting_reply` lead (`research` with `followup_asked` set) is filtered out by the engine
+  before judging (`followups.awaiting_reply`), so it is never judged and never stamped.
 - A `--dry-run` never calls `apply_verdict`, so it stamps nothing.
 - The key is `triage_`-prefixed for the reason `triage_concerns` is: a person might already use
   a bare name for their own notes.
 
-**Clearing.** Any verdict that LANDS blanks a present stamp, in the same write, the way the
-#378 `followup_asked` stale-stamp rule does. So a stamp always means the latest judgement of the
-lead said the page was not a posting. A blocked lead is re-stamped nightly, so the date stays
-current.
+**When the outcome is `"blocked"`.** A False from the stamp write is ambiguous: a refused
+`require_status`, a byte-identical same-day re-stamp, or `preserve_block_values` abstaining.
+So the classification follows `Sluice.mark_asked`: after a False, re-read the note fresh
+(`_reread_lead`, moved from `core/app.py` to `core/leads.py` so `triage/` can use it without
+importing the facade) and return `"blocked"` only when the fresh status normalises to
+`research` AND the fresh `triage_blocked` equals today's date. A True stamp write returns
+`"blocked"` directly. Every other case returns `"unchanged"`, as today.
 
-`apply_verdict` gains a third outcome for this arm, `"blocked"`, so the engine can count it
-without a second status read. It is grouped with `skipped` everywhere `skipped` is consumed
-today (counts, `surfaced`, the audit condition), except that it also increments a new
-`report.counts["blocked_research"]`. It does NOT increment `unjudgeable_by["judge"]`: no lead
-became `unjudgeable`.
+**Clearing.** In `apply_verdict` and `apply_classification`, any write that lands blanks a
+present stamp in the same write, following the #378 `followup_asked` stale-stamp rule:
+
+- a blank snapshot writes no `triage_blocked` key at all, so a judged lead that was never
+  stamped gains no key;
+- a stamped snapshot sets `triage_blocked: ""` under `require_unchanged={"triage_blocked":
+  stamp}`, MERGED with the existing `followup_asked` entry rather than replacing it (both keys
+  in one dict when both are present);
+- `triage_blocked` joins `_HAND_EDITABLE_KEYS`, so a multi-line hand-typed value is left alone.
+
+So a stamp means the latest triage write to the lead was a refused `unjudgeable` verdict. A
+blocked lead is re-stamped nightly, so the date stays current.
+
+**Engine wiring.** `apply_verdict` gains a third outcome, `"blocked"`. Both hand-written
+checks at the judge site in `triage/engine.py` learn it:
+
+- the counting key: `key = "skipped" if outcome in ("skipped", "unchanged", "blocked")`, so a
+  blocked lead counts under `skipped`, never under `unjudgeable` and never in
+  `unjudgeable_by["judge"]` (no lead became `unjudgeable`), and is not surfaced;
+- the audit condition: `if outcome not in ("skipped", "unchanged", "blocked")`, so no judge row
+  claims a decision that never landed.
+
+The classify-pass site never sees `"blocked"`, since `apply_classification` does not return
+it; it is left unchanged.
+
+`TriageReport` gains its own field, `blocked_research: int = 0`, incremented when the outcome
+is `"blocked"`. It is a cause breakdown like `unjudgeable_by`, not an outcome row, so it does
+not go in `counts`.
 
 **Digest.** `cli.py::_format_triage_digest` gains one line when `blocked_research` is non-zero:
 `N research lead(s) look blocked by their board; review with: job-sluice leads unpark`. The
-zero case prints nothing, like every other row.
+zero case prints nothing, like every other row. The `--json` triage report carries the field.
 
 ### 2. The pass: `job-sluice leads unpark`
 
 A `Sluice` facade pair modelled on `expire_report`/`expire`:
 
-- `unpark_report()` reads `read_leads({"research"})` and returns those carrying a non-blank
-  `triage_blocked`, each with slug, company, role, stamp date and url host. It changes nothing.
-- `unpark(slugs=None)` re-derives the report, narrows to `slugs` if given (an unknown slug is
-  reported, not ignored), and for each lead calls:
+- `unpark_report()` reads `read_leads({"research"})` and returns, for each lead with a non-blank
+  `triage_blocked` that is NOT `awaiting_reply`, a row with `slug`, `ref`, `company`, `role`,
+  `stamp` (the raw stored value, exactly as `require_unchanged` will compare it) and `host`
+  (the url's host). It changes nothing.
+- `unpark(slugs=None)` re-derives the report. With `slugs`, it narrows through `index_by_slug`
+  (duplicate-slug handling as in `expire`): a slug matching nothing reports `no-match`, a slug
+  two rows claim reports `ambiguous`, and the other named slugs still move. Each chosen lead is
+  written with:
 
   ```python
-  update_fields(ref, {"status": "needs_review", "triage_blocked": '""'},
-                append_note=f"{tag} unpark: the board served a non-posting page; moved from "
+  tag = f"[unpark {today}]"
+  update_fields(r.ref, {"status": "needs_review", "triage_blocked": '""'},
+                append_note=f"{tag} the board served a non-posting page; moved from "
                             "research for a human to look at", note_tag=tag,
                 require_status=frozenset({"research"}),
-                require_unchanged={"triage_blocked": <stamp from the report>})
+                require_blank=frozenset({"followup_asked"}),
+                require_unchanged={"triage_blocked": r.stamp},
+                preserve_block_values=frozenset({"triage_blocked"}))
   ```
 
-  A lead re-judged (stamp cleared), re-stamped, or moved off `research` since the report
-  abstains and is reported by name as `abstained`. `VaultConflict` is caught for that lead and
-  reported, never fatal to the sweep.
+  Outcomes per lead: `moved`; `abstained` (the write returned False: the lead was re-judged,
+  re-stamped, moved off `research`, or marked asked since the report); `conflict` (a
+  `VaultConflict`, isolated to that lead); `unreadable` (an `OSError` on that lead's ref,
+  isolated as in `expire`); `no-match`; `ambiguous`.
 
 CLI: `job-sluice leads unpark` prints the report. `--apply [SLUG ...]` moves either all of the
 reported leads or only the ones named, using `nargs="*", default=None` and an `is not None`
 dispatch (the shape `leads expire --expire` documents; a bare flag parses to a falsy `[]`).
-`--json` gives machine-readable output. There is no `--dry-run`, because the default is the dry
-run. Exit 0 unless the store errors or a named slug matches nothing.
+There is no `--dry-run`, because the default is the dry run.
+
+`--json` prints `{"leads": [{"slug", "company", "role", "stamp", "host"}, ...]}` for the report,
+and with `--apply` adds `"results": [{"slug", "outcome"}, ...]`.
+
+Exit codes follow `cmd_leads_expire`'s `_FAILED` rule: the report exits 0; `--apply` exits 1
+when any result is `abstained`, `conflict`, `unreadable`, `no-match` or `ambiguous`, so an
+apply that wrote nothing it was asked to write never reads as success. An empty report with
+`--apply` writes nothing and exits 0, since nothing was asked for.
 
 `needs_review` is triage-owned, so never-regress permits `research -> needs_review`.
 
@@ -107,9 +158,10 @@ run. Exit 0 unless the store errors or a named slug matches nothing.
 - A `research` the owner set by hand on a lead whose board is also blocked will be stamped and
   listed. The listing and the explicit `--apply` are the guard; this is why the pass does not
   run unattended.
-- If the owner hand-sets `research` on a lead AFTER a stamp landed, the stamp stays until the
-  next landed verdict. `require_unchanged` cannot tell that apart, so the human reading the list
-  is the backstop.
+- A lead moved off `research` by `leads dismiss`, `leads expire` or the reverdict pass keeps its
+  stamp. If a human later hand-sets it back to `research`, it is listed with that old stamp
+  until the next nightly verdict either clears or refreshes it. The listing shows the stamp
+  date, and the human reading it is the backstop.
 
 ## Out of scope
 
@@ -121,20 +173,54 @@ run. Exit 0 unless the store errors or a named slug matches nothing.
 
 ## Testing
 
-All offline, with the judge backend stubbed:
+Every behaviour below starts from a failing test. All offline, with the judge backend stubbed
+before anything runs. Fixtures are synthetic: seeded `faker` companies and roles, and only
+`example.com`/`example.org` hosts in urls and host assertions.
 
-- The stamp lands on a `research` lead given an `unjudgeable` verdict. It does not land on
-  `new`/`unjudgeable` (the main write lands) or on a guarded lead.
-- A later landed verdict blanks it. A dry run writes nothing.
-- A status changed to non-`research` between the snapshot and the write is not stamped. The
-  change is raced in with `tests/conftest.py::racing_read` (the shape
-  `test_a_lead_that_becomes_applied_MID_SWEEP_is_not_dismissed` uses), never by editing a
-  snapshot, since a guard on the snapshot is byte-identical to no guard.
-- `blocked_research` counts and the digest line; zero prints nothing.
-- `unpark` report changes nothing (bytes compared). `--apply` moves, appends the note and clears
-  the stamp. It abstains on a fresh status change and on a stamp change, and narrows to named
-  slugs; an unknown slug is reported.
-- Each guard (`require_status` on the stamp, `require_unchanged` and `require_status` on the
-  move, the clear-on-landed-verdict) gets a move-or-delete mutation witness.
-- Docs: `docs/USAGE.md`, the README commands table, `docs/ARCHITECTURE.md`'s `leads` passes
-  and triage paragraphs. The doc-claims tests pin the first two.
+**Stamp (apply layer).**
+- An `unjudgeable` verdict on a `research` lead stamps today's date and returns `"blocked"`;
+  status, body and `relevance_notes` are byte-unchanged.
+- It does not stamp a `new` or `unjudgeable` lead (the main write lands) or a guarded lead.
+- A second run on the same day returns `"blocked"` again (the re-read arm) and leaves the
+  bytes unchanged.
+- A multi-line hand-typed `triage_blocked` is left alone and the outcome is `"unchanged"`.
+- Race: the lead is moved to `applied` mid-judge with `tests/conftest.py::racing_read`, and the
+  test asserts the race fired. Neither write lands. `applied` is chosen because the main
+  verdict cannot land there either, so deleting the stamp's `require_status` turns the row red.
+- Race: a `new` lead hand-set to `research` mid-judge is stamped.
+
+**Clearing.**
+- A landed verdict on a stamped lead blanks the stamp; a landed classification does too.
+- A judged lead with no stamp gains no `triage_blocked` key.
+- A lead carrying both a stale `followup_asked` and a stamp clears both, and a re-stamp of
+  either on a DIFFERENT date mid-judge refuses the write.
+
+**Engine.**
+- A blocked lead counts `skipped == 1`, `counts["unjudgeable"] == 0`,
+  `unjudgeable_by["judge"] == 0`, `blocked_research == 1`, surfaces nothing and appends no audit
+  row. Each of the two hand-written checks gets its own mutation witness (remove `"blocked"`
+  from one tuple at a time).
+- Digest: the line prints for a non-zero count and nothing prints for zero.
+
+**Facade and CLI.**
+- The report changes nothing (note bytes compared before and after), carries the raw stamp, and
+  excludes an `awaiting_reply` lead. An empty report prints an empty listing and exits 0.
+- No flag writes nothing. A bare `--apply` moves every listed lead, appends the note and clears
+  the stamp. `--apply SLUG` moves only that lead; an unknown slug alongside a valid one reports
+  `no-match`, moves the valid one, and exits 1. Duplicate slugs report `ambiguous`.
+- A lead re-stamped with a DIFFERENT date after the report abstains (a same-day re-stamp is
+  byte-identical and cannot exercise the guard). A lead moved off `research` mid-sweep, and one
+  marked asked mid-sweep, each abstain, raced in with `racing_read`. Each abstain exits 1.
+- One lead raising `VaultConflict` reports `conflict` while the others still move.
+- `--json` matches the shape in §2.
+
+Each guard (`require_status` on the stamp; `require_status`, `require_blank` and
+`require_unchanged` on the move; the clear in each of the two triage writers; the
+`awaiting_reply` filter in the report) gets a move-or-delete mutation witness.
+
+**Docs.** `docs/USAGE.md`; the README commands table; `docs/ARCHITECTURE.md`'s `leads` passes
+and triage paragraphs; `.rulesync/rules/CLAUDE.md`'s `leads` passes paragraph (add `leads
+unpark (--apply [SLUG ...])`); and the comment above `_VERDICT_REQUIRE` in `triage/apply.py`,
+which names the reverdict gate as the migration route and must name `leads unpark` instead.
+The doc-claims tests pin the first two. No doc, commit message or PR body names a board, a
+lead count or a company from the owner's install.
