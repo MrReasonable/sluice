@@ -40,6 +40,35 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.8.0](https://github.com/MrReasonable/sluice/compare/v4.7.0...v4.8.0) (2026-10-14)
+
+
+### Features
+
+* **leads:** add job-sluice leads unpark ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([35f251e](https://github.com/MrReasonable/sluice/commit/35f251edea07b218f75a8dadd42b28cc22250529))
+* **leads:** add the unpark report and move to the facade ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([be4b996](https://github.com/MrReasonable/sluice/commit/be4b996786ac54c8d8366d95a4fcfdb1dec4f887))
+* **leads:** clear a triage_blocked stamp when a follow-up is answered ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([7b6eb23](https://github.com/MrReasonable/sluice/commit/7b6eb232024572d8e0aa8cfe31951a883cb7228d))
+* **triage:** clear the triage_blocked stamp when a triage write lands ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([0c8bc3a](https://github.com/MrReasonable/sluice/commit/0c8bc3a5c7d98e15da10a2de096e53e492b824c5))
+* **triage:** count blocked research leads in the triage report ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([bbbca64](https://github.com/MrReasonable/sluice/commit/bbbca649d0a9becfb1541850f5ec97a74fb0794f))
+* **triage:** define the triage_blocked stamp ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([1666937](https://github.com/MrReasonable/sluice/commit/1666937395df69a2c022c6eedc8df5e6653c0b7c))
+* **triage:** name blocked research leads in the run digest ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([3964aa7](https://github.com/MrReasonable/sluice/commit/3964aa7d6ff513667d493cecd39a613ff32f40ef))
+* **triage:** stamp a refused unjudgeable verdict on a research lead ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([effab6c](https://github.com/MrReasonable/sluice/commit/effab6c178818fa625c39f0f2fc22d0a96964819))
+
+
+### Bug Fixes
+
+* **leads:** dismiss a slug named twice in leads expire once ([f343908](https://github.com/MrReasonable/sluice/commit/f3439087322e483fad7cb730037bbc6ad22c520b))
+
+
+### Documentation
+
+* design the research-lead migration for blocked boards ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([fab6f54](https://github.com/MrReasonable/sluice/commit/fab6f5470d651dad1806ae96bb16ad83385339dd))
+* fold plan-review findings into the research migration design ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([2318162](https://github.com/MrReasonable/sluice/commit/231816222760bc8e08e9588bc220a3a39bc89d65))
+* fold round-2 plan review into the research migration design ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([ce05cac](https://github.com/MrReasonable/sluice/commit/ce05cacaa7fdbf9cce04542daed04ba6cbd3598e))
+* fold round-3 plan review into the research migration design ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([a8ad303](https://github.com/MrReasonable/sluice/commit/a8ad303e896dc79dbf321fe2eefb699422d5726b))
+* plan the research migration implementation ([#302](https://github.com/MrReasonable/sluice/issues/302)) ([e6756e6](https://github.com/MrReasonable/sluice/commit/e6756e6b77d6331c772dc47625e904f419d380c8))
+* point the research migration design at [#402](https://github.com/MrReasonable/sluice/issues/402) for unjudgeable re-judging ([8cdf681](https://github.com/MrReasonable/sluice/commit/8cdf6819734430f8581474d7db9b02b5a510ef12))
+
 ## [4.7.0](https://github.com/MrReasonable/sluice/compare/v4.6.1...v4.7.0) (2026-10-14)
 
 
