@@ -540,6 +540,28 @@ def index_by_slug(notes) -> tuple[dict, dict]:
     return index, dropped
 
 
+def blocked_stamp(fm: dict) -> str:
+    """The lead's `triage_blocked` stamp (#302), or "" when it carries none.
+
+    Triage writes the key as a bare ISO date when the judge (or the pre-judge gate) returns
+    `unjudgeable` for a `research` lead and that write is refused. Only that shape is a stamp.
+    Anything else -- a word a person typed, or a block scalar, which reads as its `|`
+    indicator rather than blank -- is the person's own text: `leads unpark` must not list it
+    and no clear may write over it. Returned RAW, unstripped, because callers pass it to
+    `update_fields(require_unchanged=...)`, which compares the stored value as stored.
+
+    Lives in `core/` rather than `triage/` because the `Sluice` facade reads it too, and
+    `core/` may not import a sub-app."""
+    raw = fm.get("triage_blocked") or ""
+    if "\n" in raw:
+        return ""
+    try:
+        date.fromisoformat(raw.strip())
+    except ValueError:
+        return ""
+    return raw
+
+
 def ambiguous_slug_warnings(what: str, dropped: dict) -> list[str]:
     """One warning line per slug `index_by_slug` dropped, ready for the CALLER's logger.
 
