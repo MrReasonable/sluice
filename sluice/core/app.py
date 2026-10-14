@@ -178,6 +178,20 @@ class StaleLead:
     refused: str | None = None
 
 
+@dataclass
+class UnparkRow:
+    """One `research` lead `leads unpark` lists (#302): triage's judge (or its pre-judge gate)
+    said the page was not something it could judge, and the write was refused because
+    `status` cannot tell a conservative-score artifact from a research task a person set.
+    `stamp` is the RAW stored value, exactly as the move's `require_unchanged` compares it."""
+    slug: str
+    ref: object
+    company: str
+    role: str
+    stamp: str
+    host: str
+
+
 # The triage-owned statuses `leads expire` may act on: every TRIAGE_OWNED state except
 # `dismiss`, which is already the destination. Application-owned states are absent, so
 # they are never even enumerated -- and this same set is handed to update_fields as
@@ -1738,6 +1752,94 @@ class Sluice:
                 continue
             results.append((r.slug, "dismissed" if wrote else "skipped"))
         return results
+
+    def unpark_report(self) -> list:
+        """The #302 report: `research` leads carrying a `triage_blocked` stamp, minus any
+        awaiting a follow-up reply (the person is actively working those). Changes nothing.
+        `blocked_stamp` returns "" for anything that is not a one-line ISO date, so a value
+        the person typed themselves is never listed and therefore never overwritten."""
+        from urllib.parse import urlsplit
+
+        from sluice.core import followups
+        from sluice.core.leads import blocked_stamp
+        rows = []
+        for note in self.store().read_leads(frozenset({"research"})):
+            stamp = blocked_stamp(note.fm)
+            if not stamp or followups.awaiting_reply(note.fm):
+                continue
+            try:
+                host = urlsplit(note.fm.get("url", "") or "").hostname or ""
+            except ValueError:
+                host = ""
+            rows.append(UnparkRow(slug=note.slug, ref=note.ref,
+                                  company=note.fm.get("company", "") or "",
+                                  role=note.fm.get("role", "") or "",
+                                  stamp=stamp, host=host))
+        return rows
+
+    def unpark(self, slugs=None):
+        """Move the reported leads (or only the `slugs` named, matched EXACTLY) from
+        `research` to `needs_review` (#302). Returns `(rows, results)` from ONE read, so the
+        CLI's listing and outcomes cannot disagree: `rows` are the leads acted on, `results`
+        `[(slug, outcome)]` with outcome one of `moved`; `abstained` (the write's fresh
+        re-read refused: re-judged, re-stamped, moved off `research` or marked asked since
+        the report); `conflict` (a sustained write race, isolated to that lead); `unreadable`
+        (an OSError on that lead's ref); `no-match`; `ambiguous` (two listed notes claim the
+        slug -- see index_by_slug)."""
+        from sluice.core.leads import ambiguous_slug_warnings, index_by_slug
+        from sluice.core.protocols import VaultConflict
+        # self.unpark_report(), not a module helper, so a test (or subclass) that replaces
+        # the report is honoured by the move as well.
+        report = self.unpark_report()
+        store = self.store()
+        results = []
+        if slugs:
+            by_slug, dropped = index_by_slug(report)
+            for msg in ambiguous_slug_warnings("unpark: blocked lead", dropped):
+                _log.warning("%s", msg)
+            chosen = []
+            for s in slugs:
+                r = by_slug.get(s)
+                if r is not None:
+                    chosen.append(r)
+                else:
+                    results.append((s, "ambiguous" if s in dropped else "no-match"))
+        else:
+            # The unnarrowed sweep has no slug to resolve; each row is acted on through its
+            # own `ref`, which is unique whatever the slugs collide on.
+            chosen = list(report)
+        today = (self._today or _today)()
+        tag = f"[unpark {today}]"
+        note = (f"{tag} triage could not judge this lead from its page (not a posting, or "
+                "too little text); moved from research for a human to look at")
+        for r in chosen:
+            try:
+                # Every guard is re-read fresh inside the store's CAS, never checked against
+                # the report's snapshot, which is stale by construction.
+                # preserve_block_values has no reachable row: require_unchanged is decided
+                # first and compares the raw value (a multi-line value never equals a
+                # one-line date stamp), so a stamp turned into a block since the report
+                # abstains there before the preserve decision is reached. It stays as the
+                # backstop the stamp write carries, so the two writers cannot drift.
+                wrote = store.update_fields(
+                    r.ref, {"status": "needs_review", "triage_blocked": '""'},
+                    append_note=note, note_tag=tag,
+                    require_status=frozenset({"research"}),
+                    require_blank=frozenset({"followup_asked"}),
+                    require_unchanged={"triage_blocked": r.stamp},
+                    preserve_block_values=frozenset({"triage_blocked"}))
+            except VaultConflict:
+                _log.warning("unpark: %s lost the write race, left untouched", r.slug)
+                results.append((r.slug, "conflict"))
+                continue
+            except OSError as e:
+                # Same rule as `expire`: a note moved or deleted mid-sweep must not discard
+                # the record of what WAS written.
+                _log.warning("unpark: %s could not be written (%s), left untouched", r.slug, e)
+                results.append((r.slug, "unreadable"))
+                continue
+            results.append((r.slug, "moved" if wrote else "abstained"))
+        return chosen, results
 
     def dedupe_report(self):
         """The #23 read-path dedup REPORT: suspected-duplicate clusters, each with a
