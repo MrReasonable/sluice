@@ -371,3 +371,10 @@ def test_a_held_lead_can_be_discharged_from_any_triage_status(tmp_path, status):
         f"a held lead at status={status} was unreachable"
     fm = Vault(str(tmp_path)).read_leads()[0].fm
     assert "pending_cv" not in fm and "needs_signoff" not in fm
+
+
+def test_a_slug_named_twice_is_dismissed_once(tmp_path):
+    # The second sight would find the lead already dismissed and report `skipped`, which
+    # the CLI exits 1 on, for a run whose one requested write landed.
+    slug = _seed(tmp_path)
+    assert _app(tmp_path).expire(slugs=[slug, slug]) == [(slug, "dismissed")]
