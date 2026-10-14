@@ -1,6 +1,7 @@
 """#302: the `triage_blocked` stamp -- what counts as one, where triage writes and clears it,
 and how the engine counts a refused `unjudgeable` verdict on a `research` lead."""
 import os
+import pathlib
 
 import pytest
 
@@ -55,7 +56,7 @@ def _note(v, name, status, extra=()):
 
 
 def _text(note):
-    return open(note.ref, encoding="utf-8").read()
+    return pathlib.Path(note.ref).read_text(encoding="utf-8")
 
 
 def test_a_refused_unjudgeable_on_a_research_lead_stamps_today_and_nothing_else(tmp_path):
@@ -187,3 +188,80 @@ def test_a_refused_unjudgeable_on_a_shortlist_lead_is_unchanged_and_unstamped(tm
     note = _note(v, "A.md", "shortlist")
     assert apply_verdict(v, note, UNJUDGEABLE, {}) == "unchanged"
     assert "triage_blocked" not in _text(note)
+
+
+SHORTLIST = {"verdict": "shortlist", "relevance_score": 80, "fit_reasoning": "fits"}
+
+
+def test_a_landed_verdict_clears_a_stamp(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "research", ["triage_blocked: 2031-03-01"])
+    assert apply_verdict(v, note, SHORTLIST, {}) == "applied"
+    assert v.read_leads()[0].fm["triage_blocked"] == ""
+
+
+def test_a_landed_classification_clears_a_stamp(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "new", ["triage_blocked: 2031-03-01"])
+    assert apply_classification(v, note, "reject", "out of scope") == "applied"
+    assert v.read_leads()[0].fm["triage_blocked"] == ""
+
+
+def test_a_landed_verdict_on_an_unstamped_lead_adds_no_key(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "research")
+    assert apply_verdict(v, note, SHORTLIST, {}) == "applied"
+    assert "triage_blocked" not in _text(note)
+
+
+@pytest.mark.parametrize("value", ["my own note", "|"])
+def test_a_landed_verdict_never_clears_a_non_date_value(tmp_path, value):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "research", [f"triage_blocked: {value}"])
+    assert apply_verdict(v, note, SHORTLIST, {}) == "applied"
+    assert f"triage_blocked: {value}" in _text(note)
+
+
+def test_a_restamp_mid_judge_refuses_the_verdict(tmp_path):
+    # Witnesses require_unchanged on triage_blocked. A DIFFERENT date: a same-day re-stamp
+    # is byte-identical and could not exercise the guard.
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "research", ["triage_blocked: 2031-03-01"])
+    v.update_fields(note.ref, {"triage_blocked": "2031-03-02"})
+    assert apply_verdict(v, note, SHORTLIST, {}) == "unchanged"
+    assert v.read_leads()[0].fm["triage_blocked"] == "2031-03-02"
+
+
+def test_both_stale_stamps_clear_together(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "new", ["triage_blocked: 2031-03-01", "followup_asked: 2031-02-01"])
+    assert apply_verdict(v, note, SHORTLIST, {}) == "applied"
+    fm = v.read_leads()[0].fm
+    assert fm["triage_blocked"] == "" and fm["followup_asked"] == ""
+
+
+def test_a_followup_restamp_mid_judge_still_refuses_when_both_stamps_are_present(tmp_path):
+    # The row that fails if the triage_blocked entry REPLACES the followup_asked one in
+    # require_unchanged instead of joining it.
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "new", ["triage_blocked: 2031-03-01", "followup_asked: 2031-02-01"])
+    v.update_fields(note.ref, {"followup_asked": "2031-03-02"})
+    assert apply_verdict(v, note, SHORTLIST, {}) == "unchanged"
+    assert v.read_leads()[0].fm["followup_asked"] == "2031-03-02"
+
+
+def test_a_blocked_restamp_mid_judge_still_refuses_when_both_stamps_are_present(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "new", ["triage_blocked: 2031-03-01", "followup_asked: 2031-02-01"])
+    v.update_fields(note.ref, {"triage_blocked": "2031-03-02"})
+    assert apply_verdict(v, note, SHORTLIST, {}) == "unchanged"
+    assert v.read_leads()[0].fm["triage_blocked"] == "2031-03-02"
+
+
+def test_a_restamp_mid_classify_refuses_the_classification(tmp_path):
+    v = Vault(str(tmp_path))
+    note = _note(v, "A.md", "new", ["triage_blocked: 2031-03-01"])
+    v.update_fields(note.ref, {"triage_blocked": "2031-03-02"})
+    assert apply_classification(v, note, "reject", "out of scope") == "unchanged"
+    assert v.read_leads()[0].fm["triage_blocked"] == "2031-03-02"
+    assert v.read_leads()[0].status == "new"
