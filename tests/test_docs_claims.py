@@ -1618,7 +1618,7 @@ def test_the_summary_key_extraction_is_not_vacuous():
     cannot pass."""
     assert _printed_summary_keys() == {
         "judged", "resolved", "llm_calls", "observed_role_types", "backend",
-        "failures"}, (
+        "failures", "record"}, (
         "the triage summary line changed. Update this set AND the "
         "`job-sluice triage: ...` sentence in docs/USAGE.md that it guards.")
 
