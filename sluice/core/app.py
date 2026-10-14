@@ -1703,7 +1703,9 @@ class Sluice:
             for msg in ambiguous_slug_warnings("expire: stale lead", dropped):
                 _log.warning("%s", msg)
             chosen = []
-            for s in slugs:
+            # Repeats dropped, order kept: the second sight of a slug would find the lead
+            # already written, abstain, and fail a run whose every requested write landed.
+            for s in dict.fromkeys(slugs):
                 r = by_slug.get(s)
                 if r is not None:
                     chosen.append(r)
