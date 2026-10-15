@@ -95,7 +95,11 @@ Shared by every sub-app:
   would re-judge leads a human has already decided about, every run.
   `unjudgeable` belongs in it because that IS the retry: the cache no longer
   persists a fetch that produced no JD (see `dossier.py` below), so the next
-  run refetches.
+  run refetches. The retry ends, when `triage.unjudgeable_give_up_after` is
+  set, after that many `unjudgeable` results in a row (#402): such a lead is
+  still selected and classified, but never fetched or judged again until its
+  `triage_unjudgeable_count` is reset or its posting is pasted under
+  `## Job description`.
 - `roletype.py` (#223): the `role_type` closed set, its provenance ladder, and
   `observe_role_type`, which reads a pay basis off a job description. Pure apart
   from one thing, named because this page qualifies purity precisely everywhere
@@ -230,8 +234,8 @@ Shared by every sub-app:
   upgrading -- bounded, not data loss, since the default `ttl_days: 7` would
   have expired them inside a week anyway.
 
-  `DossierCache.jd_arrived(dossier)` (#169) is the single owner of "did a JD
-  actually arrive" -- a predicate over the fetched `jd.markdown`, not a
+  `DossierCache.jd_arrived(dossier)` (#169) is the single owner of what the
+  cache PERSISTS -- "did a JD actually arrive" -- a predicate over the fetched `jd.markdown`, not a
   marker key riding along in the returned dict (which `slim()` would have to
   exclude by name, the way it already excludes `lead_snapshot`/`page_title`/
   `structured_data`). `get_or_build` asks it before PERSISTING a fetch: the
@@ -1534,6 +1538,29 @@ so a lead changed since the listing abstains. Residual: a lead moved off `resear
 `leads dismiss`, `leads expire` or a hand edit keeps its stamp until a classification or
 verdict write clears it, so a lead later hand-set back
 to `research` is listed with that older date.
+
+**Giving up on `unjudgeable` leads** (#402). `jd_arrived` cannot tell page chrome long enough to
+pass it from a posting, so a board that keeps serving a bot check or a sign-in wall had its lead
+re-judged on every run, on the same cached bytes for the whole ttl. With
+`triage.unjudgeable_give_up_after` (0, the default, is off), each landed `unjudgeable` from either
+producer adds one to the lead's `triage_unjudgeable_count`, in the same `update_fields` call as the
+status, so it lands only where `_DECISION_REQUIRE`/`_VERDICT_REQUIRE` let the status write land
+(`new`, `unjudgeable`). `triage/apply.py::_count_fields` merges it into the writers' dicts beside
+`triage_blocked`'s clear, under `require_unchanged` on the raw snapshot value, blank included, so a
+count a human resets or types mid-judge is never overwritten; when that entry refuses,
+`_write_counted` retries once without the counter, so the status still lands (a hand-typed block
+list in the key survives the same way), and the key is in `_HAND_EDITABLE_KEYS`. A result decided
+on the note's own section involved no fetch and does not count. A landed judge `unjudgeable` also
+calls `DossierCache.forget(note.fm)`, so every count after the first is a fresh fetch (the first
+can be a page cached before the setting was on): `jd_arrived` owns what is persisted, and the
+triage engine may evict. `engine.py::_given_up` withholds a lead at or above the threshold AFTER
+its free classification and before any fetch or judge call (company resolution included), splits
+such leads off before `--limit` so they never use up its budget, and counts them under
+`TriageReport.counts["given_up"]` instead of `keep`. Any other landed `apply_classification` or
+`apply_verdict` write clears a count above 0, whatever the setting, under its own
+`require_unchanged`; the engine's company and `role_type` writes and `_stamp_blocked` leave it
+alone. Residual, stated: a lead that heals after it has given up is never seen to, since nothing
+fetches it again.
 
 **`job-sluice leads dismiss --lead SLUG --reason REASON`** (#131) writes `dismiss`
 by the same route as `leads expire` -- `require_status=_DISMISSABLE_FROM` re-read

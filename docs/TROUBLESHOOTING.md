@@ -393,6 +393,16 @@ after it, so everything below reads as code. Close it in Obsidian with a line of
 character, at least as many as opened it (a fence opened with four backticks is not closed by
 three, nor a tilde fence by backticks), and the recorded answer becomes visible to triage.
 
+## A lead stays `unjudgeable` and the digest says it was given up
+
+With `triage.unjudgeable_give_up_after` set, triage stops fetching and judging a lead after that
+many `unjudgeable` results in a row: each time, the page that came back was a bot check, a
+sign-in wall or something else that is not a posting. The count is the note's
+`triage_unjudgeable_count`. To try again, delete that key (the next run fetches and judges the
+lead afresh), or open the posting yourself and paste it under a `## Job description` heading in
+the note: a lead carrying its own job description is always judged, from that text. Moving the
+lead back to `new` by hand buys one more attempt only, since the count is kept.
+
 ## Store / vault problems
 
 - **vault missing**: the vault directory doesn't exist. Blocks every pipeline command, and the

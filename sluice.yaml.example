@@ -210,6 +210,13 @@ triage:
   # with every batch, dry runs included. A requirement your record does not cover is
   # reported as a concern and is never a reason to lower a score.
   # evidence: true
+  # Stop fetching and judging a lead after this many CONSECUTIVE `unjudgeable` results (#402):
+  # a bot check, a sign-in wall or some other page that is not a posting, every time. Each
+  # counted result after the first is a fresh fetch, because the cached page is dropped
+  # whenever the judge says it was not a posting (the first can be a page cached earlier). The count lives on the lead as `triage_unjudgeable_count`;
+  # delete it, or paste the posting under `## Job description` in the note, to retry. A real
+  # verdict clears it. 0 = never give up, the default: nothing is counted or skipped.
+  # unjudgeable_give_up_after: 3   # <- uncomment and set YOUR OWN
   # Where the rejected-leads audit log is written. Unset, it resolves per-system under
   # $XDG_STATE_HOME (or ~/.local/state); $TRIAGE_AUDIT still wins over this key. This key
   # was declared but read by nothing before #80 -- setting it did nothing, silently.

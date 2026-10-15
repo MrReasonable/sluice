@@ -44,7 +44,7 @@ from sluice.core.roletype import DECLARED, OBSERVED, normalise_role_type
 from sluice.core.vault import frontmatter_safe
 from sluice.triage import resolve, reverdict
 from sluice.triage.apply import (apply_classification, apply_verdict, clamp_verdict,
-                                 normalise_verdict)
+                                 normalise_verdict, unjudgeable_count)
 from sluice.triage.audit import render_rejected_note
 from sluice.triage.classify import classify, reverdict_notice
 from sluice.core.config import DOSSIER_CONCURRENCY_MAX
@@ -88,7 +88,8 @@ _FX_MAX_AGE_DAYS = 7
 class TriageReport:
     counts: dict = field(default_factory=lambda: {
         "keep": 0, "shortlist": 0, "research": 0, "dismiss": 0,
-        "needs_review": 0, "skipped": 0, "unjudgeable": 0, "awaiting_reply": 0})
+        "needs_review": 0, "skipped": 0, "unjudgeable": 0, "awaiting_reply": 0,
+        "given_up": 0})
     judged: int = 0
     # How many dossiers were HANDED to the judge, as against `judged`, which counts the
     # verdicts that came back. Two numbers because `triage/judge.py` skips a batch it
@@ -436,6 +437,28 @@ def _prefetch_dossiers(keeps, ambiguous, dossier_cache, concurrency):
     return results, from_section
 
 
+def _given_up(note, give_up_after: int) -> bool:
+    """Has this lead had `give_up_after` `unjudgeable` results in a row (#402)?
+
+    Every condition must hold. The setting is on. The lead is AT `unjudgeable`: a lead a human
+    moved back to `new` gets one more judgement (its count is kept, so one more `unjudgeable`
+    gives it up again; deleting the key is the full reset). The count reads as an integer --
+    an unreadable value never skips, it errs toward judging. And the note carries no pasted
+    job description: pasting one is the human's fix, so such a lead is always judged. A
+    section that cannot be read is not given up either; it goes on to `_prefetch_dossiers`,
+    which reports it as it always has."""
+    if give_up_after <= 0 or _status.normalize(note.status) != "unjudgeable":
+        return False
+    count = unjudgeable_count(note.fm)
+    if count is None or count < give_up_after:
+        return False
+    try:
+        text, _ = jdsection.read(note.body)
+    except Exception:   # noqa: BLE001 -- unreadable means "judge it", see the docstring
+        return False
+    return not text
+
+
 def run(vault, cfg, backend, dossier_cache, audit, *,
         statuses=_status.DEFAULT_TRIAGE_STATUSES, limit=None, dry_run=False, no_llm=False,
         get_source=None, resolve_backend=None, rate_source=None,
@@ -505,8 +528,21 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     if awaiting:
         report.counts["awaiting_reply"] += awaiting
         notes = [n for n in notes if not followups.awaiting_reply(n.fm)]
+    # #402: a lead whose board keeps serving a page that is not a posting stops being fetched
+    # and judged once it has had `triage.unjudgeable_give_up_after` `unjudgeable` results in a
+    # row (0 = never). Split off BEFORE `--limit`, so given-up leads cannot use up a run's
+    # budget, and appended back AFTER it, so they still reach the classify pass below: that
+    # pass is free, a reject rule added later still dismisses them, and its landed write
+    # clears the count. They are withheld wherever a fetch or a judge call would start --
+    # company resolution and the `keep` branch, see `given_up_refs` in the classify pass.
+    # `--limit` therefore caps the leads that may be fetched or judged, not this free pass.
+    give_up_after = cfg.unjudgeable_give_up_after
+    given_up = [n for n in notes if _given_up(n, give_up_after)]
+    given_up_refs = {n.ref for n in given_up}
+    notes = [n for n in notes if n.ref not in given_up_refs]
     if limit:
         notes = notes[:limit]
+    notes = notes + given_up
 
     # #223 §2.1's delivery requirement, and it runs before any lead is judged or written:
     # the first run that would re-verdict a pre-#223 vault names the affected leads and
@@ -852,8 +888,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
         # A cost gap, not a safety gap -- the write guard already protects the
         # vault -- but there is no reason to pay for a fetch/call whose result is
         # guaranteed to be discarded.
+        # #402: never for a given-up lead -- resolution can visit the page (tier 2) and spend a
+        # call (tier 3), and a given-up lead is one whose page has stopped being a posting.
+        # Its `needs_review` lands anyway, which clears its count.
         if (decision == "needs_review" and is_placeholder_company(company)
-                and note.status in _status.TRIAGE_OWNED):
+                and note.status in _status.TRIAGE_OWNED and note.ref not in given_up_refs):
             res = resolve.resolve_company(
                 note.fm, get_source, dossier_cache, no_llm=no_llm,
                 company_resolve_fetch=cfg.company_resolve_fetch,
@@ -925,6 +964,13 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                                     "reason": "blank/placeholder company resolved from the posting"})
                     decision, reason = classify(note.fm, cfg)
         if decision == "keep":
+            # #402: the one place a given-up lead is withheld -- after its free
+            # classification, before anything is fetched or judged. Counted under
+            # `given_up` INSTEAD of `keep`: the digest reads `keep` as "passed the pre-gate"
+            # and, under --no-llm, as still waiting for a judge, neither true of it.
+            if note.ref in given_up_refs:
+                report.counts["given_up"] += 1
+                continue
             report.counts["keep"] += 1
             keeps.append(note)
             continue
@@ -980,6 +1026,10 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
     if keeps and not no_llm:
         dossiers = []
         note_by_id = {}
+        # #402: the `lead_id`s whose dossier was built from the note's own section. The verdict
+        # step below looks a lead up by `lead_id`, not by its position in `keeps`, so
+        # `from_section`'s positions are carried across as ids here.
+        section_ids = set()
         # The judge round trip is keyed on the dossier's `lead_id` -- it is what the prompt
         # labels each dossier with and what every verdict comes back wearing -- so that field
         # has to be UNIQUE PER NOTE. `DossierCache.cache_key`, which get_or_build stamps into
@@ -1094,7 +1144,11 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                     outcome = "skipped"
                 else:
                     try:
-                        outcome = apply_classification(vault, note, "unjudgeable", reason)
+                        # #402: a result on the note's OWN section involved no fetch, so it
+                        # does not count towards a threshold defined over fetches.
+                        outcome = apply_classification(
+                            vault, note, "unjudgeable", reason,
+                            count_unjudgeable=give_up_after > 0 and i not in from_section)
                     except VaultConflict as e:
                         # Symmetric with the classify-pass site earlier in this function
                         # (#16): a concurrent edit -- a human in Obsidian, another process
@@ -1189,6 +1243,8 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
             # to it either way and the collision it now cannot have went unseen for exactly
             # that reason.)
             note_by_id[d["lead_id"]] = note
+            if i in from_section:
+                section_ids.add(d["lead_id"])
         # #196: no dossier survived the fetch, so there is nothing to judge. Skipping the
         # judge here changes two things: the candidate record is not read when nothing is
         # judged, so a run that judged nothing prints no "judged without it" digest line,
@@ -1342,11 +1398,31 @@ def run(vault, cfg, backend, dossier_cache, audit, *,
                 outcome = "skipped"
             else:
                 try:
-                    outcome = apply_verdict(vault, note, verdict, dossier)
+                    outcome = apply_verdict(
+                        vault, note, verdict, dossier,
+                        count_unjudgeable=give_up_after > 0 and lead_id not in section_ids)
                 except VaultConflict as e:
                     # Symmetric with the classify-pass site above.
                     report.failures.append(f"apply {note.ref}: {e}")
                     continue
+            # #402: the judge read a CACHED page and said it is not a posting. Dropping the
+            # entry makes the next run fetch again, so every later count is a fresh fetch
+            # rather than a re-read of the same bytes for the rest of the ttl. (The FIRST
+            # count can still be a page cached before the setting was on, or by a run whose
+            # judge call failed: eviction starts with a counted verdict.) Only on a landed write
+            # (`applied` also rules out --dry-run, which never calls apply_verdict), never for
+            # a section-built dossier (never cached), and passed the NOTE's frontmatter: the
+            # dossier's `lead_id` was rewritten to the slug above, so it keys another file.
+            # A failure is reported, not raised: the verdict has landed, and one unwritable
+            # file must not abort the batch.
+            if (give_up_after > 0 and outcome == "applied" and lead_id not in section_ids
+                    and clamp_verdict(verdict.get("verdict", "")) == "unjudgeable"):
+                try:
+                    dossier_cache.forget(note.fm)
+                except OSError as e:
+                    report.failures.append(
+                        f"dossier {note.ref}: could not drop the cached page ({e}); its "
+                        "next unjudgeable count will be a re-read, not a fresh fetch")
             # Symmetric with the classify-pass site above, including #118: `unchanged`
             # is grouped with `skipped` for counting/audit purposes only -- it is never
             # reported in report.failures. Two causes reach it: a benign require_status

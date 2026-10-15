@@ -3,6 +3,7 @@ a lead that has already entered the application lifecycle (applied, phone_screen
 ...). Reject maps to the canonical `dismiss`; a plain-language reason and the
 judge's reasoning are appended (once) to relevance_notes."""
 import math
+import re
 from datetime import date
 
 from sluice.core import status as _status
@@ -222,9 +223,73 @@ _VERDICT_REQUIRE = {"unjudgeable": frozenset({"new", "unjudgeable"})}
 # `apply_verdict` never writes the key over one today (see its stale-stamp rule), and this
 # keeps a later writer from corrupting it either. `triage_blocked` (#302) is defence in depth
 # the same way: a clear runs only when the snapshot holds a date stamp, and a value turned
-# multi-line since then fails the clear's `require_unchanged` first.
+# multi-line since then fails the clear's `require_unchanged` first. The #402 counter is here
+# because a counting write must never get a preserve set of its own: passing one would
+# REPLACE this set, and the judge's write carries triage_next beside it.
 _HAND_EDITABLE_KEYS = frozenset(FRAMING_KEYS) | {"triage_next", "followup_asked",
-                                                 "triage_blocked"}
+                                                 "triage_blocked", "triage_unjudgeable_count"}
+
+# #402: how many `unjudgeable` results in a row a lead has had, each after the first on a fresh
+# fetch. The engine compares it with `triage.unjudgeable_give_up_after` to stop fetching and
+# judging a lead whose board keeps serving a page that is not a posting. A frontmatter key rather
+# than the audit log: it travels with the note, it is visible in Obsidian, and deleting it is the
+# reset.
+_COUNT_KEY = "triage_unjudgeable_count"
+_COUNT_RE = re.compile(r"[0-9]+")
+
+
+def unjudgeable_count(fm: dict) -> int | None:
+    """The lead's `triage_unjudgeable_count` (#402): 0 when absent or blank, the integer when
+    the value is a bare non-negative integer, None for anything else.
+
+    None is a person's own text -- a word, `-1`, `3.0`, a block scalar (which reads as its
+    `|`/`>` indicator) -- and is never counted over, cleared or used to skip a lead: an
+    unreadable counter errs toward judging. Two shapes read as a count without being one
+    typed by triage, both because of the frontmatter reader every caller goes through: a
+    quoted `"3"` reads `3` (`core/vault.py::_fm_dict` strips the quotes), and a hand-typed
+    block LIST reads blank (the reader takes the key's own line), so `0`. The writers keep a
+    block list intact all the same, through `_HAND_EDITABLE_KEYS`."""
+    raw = fm.get(_COUNT_KEY) or ""
+    if "\n" in raw:
+        return None
+    text = raw.strip()
+    if not text:
+        return 0
+    return int(text) if _COUNT_RE.fullmatch(text) else None
+
+
+def _count_fields(note, unjudgeable: bool, count: bool, fields: dict,
+                  require_unchanged: dict) -> None:
+    """Add the #402 counter's write, if any, to one triage write's `fields`/`require_unchanged`.
+
+    MERGED into the caller's dicts, beside `followup_asked`/`triage_blocked`, so the counter
+    rides the status write and can land only where that write may: `_DECISION_REQUIRE` and
+    `_VERDICT_REQUIRE` let `unjudgeable` over `new` and `unjudgeable` alone, so a `research`
+    lead (stamped by `_stamp_blocked` instead) and an application-owned one are never counted.
+
+    An `unjudgeable` result increments, when the caller says this result counts (the engine
+    decides: the setting is on and the result came from a fetch, not the note's own section),
+    always under `require_unchanged` on the raw snapshot value -- blank included, so a count a
+    human typed into an absent key while the lead was being judged is never overwritten by a
+    stale 1. A hand-typed block LIST in the key reads blank in the snapshot but multi-line
+    fresh, which `require_unchanged` reads as a mismatch too. Either way it is the COUNTER that
+    lost, not the verdict: `_write_counted` retries once without it, so the status lands and the
+    person's value stands.
+
+    Any other result clears a count that reads as an integer above 0, whether or not the
+    setting is on now, so a count left from a period it was on cannot survive a real verdict.
+    The clear keeps its CAS, as `triage_blocked`'s does: a value typed mid-judge stands, and
+    `_write_counted`'s retry lands the verdict without it."""
+    raw = note.fm.get(_COUNT_KEY) or ""
+    k = unjudgeable_count(note.fm)
+    if unjudgeable:
+        if not count or k is None:
+            return
+        fields[_COUNT_KEY] = str(k + 1)
+        require_unchanged[_COUNT_KEY] = raw
+    elif k:
+        fields[_COUNT_KEY] = '""'
+        require_unchanged[_COUNT_KEY] = raw
 
 _RESEARCH = frozenset({"research"})
 
@@ -274,7 +339,27 @@ def _stamp_blocked(vault, note, today: str) -> str:
     return "blocked" if blocked_stamp(note.fm) == today else "unchanged"
 
 
-def apply_classification(vault, note, decision, reason) -> str:
+def _write_counted(vault, ref, fields: dict, require_unchanged: dict, **kw) -> bool:
+    """One triage write carrying `_count_fields`' entries, retried once WITHOUT them if refused.
+
+    A refusal can come from the counter's own `require_unchanged` -- a person typed or reset a
+    count while the lead was being judged, or keeps a block list in the key -- and in that case
+    only the counter lost the race. Without the retry, the whole verdict would be discarded and,
+    for the block-list shape, discarded on every run, a paid judge call each time with nothing
+    written and nothing reported. The retry drops just the counter's field and CAS entry; every
+    other guard (`require_status`, the `followup_asked`/`triage_blocked` stamps) rides it
+    unchanged, so a refusal for any other reason refuses again. A first write that lands, or
+    one that carried no counter entry, is not retried. The counter is never written over a
+    value the snapshot did not show, so a person's count always stands."""
+    wrote = vault.update_fields(ref, fields, require_unchanged=require_unchanged or None, **kw)
+    if wrote or _COUNT_KEY not in fields:
+        return wrote
+    rest = {k: v for k, v in fields.items() if k != _COUNT_KEY}
+    guards = {k: v for k, v in require_unchanged.items() if k != _COUNT_KEY}
+    return vault.update_fields(ref, rest, require_unchanged=guards or None, **kw)
+
+
+def apply_classification(vault, note, decision, reason, *, count_unjudgeable=False) -> str:
     if _guarded(note):
         return "skipped"
     new_status = _DECISION_STATUS.get(decision, "needs_review")
@@ -288,16 +373,17 @@ def apply_classification(vault, note, decision, reason) -> str:
     # #302: a landed classification clears a `triage_blocked` stamp, as a landed verdict
     # does (see apply_verdict). Only a real date stamp is cleared; a hand-typed value is left.
     fields = {"status": new_status}
-    require_unchanged = None
+    require_unchanged = {}
     stamp = blocked_stamp(note.fm)
     if stamp:
         fields["triage_blocked"] = '""'
-        require_unchanged = {"triage_blocked": stamp}
-    wrote = vault.update_fields(
-        note.ref, fields,
+        require_unchanged["triage_blocked"] = stamp
+    _count_fields(note, new_status == "unjudgeable", count_unjudgeable, fields,
+                  require_unchanged)
+    wrote = _write_counted(
+        vault, note.ref, fields, require_unchanged,
         append_note=f"{tag} {decision}: {reason}".strip(), note_tag=tag,
         require_status=_DECISION_REQUIRE.get(decision, frozenset(_status.TRIAGE_OWNED)),
-        require_unchanged=require_unchanged,
         preserve_block_values=_HAND_EDITABLE_KEYS)
     # #118: `wrote=False` is either a genuine no-op -- require_status refused on a fresh
     # re-read (the lead already left TRIAGE_OWNED), or a byte-identical rewrite -- or (#302)
@@ -313,7 +399,7 @@ def apply_classification(vault, note, decision, reason) -> str:
     return "unchanged"
 
 
-def apply_verdict(vault, note, verdict, dossier) -> str:
+def apply_verdict(vault, note, verdict, dossier, *, count_unjudgeable=False) -> str:
     if _guarded(note):
         return "skipped"
     # #329: repaired here as well as in the engine, so a direct caller gets the same behaviour.
@@ -389,6 +475,7 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     if blocked:
         fields["triage_blocked"] = '""'
         require_unchanged["triage_blocked"] = blocked
+    _count_fields(note, status == "unjudgeable", count_unjudgeable, fields, require_unchanged)
     today = date.today().isoformat()
     tag = f"[triage {today}]"
     parts = [verdict["fit_reasoning"]]
@@ -400,11 +487,11 @@ def apply_verdict(vault, note, verdict, dossier) -> str:
     # require_status: same hardening as apply_classification above, closing the
     # identical pre-existing gap behind the (even longer) dossier-fetch-plus-judge
     # round trip.
-    wrote = vault.update_fields(note.ref, fields, append_note=note_text.strip(), note_tag=tag,
-                                require_status=_VERDICT_REQUIRE.get(
-                                    status, frozenset(_status.TRIAGE_OWNED)),
-                                require_unchanged=require_unchanged or None,
-                                preserve_block_values=_HAND_EDITABLE_KEYS)
+    wrote = _write_counted(vault, note.ref, fields, require_unchanged,
+                           append_note=note_text.strip(), note_tag=tag,
+                           require_status=_VERDICT_REQUIRE.get(
+                               status, frozenset(_status.TRIAGE_OWNED)),
+                           preserve_block_values=_HAND_EDITABLE_KEYS)
     # #118: symmetric with apply_classification above. Both writers carry the (#302)
     # stale-stamp `require_unchanged` refusing a `triage_blocked` re-stamp landed mid-judge;
     # only this one also carries the (#378) refusal of a `followup_asked` re-stamp. Each is a

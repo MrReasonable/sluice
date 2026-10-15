@@ -148,14 +148,19 @@ Classify leads.
 | Flag | Default | Notes |
 |---|---|---|
 | `--status` | `new,research,unjudgeable` | comma-separated statuses to consider |
-| `--limit` | none | cap the number processed |
+| `--limit` | none | cap the leads fetched or judged. Leads triage has given up on (`triage.unjudgeable_give_up_after`) do not count towards it, and are still classified |
 | `--backend` | none | a provider (`claude-max`, `anthropic`, `deepseek`, `openai`) to judge with for this run instead of `triage.backend`. The configured provider keeps `triage.model`; another provider uses its own default model. Tier-3 company resolution (`triage.company_resolve_llm`) keeps its own `triage.resolve_backend` regardless of this flag. The values `auto`, `primary` and `fallback` were retired with the fallback provider (#333) and are refused |
 | `--no-llm` | off | deterministic rules only; touches no backend at all, judge or resolution |
 
 Deterministic rules resolve obvious cases; ambiguous leads go to the LLM judge (skipped
 entirely under `--no-llm`). A `research` lead you have marked asked (`leads mark-asked`) is
 left out and counted, and the digest carries a `Research queue:` line counting every research
-lead, how many are marked asked, and how long ago the oldest was first seen. A blank/placeholder-company `needs_review` lead gets one resolution
+lead, how many are marked asked, and how long ago the oldest was first seen. With
+`triage.unjudgeable_give_up_after` set, an `unjudgeable` lead that has had that many
+`unjudgeable` results in a row is no longer fetched or judged; it is still classified, so a
+reject rule can still dismiss it, and the digest counts it as given up and says how to retry
+(delete the lead's `triage_unjudgeable_count`, or paste the posting under `## Job description`).
+A blank/placeholder-company `needs_review` lead gets one resolution
 attempt first: a free regex over the role text's own trailing `"<role> at <Company>"`
 clause, tier 0, then a free URL-pattern tier 1, an opt-in real page-visit tier 2
 (`triage.company_resolve_fetch`), then an opt-in LLM read of that SAME page data, tier 3
@@ -362,7 +367,8 @@ both), the composer is shown them in a TRIAGE NOTES section, as framing for whic
 to lead with. It may neither cite nor mention them, and the fabrication gate never treats them as a
 source. To steer a lead triage never judged, set `status: shortlist` first, then write each key as
 one quoted line: `culture_flags: "positive: a, negative: b"` and `triage_concerns: "a; b"`. A
-default `triage run` re-judges `new`, `research` and `unjudgeable` leads and replaces both keys.
+default `triage run` re-judges `new`, `research` and `unjudgeable` leads (an `unjudgeable` one until
+triage gives up on it, if `triage.unjudgeable_give_up_after` is set) and replaces both keys.
 A value typed across several lines is left alone by triage. As a YAML block list or block scalar
 it frames nothing, unless the key's own line holds only a comment, or a YAML tag or anchor: that
 line's text is framed instead. As a plain value continued on an indented line, it frames only its

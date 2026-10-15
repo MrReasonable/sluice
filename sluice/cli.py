@@ -617,6 +617,12 @@ _TRIAGE_FILTERED_WORDS = (
     # consent wall, an error body). "no JD fetched" was true only of the first, and read as
     # a scraper fault on leads whose fetch had in fact succeeded.
     ("unjudgeable", "{n} with no usable job description{by}"),
+    # #402: leads withheld from fetching and judging after `triage.unjudgeable_give_up_after`
+    # unjudgeable results in a row. The retry instruction rides the row itself: the count is
+    # the only place a run says it stopped trying, and the key is the reset.
+    ("given_up", "{n} given up after repeated unjudgeable results (delete "
+                 "triage_unjudgeable_count from the note, or paste the posting under "
+                 "## Job description, to retry)"),
 )
 
 # Only the `unjudgeable` row above takes `{by}`. Every other template simply never
@@ -3206,7 +3212,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     tr = triage.add_parser("run", help="classify leads: deterministic rules, then an LLM judge")
     tr.add_argument("--status", default=",".join(_status.DEFAULT_TRIAGE_STATUSES))
-    tr.add_argument("--limit", type=int)
+    # #402: leads given up on (triage.unjudgeable_give_up_after) are still classified -- that
+    # pass is free -- and do not count towards the cap, so it bounds what a run can spend.
+    tr.add_argument("--limit", type=int,
+                    help="cap the leads fetched or judged (given-up leads do not count)")
     tr.add_argument("--dry-run", action="store_true")
     tr.add_argument("--backend", type=_backend_override, default=None,
                     help=_BACKEND_HELP)
