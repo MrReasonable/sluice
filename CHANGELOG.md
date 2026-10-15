@@ -40,6 +40,19 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.9.0](https://github.com/MrReasonable/sluice/compare/v4.8.0...v4.9.0) (2026-10-15)
+
+
+### Features
+
+* **triage:** give up on leads that stay unjudgeable ([#402](https://github.com/MrReasonable/sluice/issues/402)) ([ac48baa](https://github.com/MrReasonable/sluice/commit/ac48baad5c9624a9464fb27514853d17395469f7))
+
+
+### Documentation
+
+* **plan:** implementation plan for [#402](https://github.com/MrReasonable/sluice/issues/402) unjudgeable give-up ([c3ec982](https://github.com/MrReasonable/sluice/commit/c3ec982c0b2e59a1b3212a5023f2c43306faa172))
+* **spec:** give-up rule for leads that stay unjudgeable ([#402](https://github.com/MrReasonable/sluice/issues/402)) ([7d9f7c6](https://github.com/MrReasonable/sluice/commit/7d9f7c656674bcb89e9f4444aa84f3caddb094e4))
+
 ## [4.8.0](https://github.com/MrReasonable/sluice/compare/v4.7.0...v4.8.0) (2026-10-14)
 
 
