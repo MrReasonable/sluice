@@ -65,6 +65,15 @@ class TriageConfig:
     # and the "a gap never lowers a score" rule is a prompt instruction. Same opt-in posture
     # as `company_resolve_llm` and root `record_usage`.
     evidence: bool = False
+    # #402: after this many consecutive `unjudgeable` results -- each after the first on a
+    # fresh fetch, since the engine drops the cached page whenever the judge says one is not
+    # a posting (the first can be a page cached before the setting was on) -- a lead
+    # is no longer fetched or judged until a human resets `triage_unjudgeable_count` on it or
+    # pastes its posting into the note. 0 = OFF, the shipped default: nothing is counted,
+    # evicted or skipped, so an install that never sets it behaves exactly as before. A
+    # positive number is a judgement about when a block counts as permanent, which this
+    # repo does not ship uninvited.
+    unjudgeable_give_up_after: int = 0
     ttl_days: int = 7
     # NB no `dossier_dir` here: it was a DEAD key (declared, read by nothing) and is
     # retired outright by #80 in favour of one root `dossier_dir`. load_triage_config
@@ -215,6 +224,20 @@ def load_triage_config(path: str | None = None) -> TriageConfig:
             "fire: the knob would be silently inert, every blank/placeholder-company lead would "
             "stay unresolved, and the config would say otherwise. Set "
             "company_resolve_fetch: true as well, or turn company_resolve_llm off.")
+    # #402: unconditional and after the loop, like the check above. The loop's only type check
+    # fires for bool-DEFAULTED fields, and this default is an int, so the loop would store
+    # whatever the YAML held. `bool` is refused FIRST because it subclasses int and PyYAML
+    # reads `yes`/`on`/`true` as True: `unjudgeable_give_up_after: yes`, the natural way to
+    # switch the feature on, would otherwise load as a threshold of 1. `type(...) is int`
+    # rather than isinstance for the same reason, and it also refuses a float (2.5 would make
+    # `count >= 2.5` a threshold of 3) and a quoted number (a str would raise mid-run at the
+    # first comparison instead of here).
+    give_up = cfg.unjudgeable_give_up_after
+    if isinstance(give_up, bool) or type(give_up) is not int or give_up < 0:
+        raise ValueError(
+            "triage.unjudgeable_give_up_after must be a whole number, 0 or more (0 = never "
+            f"give up), got {give_up!r}. A YAML yes/on/true reads as a boolean and is refused "
+            "rather than taken as a threshold of 1.")
     # AFTER the loop, so `audit_jsonl: ""` in a config file resolves rather than
     # escaping as the empty string the loop just set.
     cfg.audit_jsonl = resolve(env_var="TRIAGE_AUDIT", config_value=cfg.audit_jsonl,

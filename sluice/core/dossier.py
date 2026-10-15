@@ -259,6 +259,22 @@ class DossierCache:
             "built_at": self.clock().isoformat(),
         }
 
+    def forget(self, lead: dict) -> None:
+        """Remove `lead`'s cached dossier, if there is one (#402).
+
+        A generic eviction: the cache knows nothing about verdicts. The triage engine calls it
+        when its judge says a cached page was not a posting, so that lead's next run fetches
+        again instead of re-reading the same bytes for the rest of the ttl. Pass the same
+        dict `get_or_build` was handed (the note's frontmatter); a dict whose `lead_id` was
+        rewritten computes another key, which is why the engine never passes the judge's
+        dossier. Already gone is the goal state, so `FileNotFoundError` is not an error; any
+        other `OSError` is the caller's to report, since a page that stays cached makes the
+        next count a re-read."""
+        try:
+            os.remove(self._path(lead))
+        except FileNotFoundError:
+            pass
+
     def get_or_build(self, lead: dict, *, supplied_jd: str = "") -> dict:
         # #369: a job description the lead note carries wins over the cache AND the
         # fetcher, and is never written to the cache -- checked FIRST, before `_path` and
@@ -271,7 +287,14 @@ class DossierCache:
             return self._assemble(lead, {"jd": {"markdown": supplied_jd}})
         path = self._path(lead)
         if self._fresh(path):
-            return json.loads(open(path, encoding="utf-8").read())
+            # #402: `forget` can remove the entry between the freshness check and this read
+            # -- a triage run dropping a page its judge called unjudgeable while a `cv run`
+            # reads the same entry. Gone is a miss, so it falls through to a fetch rather
+            # than raising out of the caller.
+            try:
+                return json.loads(open(path, encoding="utf-8").read())
+            except FileNotFoundError:
+                pass
         dossier = self._assemble(lead, self.fetcher(lead))
         # Do NOT persist a fetch that produced no JD (#169). Caching one made every later
         # run serve the failure for the whole TTL: triage judged the lead on a document
@@ -282,7 +305,10 @@ class DossierCache:
         # short-circuits before the judge call, and
         # `unjudgeable` is now its own status inside the default selection); what THIS
         # guard still buys is the REFETCH -- one per run, rather than a cached non-answer
-        # no later run can get past. The FRESHLY FETCHED dossier is still returned, never
+        # no later run can get past. `jd_arrived` owns what is PERSISTED; it cannot see
+        # page chrome long enough to pass it, so the triage engine may also EVICT an entry
+        # its judge called `unjudgeable`, through `forget` (#402), which keeps every later
+        # count of that lead on a fresh fetch. The FRESHLY FETCHED dossier is still returned, never
         # the rejected cached one, so the caller can answer `jd_arrived` on what it holds.
         if self.jd_arrived(dossier):
             # Through `open_for_owner` (#332): a triage run writes here after the audit

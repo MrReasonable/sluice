@@ -285,11 +285,11 @@ def test_triage_classify_conflict_is_counted_and_batch_continues(tmp_path, title
     real = eng.apply_classification
     calls = {"n": 0}
 
-    def flaky(vault, note, decision, reason):
+    def flaky(vault, note, decision, reason, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise VaultConflict(note.ref)
-        return real(vault, note, decision, reason)
+        return real(vault, note, decision, reason, **kw)
     monkeypatch.setattr(eng, "apply_classification", flaky)
 
     report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
@@ -314,11 +314,11 @@ def test_triage_judge_conflict_is_counted_and_batch_continues(tmp_path, titles, 
     real = eng.apply_verdict
     calls = {"n": 0}
 
-    def flaky(vault, note, verdict, dossier):
+    def flaky(vault, note, verdict, dossier, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise VaultConflict(note.ref)
-        return real(vault, note, verdict, dossier)
+        return real(vault, note, verdict, dossier, **kw)
     monkeypatch.setattr(eng, "apply_verdict", flaky)
 
     report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
@@ -721,9 +721,9 @@ def test_apply_classification_race_produces_no_persisted_audit_entry(tmp_path, t
     cfg.reject_titles = list(reject)
 
     real = eng.apply_classification
-    def racer(vault, note, decision, reason):
+    def racer(vault, note, decision, reason, **kw):
         vault.update_fields(note.ref, {"status": "applied"})    # a receipt lands first
-        return real(vault, note, decision, reason)
+        return real(vault, note, decision, reason, **kw)
     monkeypatch.setattr(eng, "apply_classification", racer)
 
     report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
@@ -802,9 +802,9 @@ def test_apply_verdict_race_produces_no_persisted_audit_entry(tmp_path, titles, 
     cfg.accept_titles = list(accept)
 
     real = eng.apply_verdict
-    def racer(vault, note, verdict, dossier):
+    def racer(vault, note, verdict, dossier, **kw):
         vault.update_fields(note.ref, {"status": "applied"})
-        return real(vault, note, verdict, dossier)
+        return real(vault, note, verdict, dossier, **kw)
     monkeypatch.setattr(eng, "apply_verdict", racer)
 
     report = eng.run(v, cfg, _Backend(), _cache(tmp_path), audit, statuses=("new",))
@@ -1860,11 +1860,11 @@ def test_triage_unjudgeable_conflict_is_counted_and_batch_continues(tmp_path, ti
     real = eng.apply_classification
     calls = {"n": 0}
 
-    def flaky(vault, note, decision, reason):
+    def flaky(vault, note, decision, reason, **kw):
         calls["n"] += 1
         if calls["n"] == 1:
             raise VaultConflict(note.ref)
-        return real(vault, note, decision, reason)
+        return real(vault, note, decision, reason, **kw)
     monkeypatch.setattr(eng, "apply_classification", flaky)
 
     report = eng.run(v, cfg, _Backend(), cache, audit, statuses=("new",))

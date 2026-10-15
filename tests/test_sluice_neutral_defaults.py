@@ -1133,3 +1133,54 @@ def test_no_str_default_on_a_swept_config_is_an_absolute_or_home_path():
     # `apply.camofox_cv_dir` is a path INSIDE the browser container, which the guard excludes
     # by name (`_CONTAINER_PATHS`) because nothing on this host is ever written there.
     assert relative - _CONTAINER_PATHS <= _relative_path_defaults()
+
+
+# ── #402: the unjudgeable give-up threshold ──────────────────────────────────────────────
+# triage.unjudgeable_give_up_after carries its own guards for the reason min_jd_chars does: the
+# list-keyed sweep below cannot see an int field. Its default is the switch for the whole
+# feature -- at 0 nothing is counted, evicted or skipped -- so a non-zero default would stop
+# judging every install's unjudgeable leads after that many runs with nothing asked of anyone.
+def test_unjudgeable_give_up_after_dataclass_default_is_off():
+    assert TriageConfig().unjudgeable_give_up_after == 0
+
+
+def test_unjudgeable_give_up_after_loader_default_is_off(monkeypatch):
+    monkeypatch.delenv("SLUICE_CONFIG", raising=False)
+    assert load_triage_config().unjudgeable_give_up_after == 0
+
+
+def test_unjudgeable_give_up_after_absent_key_abstains(tmp_path, monkeypatch):
+    p = tmp_path / "c.yaml"
+    p.write_text("triage:\n  batch_size: 5\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_triage_config().unjudgeable_give_up_after == 0
+
+
+def test_unjudgeable_give_up_after_configured_value_round_trips(tmp_path, monkeypatch):
+    p = tmp_path / "c.yaml"
+    p.write_text("triage:\n  unjudgeable_give_up_after: 3\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    assert load_triage_config().unjudgeable_give_up_after == 3
+
+
+@pytest.mark.parametrize("value", ["yes", "on", "true", "True", "-1", "2.5", "'3'", "[3]"])
+def test_unjudgeable_give_up_after_rejects_non_counts(tmp_path, monkeypatch, value):
+    # `yes` is the natural spelling to turn the feature ON, and PyYAML reads it as True, a
+    # subclass of int: unchecked it would load as a threshold of 1. A quoted '3' is a str,
+    # which would raise mid-run at the first `> 0` rather than here.
+    p = tmp_path / "c.yaml"
+    p.write_text(f"triage:\n  unjudgeable_give_up_after: {value}\n", encoding="utf-8")
+    monkeypatch.setenv("SLUICE_CONFIG", str(p))
+    with pytest.raises(ValueError, match="unjudgeable_give_up_after"):
+        load_triage_config()
+
+
+def test_example_config_ships_unjudgeable_give_up_after_off():
+    # The example is a catalogue people copy; an active threshold would stop judging their
+    # unjudgeable leads after that many runs without their having chosen it.
+    text = _EXAMPLE_PATH.read_text(encoding="utf-8")
+    active = [ln for ln in text.splitlines()
+              if ln.strip().startswith("unjudgeable_give_up_after:")]
+    assert all(ln.split(":", 1)[1].strip() == "0" for ln in active), \
+        "unjudgeable_give_up_after must ship commented out (or 0) in sluice.yaml.example"
+    assert "unjudgeable_give_up_after" in text, "the knob must be documented in the example"
