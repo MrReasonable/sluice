@@ -2013,7 +2013,7 @@ class Vault:
         # the registry rather than the four hardcoded `fm.get("Company", ...)` lookups
         # this used to carry: those were an identity mapping on title-cased names, and
         # `skills`' own field names collide with none of them -- so `best_for` was the
-        # empty string for every skill and cv/bundle.py's rank() scored a `platform`
+        # empty string for every skill and `core/rank.py::rank` scored a `platform`
         # skill zero against the keyword `platform` (#164 review, M3). See
         # `EvidenceKind.floor_map` for what each kind maps and, for `skills`, what it
         # deliberately does NOT.
@@ -2036,8 +2036,8 @@ class Vault:
                 "path": path, "title": name[:-3],
                 **{floor: fm.get(key, "") for floor, key in sources.items()},
                 "verified": fm.get(VERIFIED_KEY) or None, "body": body.strip(),
-                # The keys above are a FLOOR, kept so cv/bundle.py's rank() and
-                # assign_codes work on every kind unchanged. `fields` carries the kind's
+                # The keys above are a FLOOR, kept so `core/rank.py::rank` and
+                # `cv/bundle.py::assign_codes` work on every kind unchanged. `fields` carries the kind's
                 # OWN frontmatter under its own names, which is where a field with no
                 # floor analogue (skills' Proficiency/Evidence/Signal Value) stays
                 # reachable.

@@ -48,6 +48,8 @@ from sluice.core.layout import asks_for_bullets, build_slots, no_citable_slot
 from sluice.core.log import get_logger
 from sluice.core.protocols import (CANDIDATE_PROFILE_RELPATH, CV_LAYOUT_RELPATH, EVIDENCE_KINDS,
                                    LayoutError)
+# Bound under the module-level name `_jd_keywords`, which tests/test_dossier_guard.py monkeypatches.
+from sluice.core.rank import jd_keywords as _jd_keywords
 from sluice.core.tokens import tool_items
 from sluice.core.usage import meter
 from sluice.cv import artefacts as _artefacts
@@ -179,10 +181,6 @@ class CvResult:
 
 def _slug(company: str, role: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", f"{company}-{role}".lower()).strip("-")[:80] or "lead"
-
-
-def _jd_keywords(role: str, jd: str) -> list:
-    return sorted({w for w in re.findall(r"[a-z]{4,}", f"{role} {jd or ''}".lower())})
 
 
 _IDENTITY_REFUSAL = (

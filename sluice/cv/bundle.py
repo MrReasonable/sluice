@@ -6,7 +6,9 @@ CV Layout places is available to be cited."""
 import re
 
 from sluice.core.layout import layout_text
-from sluice.core.stem import stem_all as _stem_all
+# `rank` lives in core/rank.py, where core/prepbrief.py shares it; the name stays
+# importable from here.
+from sluice.core.rank import rank
 
 # The one tokeniser lives in core/tokens.py, where core/doctor.py shares it; the name stays
 # importable from here for cv/terms.py.
@@ -32,43 +34,6 @@ def assign_codes(entries: list[dict], prefix_map: dict) -> list[dict]:
         seq[p] = seq.get(p, 0) + 1
         out.append({**e, "id": f"{p}{seq[p]}"})
     return out
-
-
-def rank(entries: list[dict], jd_keywords: list[str]) -> list[dict]:
-    """Order entries by how many JD keywords their classification fields answer.
-
-    Matching is on STEMS, both sides (#165), so "documenting", "documentation" and
-    "documented" all rank the same entry. Before this it was raw substring containment,
-    which missed every inflection -- measured on a real posting, an entry that directly
-    evidenced the ad's most-emphasised requirement scored ZERO and ranked below dozens of
-    unrelated ones, because the ad said "documenting" and the entry said "documentation".
-    It also related words it should not: `"java" in "javascript"` is True.
-
-    Orders, never excludes. The FULL verified set is emitted either way, so a ranking
-    change can never lose evidence -- only move it. It DOES change which `[id]` an entry
-    receives, since `assign_codes` runs after this.
-
-    The haystack stays `best_for`/`category`/`title` and deliberately excludes `body`:
-    matching into free prose lets a long entry out-score a precise one on volume alone.
-
-    BOTH sides go through `_stem_all`, which tokenises before stemming. Stemming each
-    keyword WHOLE (`_stem(k)`) is not the same operation: `_stem("machine learning")` is
-    `"machine learn"`, a single string that no tokenised haystack can ever contain, so a
-    multi-word keyword scored ZERO -- measured, the entry that answered it ranked last of
-    seven while entries matching an unrelated keyword scored 1. That is the SAME
-    two-vocabularies-nobody-normalised defect this function was rewritten to fix, one
-    level down. Today's only production caller (`cv/engine.py:_jd_keywords`) yields single
-    `[a-z]{4,}` words, for which the two spellings are provably identical, so this is
-    reachability-hardening rather than a live bug fix -- but `rank` is reachable with any
-    keyword list, and the two sides agreeing BY CONSTRUCTION is the property worth having.
-    """
-    wanted = _stem_all(" ".join(jd_keywords))
-
-    def score(e):
-        hay = f"{e.get('best_for','')} {e.get('category','')} {e.get('title','')}"
-        return len(wanted & _stem_all(hay))
-
-    return sorted(entries, key=score, reverse=True)
 
 
 def build_bundle(entries, negatives, jd_keywords, prefix_map, skills=()) -> dict:

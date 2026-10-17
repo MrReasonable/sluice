@@ -2364,7 +2364,7 @@ sentence cannot be.
   TEXT floor keys (`company`/`category`/`best_for`/`metrics`) is
   `FLOOR_FIELD_SOURCES` merged with that kind's `floor_map`, not an identity
   mapping a store invents: `skills` names its keyword axis `Domain`, and
-  without the override `cv/bundle.py`'s `rank()` scored a `platform` skill
+  without the override `core/rank.py::rank` scored a `platform` skill
   zero against the keyword `platform`.
   `read_cv_layout()` (#364/#365/#368) is MUST-support, like `read_candidate_profile`, with
   its outcomes kept apart: `None` for an absent note, `LayoutError` for a malformed one,

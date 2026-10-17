@@ -10,8 +10,8 @@ Certified against Martin Porter's published 23,531-word vocabulary at 100.0000%
 (tests/data/porter_vocabulary.txt). That corpus buys a ONE-TIME validation of this
 implementation against the reference; it is not drift detection of the reference.
 
-Consumers: `cv/bundle.py:rank` and `core/doctor.py`. Deliberately NOT
-`core/relevance.py`, whose keep/drop lists are a user-specified ingest gate applied
+Consumer: `core/rank.py`, which cv and the interview prep brief rank through.
+Deliberately NOT `core/relevance.py`, whose keep/drop lists are a user-specified ingest gate applied
 before dedup -- widening that match silently changes which leads are discarded, the
 672ad2a failure.
 """
