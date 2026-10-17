@@ -66,6 +66,12 @@ python -m scripts.coach_eval.run --prep-persona prep-strong --out "$(mktemp -d)"
 python -m scripts.coach_eval.run --prep-all --out "$(mktemp -d)"
 ```
 
+Measured 2026-10-17 on Claude Code 2.1.302, against the playbook as merged in #414 (before
+the fixes that run prompted): each of the three personas finished in 11 or 12 coach messages,
+and the coach session cost $0.07 to $0.12 per persona. A `--resume` session reports its cost
+cumulatively, so read the LAST turn's `total_cost_usd`; summing every turn overstates it
+several times over.
+
 `--prep-persona`/`--prep-all` are exclusive with every other mode, and `--all` still means the
 setup personas only. `--grader-model` and `--out` reach the prep runner exactly as they reach
 setup's.
