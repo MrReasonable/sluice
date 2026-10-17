@@ -296,6 +296,14 @@ WebSearch` narrows only the built-in tools (every `mcp__sluice__*` tool is still
 The same probe, the same shape: the server connects, `--tools WebSearch` narrows only the
 built-in tools, and `--tools ""` lists none.
 
+### Measurement 2c: Claude Code 2.1.302, 2026-10-17
+
+The same probe, run against a sandboxed server (its own `HOME`, XDG dirs, config path and vault)
+rather than the real one, the same shape: the server connects with `prep_brief` among its tools,
+`--tools WebSearch` narrows only the built-in tools, and `--tools ""` lists none; only builtin
+plugins load. Measurement 3's narrowing was re-checked too: `--disallowedTools` naming
+`cv_run`, `setup_save` and `doctor` removed exactly those three from the listed MCP tools.
+
 ### Measurement 3: `--disallowedTools` narrows MCP tools (2.1.292, 2026-10-07)
 
 `--disallowedTools` removes tools from availability (`--allowedTools` only pre-approves). The
