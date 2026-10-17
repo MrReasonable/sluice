@@ -40,6 +40,31 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.10.0](https://github.com/MrReasonable/sluice/compare/v4.9.0...v4.10.0) (2026-10-17)
+
+
+### Features
+
+* **leads:** job-sluice leads prep, an interview prep brief from STAR stories ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([ae80ce7](https://github.com/MrReasonable/sluice/commit/ae80ce7e3c7976f525585499d04a384ac8511a2b))
+* **mcp:** a read-only prep_brief tool and an interview_prep coach prompt ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([e63dc94](https://github.com/MrReasonable/sluice/commit/e63dc94f44983e05e38cef9183ee7d4ca96689c1))
+
+
+### Bug Fixes
+
+* **mcp:** the interview_prep coach gives saved stories a Best For and quotes the posting when asked ([ac7f215](https://github.com/MrReasonable/sluice/commit/ac7f2159daf12b3ea98f0360fd15e286fe719f5f))
+
+
+### Refactoring
+
+* **core:** move rank and jd_keywords into core/rank.py ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([5f42161](https://github.com/MrReasonable/sluice/commit/5f4216169e89e4ff7d022ec77223612d3f97ec03))
+
+
+### Documentation
+
+* **plan:** implementation plan for [#195](https://github.com/MrReasonable/sluice/issues/195) interview prep briefs (PR 1) ([96464e8](https://github.com/MrReasonable/sluice/commit/96464e8ab7c9cabd105a472e0bf71215cc4eeb50))
+* **plan:** implementation plan for [#195](https://github.com/MrReasonable/sluice/issues/195) PR 2 (MCP tool, coach prompt, eval runner) ([4d49f94](https://github.com/MrReasonable/sluice/commit/4d49f945cf75c573632b8edf8fe8aacfd40c595e))
+* **spec:** interview prep briefs from STAR stories ([#195](https://github.com/MrReasonable/sluice/issues/195), part 1) ([0af95c3](https://github.com/MrReasonable/sluice/commit/0af95c3b7a37b3d9da8e927413846dbc2efb25c7))
+
 ## [4.9.0](https://github.com/MrReasonable/sluice/compare/v4.8.0...v4.9.0) (2026-10-15)
 
 
