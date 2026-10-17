@@ -1,0 +1,26 @@
+{
+  "id": "prep-unverified",
+  "name_seed": 203,
+  "location": "Charlie",
+  "company": "Example Northgate",
+  "role_seed": 37,
+  "status": "interview",
+  "write": false,
+  "jd_template": "{company} has an opening for a {role} based in {location}.\n\nThe work:\n- handle a varied workload with changing priorities\n- keep careful records\n- work with people from outside the organisation\n\nYou will have:\n- experience coping with a sudden change in priorities\n- experience finding and fixing a mistake before it caused harm\n- experience building a good working relationship with someone outside your organisation",
+  "stories": [
+    {
+      "title": "Caught a billing error before it went out",
+      "company": "Example Cartography",
+      "best_for": "finding a mistake",
+      "body": "**Situation.** A batch of invoices was ready to send at the end of the month.\n\n**Task.** I was doing the final check before they went out.\n\n**Action.** I noticed that one customer's total was ten times the usual amount, traced it to a figure entered with an extra zero, and held the batch while it was corrected.\n\n**Result.** The invoices went out a day later with the right amounts, and a second check on large totals was added to the process.",
+      "verified": false
+    },
+    {
+      "title": "Rescheduled a week of work after a sudden change",
+      "company": "Example Foundry",
+      "best_for": "changing priorities",
+      "body": "**Situation.** On a Monday morning an urgent request arrived that needed most of my week.\n\n**Task.** I had to fit it in without dropping the work already promised.\n\n**Action.** I listed everything due that week, asked each person waiting which of their items could move, and agreed new dates for three of them before starting the urgent request.\n\n**Result.** The urgent request was finished on Thursday, and every moved item was delivered by its new date.",
+      "verified": false
+    }
+  ]
+}

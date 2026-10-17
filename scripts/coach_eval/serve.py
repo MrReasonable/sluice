@@ -18,6 +18,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--sandbox", required=True)
     ap.add_argument("--vault-env", action="store_true")
+    # The prep runner's read-only personas: the server without `--write`, so the playbook's
+    # read-only branch (no propose_evidence registered) has an eval of its own.
+    ap.add_argument("--read-only", action="store_true")
     args = ap.parse_args(argv)
     sandbox = Path(args.sandbox)
     env = isolation.server_env(os.environ, sandbox, ROOT, vault_env=args.vault_env)
@@ -32,7 +35,7 @@ def main(argv=None):
     cwd.mkdir(parents=True, exist_ok=True)
     os.chdir(cwd)
     exe = os.path.join(os.path.dirname(sys.executable), "job-sluice")
-    os.execve(exe, [exe, "mcp", "serve", "--write"], env)
+    os.execve(exe, [exe, "mcp", "serve", *([] if args.read_only else ["--write"])], env)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,39 @@ from tests.conftest import LOCATIONS, PATH_ENV_VARS
 ROOT = Path(__file__).resolve().parent.parent
 
 
+@pytest.fixture(autouse=True)
+def _no_claude_spawn(monkeypatch):
+    """Every test here fails CLOSED on a real `claude` spawn rather than spending the owner's
+    allowance. Most tests patch `run._claude`, and that patch governs only callers that reach
+    `_claude` through the module attribute: a by-name import in a runner would call the real one,
+    which spawns `claude` on any machine that has it installed. A test that stubs
+    `subprocess.run` itself (`_stub_claude`) patches over this one for its own duration. Any
+    other command still runs, so a test driving a real subprocess of its own keeps working."""
+    import os
+    import subprocess
+
+    real = subprocess.run
+
+    def _claude_tripwire(cmd, *a, **k):
+        argv = cmd.split() if isinstance(cmd, str) else [str(c) for c in cmd]
+        if argv and os.path.basename(argv[0]) == "claude":
+            raise AssertionError(f"a test spawned a real claude process: {cmd}")
+        return real(cmd, *a, **k)
+
+    monkeypatch.setattr(subprocess, "run", _claude_tripwire)
+
+
+def test_the_claude_tripwire_is_installed_and_refuses_a_spawn(tmp_path):
+    import subprocess
+
+    from scripts.coach_eval import run
+
+    # Checked BEFORE the call below: without the fixture that call would spawn a real claude.
+    assert subprocess.run.__name__ == "_claude_tripwire"
+    with pytest.raises(AssertionError, match="spawned a real claude"):
+        run._claude(["-p", "x"], tmp_path)
+
+
 def test_the_unset_set_is_derived_and_matches_the_sandbox():
     assert isolation.path_env_vars(ROOT) == set(PATH_ENV_VARS)
     assert set(isolation.EXTRA_UNSET) >= {"CAMOFOX_USER", "CAMOFOX_SESSION", "CAMOFOX_URL",
@@ -226,7 +259,7 @@ def test_serve_execs_the_real_server_from_an_empty_cwd_when_sandboxed(tmp_path, 
     assert isolation.isolation_problems(seen["env"], tmp_path, ROOT) == []
 
 
-def _server_tool_names():
+def _server_tool_names(write=True):
     import asyncio
 
     from sluice.core.config import Config
@@ -234,7 +267,7 @@ def _server_tool_names():
 
     async def _run():
         from mcp import Client
-        async with Client(build_server(Config(), write=True), raise_exceptions=True) as c:
+        async with Client(build_server(Config(), write=write), raise_exceptions=True) as c:
             return {t.name for t in (await c.list_tools()).tools}
 
     return asyncio.run(_run())
@@ -243,7 +276,8 @@ def _server_tool_names():
 def test_every_server_tool_is_either_kept_or_disallowed_for_the_coach():
     from scripts.coach_eval import run
 
-    roster = _server_tool_names()
+    # The write level only: it is the one level the setup coach runs at (serve.py's default).
+    roster = _server_tool_names(write=True)
     assert roster  # the sweep enumerated something
     kept, gone = set(run.SETUP_TOOLS), set(run.DISALLOWED_SLUICE_TOOLS)
     assert kept | gone == roster and not kept & gone
@@ -586,12 +620,16 @@ def test_the_not_exercised_overwrite_applies_in_a_regrade(monkeypatch, tmp_path)
     assert llm["setup_save_reached"] is False
 
 
-def test_grader_model_reaches_the_argv_and_defaults_to_sonnet(monkeypatch, tmp_path):
+@pytest.mark.parametrize("runner", ["setup", "prep"])
+def test_grader_model_reaches_the_argv_and_defaults_to_sonnet(monkeypatch, tmp_path, runner):
     # Owner's decision (2026-10-07), after regrading runs 2-5 with both: the default grader is
     # Sonnet. The explicit flag is a DIFFERENT model, so the default is what the second call shows.
     from scripts.coach_eval import run
 
-    _saved_run(tmp_path, (rubric.STATUS,))
+    if runner == "setup":
+        _saved_run(tmp_path, (rubric.STATUS,))
+    else:
+        _saved_prep_run(tmp_path, [])
     seen = _grader_stub(monkeypatch)
     run.main(["--regrade", str(tmp_path), "--grader-model", "haiku"])
     run.main(["--regrade", str(tmp_path)])
@@ -641,6 +679,15 @@ def test_regrade_is_exclusive_with_persona_and_all(tmp_path):
     for other in (["--persona", "x"], ["--all"], ["--regrade", str(tmp_path)]):
         with pytest.raises(SystemExit):
             run.main(["--print-grader-prompt", str(tmp_path), *other])
+    # The prep runner's selectors join the same group: one mode per invocation.
+    prep_modes = (["--prep-persona", "x"], ["--prep-all"])
+    others = (["--persona", "x"], ["--all"], ["--regrade", str(tmp_path)],
+              ["--print-grader-prompt", str(tmp_path)])
+    for mode in prep_modes:
+        for other in (*others, *[m for m in prep_modes if m != mode]):
+            with pytest.raises(SystemExit) as raised:
+                run.main([*mode, *other])
+            assert raised.value.code == 2   # argparse's usage error, not a run that started
 
 
 def test_regrade_removes_its_sandbox_and_print_grader_prompt_makes_none(monkeypatch, tmp_path):
@@ -673,13 +720,21 @@ def test_regrade_removes_its_sandbox_and_print_grader_prompt_makes_none(monkeypa
     assert made == []
 
 
-def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_path):
+@pytest.mark.parametrize("runner", ["setup", "prep"])
+def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_path, runner):
     from scripts.coach_eval import run
 
+    if runner == "setup":
+        p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
+        tools, flag = run.COACH_EXPECTED_TOOLS, "--persona"
+    else:
+        from scripts.coach_eval import prep
+        p = _prep_personas()[0]
+        tools, flag = prep.expected_tools(p.write), "--prep-persona"
     init = {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
             "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
             "mcp_servers": [{"name": "sluice", "status": "connected"}],
-            "tools": sorted(run.COACH_EXPECTED_TOOLS)}
+            "tools": sorted(tools)}
 
     def reply(cmd, kw):
         if "--mcp-config" in cmd:
@@ -689,10 +744,12 @@ def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_
         return [{"type": "result", "result": "DONE"}]
 
     seen = _stub_claude(monkeypatch, reply)
-    p = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")[0]
-    run.main(["--persona", p.id, "--grader-model", "opus", "--out", str(tmp_path / "out")])
+    run.main([flag, p.id, "--grader-model", "opus", "--out", str(tmp_path / "out")])
     graders = [cmd for cmd, kw in seen if (kw.get("input") or "").startswith("Grade")]
     assert len(graders) == 1 and graders[0][graders[0].index("--model") + 1] == "opus"
+    # --out reached the runner too: the scorecard is where the flag said.
+    card = json.loads((tmp_path / "out" / f"{p.id}.scorecard.json").read_text())
+    assert card.get("runner", "setup") == runner
 
 
 def test_brief_cites_sources_is_checked_per_save_call_carrying_a_brief():
@@ -1118,12 +1175,22 @@ def test_the_retired_board_is_the_registrys_first_disabled_one(monkeypatch):
 
 
 def test_no_persona_file_names_a_board():
+    """WHOLE-FILE over both runners' persona directories: every key and value, the prep JD
+    templates and story bodies included, since a posting ("apply via ...") is the likeliest
+    text to name a board. The ids are read from the registry at run time, never listed."""
     from sluice.ingest.sources import all_sources
     ids = {s.id.lower() for s in all_sources()}
     assert ids
-    for f in (ROOT / "scripts" / "coach_eval" / "personas").glob("*.json"):
+    base = ROOT / "scripts" / "coach_eval" / "personas"
+    files = {"setup": sorted(base.glob("*.json")), "prep": sorted((base / "prep").glob("*.json"))}
+    # scope: the sweep read files from BOTH directories, so a moved or renamed prep directory
+    # cannot leave the guard passing on nothing
+    assert files["setup"] and files["prep"], files
+    for f in files["setup"] + files["prep"]:
         words = set(re.findall(r"[a-z_]+", f.read_text(encoding="utf-8").lower()))
-        assert not ids & words, f.name
+        assert not ids & words, (
+            f"{f.name} names a board id {sorted(ids & words)}. Some ids are ordinary words: "
+            "reword the persona, never narrow or change this guard.")
 
 
 def _coach_init():
@@ -1290,3 +1357,912 @@ def test_the_first_turn_is_the_bare_command_and_the_focus_is_the_next_message(
     p = next(x for x in ps if " " in x.focus)  # scope: a multi-word focus, the case that broke
     run.run_persona(p, tmp_path)
     assert coach_messages[:2] == ["/mcp__sluice__career_interview", p.focus]
+
+
+# ── the prep coach's runner (#195): scripts/coach_eval/prep.py ─────────────────────────────
+# Spec docs/superpowers/specs/2026-10-16-interview-prep-design.md, section 10 and Testing (PR 2),
+# "The prep eval runner". Every prep_brief reply below is built by CALLING the real
+# `mcpserver.prep_brief` (`_brief_call`) on a vault the real seeder filled, so the envelope keys
+# (`outcome`, `brief`, `jd.text`) come from the server, never typed here. The other tools'
+# replies are typed, because the rubric reads only their names and whether they errored.
+
+_PREP_DIR = ROOT / "scripts" / "coach_eval" / "personas" / "prep"
+_PREP_GRADE = {"gaps_probed": 4, "no_supplied_example": "yes", "unverified_handled": 4,
+               "fidelity_feedback": 4, "coaching_quality": 3, "notes": "n"}
+_FACT_SCORED = ("gaps_probed", "unverified_handled", "fidelity_feedback")
+
+
+def _prep_personas():
+    ps = personas.load_prep_personas(_PREP_DIR)
+    # scope: every prep file loaded, and at least the three the spec names
+    assert len(ps) == len(list(_PREP_DIR.glob("*.json"))) >= 3
+    return ps
+
+
+def _prep_where(pred):
+    return next(p for p in _prep_personas() if pred(p))
+
+
+def _with_unverified():
+    return _prep_where(lambda p: any(not s["verified"] for s in p.stories))
+
+
+def _all_verified():
+    return _prep_where(lambda p: p.stories and all(s["verified"] for s in p.stories))
+
+
+def _seeded(tmp_path, p):
+    """`p` seeded by the REAL seeder into its own sandbox: (a facade over that vault, slug)."""
+    from scripts.coach_eval import prep, run
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.core.vault import Vault
+
+    sandbox = tmp_path / f"sandbox-{p.id}"
+    sandbox.mkdir()
+    slug = prep.seed_vault(p, sandbox)
+    return Sluice(Config(), store=Vault(str(run.sandbox_vault(sandbox, False)))), slug
+
+
+def _brief_call(sluice, lead, *, denied=False):
+    """One prep_brief tool call answered with the real module-level tool's reply."""
+    from sluice import mcpserver
+    return _tool(rubric.PREP, {"lead": lead}, mcpserver.prep_brief(sluice, lead), denied=denied)
+
+
+def _fragment(slug):
+    # The company half of the slug: a guess that misses and draws suggestions.
+    return slug.split(" - ")[0]
+
+
+def _prep_init(write):
+    from scripts.coach_eval import prep
+    return {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+            "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+            "mcp_servers": [{"name": "sluice", "status": "connected"}],
+            "tools": sorted(prep.expected_tools(write))}
+
+
+def _saved_prep_run(tmp_path, events, pid="prep-saved", runner="prep"):
+    """A saved prep run as the live runner leaves it, scorecard included."""
+    transcript = ["COACH: hello", "USER: hi", "COACH: bye", "USER: DONE"]
+    (tmp_path / f"{pid}.events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+    (tmp_path / f"{pid}.transcript.txt").write_text("\n".join(transcript))
+    (tmp_path / f"{pid}.scorecard.json").write_text(json.dumps({"runner": runner,
+                                                                "persona": pid}))
+    return pid, events, transcript
+
+
+# ── setup is unchanged except where listed ──
+
+def test_coach_args_with_no_keywords_is_the_argv_built_from_runs_own_constants(tmp_path):
+    from scripts.coach_eval import run
+
+    m = tmp_path / "m.json"
+    built = ["--model", run.COACH_MODEL, "-p", "hi", "--mcp-config", str(m),
+             "--tools", run.COACH_TOOLS, "--disallowedTools", run.COACH_DISALLOWED,
+             "--allowedTools", ",".join(sorted(run.COACH_EXPECTED_TOOLS)),
+             "--output-format", "stream-json", "--verbose"]
+    assert run.coach_args("hi", m) == built
+    assert run.coach_args("hi", m, "s") == built + ["--resume", "s"]
+
+
+def test_the_setup_run_writes_its_mcp_config_with_todays_arguments(monkeypatch, tmp_path):
+    import sys
+
+    from scripts.coach_eval import run
+
+    seen = []
+    real = run.write_mcp_config
+
+    def spy(sandbox, server_args):
+        seen.append((Path(sandbox), list(server_args)))
+        path = real(sandbox, server_args)
+        seen.append(json.loads(path.read_text()))
+        return path
+
+    monkeypatch.setattr(run, "write_mcp_config", spy)
+    monkeypatch.setattr(run, "_claude", lambda args, cwd, prompt=None: (
+        [_coach_init()] if "--mcp-config" in args else []))
+    ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
+    for p in (next(x for x in ps if not x.vault_env), next(x for x in ps if x.vault_env)):
+        seen.clear()
+        run.run_persona(p, tmp_path)
+        (sandbox, args), written = seen
+        assert args == ["--sandbox", str(sandbox)] + (["--vault-env"] if p.vault_env else [])
+        assert written == {"mcpServers": {"sluice": {"command": sys.executable, "args": [
+            str(ROOT / "scripts" / "coach_eval" / "serve.py"), *args]}}}
+
+
+# ── one patch governs both runners ──
+
+def test_one_patch_on_run_claude_governs_the_prep_runner(monkeypatch, tmp_path):
+    """prep.py reaches `_claude` BY ATTRIBUTE on run, so this one patch intercepts it; a
+    by-name import would call the real `_claude`, which spawns a process and trips the wire."""
+    import subprocess
+
+    from scripts.coach_eval import prep, run
+
+    def tripwire(*_a, **_k):
+        raise AssertionError("a claude process was spawned past the patch on run._claude")
+
+    monkeypatch.setattr(subprocess, "run", tripwire)
+    p = _prep_personas()[0]
+    seen = []
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            seen.append("coach")
+            return [_prep_init(p.write), *_say("Which interview is it?")]
+        if (prompt or "").startswith("Grade"):
+            seen.append("grader")
+            return [{"type": "result", "result": json.dumps(_PREP_GRADE)}]
+        seen.append("user")
+        return [{"type": "result", "result": "DONE"}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    card = prep.run_persona(p, tmp_path)
+    assert seen == ["coach", "user", "grader"]
+    assert card["runner"] == "prep" and card["persona"] == p.id
+    assert json.loads((tmp_path / f"{p.id}.scorecard.json").read_text()) == card
+
+
+def _prep_imports_in_run():
+    """(enclosing function name, or None at module scope) for every import of prep in run.py.
+    MODULE SCOPE is whatever runs when run.py is imported: the top level and any `if`/`try`/
+    class body under it, but no function body, so the walk does not descend into one."""
+    import ast
+
+    def names_prep(node):
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            return (mod.endswith("coach_eval.prep") or mod == "prep"
+                    or (mod.endswith("coach_eval") or node.level) and any(
+                        a.name == "prep" for a in node.names))
+        return isinstance(node, ast.Import) and any(
+            a.name.split(".")[-1] == "prep" for a in node.names)
+
+    found = []
+
+    def walk(node, func):
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                walk(child, getattr(child, "name", "<lambda>"))
+            else:
+                if names_prep(child):
+                    found.append(func)
+                walk(child, func)
+
+    walk(ast.parse((ROOT / "scripts" / "coach_eval" / "run.py").read_text(encoding="utf-8")),
+         None)
+    return found
+
+
+def test_run_imports_prep_only_inside_its_functions():
+    """prep imports run at module scope, so run must reach prep only from inside a function,
+    or the two form an import cycle. An import at the END of run.py works in either import
+    order, silently, which is why this reads the source rather than importing anything."""
+    found = _prep_imports_in_run()
+    # Scope: the walk sees the function-local imports that do exist, so a matcher that found
+    # nothing cannot pass.
+    assert {"_grading", "main"} <= set(found), found
+    assert None not in found, "run.py imports prep at module scope"
+
+
+def test_the_prep_coach_starts_on_its_own_command_with_its_own_lists(monkeypatch, tmp_path):
+    from scripts.coach_eval import prep, run
+
+    for p in (_prep_where(lambda x: x.write), _prep_where(lambda x: not x.write)):
+        coach = []
+
+        def fake(args, cwd, prompt=None, p=p, coach=coach):
+            if "--mcp-config" in args:
+                coach.append(args)
+                return [_prep_init(p.write)]
+            return [{"type": "result", "result": "{}" if (prompt or "").startswith("Grade")
+                     else "DONE"}]
+
+        monkeypatch.setattr(run, "_claude", fake)
+        prep.run_persona(p, tmp_path)
+        args = coach[0]
+        assert args[args.index("-p") + 1] == prep.COMMAND == "/mcp__sluice__interview_prep"
+        assert args[args.index("--tools") + 1] == ""   # no built-in tools at all
+        assert set(args[args.index("--allowedTools") + 1].split(",")) == prep.expected_tools(
+            p.write)
+        assert set(args[args.index("--disallowedTools") + 1].split(",")) == {
+            f"mcp__sluice__{n}" for n in prep.disallowed(p.write)}
+        assert "--resume" not in args
+
+
+def test_a_read_only_persona_starts_the_server_read_only(tmp_path):
+    from scripts.coach_eval import prep
+
+    for p in _prep_personas():
+        args = prep.server_args(p, tmp_path)
+        assert args == ["--sandbox", str(tmp_path)] + ([] if p.write else ["--read-only"])
+    # scope: both levels are among the personas
+    assert {p.write for p in _prep_personas()} == {True, False}
+
+
+# ── rosters, at both levels ──
+
+@pytest.mark.parametrize("write", [False, True])
+def test_the_prep_rosters_place_every_server_tool_at_each_level(write):
+    from scripts.coach_eval import prep
+
+    roster = _server_tool_names(write=write)
+    assert roster  # the sweep enumerated something
+    kept, gone = set(prep.kept(write)), set(prep.disallowed(write))
+    assert kept | gone == roster and not kept & gone
+    assert prep.expected_tools(write) == {f"mcp__sluice__{n}" for n in prep.kept(write)}
+    assert ("propose_evidence" in kept) is write
+
+
+def test_the_two_runners_persona_ids_are_disjoint():
+    # They share the `<id>.*` output names in one --out directory.
+    setup = {p.id for p in personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")}
+    prep_ids = {p.id for p in _prep_personas()}
+    assert setup and prep_ids and not setup & prep_ids
+
+
+# ── no built-ins ──
+
+@pytest.mark.parametrize("write", [False, True])
+def test_the_prep_init_check_fails_on_websearch_or_any_disallowed_tool(write):
+    from scripts.coach_eval import prep
+
+    want = prep.expected_tools(write)
+    ev = _prep_init(write)
+    assert isolation.check_init_event(ev, tools=want, servers={"sluice"}) == []
+    extras = ["WebSearch", *(f"mcp__sluice__{n}" for n in prep.disallowed(write))]
+    assert len(extras) > 1   # scope: the disallowed tools are among them
+    for extra in extras:
+        ev["tools"] = sorted(want | {extra})
+        problems = isolation.check_init_event(ev, tools=want, servers={"sluice"})
+        assert any(extra in p for p in problems), extra
+
+
+@pytest.mark.parametrize("extra", ["WebSearch", "a disallowed sluice tool"])
+def test_the_prep_run_stops_and_removes_its_sandbox_when_the_isolation_check_fails(
+        monkeypatch, tmp_path, extra):
+    """The prep LOOP consults the init check and stops on it: the row above tests the check
+    itself, this one that the runner acts on it, before any user or grader call."""
+    from scripts.coach_eval import prep
+
+    p = _prep_where(lambda x: x.write)
+    tool = extra if extra == "WebSearch" else f"mcp__sluice__{prep.disallowed(p.write)[0]}"
+    init = {**_prep_init(p.write), "tools": sorted(prep.expected_tools(p.write) | {tool})}
+    seen = _sandbox_probe(monkeypatch, init)
+    with pytest.raises(SystemExit, match="isolation check failed"):
+        prep.run_persona(p, tmp_path)
+    assert len(seen) == 1                    # the coach's first turn, and nothing after it
+    assert not seen[0].exists()              # the sandbox is removed on the SystemExit
+    assert not list(tmp_path.glob("*.scorecard.json"))
+
+
+# ── personas ──
+
+def test_load_personas_never_returns_a_prep_persona_and_the_prep_loader_returns_every_file():
+    setup = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
+    ps = _prep_personas()   # its own scope assertion: every file, at least three
+    assert setup and not any(isinstance(p, personas.PrepPersona) for p in setup)
+    assert all(isinstance(p, personas.PrepPersona) for p in ps)
+    assert {f.stem for f in _PREP_DIR.glob("*.json")} == {p.id for p in ps}
+
+
+def _story(**over):
+    return {"title": "t", "company": "c", "best_for": "b", "body": "x", "verified": True, **over}
+
+
+def _prep_persona_with(**over):
+    return personas.PrepPersona(**{
+        "id": "x", "name_seed": 1, "location": LOCATIONS[0], "company": "c", "role_seed": 1,
+        "status": "interview", "write": True, "jd_template": "{company} {role} {location}",
+        "stories": [_story()], **over})
+
+
+def test_a_well_formed_prep_persona_loads():
+    assert _prep_persona_with().status == "interview"
+
+
+def test_a_prep_persona_with_an_unknown_status_is_refused():
+    with pytest.raises(ValueError, match="unknown status"):
+        _prep_persona_with(status="intervew")
+
+
+def test_the_required_story_fields_include_the_three_the_seeder_needs():
+    # Scope for the row below, which iterates the constant: a roster that lost a key would
+    # leave that row green with one row fewer.
+    assert set(personas.STORY_REQUIRED) == {"title", "company", "body"}
+
+
+@pytest.mark.parametrize("field", personas.STORY_REQUIRED)
+def test_a_story_without_a_required_field_is_refused(field):
+    for missing in (_story(**{field: ""}), {k: v for k, v in _story().items() if k != field}):
+        with pytest.raises(ValueError, match=f"has no {field}"):
+            _prep_persona_with(stories=[_story(title="other"), missing])
+
+
+@pytest.mark.parametrize("value", ["false", "true", 0, 1, None])
+def test_a_prep_persona_whose_write_is_not_a_boolean_is_refused(value):
+    # "false" is truthy: it would run the read-only persona at the write level.
+    with pytest.raises(ValueError, match="write must be true or false"):
+        _prep_persona_with(write=value)
+
+
+@pytest.mark.parametrize("value", ["false", "yes", 0, 1, None, "<missing>"])
+def test_a_story_whose_verified_is_not_a_boolean_is_refused(value):
+    # "false" is truthy: the seeder would mark the story verified against the persona's word.
+    story = _story(title="other")
+    if value == "<missing>":
+        del story["verified"]
+    else:
+        story["verified"] = value
+    with pytest.raises(ValueError, match="verified must be true or false"):
+        _prep_persona_with(stories=[story])
+
+
+@pytest.mark.parametrize("title", ["../../../escape", "a/b", "a\\b", "a\0b", ".", "..",
+                                   ".hidden"])
+def test_a_story_title_that_is_not_a_plain_file_name_is_refused(title):
+    # The title names the story's note, written by prep.py::seed_vault under the stories folder.
+    with pytest.raises(ValueError, match="is not a plain file name"):
+        _prep_persona_with(stories=[_story(title=title)])
+
+
+@pytest.mark.parametrize("second", ["Same", "SAME"])
+def test_two_stories_sharing_a_title_are_refused(second):
+    # One note would be seeded for two stories, while the simulated user is told both.
+    with pytest.raises(ValueError, match="share the title"):
+        _prep_persona_with(stories=[_story(title="Same"), _story(title=second, body="y")])
+
+
+def test_titles_that_differ_beyond_case_are_two_stories():
+    # The control for the two rows above: distinct names, inner dots and spaces all load.
+    p = _prep_persona_with(stories=[_story(title="Same"), _story(title="Same v2.0 draft")])
+    assert len(p.stories) == 2
+
+
+@pytest.mark.parametrize("field", ["title", "company", "best_for", "body"])
+def test_a_placeholder_in_any_story_field_is_refused(field):
+    with pytest.raises(ValueError, match=f"{field} carries a placeholder"):
+        _prep_persona_with(stories=[_story(**{field: "at {company}"})])
+
+
+def test_a_jd_template_placeholder_outside_the_three_is_refused():
+    with pytest.raises(ValueError, match="placeholder"):
+        _prep_persona_with(jd_template="{company} {role} {location} {salary}")
+
+
+# ── the seeder ──
+
+def _tree(root):
+    return sorted(str(p.relative_to(root)) for p in Path(root).rglob("*"))
+
+
+def test_the_seeder_writes_only_into_the_sandbox_whatever_the_environment_says(
+        monkeypatch, tmp_path):
+    """A developer's exported VAULT_DIR and SLUICE_CONFIG (here decoys, the config naming a
+    vault of its own) must not redirect the seeder: it names its Vault explicitly."""
+    from urllib.parse import urlparse
+
+    from scripts.coach_eval import prep, run
+    from sluice import mcpserver
+    from sluice.core.app import Sluice
+    from sluice.core.config import Config
+    from sluice.core.vault import Vault
+
+    decoy_vault, decoy_cfg = tmp_path / "decoy-vault", tmp_path / "decoy-config"
+    decoy_vault.mkdir()
+    decoy_cfg.mkdir()
+    (decoy_cfg / "config.yaml").write_text(f"vault_dir: {decoy_cfg / 'vault'}\n")
+    monkeypatch.setenv("VAULT_DIR", str(decoy_vault))
+    monkeypatch.setenv("SLUICE_CONFIG", str(decoy_cfg / "config.yaml"))
+    before = (_tree(decoy_vault), _tree(decoy_cfg))
+    p = _with_unverified()
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    slug = prep.seed_vault(p, sandbox)
+    assert (_tree(decoy_vault), _tree(decoy_cfg)) == before
+    # The read-back with VAULT_DIR gone, through a store on the sandbox vault alone.
+    monkeypatch.delenv("VAULT_DIR")
+    vault = run.sandbox_vault(sandbox, False)
+    assert vault.is_relative_to(sandbox)
+    reply = mcpserver.prep_brief(Sluice(Config(), store=Vault(str(vault))), slug)
+    assert reply["outcome"] == "ok" and reply["slug"] == slug
+    entries = {e["title"]: e["verified"] for b in reply["brief"]["kinds"].values()
+               for e in b["entries"]}
+    assert entries == {s["title"]: bool(s["verified"]) for s in p.stories}
+    assert reply["status"] == p.status
+    note = next(n for n in Vault(str(vault)).read_leads() if n.slug == slug)
+    assert urlparse(note.fm["url"].strip('"')).hostname == "jobs.example.com"
+
+
+class _Spy:
+    """A store that is a real Vault on the sandbox except for the methods given."""
+
+    def __init__(self, real, **over):
+        self._real, self._over = real, over
+
+    def __getattr__(self, name):
+        return self._over[name] if name in self._over else getattr(self._real, name)
+
+
+def _spy_rows():
+    import dataclasses
+
+    return {
+        "upsert not created": (lambda v: {"upsert": lambda lead: dataclasses.replace(
+            v.upsert(lead), outcome="updated")}, "upsert"),
+        "JD append returned False": (lambda v: {
+            "append_body_section": lambda *a, **k: False}, "JD append"),
+        "read-back status differs": (lambda v: {
+            "update_fields": lambda *a, **k: False}, "status"),
+        "read-back has no JD section": (lambda v: {
+            "append_body_section": lambda *a, **k: True}, "job description section"),
+        "read-back misses a story": (lambda v: {
+            "read_evidence": lambda kind, verified_only=True: v.read_evidence(
+                kind, verified_only)[1:]}, "not listed"),
+        "read-back has no lead": (lambda v: {"read_leads": lambda: []},
+                                  "is not there on a read-back"),
+    }
+
+
+@pytest.mark.parametrize("row", sorted(_spy_rows()))
+def test_each_seeder_check_raises(tmp_path, row):
+    """A seed that silently did nothing, or did something else, must never become an eval of
+    an empty or wrong vault: each check raises with its own message (asserted, since every
+    one raises the same type)."""
+    from scripts.coach_eval import prep, run
+    from sluice.core.vault import Vault
+
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    real = Vault(str(run.sandbox_vault(sandbox, False)))
+    over, message = _spy_rows()[row]
+    with pytest.raises(SystemExit, match=message):
+        prep.seed_vault(_all_verified(), sandbox, store=_Spy(real, **over(real)))
+
+
+def test_the_seeder_writes_no_story_outside_the_vault_whatever_its_title(tmp_path):
+    """The seeder's own containment check, reached past PrepPersona's title refusal: the
+    persona's story list is mutated after it loaded, as nothing in a persona file can do."""
+    import copy
+
+    from scripts.coach_eval import prep
+
+    p = copy.deepcopy(_all_verified())
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    p.stories[0]["title"] = "../../../../escape"
+    with pytest.raises(SystemExit, match="would be written outside the vault"):
+        prep.seed_vault(p, sandbox)
+    assert not list(tmp_path.rglob("escape.md"))
+
+
+def test_the_seeder_without_a_spy_seeds_and_returns_the_lead_slug(tmp_path):
+    from sluice.core.status import CANONICAL
+
+    for p in _prep_personas():
+        sluice, slug = _seeded(tmp_path, p)
+        assert p.status in CANONICAL
+        assert [n.slug for n in sluice.store().read_leads()] == [slug]
+
+
+# ── the simulated user ──
+
+def test_the_prep_users_prompt_carries_every_story_body_verbatim():
+    from scripts.coach_eval import prep
+
+    for p in _prep_personas():
+        text = prep.prep_user_prompt(p, ["COACH: hi"])
+        assert p.stories and all(s["body"] in text for s in p.stories), p.id
+        assert p.company in text and personas.role_name(p) in text
+        assert text.endswith("COACH: hi")
+
+
+def test_the_prep_users_system_prompt_replaces_the_agent_prompt(monkeypatch, tmp_path):
+    from scripts.coach_eval import prep, run
+
+    calls = []
+
+    def fake(args, cwd, prompt=None):
+        calls.append(args)
+        return [_prep_init(True)] if "--mcp-config" in args else []
+
+    monkeypatch.setattr(run, "_claude", fake)
+    card = prep.run_persona(_prep_where(lambda x: x.write), tmp_path)
+    assert card["failure"] == "the simulated user returned an empty reply"
+    # The empty reply STOPS the loop: one coach turn, one user turn, then the grader, never a
+    # further coach turn sent an empty message.
+    assert len(calls) == 3 and sum("--mcp-config" in a for a in calls) == 1
+    user, grader = calls[-2:]
+    assert user[user.index("--system-prompt") + 1] == prep.PREP_USER_SYSTEM
+    assert grader[grader.index("--system-prompt") + 1] == run.GRADER_SYSTEM
+    assert "--system-prompt" not in calls[0]
+
+
+# ── the rubric ──
+
+def _det(events, slug, write, max_turns=12):
+    from scripts.coach_eval import prep
+    out = rubric.prep_deterministic(events, slug=slug, write=write,
+                                    kept=prep.expected_tools(write), max_turns=max_turns)
+    return {k: v[0] for k, v in out.items()}
+
+
+def _propose(denied=False):
+    return _tool(rubric.PROPOSE, {"kind": "stories"}, {"outcome": "proposed"}, denied=denied)
+
+
+def test_prep_rubric_deterministic_checks(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _tool("mcp__sluice__list_leads", {}, {"leads": []}),
+                   _brief_call(sluice, slug), _start(), _propose())
+    assert all(_det(events, slug, write=True).values())
+    # read-only, no proposal: everything passes and the proposal check has no subject
+    out = _det(_flat(_start(), _brief_call(sluice, slug)), slug, write=False)
+    assert out.pop("propose_only_when_writing") is rubric.NOT_EXERCISED
+    assert all(out.values()), out
+
+
+def test_a_fragment_then_the_real_slug_passes_the_slug_check(tmp_path):
+    """Recovering from a guessed fragment through the bounded suggestions is what they are for."""
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    miss = _brief_call(sluice, _fragment(slug))
+    assert rubric._payload(miss[1]["message"]["content"][0]["content"])["suggestions"] == [slug]
+    out = _det(_flat(_start(), miss, _brief_call(sluice, slug)), slug, write=True)
+    assert out["seeded_slug"] is True and out["prep_brief_ok"] is True
+
+
+@pytest.mark.parametrize("shape", ["not_found only", "denied only"])
+def test_the_slug_check_is_not_exercised_without_a_successful_call(tmp_path, shape):
+    # all([]) is True: without `_when`, a run that never read the brief would pass it.
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    call = (_brief_call(sluice, _fragment(slug)) if shape == "not_found only"
+            else _brief_call(sluice, slug, denied=True))
+    out = _det(_flat(_start(), call), slug, write=True)
+    assert out["seeded_slug"] is rubric.NOT_EXERCISED
+    assert out["prep_brief_ok"] is False
+
+
+def _failing_rows():
+    """(build, write, check): `build(s, slug, other)` makes the events from the seeded facade,
+    its slug, and `other()`, a real ok call on a SECOND seeded lead."""
+    return {
+        "no prep_brief": (lambda s, slug, other: _flat(_start()), True, "prep_brief_ok"),
+        "a denied prep_brief": (lambda s, slug, other: _brief_call(s, slug, denied=True),
+                                True, "prep_brief_ok"),
+        "only a not_found prep_brief": (
+            lambda s, slug, other: _brief_call(s, _fragment(slug)), True, "prep_brief_ok"),
+        "an ok call on another slug": (
+            lambda s, slug, other: _flat(_brief_call(s, slug), other()), True, "seeded_slug"),
+        "a disallowed sluice tool": (lambda s, slug, other: _flat(_brief_call(s, slug), _tool(
+            "mcp__sluice__get_lead")), True, "no_disallowed_tool"),
+        "a built-in": (lambda s, slug, other: _flat(_brief_call(s, slug), _tool("WebSearch")),
+                       True, "no_disallowed_tool"),
+        "propose_evidence at read-only": (
+            lambda s, slug, other: _flat(_brief_call(s, slug), _propose()), False,
+            "propose_only_when_writing"),
+        "a denied propose_evidence when writing": (lambda s, slug, other: _flat(
+            _brief_call(s, slug), _propose(denied=True)), True, "no_tool_denied"),
+        "too many turns": (lambda s, slug, other: _flat(
+            _brief_call(s, slug), *[_start() for _ in range(13)]), True, "turns"),
+    }
+
+
+@pytest.mark.parametrize("row", sorted(_failing_rows()))
+def test_each_prep_rubric_check_fails_when_its_rule_is_broken(tmp_path, row):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    build, write, check = _failing_rows()[row]
+
+    def other():
+        # A second persona's lead in its own sandbox, answered by the real tool: an ok reply
+        # on a slug that is not the seeded one.
+        s2, slug2 = _seeded(tmp_path, _with_unverified())
+        assert slug2 != slug
+        return _brief_call(s2, slug2)
+
+    assert _det(build(sluice, slug, other), slug, write=write)[check] is False
+
+
+# ── the grader ──
+
+def _grade(monkeypatch, events, grade=None):
+    from scripts.coach_eval import prep, run
+
+    prompts = []
+
+    def fake(args, cwd, prompt=None):
+        prompts.append(prompt)
+        return [{"type": "result", "result": json.dumps(grade or _PREP_GRADE)}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    llm, failure = prep.grade_prep(events, ["COACH: hi", "USER: DONE"], "sonnet", "/")
+    assert failure is None and len(prompts) == 1
+    return llm, prompts[0]
+
+
+def _titles(brief):
+    return [e["title"] for b in brief["kinds"].values() for e in b["entries"]]
+
+
+def test_the_grader_is_told_the_first_ok_calls_facts(monkeypatch, tmp_path):
+    from sluice import mcpserver
+
+    p = _with_unverified()
+    sluice, slug = _seeded(tmp_path, p)
+    ok = mcpserver.prep_brief(sluice, slug)
+    events = _flat(_start(), _brief_call(sluice, _fragment(slug)), _brief_call(sluice, slug))
+    llm, prompt = _grade(monkeypatch, events)
+    titles = _titles(ok["brief"])
+    assert titles and all(t in prompt for t in titles)
+    assert all(e["body"] in prompt for b in ok["brief"]["kinds"].values() for e in b["entries"])
+    assert ok["jd"]["text"] and ok["jd"]["text"] in prompt
+    # the brief holds an unverified entry, so that score stands
+    assert llm["unverified_handled"] == 4 and llm["prep_brief_reached"] is True
+
+
+def test_the_grader_is_told_the_FIRST_ok_call_when_two_succeed(monkeypatch, tmp_path):
+    """Two successful calls on two different leads: the facts, and the unverified overwrite,
+    follow the first. The first lead holds no unverified entry and the second does, so a
+    grader told the second's facts would also keep its `unverified_handled` score."""
+    from scripts.coach_eval import prep
+
+    first, second = _all_verified(), _with_unverified()
+    a, b = ({s["title"] for s in p.stories} for p in (first, second))
+    assert a and b and not a & b           # scope: the two briefs are told apart by title
+    sa, slug_a = _seeded(tmp_path, first)
+    sb, slug_b = _seeded(tmp_path, second)
+    events = _flat(_start(), _brief_call(sa, slug_a), _brief_call(sb, slug_b))
+    assert len(rubric.prep_brief_ok(events)) == 2
+    fact = prep.brief_fact(events)
+    assert all(t in fact for t in a) and not any(t in fact for t in b)
+    llm, prompt = _grade(monkeypatch, events)
+    assert fact in prompt and llm["unverified_handled"] == "not exercised"
+
+
+def test_with_no_successful_call_the_grader_is_told_so_and_sees_no_entry(monkeypatch, tmp_path):
+    from scripts.coach_eval import prep
+
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    _, prompt = _grade(monkeypatch, _flat(_start(), _brief_call(sluice, _fragment(slug))))
+    assert prep.NO_BRIEF_FACT in prompt
+    every_title = [s["title"] for p in _prep_personas() for s in p.stories]
+    assert every_title and not any(t in prompt for t in every_title)
+
+
+@pytest.mark.parametrize("shape", ["not_found only", "denied only"])
+def test_with_no_successful_call_only_the_chat_scores_survive(monkeypatch, tmp_path, shape):
+    sluice, slug = _seeded(tmp_path, _with_unverified())
+    call = (_brief_call(sluice, _fragment(slug)) if shape == "not_found only"
+            else _brief_call(sluice, slug, denied=True))
+    llm, _ = _grade(monkeypatch, _flat(_start(), call),
+                    grade={**_PREP_GRADE, "no_supplied_example": "no: quoted"})
+    assert {k: llm[k] for k in _FACT_SCORED} == dict.fromkeys(_FACT_SCORED, "not exercised")
+    assert llm["coaching_quality"] == 3 and llm["no_supplied_example"] == "no: quoted"
+    assert llm["notes"] == "n" and llm["prep_brief_reached"] is False
+
+
+def test_with_no_unverified_entry_unverified_handled_is_not_exercised(monkeypatch, tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    llm, _ = _grade(monkeypatch, _flat(_start(), _brief_call(sluice, slug)))
+    assert llm["unverified_handled"] == "not exercised"
+    assert llm["gaps_probed"] == 4 and llm["fidelity_feedback"] == 4
+
+
+# ── regrade, print, dispatch ──
+
+@pytest.mark.parametrize("persona,shape", [("all_verified", "ok"), ("with_unverified",
+                                                                     "not_found")])
+def test_both_prep_overwrites_hold_in_a_regrade(monkeypatch, tmp_path, persona, shape):
+    from scripts.coach_eval import run
+
+    p = _all_verified() if persona == "all_verified" else _with_unverified()
+    sluice, slug = _seeded(tmp_path, p)
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    lead = slug if shape == "ok" else _fragment(slug)
+    pid, _, _ = _saved_prep_run(runs, _flat(_start(), _brief_call(sluice, lead)))
+    seen = _stub_claude(monkeypatch, lambda c, k: [
+        {"type": "result", "result": json.dumps(_PREP_GRADE)}])
+    run.regrade(runs, "haiku")
+    assert len(seen) == 1
+    card = json.loads((runs / f"{pid}.regrade-haiku.json").read_text())
+    llm = card["llm_graded"]
+    assert card["runner"] == "prep" and llm["unverified_handled"] == "not exercised"
+    if shape == "ok":
+        assert llm["prep_brief_reached"] is True and llm["gaps_probed"] == 4
+    else:
+        assert llm["prep_brief_reached"] is False and llm["gaps_probed"] == "not exercised"
+
+
+def test_a_saved_prep_run_regrades_through_the_prep_grader(monkeypatch, tmp_path):
+    from scripts.coach_eval import prep, run
+
+    sluice, slug = _seeded(tmp_path, _with_unverified())
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    _, events, transcript = _saved_prep_run(runs, _flat(_start(), _brief_call(sluice, slug)))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--regrade", str(runs)])
+    assert seen[0][1]["input"] == prep.prep_grader_prompt(events, transcript)
+    assert seen[0][1]["input"] != run.grader_prompt(events, transcript)
+
+
+def test_a_saved_run_naming_an_unknown_runner_is_refused(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    _saved_prep_run(tmp_path, [], runner="prepp")
+    seen = _grader_stub(monkeypatch)
+    for mode in ("--regrade", "--print-grader-prompt"):
+        with pytest.raises(SystemExit, match="unknown runner 'prepp'"):
+            run.main([mode, str(tmp_path)])
+    assert seen == []   # refused, never graded as setup
+    assert not list(tmp_path.glob("*.regrade-*")) and not list(tmp_path.glob("*.grade-me.txt"))
+
+
+def test_an_unknown_runner_beside_a_valid_run_is_refused_before_any_run_is_graded(
+        monkeypatch, tmp_path):
+    """Every saved run is checked before the first is graded or printed: the valid run sorts
+    FIRST here, so a lazy check would grade it, and write its card, before refusing."""
+    from scripts.coach_eval import run
+
+    _saved_run(tmp_path, (rubric.STATUS,), pid="a-valid-setup-run")
+    _saved_prep_run(tmp_path, [], pid="z-unknown-runner", runner="prepp")
+    seen = _grader_stub(monkeypatch)
+    for mode in ("--regrade", "--print-grader-prompt"):
+        with pytest.raises(SystemExit, match="unknown runner 'prepp'"):
+            run.main([mode, str(tmp_path)])
+    assert seen == []
+    assert not list(tmp_path.glob("*.regrade-*")) and not list(tmp_path.glob("*.grade-me.txt"))
+
+
+def test_a_scorecard_without_a_runner_key_is_a_setup_run(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+
+    pid, events, transcript = _saved_run(tmp_path, (rubric.STATUS,))
+    (tmp_path / f"{pid}.scorecard.json").write_text(json.dumps({"persona": pid}))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--regrade", str(tmp_path)])
+    assert seen[0][1]["input"] == run.grader_prompt(events, transcript)
+    card = json.loads((tmp_path / f"{pid}.regrade-sonnet.json").read_text())
+    assert "runner" not in card and card["llm_graded"]["setup_save_reached"] is False
+
+
+def test_a_saved_prep_runs_printed_prompt_is_the_prep_graders_and_calls_nothing(
+        monkeypatch, tmp_path):
+    from scripts.coach_eval import prep, run
+
+    sluice, slug = _seeded(tmp_path, _with_unverified())
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    pid, events, transcript = _saved_prep_run(runs, _flat(_start(), _brief_call(sluice, slug)))
+    seen = _grader_stub(monkeypatch)
+    run.main(["--print-grader-prompt", str(runs)])
+    assert seen == []
+    assert (runs / f"{pid}.grade-me.txt").read_text() == prep.prep_grader_prompt(
+        events, transcript)
+
+
+def test_an_unknown_prep_persona_is_refused(tmp_path):
+    from scripts.coach_eval import run
+
+    with pytest.raises(SystemExit, match="no prep persona"):
+        run.main(["--prep-persona", "nobody", "--out", str(tmp_path / "out")])
+
+
+def test_the_prep_run_copies_the_lead_note_the_stories_and_the_inbox(tmp_path):
+    from scripts.coach_eval import prep, run
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import INBOX_SUBDIR
+
+    p = _all_verified()
+    sandbox = tmp_path / "sandbox"
+    sandbox.mkdir()
+    slug = prep.seed_vault(p, sandbox)
+    vault = run.sandbox_vault(sandbox, False)
+    inbox = vault / EVIDENCE_KINDS["stories"].relpath / "_inbox"
+    inbox.mkdir()
+    (inbox / "Proposed.md").write_text("new")
+    # A proposal filed under ANOTHER kind's inbox is copied too; that kind's own entries,
+    # outside its inbox, are not the run's to report.
+    other = next(k for k in EVIDENCE_KINDS if k != "stories")
+    misfiled = vault / EVIDENCE_KINDS[other].relpath / INBOX_SUBDIR
+    misfiled.mkdir(parents=True)
+    (misfiled / "Misfiled.md").write_text("misfiled")
+    (misfiled.parent / "Verified.md").write_text("not the run's")
+    (sandbox / "client-cwd").mkdir()
+    (sandbox / "client-cwd" / "stray.md").write_text("not the run's")
+    copied = prep.copy_prep_files(sandbox, tmp_path / "out")
+    rel = lambda path: str(path.relative_to(sandbox))  # noqa: E731
+    stories = vault / EVIDENCE_KINDS["stories"].relpath
+    assert {rel(inbox / "Proposed.md"), *(rel(stories / f"{s['title']}.md") for s in p.stories)
+            } <= set(copied)
+    assert any(c.endswith(f"{slug}.md") for c in copied)
+    assert not any(c.startswith("client-cwd") for c in copied)
+    assert (tmp_path / "out" / rel(inbox / "Proposed.md")).read_text() == "new"
+    assert rel(misfiled / "Misfiled.md") in copied
+    assert (tmp_path / "out" / rel(misfiled / "Misfiled.md")).read_text() == "misfiled"
+    assert rel(misfiled.parent / "Verified.md") not in copied
+
+
+# ── the read-only server ──
+
+def test_serve_read_only_runs_the_server_without_write(tmp_path, monkeypatch):
+    from scripts.coach_eval import serve
+
+    seen = {}
+
+    def fake(exe, argv, env):
+        seen.update(exe=exe, argv=argv, env=env, cwd=Path.cwd())
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("os.execve", fake)
+    serve.main(["--sandbox", str(tmp_path), "--read-only"])
+    assert seen["argv"][1:] == ["mcp", "serve"]
+    assert seen["cwd"] == (tmp_path / "server-cwd").resolve()
+    assert isolation.isolation_problems(seen["env"], tmp_path, ROOT) == []
+
+
+# ── the persona guard (spec section 10, "Persona content") ──
+
+def test_every_prep_persona_company_and_location_is_on_its_roster():
+    from tests.test_fixture_name_neutrality import _REVIEWED_FIXTURE_IDENTITIES
+
+    ps = _prep_personas()
+    story_companies = [s["company"] for p in ps for s in p.stories]
+    assert story_companies   # scope: the story level was checked, not only the persona's
+    for name in [p.company for p in ps] + story_companies:
+        assert name in _REVIEWED_FIXTURE_IDENTITIES, name
+    assert all(p.location in LOCATIONS for p in ps)
+
+
+def test_only_the_jd_template_carries_placeholders_and_only_the_three():
+    import string
+
+    ps = _prep_personas()
+    for p in ps:
+        named = {f for _, f, _, _ in string.Formatter().parse(p.jd_template) if f is not None}
+        assert named == {"company", "location", "role"}, p.id
+        for s in p.stories:
+            assert not any(c in str(s[k]) for k in ("title", "company", "best_for", "body")
+                           for c in "{}"), (p.id, s["title"])
+
+
+def test_no_prep_persona_text_expresses_a_preference():
+    from sluice.onboard.questions import expresses_a_preference
+
+    texts = [(p.id, "jd_template", p.jd_template) for p in _prep_personas()] + [
+        (p.id, f"{s['title']}.{k}", s[k]) for p in _prep_personas() for s in p.stories
+        for k in ("title", "best_for", "body")]
+    assert len(texts) > len(_prep_personas())   # scope: the story fields were read
+    for pid, where, text in texts:
+        assert expresses_a_preference(text) == [], (pid, where)
+
+
+# A reviewed digest per prep persona over its canonical JSON (sorted keys, so formatting and
+# key order do not count, but every value does). Free text such as a story body can carry a
+# real place or employer no roster can enumerate, so a change here must be READ before it is
+# re-digested: the digest only forces that review.
+_PREP_PERSONA_DIGESTS = {
+    "prep-gaps.json": "45206bef4f7ef22e12914b1d3af2d87f6861fe2e78f5f9c89076522e77f3be27",
+    "prep-strong.json": "7b08c5e7a4d8ecbcd7dd98af13810c03ec830392372b29d87c5b54dfbd309e7b",
+    "prep-unverified.json": "00c20bcdad0f0fb934cb40ce8b1b8e16ae7c72e548ec4cb5d2c481de38da7afc",
+}
+
+
+def _canonical_digest(path):
+    import hashlib
+    data = json.loads(path.read_text(encoding="utf-8"))
+    canon = json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
+
+
+def test_each_prep_persona_matches_its_reviewed_digest():
+    found = {f.name: _canonical_digest(f) for f in sorted(_PREP_DIR.glob("*.json"))}
+    assert found and len(found) == len(_prep_personas())   # scope
+    assert found == _PREP_PERSONA_DIGESTS, (
+        "a prep persona changed, was added or was removed. READ the diff for any real "
+        "employer, place, person or board name first; only then paste the new digest: "
+        f"{found}")

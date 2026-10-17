@@ -2,7 +2,11 @@
 
 Dev-only: it spends tokens and is not hermetic, so it never runs in CI. Output goes OUTSIDE
 the repository (--out, default a fresh temporary directory) because transcripts carry live
-web research and model-played users."""
+web research and model-played users.
+
+This is the setup coach's runner, and `main` is the entry point for both runners: the
+interview_prep coach has its own (prep.py), reached through `--prep-persona`/`--prep-all` and
+through a saved run's `runner`, by imports inside the functions that need it."""
 import argparse
 import json
 import os
@@ -14,6 +18,7 @@ from pathlib import Path
 from scripts.coach_eval import isolation, personas, rubric
 
 ROOT = Path(__file__).resolve().parents[2]
+PREP_PERSONAS = ROOT / "scripts" / "coach_eval" / "personas" / "prep"
 # `--tools` restricts only the built-ins; the server's own tools stay available unless named in
 # `--disallowedTools` (measured 2026-10-07 on Claude Code 2.1.292, README.md). Most of them can
 # spend the owner's allowance unattended (`cv_run` and the other backend callers default to the
@@ -170,12 +175,15 @@ def hand_edit(sandbox, vault_env) -> str:
     return str(note.relative_to(sandbox))
 
 
-def coach_args(message, mcp, session=None):
+def coach_args(message, mcp, session=None, *, tools=COACH_TOOLS, disallowed=COACH_DISALLOWED,
+               allowed=",".join(sorted(COACH_EXPECTED_TOOLS))):
+    """The coach client's argv. The keywords default to the setup coach's own lists; the prep
+    runner (prep.py) passes its own, so both coaches are built by this one function."""
     args = ["--model", COACH_MODEL, "-p", message, "--mcp-config", str(mcp),
-            "--tools", COACH_TOOLS, "--disallowedTools", COACH_DISALLOWED,
+            "--tools", tools, "--disallowedTools", disallowed,
             # Availability and approval are separate: headless mode denies anything not
             # pre-approved, so the kept tools are named here (measured, README.md).
-            "--allowedTools", ",".join(sorted(COACH_EXPECTED_TOOLS)),
+            "--allowedTools", allowed,
             "--output-format", "stream-json", "--verbose"]
     if session:
         args += ["--resume", session]
@@ -221,30 +229,66 @@ def grader_prompt(events, transcript):
                                 transcript="\n".join(transcript))
 
 
-def _saved_runs(directory):
-    """(persona id, events, transcript lines) for every saved run in `directory`: each
-    `<id>.transcript.txt` with its `<id>.events.jsonl` beside it. Refuses an empty directory
-    or a transcript whose events are missing, rather than skipping it quietly."""
+RUNNERS = ("setup", "prep")
+
+
+def _saved_runner(card) -> str:
+    """Which runner left a saved run, from its scorecard's `runner` key. A missing scorecard,
+    or one with no key, is a setup run: every run saved before the prep runner existed. Any
+    other value is refused rather than graded as setup, which would hand a prep transcript to
+    setup's grader and its setup_save overwrites and return a confident, wrong card."""
+    if not card.exists():
+        return "setup"
+    runner = json.loads(card.read_text()).get("runner", "setup")
+    if runner not in RUNNERS:
+        raise SystemExit(f"coach_eval: {card.name} names an unknown runner {runner!r}; "
+                         f"valid: {', '.join(RUNNERS)}")
+    return runner
+
+
+def _grading(runner):
+    """(prompt builder, grader) for a saved run's runner. prep is imported here, inside the
+    function, never at module scope: prep imports this module, so the import goes one way."""
+    if runner == "prep":
+        from scripts.coach_eval import prep
+        return prep.prep_grader_prompt, prep.grade_prep
+    return grader_prompt, grade
+
+
+def _saved_runs(directory) -> list:
+    """(persona id, events, transcript lines, runner) for every saved run in `directory`: each
+    `<id>.transcript.txt` with its `<id>.events.jsonl` beside it, and the runner its
+    `<id>.scorecard.json` names (`_saved_runner`). Refuses an empty directory, a transcript
+    whose events are missing, or a scorecard naming an unknown runner, rather than skipping it
+    quietly.
+
+    A LIST, built whole before it is returned, never a generator: every run is checked before
+    the caller grades or prints any of them, so a refusal on the last run spends no grader
+    call on, and writes no file for, the runs sorted before it."""
     directory = Path(directory)
     found = sorted(directory.glob("*.transcript.txt"))
     if not found:
         raise SystemExit(f"coach_eval: no *.transcript.txt in {directory}")
+    runs = []
     for tpath in found:
         pid = tpath.name[:-len(".transcript.txt")]
         epath = directory / f"{pid}.events.jsonl"
         if not epath.exists():
             raise SystemExit(f"coach_eval: {epath.name} is missing beside {tpath.name}")
+        runner = _saved_runner(directory / f"{pid}.scorecard.json")
         events = [json.loads(line) for line in epath.read_text().splitlines() if line.strip()]
-        yield pid, events, tpath.read_text().split("\n")
+        runs.append((pid, events, tpath.read_text().split("\n"), runner))
+    return runs
 
 
 def print_grader_prompts(directory):
     """Write `<id>.grade-me.txt` beside each saved transcript: the grader's exact prompt, to
     paste into a model from another family. Spends nothing: no `claude` call at all."""
     directory = Path(directory)
-    for pid, events, transcript in _saved_runs(directory):
+    for pid, events, transcript, runner in _saved_runs(directory):
+        prompt_for, _ = _grading(runner)
         out = directory / f"{pid}.grade-me.txt"
-        out.write_text(grader_prompt(events, transcript))
+        out.write_text(prompt_for(events, transcript))
         print(out)
 
 
@@ -280,9 +324,12 @@ def regrade(directory, model):
     safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in model)
     # The grader's empty working directory; removed afterwards, whatever happens.
     with tempfile.TemporaryDirectory(prefix="coach-eval-regrade-") as sandbox:
-        for pid, events, transcript in _saved_runs(directory):
-            llm, failure = grade(events, transcript, model, Path(sandbox))
+        for pid, events, transcript, runner in _saved_runs(directory):
+            _, grade_for = _grading(runner)
+            llm, failure = grade_for(events, transcript, model, Path(sandbox))
             card = {"persona": pid, "grader_model": model, "llm_graded": llm}
+            if runner != "setup":
+                card["runner"] = runner
             if failure:
                 card["failure"] = failure
             (directory / f"{pid}.regrade-{safe}.json").write_text(json.dumps(card, indent=2))
@@ -296,14 +343,22 @@ def run_persona(p, out_dir, grader_model=GRADER_MODEL):
         return _run_in_sandbox(p, out_dir, grader_model, Path(sandbox))
 
 
+def write_mcp_config(sandbox, server_args) -> Path:
+    """Write the client's `mcp.json` into the sandbox: one server, `sluice`, launched as
+    serve.py with `server_args`. Shared by both runners, so each starts the server through the
+    same sandboxing wrapper."""
+    mcp = Path(sandbox) / "mcp.json"
+    mcp.write_text(json.dumps({"mcpServers": {"sluice": {
+        "command": sys.executable,
+        "args": [str(ROOT / "scripts" / "coach_eval" / "serve.py"), *server_args]}}}))
+    return mcp
+
+
 def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     empty = sandbox / "client-cwd"
     empty.mkdir()
-    mcp = sandbox / "mcp.json"
-    mcp.write_text(json.dumps({"mcpServers": {"sluice": {
-        "command": sys.executable,
-        "args": [str(ROOT / "scripts" / "coach_eval" / "serve.py"), "--sandbox", str(sandbox)]
-                + (["--vault-env"] if p.vault_env else [])}}}))
+    mcp = write_mcp_config(sandbox, ["--sandbox", str(sandbox)]
+                           + (["--vault-env"] if p.vault_env else []))
     events, transcript, session, failure = [], [], None, None
     user_messages, edit, board = [], None, None
     if p.scenario == "retired_board":
@@ -415,6 +470,11 @@ def main(argv=None):
     which.add_argument("--print-grader-prompt", metavar="DIR",
                        help="write each saved run's grader prompt to <id>.grade-me.txt in DIR, "
                             "for a cross-check in another model (no call at all)")
+    # The prep coach's runner (prep.py). `--all` still means the setup personas only.
+    which.add_argument("--prep-persona", metavar="ID",
+                       help="run one interview_prep persona from personas/prep/")
+    which.add_argument("--prep-all", action="store_true",
+                       help="run every interview_prep persona")
     ap.add_argument("--grader-model", default=GRADER_MODEL)
     ap.add_argument("--out", default=None)
     args = ap.parse_args(argv)
@@ -427,6 +487,17 @@ def main(argv=None):
                                                   "--print-grader-prompt"))
     out = _outside_repo(args.out or tempfile.mkdtemp(prefix="coach-eval-out-"), "--out")
     out.mkdir(parents=True, exist_ok=True)
+    if args.prep_persona or args.prep_all:
+        from scripts.coach_eval import prep
+        ps = personas.load_prep_personas(PREP_PERSONAS)
+        chosen = ps if args.prep_all else [p for p in ps if p.id == args.prep_persona]
+        if not chosen:
+            raise SystemExit(f"coach_eval: no prep persona {args.prep_persona!r}; valid: "
+                             f"{', '.join(p.id for p in ps)}")
+        for p in chosen:
+            print(json.dumps(prep.run_persona(p, out, args.grader_model)))
+        print(f"scorecards in {out}")
+        return
     ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
     chosen = ps if args.all else [p for p in ps if p.id == args.persona]
     if not chosen:

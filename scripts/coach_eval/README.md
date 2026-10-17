@@ -1,9 +1,15 @@
 # Career-coach evals
 
-A dev-only harness that plays the `career_interview` coach against model-simulated users and
-scores each transcript. It spends the owner's Claude Max allowance and talks to live web
-search, so **CI never runs it** and nothing under `tests/` invokes `claude`. The tests cover
-argument and command construction, the isolation checks and the rubric only.
+A dev-only harness that plays the coach's prompts against model-simulated users and scores each
+transcript. It has two runners:
+
+- the **setup runner** (`run.py`) plays the `career_interview` coach, which sets sluice up;
+- the **prep runner** (`prep.py`) plays the `interview_prep` coach, which rehearses one
+  interview over a seeded lead (see [The interview prep runner](#the-interview-prep-runner)).
+
+It spends the owner's Claude Max allowance and the setup coach talks to live web search, so
+**CI never runs it** and nothing under `tests/` invokes `claude`. The tests cover argument and
+command construction, the isolation checks, the seeder and the rubrics only.
 
 ## Running
 
@@ -41,10 +47,96 @@ Models (owner's budget ruling, 2026-10-07): coach `sonnet`, simulated user `haik
 decision after regrading runs 2-5 with both and cross-checking them in a different model
 family. Haiku had scored `asked_before_proposing` on runs 2 and 3, where the save tool (then
 `setup_review`) was never called.
-Personas live in `personas/*.json`; each has a turn cap (`max_turns`, default 12). The three scenario personas (`hesitant`, `edited-mid-session`, `retired-board`) take 20:
+The setup runner's personas live in `personas/*.json` (the prep runner's in `personas/prep/`,
+below); each has a turn cap (`max_turns`, default 12). The three scenario personas (`hesitant`, `edited-mid-session`, `retired-board`) take 20:
 measured 2026-10-08, all three reached the last settings group at message 12, before the
 playback their scenario is about, because each adds turns of its own (a second save question,
 a stale save and a re-read, a refused board). A run costs about $0.04 a coach message.
+
+## The interview prep runner
+
+`prep.py` plays the `interview_prep` prompt. It is a separate runner, not a mode of the setup
+loop: it shares run.py's stateless helpers (`_claude`, reached by attribute so one patch on
+`run._claude` governs both, `_text`, `_final_text`, `_json_object`, `coach_args`,
+`write_mcp_config`, `sandbox_vault`, the sandbox directory and `isolation`), and none of setup's
+per-run state. Start it through run.py, and like any run only with the owner's go-ahead:
+
+```bash
+python -m scripts.coach_eval.run --prep-persona prep-strong --out "$(mktemp -d)"
+python -m scripts.coach_eval.run --prep-all --out "$(mktemp -d)"
+```
+
+`--prep-persona`/`--prep-all` are exclusive with every other mode, and `--all` still means the
+setup personas only. `--grader-model` and `--out` reach the prep runner exactly as they reach
+setup's.
+
+**Personas** live in `personas/prep/*.json` (`personas.PrepPersona`, loaded by
+`load_prep_personas`; `load_personas` globs only the top directory, so it never reads them).
+Each names the interview's employer (`company`), a faker seed for the role (`role_seed`: the
+role is generated, never written in the file), the lead's `status`, the server's level
+(`write`), a `jd_template` and the user's own `stories`, each with its title, the PAST employer
+it happened at, `best_for`, `body` and `verified`. Only the JD template carries placeholders,
+and only `{company}`, `{location}` and `{role}`; a story carries none, since it happened at its
+own employer. A persona with an unknown status, a story missing its body or company, or a
+placeholder in any story field is refused when the personas load. The three: strong verified
+stories at the write level (`prep-strong`), a posting that asks for things no story covers
+(`prep-gaps`), and only unverified stories at read-only (`prep-unverified`).
+
+**Seeding** (`prep.seed_vault`): before the coach starts, the persona's lead is created in the
+sandbox's vault with its url on the reserved host `jobs.example.com`, its job description
+appended, its status set, and its stories written as notes in the stories folder (`verified:`
+only on a verified one). The seeder constructs that Vault on the path `run.sandbox_vault`
+gives, so an exported `VAULT_DIR` or `SLUICE_CONFIG` cannot redirect it. It refuses (and the
+persona fails) when the lead is not newly created, when the job description is not appended,
+or when a read-back finds the wrong status, no job description section, or a story missing.
+
+**The read-only server.** A persona with `write: false` starts `serve.py --read-only`, which
+runs `job-sluice mcp serve` without `--write`, so the playbook's read-only branch has an eval.
+
+**The coach** starts on `/mcp__sluice__interview_prep` with `--tools ""` (no built-in tool:
+the playbook takes requirements from the posting and the user only). It keeps `list_leads` and
+`prep_brief`, plus `propose_evidence` at the write level, and every other server tool is
+disallowed. Both lists are hand-listed per level in `prep.py` (`kept(write)`,
+`disallowed(write)`), and a test requires them to equal the real server's `list_tools()` at that
+level, so a newly registered tool fails the build until it is placed. The init check requires
+exactly the kept tools on every turn.
+
+**The simulated user** is told the interview's company and role and given its own stories
+verbatim as the true record of its past work: it retells them without contradicting them, and
+says honestly whether it has an experience no story covers. That is the grader's ground truth
+for fidelity.
+
+**Scored.** "The brief was reached" means a `prep_brief` call answered without error AND with
+outcome `ok` (`rubric.prep_brief_ok`): every outcome the tool classifies is a structured reply,
+so a guessed slug's `not_found` is not an error, and it is not a brief either. A read failure it
+does not classify arrives as an error, and is not a brief either. Deterministic
+(`rubric.prep_deterministic`): `prep_brief_ok` (a call reached the brief); `seeded_slug` (every
+successful call named the seeded slug; `not exercised` with none, and a guessed fragment's
+`not_found` before the real call does not count against it); `no_disallowed_tool` (no tool
+outside the kept set was attempted, a built-in included); `propose_only_when_writing`
+(`not exercised` when nothing was proposed); `no_tool_denied`; `turns`. Graded (sonnet by
+default): `gaps_probed`, `no_supplied_example` (`yes`, or `no` with a quote),
+`unverified_handled`, `fidelity_feedback`, `coaching_quality`, plus notes. The grader is told
+what the FIRST successful call returned (each entry's title, verified label and body, and the
+job description), or `prep.NO_BRIEF_FACT`. In code, never trusted to the grader:
+`prep_brief_reached` is written beside the grade; with no successful call, `gaps_probed`,
+`unverified_handled` and `fidelity_feedback` become `not exercised`; and with no unverified
+entry in that brief, so does `unverified_handled`. The same holds in a regrade.
+
+**Scorecard keys** (`<id>.scorecard.json`): `runner` (`"prep"`), `persona`, `write`, `slug`,
+`prep_brief_reached`, `files`, `deterministic`, `llm_graded`, and `failure` when one happened.
+`<id>.files/` holds the lead note, the stories folder (its `_inbox/` included, where a
+write-level proposal lands) and every other kind's `_inbox/`. A setup scorecard carries no
+`runner` key, and its keys are `persona`, `setup_save_reached`, `files`, `deterministic`,
+`llm_graded`, and `scenario`, `retired_board` and `failure` when they apply.
+
+**Regrading and printing** choose the runner from each saved run's scorecard: no scorecard, or
+one with no `runner` key, is a setup run (every run saved before the prep runner); `"prep"`
+regrades through `prep.grade_prep` and prints `prep.prep_grader_prompt`; any other value is
+refused. Every saved run in the directory is checked before any is graded or printed, so a
+refusal spends no grader call and writes no file. A missing scorecard still means a setup run,
+so a prep run whose scorecard was lost is graded as setup: keep the scorecard beside its
+transcript. A prep regrade card carries `"runner": "prep"`.
 
 ## Scenarios
 
@@ -143,8 +235,9 @@ The coach client runs `claude --restricted --strict-mcp-config` from an empty di
 project context, settings, plugin or other MCP server loads. The MCP server is started through
 `serve.py`, which rebuilds its environment (`isolation.server_env`), refuses to start if any
 path variable could still reach the developer's real config, vault or dedup stores
-(`isolation.isolation_problems`), and only then exec's `job-sluice mcp serve --write` from an
-empty directory inside the sandbox. Every client turn's `system/init` event is checked
+(`isolation.isolation_problems`), and only then exec's `job-sluice mcp serve --write` (without
+`--write` under `--read-only`, for a read-only prep persona) from an empty directory inside the
+sandbox. Every client turn's `system/init` event is checked
 (`isolation.check_init_event`): the Claude Code version must be one that was measured, the
 only MCP server must be `sluice` and connected, the tool list must be exactly the expected
 set, and no non-builtin plugin may be loaded.
@@ -220,7 +313,10 @@ get_lead, joined by commas:
 
 `COACH_EXPECTED_TOOLS` is exactly that set, so the init check fails if a removed tool returns.
 The disallowed list is not hand-trusted: a test derives the server's roster from its real
-`list_tools()` under `--write` and requires kept + disallowed to equal it.
+`list_tools()` under `--write` and requires kept + disallowed to equal it. The roster above is
+the one probed on that date; the server has gained tools since (`prep_brief` among them), and
+`run.py::DISALLOWED_SLUICE_TOOLS` is the current list, held to the server by that test. The
+prep runner's lists are checked the same way at both levels.
 
 ### Measurement 4: approval, and the long-prompt path (2.1.292, 2026-10-07)
 
@@ -254,5 +350,6 @@ plus `status_before_review`, `brief_cites_sources` and `no_verified` over what i
 Superseded 2026-10-08: setup is now saved by `setup_save` on a yes in chat, with no form
 (docs/superpowers/specs/2026-10-08-setup-chat-confirmation-design.md), so a run's saves land in
 its sandbox and `save_after_user_turn`, `saves_played_back` and the copied files score them.
-The tool roster in Measurement 3 was taken under the old name; `COACH_EXPECTED_TOOLS` is derived
-from the live server, so re-run that probe before the next eval.
+The tool roster in Measurement 3 was taken under the old name. `COACH_EXPECTED_TOOLS` is
+hand-listed, and a test holds kept + disallowed to the live server's roster, so re-run that probe
+before the next eval.
