@@ -59,7 +59,8 @@ def test_a_row_cannot_block_a_capability_the_verdict_has_never_heard_of():
     assert "sixthapp" in str(ei.value)
     assert "ingest" in str(ei.value), "the refusal must list the valid names"
     # A partial match is still a mistake, and an empty `blocks` is still legal -- the
-    # unreadable `stories` corpus carries it, because nothing reads that corpus.
+    # unreadable `stories` corpus carries it, because no capability reads that corpus
+    # (`leads prep`, its one reader since #195, is not a capability).
     with pytest.raises(ValueError):
         ComponentCheck("store", "x", DEAD, "d", blocks=("cv", "nope"))
     assert ComponentCheck("store", "x", DEAD, "d").blocks == ()

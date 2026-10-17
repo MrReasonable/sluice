@@ -1850,6 +1850,9 @@ def test_propose_evidence_detail_never_claims_what_verify_buys_per_kind(tmp_path
             f"entry is citable in no kind")
         assert ("citable" in detail) == EVIDENCE_KINDS[kind].cited_by_gate, (
             f"{kind}: the response claims what verifying this kind cannot buy")
+        # #195: the exact prep suffix in the result's own subject, only where prep reads.
+        assert ("and include it in interview prep briefs:" in detail) \
+            == EVIDENCE_KINDS[kind].read_by_prep, kind
     # Assert on the SCOPE, not only on the violations. A sweep that enumerated nothing
     # satisfies every assertion inside the loop, so this row was green under
     # `EVIDENCE_KINDS = {}` -- measured, not supposed. Pinned against the registry's own
@@ -1940,6 +1943,9 @@ _ISOLATION_ALLOWED_MODULES = frozenset({
     # The follow-up answers grammar (#378): get_lead's warning names its heading. Pure
     # section parsing and a queue builder; no write path.
     "sluice.core.followups",
+    # The interview prep brief (#195): get_lead's warning names its tagged heading. Pure
+    # section grammar and renderer; no write path.
+    "sluice.core.prepbrief",
     # The escaping logger (a stderr StreamHandler; no file, no store): setup_save records an
     # unexpected step error's traceback there before reporting it as a structured outcome.
     "sluice.core.log",
@@ -2391,6 +2397,11 @@ def test_the_evidence_tool_descriptions_say_what_verifying_buys_per_kind():
             assert f"'{kind}'" in desc, (tool, kind)
             assert verify_outcome(spec, f"{kind} entries") in desc, (tool, kind)
         assert "verification is what makes an entry citable" not in desc, tool
+        # #195: the exact prep suffix, in the description's own subject, for every kind
+        # prep reads -- `verify_outcome` above moves with any rewording, this does not.
+        for kind, spec in EVIDENCE_KINDS.items():
+            assert (f"and include {kind} entries in interview prep briefs" in desc) \
+                == spec.read_by_prep, (tool, kind)
         for kind in uncited:
             assert f"make {kind} entries citable" not in desc, (tool, kind)
 

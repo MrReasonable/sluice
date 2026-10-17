@@ -403,6 +403,50 @@ lead afresh), or open the posting yourself and paste it under a `## Job descript
 the note: a lead carrying its own job description is always judged, from that text. Moving the
 lead back to `new` by hand buys one more attempt only, since the count is kept.
 
+## `leads prep --write` says "not written"
+
+`job-sluice leads prep --lead "<slug>" --write` writes an interview prep brief into the note
+ONCE, so it refuses a brief that would be locked in degraded, writes nothing, and exits 1. The
+brief still prints, and its own sentence (and the `degradations` list under `--json`) names which
+case it is:
+
+- **`no_entries`**: the `stories` folder has no entry. Add one with `job-sluice stories add`. A
+  story you added that way waits in the inbox and is left out until you review it with
+  `job-sluice stories verify`.
+- **`no_jd`**: the note has no `## Job description` section and there is no usable cached copy
+  of the posting. Paste the posting under a `## Job description` heading in the note. If the
+  brief's `- Job description:` line says the cached copy could not be read, the cache file is
+  damaged; pasting the posting still works, since the note's own section comes first.
+- **`jd_below_floor`**: the job description is shorter than your `min_jd_chars`, the floor
+  triage and cv apply. Paste the full posting.
+- **`jd_no_keyword`**: the job description adds no word the ranker can match beyond the role's
+  (a section reading "TBD", say). Paste the full posting.
+- **`jd_rejected_page`**: the only job description is a cached page triage would not judge
+  (the lead is `unjudgeable`, or carries a dated `triage_blocked` stamp). Paste the posting. If it
+  has been taken down and you know the cached copy is the real posting, follow the step the
+  sentence names for this lead: `job-sluice leads unpark --apply '<slug>'` for a `research` lead
+  (it also moves the lead to `needs_review`), `job-sluice leads answer` for one awaiting a
+  follow-up reply, or a hand edit of the note (delete the `triage_blocked` value, or move the
+  status off `unjudgeable`, or both, as the sentence says). Then run `--write` again.
+- **`note_open_fence`**: the note ends inside a code fence with no closing line, so the brief
+  would be hidden inside it. Close it with a line of the SAME character, at least as many as
+  opened it.
+
+Other outcomes:
+
+- **"the note already has an ... section"** (exit 0): the note holds a brief from an earlier
+  `--write`, and nothing was written. The brief printed above it is a fresh render and may
+  differ. To replace it, delete that section from the note and run `--write` again.
+- **"written, but an unclosed code fence before it now hides it"** (exit 1): the brief was
+  appended, but a fence left open before it (most likely from an edit made while the command
+  ran) swallowed it, and that section will read the brief as its own text. Close the fence.
+- **"the note carries the interview-prep tag but no readable ... section"** (exit 1): the tag
+  `<!-- sluice:interview-prep -->` sits somewhere other than on the brief's heading line (a
+  pasted copy, or a frontmatter value). Remove the stray tag by hand, then run `--write` again.
+- **"conflict"**: the note changed while the command ran. Run it again.
+- **"could not read the evidence"**: a stories note cannot be read (permissions, a symlinked
+  folder, a file that is not UTF-8). The reason names which.
+
 ## Store / vault problems
 
 - **vault missing**: the vault directory doesn't exist. Blocks every pipeline command, and the
@@ -424,7 +468,8 @@ lead back to `new` by hand buys one more attempt only, since the count is kept.
   failure, not a `doctor` one" — which left `doctor` calling an install fine about the very
   thing that stopped the next command.) The other two stay `notice`: a verified `skills` entry
   reaches the composer as framing and its name can appear in a CV's SKILLS section, but it is
-  citable by nothing, and a verified `stories` entry is consumed by nothing yet, so an empty
+  citable by nothing, and a verified `stories` entry reaches no CV (its row says it is read by
+  `leads prep` interview briefs, which is not a capability `doctor` grades), so an empty
   one of either blocks nothing. A non-zero
   PENDING count also gets `; <pending> proposed and awaiting review (job-sluice <kind> verify)`
   — an entry `<kind> add` captured sits in `_inbox/` doing nothing until a human runs that
@@ -444,7 +489,8 @@ lead back to `new` by hand buys one more attempt only, since the count is kept.
   promoting an entry from behind it would make content from outside your vault citable — and
   `verify`'s cleanup would then delete a file outside your vault. Move the real folder into the
   vault. Only the `experience` row names `blocks: cv`: an unreadable `skills` corpus is
-  composed without (no framing, no skill names), and nothing reads `stories` yet. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
+  composed without (no framing, no skill names), and `stories` is read only by `leads prep`,
+  which is not a capability `doctor` grades. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
   your config and Judging Profile, and skips the capture step rather than offering it against a
   corpus it could not read; `--no-input` never reads the corpus at all.
 - **A command refuses citing a relocated state file** (`seen.db`, `track-seen.db`,

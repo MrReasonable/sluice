@@ -137,8 +137,9 @@ class ComponentCheck:
         and catches it at the row that is wrong, wherever in the tree that row is minted.
 
         An EMPTY `blocks` stays legal and is not the same mistake: the unreadable
-        `stories` corpus carries it deliberately, because nothing reads that corpus, and
-        an unread row genuinely stops nothing."""
+        `stories` corpus carries it deliberately, because no CAPABILITY reads that corpus.
+        Its one reader, `leads prep` (#195), is not a capability the verdict reports on, so
+        naming one here would say the row stops something it does not."""
         if self.warn_by_default and self.state != DEGRADED:
             raise ValueError(
                 f"ComponentCheck({self.component}/{self.subject}) sets warn_by_default on a "
@@ -508,7 +509,10 @@ def classify_store(facts: dict | None, *, cv_asks_for_bullets: bool = True) -> l
     still attempted and failed later. The other two say so rather than claiming a citability they do not have,
     and since #165 they differ from each other: `skills` is READ by the composer as
     framing (`read_by_composer`) while remaining uncitable, so its row says that rather
-    than either "citable" or "nothing reads this". In every case a non-zero
+    than either "citable" or "nothing reads this". A kind `leads prep` reads
+    (`read_by_prep`, `stories` since #195) says so in a suffix after that chain, so the
+    "nothing reads" clause is kept only for a kind no reader is declared for. In every
+    case a non-zero
     PENDING count is the same tier again, because propose-only writes leave
     entries sitting in `_inbox/`, doing nothing, until a human runs `job-sluice
     <kind> verify`; the message names that exact command; a count nobody can
@@ -625,9 +629,10 @@ def classify_store(facts: dict | None, *, cv_asks_for_bullets: bool = True) -> l
                       f"composer as framing; not a citable source for the gate")
         else:
             detail = f"{verified} verified / {total} total entries -- reviewed"
-            # A kind the judge reads is not unread: the suffix below names that reader, so
-            # "nothing reads this corpus" would contradict the same row.
-            if not spec.judge_fields:
+            # A kind the judge or `leads prep` reads is not unread: the suffixes below name
+            # that reader, so "nothing reads this corpus" would contradict the same row. The
+            # clause is kept for any kind nothing reads, which must still say so.
+            if not spec.judge_fields and not spec.read_by_prep:
                 detail += ", but nothing reads this corpus yet"
         if spec.judge_fields:
             # #196: a SUFFIX after the chain, not an arm in it. The kinds the judge really
@@ -636,6 +641,10 @@ def classify_store(facts: dict | None, *, cv_asks_for_bullets: bool = True) -> l
             # see `triage.evidence` (it ships off), so the clause says the condition rather
             # than claiming a reader that a default install does not have.
             detail += "; read by the triage judge when triage.evidence is on"
+        if spec.read_by_prep:
+            # #195: a SUFFIX after the chain, as judge_fields is (#196): an arm would sit behind
+            # an earlier one and never fire for a kind that also carries another flag.
+            detail += ", and read by `leads prep` interview briefs"
         if pending:
             # The failure mode propose-only writes introduce: entries captured,
             # sitting in `_inbox/`, doing nothing, with no other signal anywhere
@@ -1078,10 +1087,10 @@ def classify_cv_layout(layout, error=None) -> ComponentCheck:
         # Unreadable is never reported as absent (#242). The reason goes through the one
         # path-free formatter the Vault's own `<kind>_error` facts use: a system OSError's
         # str() names the absolute path, and a DoctorReport reaches MCP clients whole.
-        from sluice.core.vault import _unreadable_reason
+        from sluice.core.vault import unreadable_reason
         return ComponentCheck("store", "cv_layout", DEAD,
                               f"{CV_LAYOUT_RELPATH} could not be read -- "
-                              f"{_unreadable_reason(error)}",
+                              f"{unreadable_reason(error)}",
                               blocks=("cv",))
     if layout is None:
         return ComponentCheck(

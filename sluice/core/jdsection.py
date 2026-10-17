@@ -10,7 +10,8 @@ section through `sections()` below, so a fence or a level-1/2 heading means the 
 both.
 
 Pure and stdlib-only, beside `core/names.py` and `core/tokens.py` for the same reason they
-sit in `core/`: triage and cv both import it, and neither may import the other.
+sit in `core/`: triage and cv both import it, and neither may import the other. `leads prep`
+(#195: `core/prepbrief.py` and the facade) reads it too.
 
 Fenced code is skipped by the reader, as CommonMark (and so Obsidian) renders it: a
 `## Job description` line inside a fence is an example, not the section, and reading it as one
@@ -43,9 +44,16 @@ _HASHES = re.compile(r"^( {0,3})#{1,2}")
 _FENCE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})")
 
 
-def _lines(text: str) -> list:
-    # CRLF and lone CR both normalised, so a note saved on another platform reads the same.
+def lines(text: str) -> list:
+    """`text` split into lines, CRLF and lone CR both normalised, so a note saved on another
+    platform reads the same. Public (#195) so `core/prepbrief.py` splits by the very rule the
+    fence scanner reads, rather than reaching into a private helper or keeping a copy."""
     return text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+
+
+# The name every caller in this module already uses; kept so the public name is an addition,
+# not a rename.
+_lines = lines
 
 
 def breaks_section(line: str) -> bool:
@@ -75,6 +83,14 @@ def _scan_fences(lines: list) -> tuple:
 
 def _outside_fences(lines: list) -> list:
     return _scan_fences(lines)[0]
+
+
+def open_fence(body: str) -> bool:
+    """True when `body` ENDS inside an unclosed code fence, so anything appended after it would
+    be swallowed into the fence (#195: `leads prep --write` refuses then, rather than appending
+    a brief no reader would see). One scanner: `_scan_fences`' still-open opener, never a
+    second copy of the fence grammar."""
+    return bool(_scan_fences(_lines(body))[1])
 
 
 def _is_heading(line: str, heading: str, tag: str) -> bool:

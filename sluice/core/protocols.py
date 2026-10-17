@@ -170,6 +170,10 @@ class EvidenceKind:
     # `Skills:` reach the pool through core/tokens.py::tool_items and ::skill_items whatever
     # this flag says.
     names_in_skills_pool: bool = False
+    # #195: `leads prep` (core/prepbrief.py via Sluice.prep_brief) shows this corpus's entries in
+    # an interview prep brief. The flag is what the facade iterates, so the flag and the reader
+    # cannot disagree, and doctor/verify_outcome key their wording on it.
+    read_by_prep: bool = False
     # #196: the declared fields the TRIAGE JUDGE is shown, in order, when the user sets
     # `triage.evidence: true`. Non-empty IS "the judge reads this kind": one attribute, so
     # "is it read" and "which fields" cannot disagree (a judge-read kind with no fields
@@ -353,7 +357,7 @@ EVIDENCE_KINDS = {
     # so a multi-line frontmatter value does not round-trip (its continuation lines
     # are re-read as further keys).
     "stories": EvidenceKind("Job Applications/STAR Stories",
-                            ("Company", "Best For")),
+                            ("Company", "Best For"), read_by_prep=True),
 }
 
 
@@ -364,12 +368,20 @@ def verify_outcome(spec, subject: str = "it") -> str:
     name: `cited_by_gate` first (the gate may license its content), then
     `names_in_skills_pool` (#364 D12: a verified note's name may appear in a CV's skills list).
     Here rather than in sluice/evidence/ so core/doctor.py and core/app.py can say the same
-    thing; `subject` lets the init wizard's plural summary share the sentence."""
+    thing; `subject` lets the init wizard's plural summary share the sentence.
+
+    `read_by_prep` (#195) is a SUFFIX after the chain, the shape core/doctor.py::classify_store
+    uses for it and for `judge_fields` (#196): an arm after the two early returns would never
+    fire for a kind carrying either earlier flag."""
     if spec.cited_by_gate:
-        return f"make {subject} citable"
-    if spec.names_in_skills_pool:
-        return f"make {subject} available to a CV's skills list"
-    return f"mark {subject} reviewed"
+        out = f"make {subject} citable"
+    elif spec.names_in_skills_pool:
+        out = f"make {subject} available to a CV's skills list"
+    else:
+        out = f"mark {subject} reviewed"
+    if spec.read_by_prep:
+        out += f" and include {subject} in interview prep briefs"
+    return out
 
 
 def skill_label(entry) -> str:
@@ -1005,9 +1017,10 @@ class Store(Protocol):
         for an absent corpus would tell a user with no Skills Inventory yet that their
         corpus is unreadable, on every lead of every run. `experience` is deliberately NOT
         wrapped there, being the gate's only citable evidence.
-        `triage/engine.py::_read_record` (#196) relies on it too, catching exactly
-        `(OSError, UnicodeDecodeError)`: an unreadable corpus must raise one of those, and
-        a kind the store does not support raises `ValueError`, which triage lets through.
+        `triage/engine.py::_read_record` (#196) and `core/app.py::Sluice.prep_brief` (#195)
+        rely on it too, each catching exactly `(OSError, UnicodeDecodeError)`: an unreadable
+        corpus must raise one of those, and a kind the store does not support raises
+        `ValueError`, which both let through.
 
         `tests/conformance/test_store_contract.py::test_an_absent_corpus_reads_as_empty`
         binds this per kind, because a docstring alone is what the vault happened to do
@@ -1025,8 +1038,9 @@ class Store(Protocol):
         reachable -- for the vault, by a human placing one there, which this tool treats
         as a first-class workflow -- and it is exactly the entry a human needs to see: it
         is inert, it is not citable, and the ONLY places that could report it are this
-        reader's three consumers (`<kind> list --pending`, the queue `verify` offers, and
-        doctor's pending count). Filtering here hides it from all three at once."""
+        reader's consumers (`<kind> list --pending`, the queue `verify` offers, doctor's
+        pending count, and a `leads prep` brief's pending line). Filtering here
+        hides it from every one of them at once."""
         ...
 
     def read_pending_evidence_text(self, kind: str, name) -> str:

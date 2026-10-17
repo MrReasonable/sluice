@@ -1091,6 +1091,10 @@ def test_the_registry_flags_are_what_this_change_intends():
     flipped in either direction reddens here rather than passing vacuously."""
     assert {k: (s.read_by_composer, s.cited_by_gate) for k, s in EVIDENCE_KINDS.items()} \
         == {"experience": (True, True), "skills": (True, False), "stories": (False, False)}
+    # #195: `leads prep` reads stories alone; the facade iterates this flag, so a kind
+    # flipped on here is a kind every brief starts showing (and demanding an entry for).
+    assert {k: s.read_by_prep for k, s in EVIDENCE_KINDS.items()} \
+        == {"experience": False, "skills": False, "stories": True}
 
 
 def test_an_experience_entrys_skills_is_written_and_read_back_as_data(tmp_path):

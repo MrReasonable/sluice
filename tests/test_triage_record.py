@@ -103,13 +103,16 @@ def test_judge_fields_must_be_declared_fields():
 
 def test_doctor_names_triage_evidence_for_a_judge_only_kind(monkeypatch):
     """`core/doctor.py` binds EVIDENCE_KINDS at import, so THAT binding is the one patched.
-    The stories row is asserted EQUAL to its pre-change text, not by substring: a substring
-    check passes if the judge wording leaked onto every unread kind."""
+    The stories row and a synthetic unread kind's row are asserted EQUAL to their exact text,
+    not by substring: a substring check passes if the judge wording leaked onto every
+    kind the judge does not read. Since #195 stories is read by `leads prep`, so the
+    unread kind is what keeps the "nothing reads" half of that no-leak property."""
     from sluice.core import doctor
     from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind
     judge_only = EvidenceKind("Job Applications/Judge Only", ("Domain",),
                               judge_fields=("Domain",))
-    kinds = {**EVIDENCE_KINDS, "judgeonly": judge_only}
+    unread = EvidenceKind("Job Applications/Unread Kind", ("Domain",))
+    kinds = {**EVIDENCE_KINDS, "judgeonly": judge_only, "unread": unread}
     monkeypatch.setattr(doctor, "EVIDENCE_KINDS", kinds)
     facts = {"vault_exists": True, "criteria_present": True}
     for k in kinds:
@@ -117,8 +120,10 @@ def test_doctor_names_triage_evidence_for_a_judge_only_kind(monkeypatch):
     rows = {r.subject: r.detail for r in doctor.classify_store(facts)}
     suffix = "; read by the triage judge when triage.evidence is on"
     assert rows["Judge Only"] == f"1 verified / 1 total entries -- reviewed{suffix}"
-    assert rows["STAR Stories"] == ("1 verified / 1 total entries -- reviewed, but nothing "
-                                    "reads this corpus yet")
+    assert rows["STAR Stories"] == ("1 verified / 1 total entries -- reviewed, and read by "
+                                    "`leads prep` interview briefs")
+    assert rows["Unread Kind"] == ("1 verified / 1 total entries -- reviewed, but nothing "
+                                   "reads this corpus yet")
     # The REAL judge-read kinds are also read by the composer, so an earlier arm writes
     # their base text: the judge clause must still end each of their rows.
     judged = {spec.relpath.rsplit("/", 1)[-1]

@@ -97,26 +97,19 @@ def _claimed_pairs(text: str) -> set:
 def test_the_command_tree_walk_is_not_vacuous():
     """SCOPE guard, ahead of everything below: a broken walk (e.g. `_build_parser` changing
     shape so `_SubParsersAction` is never found) would make every assertion below pass over an
-    empty tree. Pin real structure, not just non-emptiness -- 13 known top-level groups (#164
-    added `experience`/`skills`/`stories`, one loop over EVIDENCE_KINDS, to the prior 10) and an
-    EXACT total subcommand count, not merely a floor.
+    empty tree. Pin real structure, not just non-emptiness: the EXACT set of top-level groups
+    and an EXACT total subcommand count, not merely a floor. A floor trailing reality asserts
+    nothing, which is how an earlier `>=` version of this check caught none of a growth it
+    existed to catch.
 
-    The prior `>= 15` floor was itself the bug this file exists to catch: the real count moved
-    from 20 to 29 across #164 and the floor caught none of it (Task 7 review, MINOR 4) -- a
-    floor that trails reality by 14 asserts nothing. The literal (`22`) is the NON-EVIDENCE
-    groups' own subcommand total; the evidence contribution is DERIVED from EVIDENCE_KINDS (3
-    subcommands -- add/list/verify -- per kind) so a future fourth kind needs no edit here.
+    The literal is the NON-EVIDENCE groups' own subcommand total; the evidence contribution is
+    DERIVED from EVIDENCE_KINDS (add/list/verify per kind), so a new kind needs no edit here.
 
-    The literal is edited by hand ON PURPOSE, and it moves whenever a subcommand does: it was
-    `20` until #241's `leads add` made it 21, 21 until #201's `track auth` made it 22, and 22 until
-    `mcp install` made it 23. Each
-    time, this assertion is what said so. An earlier version of this note
-    justified the literal by claiming the count "does NOT grow on its own" -- which read as a
-    property of the tree when it is only a property of the LITERAL, and would have invited
-    deriving it from the walk the next time it moved. A derived expected value compares the walk
-    against itself and can never fail. The edit IS the review step: a subcommand is a public
-    interface, and being made to touch this line is how a new one is noticed here, in
-    docs/USAGE.md, and in README's Commands table together.
+    The literal is edited by hand ON PURPOSE, and it moves whenever a non-evidence subcommand
+    does. A derived expected value compares the walk against itself and can never fail. The
+    edit IS the review step: a subcommand is a public interface, and being made to touch this
+    line is how a new one is noticed here, in docs/USAGE.md, and in README's Commands table
+    together.
     """
     tree = _command_tree()
     assert set(tree) == {
@@ -125,9 +118,9 @@ def test_the_command_tree_walk_is_not_vacuous():
         f"the walk found {sorted(tree)} -- a group was added, renamed, or removed; if that is "
         f"intentional, docs/USAGE.md and this set both need updating")
     total_subs = sum(len(v) for v in tree.values() if v is not None)
-    expected = 27 + 3 * len(EVIDENCE_KINDS)
+    expected = 28 + 3 * len(EVIDENCE_KINDS)
     assert total_subs == expected, (
-        f"expected {expected} subcommands (27 non-evidence + 3 per evidence kind), found "
+        f"expected {expected} subcommands (28 non-evidence + 3 per evidence kind), found "
         f"{total_subs} -- the walk is broken, or a group's own subcommand count changed and "
         f"this needs updating, along with docs/USAGE.md and README's Commands table")
 

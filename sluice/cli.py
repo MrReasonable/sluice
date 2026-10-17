@@ -1171,6 +1171,86 @@ def cmd_leads_answer(args, config) -> int:
     return 0
 
 
+# #195: `leads prep`'s outcomes that exit 0. Every other outcome exits 1, under `--json` too, so a
+# script cannot read a hidden or failed write as success.
+_PREP_OK = frozenset({"ok", "written", "already_written"})
+# The fixed stderr texts after `leads prep: SLUG: `, held here so each has ONE spelling in the
+# handler; the CLI rows pin the wording, most of them against typed literals. The two naming
+# the section take its text from
+# `prepbrief.HEADING` at run time (`{heading}`), never a typed copy: a renamed heading must not
+# leave the CLI naming a section the note does not hold.
+_PREP_WRITTEN = "written to the note"
+_PREP_ALREADY_WRITTEN = ('not written -- the note already has an "{heading}" section; the brief '
+                         'above is a fresh render and may differ from it. Delete that section to '
+                         'write a fresh one')
+# Names no consumer: the hiding fence can sit in ANY section, and only the two examples are given.
+_PREP_WRITTEN_HIDDEN = ("written, but an unclosed code fence before it now hides it, and "
+                        "whichever section that fence sits in (the job description or the "
+                        "follow-up answers, say) will read the brief as its own text until "
+                        "the fence is closed")
+_PREP_PRESENT_UNREADABLE = ('the note carries the interview-prep tag but no readable '
+                            '"{heading}" section -- fix the note by hand')
+# A post-write `not_found` whose append LANDED: the slug resolved a moment earlier,
+# so "no lead matching" would deny a write that happened. Exit 1 still: the read-back that
+# certifies the brief reads as its own section never ran.
+_PREP_WRITTEN_GONE = ("written, but the note moved or went before it could be read back, so "
+                      "whether the brief reads as its own section is unchecked; run the same "
+                      "command again to check")
+
+
+def cmd_leads_prep(args, config) -> int:
+    """#195: print one lead's interview prep brief; `--write` appends it to the note, once.
+
+    The brief always goes to stdout (degraded or not, written or not); the write's outcome is
+    ONE line on stderr. `--json` replaces both with one document on stdout and keeps every exit
+    code, so the two runs cannot disagree about success."""
+    from sluice.core import prepbrief   # pure; read here so HEADING has ONE spelling
+    from sluice.core.app import Sluice
+    r = Sluice(config).prep_brief(lead=args.lead, write=args.write)
+    code = 0 if r.outcome in _PREP_OK else 1
+    if args.json:
+        # ensure_ascii stays at its default: a raw DEL or U+2028 from a story body would be
+        # rewritten by the terminal wrapper into an escape the JSON cannot parse.
+        print(json.dumps({"outcome": r.outcome, "slug": r.slug, "status": r.status,
+                          "candidates": r.candidates, "suggestions": r.suggestions,
+                          "more_suggestions": r.more_suggestions, "brief": r.brief,
+                          "reason": r.reason, "appended": r.appended}))
+        return code
+    if r.outcome == "not_found" and r.appended:
+        print(r.markdown)
+        print(f"leads prep: {r.slug}: {_PREP_WRITTEN_GONE}", file=sys.stderr)
+        return code
+    if r.outcome in ("not_found", "ambiguous"):
+        _lead_refusal("prep", r, args.lead)
+        if r.suggestions:
+            print("did you mean:", file=sys.stderr)
+            for s in r.suggestions:
+                print(f"  {s}", file=sys.stderr)
+            if r.more_suggestions:
+                print(f"  ... and {r.more_suggestions} more", file=sys.stderr)
+        return 1
+    if r.outcome == "entries_unreadable":
+        print(f"leads prep: {r.slug}: could not read the evidence -- {r.reason}", file=sys.stderr)
+        return 1
+    print(r.markdown)
+    if not args.write:
+        return 0
+    if r.outcome == "conflict":
+        _lead_refusal("prep", r, args.lead)
+        return code
+    heading = prepbrief.HEADING.lstrip("# ")
+    lines = {
+        "written": _PREP_WRITTEN,
+        "already_written": _PREP_ALREADY_WRITTEN.format(heading=heading),
+        "not_writable": f"not written -- {r.reason}",
+        "written_hidden": _PREP_WRITTEN_HIDDEN,
+        "present_unreadable": _PREP_PRESENT_UNREADABLE.format(heading=heading),
+        "write_failed": f"could not write the note -- {r.reason}",
+    }
+    print(f"leads prep: {r.slug}: {lines[r.outcome]}", file=sys.stderr)
+    return code
+
+
 def cmd_leads_expire(args, config) -> int:
     from sluice.core.app import Sluice
 
@@ -3424,6 +3504,21 @@ def _build_parser() -> argparse.ArgumentParser:
                     help='exact store-issued slug, e.g. --lead "Example Ltd - Example Role"')
     an.add_argument("--text", required=True, help="the reply, in your own words")
     an.set_defaults(func=cmd_leads_answer)
+
+    # #195: previews by default, like the other `leads` passes, because a brief is
+    # tool-computed. The flag is `--write`, not the `leads` passes' `--apply`, because `apply`
+    # is also the sub-app that SENDS applications, and `leads prep --apply` reads as "apply to
+    # this job" (spec Decision 8). No --dry-run: the default IS the dry run.
+    pp = leads.add_parser("prep",
+                          help="print an interview prep brief for one lead from your STAR "
+                               "stories; --write appends it to the note once")
+    pp.add_argument("--lead", required=True, metavar="SLUG",
+                    help="the exact store-issued slug (the note's filename)")
+    pp.add_argument("--write", action="store_true",
+                    help="append the brief to the note, once; refused when it is degraded")
+    pp.add_argument("--json", action="store_true",
+                    help="print the result as one JSON document on stdout")
+    pp.set_defaults(func=cmd_leads_prep)
 
     rc = leads.add_parser(
         "reconcile",

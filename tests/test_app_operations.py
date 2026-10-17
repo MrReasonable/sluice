@@ -679,7 +679,7 @@ def test_the_facade_method_names_stay_disjoint_from_the_store_member_names():
     assert store_members, (
         "Store protocol introspection found no members -- the derivation above is "
         "broken, not the protocol; this guard would silently pass vacuously")
-    facade = {"add_evidence", "list_evidence", "verify_evidence_interactive"}
+    facade = {"add_evidence", "list_evidence", "verify_evidence_interactive", "prep_brief"}
     assert facade & store_members == set()
     # Bind the hand-listed literal to something REAL: deleting or renaming any of
     # the three facade methods must fail this test, not merely leave it agreeing

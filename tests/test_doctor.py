@@ -2011,6 +2011,16 @@ def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tm
     remaining uncitable, so both "citable" and "nothing reads this corpus" are false for it.
     Since D12 (#364/#365/#368) its verified names also reach a CV's skills list, which its
     row must say too (tests/test_skills_pool_wording.py pins the wording per flag).
+
+    The last arm is the kinds the composer does not read. A kind `leads prep` reads gets the
+    prep clause and NOT "nothing reads this corpus yet"; a kind no reader is declared for
+    gets the unread wording. Both halves are asserted here per registered kind, so a kind
+    added to the registry that the gate, the composer or `leads prep` reads, or that has no
+    reader and no judge fields, is checked. A judge-only kind (`judge_fields` set, read by
+    neither the composer nor prep) reaches none of the asserted arms past the not-citable
+    check, so this loop says nothing about its wording. The unread wording is also driven
+    by a synthetic kind in `test_a_kind_nothing_reads_still_says_so`, which holds whatever
+    the registry carries.
     """
     from sluice.core.protocols import EVIDENCE_KINDS
     from sluice.core.vault import Vault
@@ -2021,8 +2031,8 @@ def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tm
     assert any(s.read_by_composer and not s.cited_by_gate
                for s in EVIDENCE_KINDS.values()), \
         "no kind is framing-only -- the middle branch below is unexercised"
-    assert any(not s.read_by_composer for s in EVIDENCE_KINDS.values()), \
-        "every kind is read -- the unread half is vacuous"
+    assert any(s.read_by_prep and not s.read_by_composer for s in EVIDENCE_KINDS.values()), \
+        "the prep arm must be reached"
     for kind, spec in EVIDENCE_KINDS.items():
         detail = rows[spec.relpath.rsplit("/", 1)[-1]]
         if spec.cited_by_gate:
@@ -2035,8 +2045,59 @@ def test_doctor_claims_citability_only_for_the_corpus_the_gate_actually_reads(tm
             assert "shown to the CV composer as framing" in detail, kind
             assert "are citable by the CV fabrication gate" not in detail, kind
         else:
-            assert "nothing reads this corpus yet" in detail, kind
             assert "are citable by the CV fabrication gate" not in detail, kind
+            if spec.read_by_prep:
+                assert "read by `leads prep` interview briefs" in detail, kind
+                assert "nothing reads this corpus yet" not in detail, kind
+            elif not spec.judge_fields:
+                assert "nothing reads this corpus yet" in detail, kind
+
+
+def _store_facts(kinds):
+    """`classify_store` facts with every kind in `kinds` at 1 verified / 1 total."""
+    facts = {"vault_exists": True, "criteria_present": True}
+    for k in kinds:
+        facts.update({f"{k}_verified": 1, f"{k}_total": 1, f"{k}_pending": 0})
+    return facts
+
+
+def test_a_kind_nothing_reads_still_says_so(monkeypatch):
+    """#195 left no REGISTERED kind on the `nothing reads this corpus yet` clause, and the
+    clause is kept for the next kind nothing reads. A synthetic kind with no reader drives it,
+    patched into `core/doctor.py`'s own `EVIDENCE_KINDS` binding (the
+    tests/test_triage_record.py precedent). Asserted EQUAL, so the prep clause leaking onto a
+    kind that does not carry the flag goes red too."""
+    from sluice.core import doctor
+    from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind
+
+    unread = EvidenceKind("Job Applications/Unread Kind", ("Domain",))
+    kinds = {**EVIDENCE_KINDS, "unread": unread}
+    monkeypatch.setattr(doctor, "EVIDENCE_KINDS", kinds)
+    rows = {r.subject: r.detail for r in doctor.classify_store(_store_facts(kinds))}
+    assert rows["Unread Kind"] == ("1 verified / 1 total entries -- reviewed, but nothing "
+                                   "reads this corpus yet")
+
+
+def test_the_prep_clause_is_a_suffix_in_classify_store_and_verify_outcome(monkeypatch):
+    """#195, the #196 lesson in both functions. A kind carrying `read_by_prep` AND an earlier
+    flag (`names_in_skills_pool`) must still get the prep clause: an arm in either chain would
+    sit behind the earlier one and never fire. `verify_outcome` must use the caller's own
+    subject, not a hard-coded "it"."""
+    from sluice.core import doctor
+    from sluice.core.protocols import EVIDENCE_KINDS, EvidenceKind, verify_outcome
+
+    both = EvidenceKind("Job Applications/Both Flags", ("Domain",),
+                        names_in_skills_pool=True, read_by_prep=True)
+    kinds = {**EVIDENCE_KINDS, "both": both}
+    monkeypatch.setattr(doctor, "EVIDENCE_KINDS", kinds)
+    rows = {r.subject: r.detail for r in doctor.classify_store(_store_facts(kinds))}
+    assert "can appear in a CV's skills list" in rows["Both Flags"], \
+        "the earlier arm must still write the base text"
+    assert rows["Both Flags"].endswith(", and read by `leads prep` interview briefs")
+    assert "nothing reads this corpus yet" not in rows["Both Flags"]
+    phrase = verify_outcome(both, subject="stories entries")
+    assert phrase.startswith("make stories entries available to a CV's skills list")
+    assert phrase.endswith("and include stories entries in interview prep briefs")
 
 
 def test_doctor_reports_a_notice_naming_the_command_that_makes_entries_citable(tmp_path):
@@ -2081,7 +2142,7 @@ def test_one_unreadable_evidence_kind_does_not_erase_every_other_store_fact(tmp_
     the symlink is a stray directory nothing reads and `doctor` prints four store rows,
     including `Candidate Profile | dead | blocks: cv`; this branch printed one. So a user
     whose `cv run` says `skipped-config` runs `doctor` to find out why is told only about a
-    corpus nothing reads -- on the single command that exists to diagnose exactly this.
+    corpus `cv run` never reads -- on the single command that exists to diagnose exactly this.
 
     Asserted on the FACTS, at the `preflight` layer: the broken kind reports `<kind>_error`
     and no count triple (a `0` would read as "the corpus is empty", which is the quiet
@@ -2119,7 +2180,8 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
     `DoctorReport.exit_code`) and a directory the store cannot read at all is a fault the
     user must act on, not a posture. `blocks` is asserted on the UNCITED kind here:
     an unreadable `skills` corpus DEGRADES rather than blocking `cv` (#165: cv/engine.py
-    catches it and composes without the framing) and nothing reads `stories` at all, so
+    catches it and composes without the framing) and no capability reads `stories` (its one
+    reader, `leads prep` (#195), is not a capability the verdict reports on), so
     naming a sub-app for either would be the
     over-claim `EvidenceKind.cited_by_gate` exists to prevent.
     """
@@ -2133,7 +2195,7 @@ def test_an_unreadable_evidence_corpus_takes_its_own_row_and_leaves_the_others_s
     broken = by_subject[EVIDENCE_KINDS["stories"].relpath.rsplit("/", 1)[-1]]
     assert broken.state == DEAD
     assert "cannot be read" in broken.detail and "is a symlink" in broken.detail
-    assert broken.blocks == (), "nothing reads stories, so it blocks no sub-app"
+    assert broken.blocks == (), "no capability reads stories, so it blocks no sub-app"
     # Every other store row survives -- the whole point of the isolation.
     for subject in ("Judging Profile", "Candidate Profile",
                     EVIDENCE_KINDS["experience"].relpath.rsplit("/", 1)[-1],

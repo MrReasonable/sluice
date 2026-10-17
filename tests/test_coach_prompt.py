@@ -81,7 +81,16 @@ def test_registered_descriptions_name_no_preference():
     texts += [p.description for p in prompts] + [a.description for p in prompts
                                                  for a in (p.arguments or [])
                                                  if a.description]
-    assert len(texts) >= 3 and all(_leaks(t) == [] for t in texts)
+    # #195: get_lead's interview-prep sentence, by name. It is a returned content_warning
+    # rather than a registered description, but it is shipped prose an agent reads beside the
+    # coach's, so it carries the same no-opinion rule. Scope: the named text IS the sentence
+    # get_lead returns, so the sweep cannot pass over a stale copy.
+    from sluice.core.prepbrief import TAGGED_HEADING
+    from sluice.mcpserver import _GET_LEAD_CONTENT_WARNING, _GET_LEAD_PREP_BRIEF_NOTE
+    assert TAGGED_HEADING in _GET_LEAD_PREP_BRIEF_NOTE
+    assert _GET_LEAD_PREP_BRIEF_NOTE in _GET_LEAD_CONTENT_WARNING
+    texts.append(_GET_LEAD_PREP_BRIEF_NOTE)
+    assert len(texts) >= 4 and all(_leaks(t) == [] for t in texts)
 
 
 def test_a_read_only_server_says_to_restart_with_write():

@@ -5,7 +5,7 @@ The reader (where reading stops) and the writer (what writing must demote) share
 import pytest
 
 from sluice.core import jdsection
-from sluice.core.jdsection import HEADING, TAG, breaks_section, read, render
+from sluice.core.jdsection import HEADING, TAG, breaks_section, open_fence, read, render
 
 _JD = "We are hiring an engineer.\nYou will build placeholder systems."
 
@@ -195,3 +195,22 @@ def test_neutralise_leaves_a_closed_fence_alone():
 def test_a_job_description_left_open_no_longer_hides_a_later_section():
     body = render("posting\n```") + "\n\n## Other\nlater\n"
     assert jdsection.sections(body, "## Other") == ["later"]
+
+
+@pytest.mark.parametrize("body", ["x\n```\ncode", "x\n~~~\ncode", "x\n````py\n```\nstill code"])
+def test_open_fence_is_true_for_a_body_ending_inside_a_fence(body):
+    # #195: `leads prep --write` refuses a note whose body ends inside a fence, since the
+    # brief appended after it would be swallowed into the fence. The last row: a shorter
+    # run of the same character does not close a longer opener.
+    assert open_fence(body)
+
+
+@pytest.mark.parametrize("body", ["x\n```\ncode\n```\n", "x\n~~~\ncode\n~~~", "plain", ""])
+def test_open_fence_is_false_for_a_closed_fence_and_for_no_fence(body):
+    assert not open_fence(body)
+
+
+def test_lines_is_the_public_splitter_and_normalises_line_endings():
+    # #195: core/prepbrief.py splits with the SAME rule the scanner reads, through a public
+    # name rather than the private `_lines`.
+    assert jdsection.lines("a\r\nb\rc\n") == ["a", "b", "c", ""]
