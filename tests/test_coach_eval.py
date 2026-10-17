@@ -2266,3 +2266,18 @@ def test_each_prep_persona_matches_its_reviewed_digest():
         "a prep persona changed, was added or was removed. READ the diff for any real "
         "employer, place, person or board name first; only then paste the new digest: "
         f"{found}")
+
+
+def test_the_prep_grader_scores_gaps_against_the_requirements_the_user_chose():
+    # The spec's exit criterion is each requirement the user CARES ABOUT, and the playbook lets
+    # the user choose. The first live run's grader marked two coaches down to 3 for not probing
+    # requirements the user had declined, so the rubric says which miss counts: an unnamed gap
+    # is one, a declined one is not.
+    from scripts.coach_eval import prep
+    text = prep.PREP_GRADER_PROMPT
+    assert "named EVERY requirement in the job description that no entry evidences" in text
+    assert "for each one the user chose to prepare for" in text
+    assert "so one they declined is not a miss" in text
+    # A coach that never offers the choice has nothing declined, so every gap it skipped is a
+    # miss: without this clause, asking about none would score as well as asking about all.
+    assert "one it never asked about that the user had not declined" in text
