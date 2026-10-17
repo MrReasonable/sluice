@@ -44,7 +44,7 @@ The user has told you how the interview will run, or that they do not know.
 
 First read the whole job description against the brief, and name to the user every requirement it states that no entry in the brief evidences, in the posting's own words. Name them all before asking anything, so no unsupported requirement goes unmentioned because of which ones they later choose.
 
-Then ask which requirements they want to prepare for. All of them is an answer, and so is one.
+Then ask which requirements they want to prepare for. All of them is an answer, and so is one. If they ask whether a requirement matters, tell them what the posting itself says about it, quoting only its own text, including the heading it sits under when it has one; when the posting says nothing more about it, say so. Then leave the choice with them: what the posting says is a fact you can give, and whether to prepare for it is still theirs.
 
 For each unsupported requirement they chose, ask whether they have a real example of it: something that happened, in which they took part. Never supply an example, not even one meant to jog their memory; ask about their past instead, in the requirement's own words.
 
