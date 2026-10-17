@@ -138,8 +138,9 @@ class ComponentCheck:
 
         An EMPTY `blocks` stays legal and is not the same mistake: the unreadable
         `stories` corpus carries it deliberately, because no CAPABILITY reads that corpus.
-        Its one reader, `leads prep` (#195), is not a capability the verdict reports on, so
-        naming one here would say the row stops something it does not."""
+        Its one reader, `Sluice.prep_brief` (#195), behind `leads prep` and the `prep_brief` MCP
+        tool, is not a capability the verdict reports on, so naming one here would say the row
+        stops something it does not."""
         if self.warn_by_default and self.state != DEGRADED:
             raise ValueError(
                 f"ComponentCheck({self.component}/{self.subject}) sets warn_by_default on a "

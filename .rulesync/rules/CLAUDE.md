@@ -151,7 +151,7 @@ reading the diff it is certifying.
 
 Pipeline: `ingest -> triage -> cv -> apply -> track`. Five sub-apps under `sluice/`, all sitting on
 `sluice/core/`, plus COMMAND packages, none a sixth sub-app: `sluice/onboard/` for
-`job-sluice init`, (#164) `sluice/evidence/` for the nine `job-sluice
+`job-sluice init` and both MCP coach prompts, (#164) `sluice/evidence/` for the nine `job-sluice
 {experience,skills,stories} {add,list,verify}` handlers, and `sluice/mcpinstall/` for
 `job-sluice mcp install`. No pipeline sub-app -- ingest, triage, cv, apply, track -- imports any
 of them. `cli.py` imports onboard and evidence, and neither import sits at
@@ -168,15 +168,17 @@ deferral that import does not provide, which invited someone to "restore" the la
 hoisting the per-function `Sluice` import to module scope and putting a heavy import on every
 invocation. `sluice/mcpserver.py` is a further importer of `sluice.onboard`: it imports the
 `review` and `coach` modules (and through them `edit`, `plan` and `questions`) at its own module
-scope, for `setup_status`, `setup_save` and the `career_interview` prompt, so `cli.py` is not
-onboard's only importer. Neither does I/O, but neither is free to import: `review` imports
-`core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver` loads the
-store module, and `coach.assemble_prompt` imports `core/app.py` and `sluice.backends` (registering
-every backend) inside the function, when the prompt is built. `sluice/mcpinstall/` writes
-other tools' MCP config files at user scope: it copies each before changing it, reads every
-registration back from the file, and imports nothing from the `mcp` package; `_build_parser`
-imports its `clients` module for `--client`'s choices, which loads only the package's own stdlib
-modules. Onboard and evidence are not mutually isolated, either: `sluice/evidence/commands.py`
+scope, for `setup_status`, `setup_save` and the `career_interview` and `interview_prep` prompts,
+so `cli.py` is not onboard's only importer. Neither does I/O, but neither is free to import:
+`review` imports `core/vault.py`'s frontmatter text helpers at module scope, so importing
+`mcpserver` loads the store module, and `coach.assemble_prompt` imports `core/app.py` and
+`sluice.backends` (registering every backend) inside the function, when the `career_interview`
+prompt is built. `coach.assemble_prep_prompt`, which builds the `interview_prep` prompt, imports
+no backend at all (`tests/test_coach_prompt.py::test_the_prep_prompt_imports_no_backend`).
+`sluice/mcpinstall/` writes other tools' MCP config files at user scope: it copies each before
+changing it, reads every registration back from the file, and imports nothing from the `mcp`
+package; `_build_parser` imports its `clients` module for `--client`'s choices, which loads only
+the package's own stdlib modules. Onboard and evidence are not mutually isolated, either: `sluice/evidence/commands.py`
 imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
 imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
 those two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
@@ -889,8 +891,11 @@ against.) `EvidenceKind.fields` is the user-facing set only, and `cli.py` derive
 flags from that tuple, so listing `verified` there would generate a `--verified` flag — exactly
 what an agent shelling out to the CLI would reach for; and `verify` carries no `--all` and no
 `--yes`, because a bulk flag is the same
-hole one level up. The MCP server exposes `list_evidence` at every level and, under `--write`,
-`propose_evidence` (#175) and `verify_evidence`. A proposal lands under `INBOX_SUBDIR`, which
+hole one level up. The MCP server exposes `list_evidence` and (#195) `prep_brief` at every
+level and, under `--write`, `propose_evidence` (#175) and `verify_evidence`. `prep_brief`
+returns one lead's interview prep brief with its entries' bodies, and only reads; it can stamp
+nothing.
+A proposal lands under `INBOX_SUBDIR`, which
 `read_evidence` cannot see, and cannot stamp the key (the same `_render_evidence_note` refusal above
 is what holds it, since `fields` is caller-supplied), so it is inert until a human promotes it.
 The `verify_evidence` MCP tool is a second route to `Store.verify_evidence` (through
@@ -920,8 +925,8 @@ appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` an
 items reach the skills pool through `tool_items` and `skill_items` whatever that flag says); `skills` is read and named, and is
 RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
 declared skill, but nothing LICENSES it; `stories` is neither. `read_by_prep` (#195) says
-the corpus is shown, entry by entry, in a `leads prep` interview prep brief, and is exactly
-what `Sluice.prep_brief` iterates; only `stories` carries it. `judge_fields` (#196) names the declared fields the TRIAGE judge is shown when the user sets `triage.evidence: true`; non-empty is what makes a kind judge-read, so the two cannot disagree. `experience` shows Company/Category/Best For/Metrics/Tools (not `Skills:`, which belong to no job), `skills` shows Proficiency/Domain, `stories` nothing. `__post_init__` refuses
+the corpus is shown, entry by entry, in an interview prep brief (`leads prep`, and the
+`prep_brief` MCP tool at every level), and is exactly what `Sluice.prep_brief` iterates; only `stories` carries it. `judge_fields` (#196) names the declared fields the TRIAGE judge is shown when the user sets `triage.evidence: true`; non-empty is what makes a kind judge-read, so the two cannot disagree. `experience` shows Company/Category/Best For/Metrics/Tools (not `Skills:`, which belong to no job), `skills` shows Proficiency/Domain, `stories` nothing. `__post_init__` refuses
 `cited_by_gate` without `read_by_composer`, since the gate cannot license what the composer
 never emitted. `add`'s unverified notice, the `init` wizard's
 summary and the MCP `propose_evidence` RESULT say what verifying buys through

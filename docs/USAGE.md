@@ -1038,8 +1038,8 @@ installed, exits 2 with a stderr message naming `job-sluice[mcp]` as the extra t
 install (see `sluice/mcpserver.py`'s `McpNotInstalled`) rather than a traceback.
 Blocks for the life of the process once started; there is no `--dry-run`.
 
-**Without `--write`** (the default), the read-only tools are registered:
-`list_leads`, `get_lead`, `doctor`, `health`, `list_evidence`, `setup_status`. `list_evidence(kind,
+**Without `--write`** (the default), only the read-only tools are registered; your client's
+tool list shows them, and [`MCP.md`](MCP.md) describes them. `list_evidence(kind,
 pending=False)` lists evidence corpus entries (`experience`, `skills`, `stories`) --
 verified ones by default, or the not-yet-verified queue when `pending=True`. Verified
 does not mean citable for every kind: the CV fabrication gate licenses the Experience
@@ -1172,6 +1172,19 @@ cannot list this prompt for you, so start it by name. The prompt is available on
 server too, but saving needs `--write`; the coach says so. What the research produces is kept in the `Job Applications/Role Brief.md`
 note, which no pipeline stage reads (see `docs/CONFIGURATION.md`). The coach's evaluation
 harness is a developer tool and never runs in CI: `scripts/coach_eval/README.md`.
+
+**The interview prep coach.** In Claude Code, type `/mcp__job-sluice__interview_prep` on its own (the middle part is
+whatever name you registered the server under, as above; measured with Claude Code 2.1.302 on
+2026-10-17, from the `slash_commands` in the session's init event). The coach asks which interview it is,
+finds the lead with `list_leads` and reads its brief with the read-only `prep_brief` tool. It
+asks how the interview will run, names each requirement in the job description that none of
+your entries evidences and asks you for a real example of it, never supplying one, then
+rehearses your stories with you, commenting only on whether each has a situation, your own
+action and an outcome, and whether it matches what your note says happened. A story you tell
+that is not in your entries can be kept: under `--write` the coach offers `propose_evidence`,
+which puts it in your stories' `_inbox/` folder, where no brief reads it until you verify it
+(`job-sluice stories verify`); on a read-only server it gives you `job-sluice stories add`
+instead. `job-sluice leads prep` builds the same brief in the terminal.
 
 ### `job-sluice mcp install [--client NAME ...] [--read-only] [--replace] [--yes] [--dry-run]`
 

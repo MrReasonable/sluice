@@ -25,7 +25,7 @@ COACH_TOOLS = "WebSearch"
 SETUP_TOOLS = ("setup_status", "setup_save", "doctor")
 DISALLOWED_SLUICE_TOOLS = (
     "apply_record", "create_lead", "cv_run", "cv_signoff", "dismiss_lead", "get_lead",
-    "health", "list_evidence", "list_leads", "propose_evidence", "verify_evidence")
+    "health", "list_evidence", "list_leads", "prep_brief", "propose_evidence", "verify_evidence")
 COACH_DISALLOWED = ",".join(f"mcp__sluice__{n}" for n in DISALLOWED_SLUICE_TOOLS)
 COACH_EXPECTED_TOOLS = {"WebSearch"} | {f"mcp__sluice__{n}" for n in SETUP_TOOLS}
 # A hung client must fail the persona loudly rather than hold the run (and the allowance) open.

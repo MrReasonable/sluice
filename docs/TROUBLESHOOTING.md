@@ -489,8 +489,8 @@ Other outcomes:
   promoting an entry from behind it would make content from outside your vault citable — and
   `verify`'s cleanup would then delete a file outside your vault. Move the real folder into the
   vault. Only the `experience` row names `blocks: cv`: an unreadable `skills` corpus is
-  composed without (no framing, no skill names), and `stories` is read only by `leads prep`,
-  which is not a capability `doctor` grades. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
+  composed without (no framing, no skill names), and `stories` is read only by interview prep
+  briefs (`leads prep` and the `prep_brief` MCP tool), which is not a capability `doctor` grades. An interactive `job-sluice init` reports the same cause as a `FAILED` line, still writes
   your config and Judging Profile, and skips the capture step rather than offering it against a
   corpus it could not read; `--no-input` never reads the corpus at all.
 - **A command refuses citing a relocated state file** (`seen.db`, `track-seen.db`,

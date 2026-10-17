@@ -347,10 +347,9 @@ class BriefResult:
     only, and every text in it path-free, because it is a public surface (`leads prep
     --json`). `suggestions` holds at most `prepbrief.SUGGESTION_LIMIT` slugs and
     `more_suggestions` counts the rest. `jd_text` is the full JD the brief was built on (the
-    brief's own text never embeds it) and `jd_source` where it came from: NO caller in #195's
-    first PR reads either -- `--json` leaves them out -- and they are carried so the second
-    PR's MCP tool, which hands the JD to the coach, does not have to widen this result. Do not
-    delete them as dead. `reason` is
+    brief's own text never embeds it) and `jd_source` where it came from:
+    `mcpserver.py::prep_brief` hands both to the coach as `jd`, and `leads prep --json` leaves
+    them out. `reason` is
     the degradation sentences joined (not_writable), or a path-free error text
     (entries_unreadable, write_failed), else "". `appended` is True exactly when the append
     LANDED (`written`, `written_hidden`, or a `not_found` after the write), as
@@ -3777,8 +3776,9 @@ class Sluice:
         # marks as stopping "the entire pipeline, not a subset of it", so it is spelled the
         # same way. `blocks=()` remains meaningful and must not be filled in reflexively:
         # the unreadable `stories` corpus carries it deliberately, because no capability
-        # reads that corpus (its one reader, `leads prep` (#195), is not a capability the
-        # verdict reports on) and naming a sub-app there would be an over-claim.
+        # reads that corpus (its one reader, `Sluice.prep_brief` (#195), behind `leads prep`
+        # and the `prep_brief` MCP tool, is not a capability the verdict reports on) and naming
+        # a sub-app there would be an over-claim.
         try:
             store = self.store()
         except (plugins.UnknownAdapter, ValueError) as e:

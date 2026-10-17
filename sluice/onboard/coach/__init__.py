@@ -1,6 +1,12 @@
-"""The career coach's prompt (the `career_interview` prompt), assembled from Markdown
-playbooks packaged beside this file: a persona core plus one playbook per phase, each with
-its method and exit criteria. Later phases add files rather than growing one text.
+"""The coach's two prompts, each assembled from Markdown playbooks packaged beside this file.
+
+- `career_interview` (`assemble_prompt`, the `PLAYBOOKS` roster): the career coach that sets up
+  a job hunt. A persona core plus one playbook per phase, each with its method and exit
+  criteria, followed by the units `setup_save` accepts, derived from its own tables. Later
+  phases add files rather than growing one text.
+- `interview_prep` (`assemble_prep_prompt`, the `PREP_PLAYBOOKS` roster): the rehearsal coach
+  that prepares the user for one lead's interview from the `prep_brief` tool. It reads none of
+  the setup playbooks, and each prompt's roster is pinned to that prompt alone.
 
 The shipped text names no role, sector, seniority or employer, and gives no example list of
 either; the coach's expertise comes from researching the user's chosen role in the session
@@ -9,11 +15,20 @@ either; the coach's expertise comes from researching the user's chosen role in t
 The playbooks are DATA files rather than module constants for two reasons. A phase is a page
 of prose, and a Python string literal that long is unreviewable as prose. And
 tests/onboard_prose.py's constant roster would otherwise have to treat each page as a label
-string; it sweeps the assembled prompt whole instead (`rendered:coach_prompt`).
+string; it sweeps each assembled prompt whole instead (`rendered:coach_prompt`, and
+`rendered:prep_prompt` at both privilege levels).
 
-Nothing here writes. The coach saves changes the user agreed to through the `setup_save` tool,
-the only route to a write; tests/test_mcpserver.py's onboard sweep pins that this package has no
-write path of its own.
+Nothing here writes, and tests/test_mcpserver.py's onboard sweep pins that this package has no
+write path of its own. What each coach itself writes goes through one server tool: the setup
+coach saves the changes the user agreed to through `setup_save`, and the rehearsal coach, at
+`--write`, may queue a story through `propose_evidence`, which lands in the inbox and reaches no
+brief until the user verifies it. That promotion is the user's, not the coach's: the write-level
+note points them at `job-sluice stories verify` or the server's `verify_evidence`, whose form
+puts a human in front of every entry it promotes.
+
+Building `career_interview`'s prompt imports `core/app.py` and the backends (its units list
+what each backend needs, see `_backend_requirements`). Building `interview_prep`'s imports
+neither, and tests/test_coach_prompt.py checks that in a fresh interpreter.
 """
 from importlib import resources
 
@@ -38,6 +53,25 @@ BACKENDS_INTRO = ("What each `backend` needs before it can run. Every one needs 
                   "include one. Whether something the user already has meets a line below is "
                   "for them to check against that line, never to infer from a provider's name.")
 NO_REQUIREMENT_STATED = "what it needs is not stated here; `doctor` reports whether it is ready."
+
+# The interview_prep prompt's playbooks, a roster of its own: the setup coach never reads them,
+# and the prep coach never reads PLAYBOOKS.
+PREP_PLAYBOOKS = ("rehearse",)
+# The prep coach's capture rule, one note per privilege level. It lives here rather than in
+# rehearse.md, which both levels share, because only a `--write` server registers
+# `propose_evidence`: a read-only coach told to call it would reach for a tool that is not there.
+PREP_READ_ONLY_NOTE = (
+    "This sluice server is read-only, so it cannot save a story. When the user tells a story "
+    "that is not in their entries, give them the command to add it themselves: "
+    "`job-sluice stories add`, then `job-sluice stories verify` to include it in a brief.")
+PREP_WRITE_NOTE = (
+    "This sluice server can save a story for the user to review. When the user tells a story "
+    "that is not in their entries, offer to save it with `propose_evidence` (kind `stories`), "
+    "in the user's own words: never reword it, add a part they did not tell, or save it "
+    "without their yes. A saved story lands in the `_inbox/` folder of their stories, not among "
+    "their entries, and it reaches a brief only after they review and verify it themselves, "
+    "with `job-sluice stories verify` or this server's `verify_evidence`. Never tell them it is "
+    "in their brief.")
 
 
 def read_playbook(name: str) -> str:
@@ -103,4 +137,14 @@ def assemble_prompt(*, write: bool = True, read=read_playbook) -> str:
     parts = [read(n).strip() for n in PLAYBOOKS] + [_units()]
     if not write:
         parts.append(READ_ONLY_NOTE)
+    return "\n\n".join(parts) + "\n"
+
+
+def assemble_prep_prompt(*, write: bool = True, read=read_playbook) -> str:
+    """The interview_prep prompt: the PREP_PLAYBOOKS only (never the setup playbooks), then the
+    capture note for the server's privilege level. `read` is the same injection seam
+    `assemble_prompt` has. It imports no backend: unlike `assemble_prompt` it lists no units,
+    so it needs no backend requirement text, and no backend's import can fail it."""
+    parts = [read(n).strip() for n in PREP_PLAYBOOKS]
+    parts.append(PREP_WRITE_NOTE if write else PREP_READ_ONLY_NOTE)
     return "\n\n".join(parts) + "\n"

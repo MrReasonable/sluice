@@ -1,7 +1,7 @@
-"""MCP registration contract (#105, extended by #131, #164 and #175): `tools/list`
-reflects the real tools -- the read-only tools (list_leads, get_lead, doctor, health,
-list_evidence) under the default write=False, plus the write tools under write=True
--- names, and schemas that never leak the injected
+"""MCP registration contract (#105, extended by #131, #164, #175 and #195): `tools/list`
+reflects the real tools -- the read-only tools under the default write=False, plus the
+write tools under write=True, each set pinned by an exact `==` below rather than restated
+here -- names, and schemas that never leak the injected
 `sluice` parameter (the property decision #4's nested-closure shape in
 sluice/mcpserver.py exists to guarantee) -- and a real `call_tool(...)` round-trips
 through the SDK's own dispatch into the real functions, including one full
@@ -16,12 +16,19 @@ test wraps its async body in a plain `asyncio.run(...)` call instead.
 """
 import asyncio
 import json
+import os
 
+import pytest
+
+import sluice.mcpserver as mcpserver
+from sluice.core.app import Sluice
 from sluice.core.config import Config
 from sluice.core.leads import Lead
 from sluice.core.protocols import EVIDENCE_KINDS
 from sluice.core.vault import Vault
 from sluice.mcpserver import build_server
+from tests.conftest import UNREADABLE_DIR
+from tests.test_prep_brief_facade import KIND, _kind_dir, _seed, _story
 
 
 def test_tools_list_names_and_schemas_never_leak_sluice():
@@ -38,7 +45,7 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
     # clause beside it, which would only restate what the set already says while
     # being free to go stale on its own.
     assert set(by_name) == {"list_leads", "get_lead", "doctor", "health", "list_evidence",
-                           "setup_status"}
+                           "setup_status", "prep_brief"}
     for tool in by_name.values():
         props = tool.input_schema.get("properties", {})
         assert "sluice" not in props, (
@@ -48,6 +55,10 @@ def test_tools_list_names_and_schemas_never_leak_sluice():
     assert set(by_name["doctor"].input_schema["properties"]) == {"offline"}
     assert by_name["health"].input_schema.get("properties", {}) == {}
     assert set(by_name["list_evidence"].input_schema["properties"]) == {"kind", "pending"}
+    # #195: the slug and nothing else. A `write` property here would hand the model the one
+    # argument this read-only tool exists not to have.
+    assert set(by_name["prep_brief"].input_schema["properties"]) == {"lead"}
+    assert by_name["prep_brief"].input_schema.get("required") == ["lead"]
 
 
 def test_call_tool_round_trips_through_the_real_dispatch():
@@ -374,7 +385,7 @@ def test_tools_list_under_default_write_false_returns_exactly_the_original_read_
     result = asyncio.run(_run())
     names = {t.name for t in result.tools}
     assert names == {"list_leads", "get_lead", "doctor", "health", "list_evidence",
-                           "setup_status"}, (
+                     "setup_status", "prep_brief"}, (
         "every write tool must be genuinely ABSENT from tools/list under the default "
         "(no --write) registration, not merely refusing at call time -- #175's "
         "propose_evidence included, since a read-only registration is exactly the one "
@@ -402,7 +413,7 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
         f"between the model and citability")
     assert set(by_name) == {
         "list_leads", "get_lead", "doctor", "health", "list_evidence", "setup_status",
-        "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
+        "prep_brief", "dismiss_lead", "apply_record", "cv_run", "cv_signoff", "create_lead",
         "propose_evidence", "verify_evidence", "setup_save",
     }
     for tool in by_name.values():
@@ -413,6 +424,9 @@ def test_tools_list_under_write_true_returns_every_tool_with_exact_schemas():
     assert "note_tag" not in by_name["dismiss_lead"].input_schema["properties"]
     assert set(by_name["apply_record"].input_schema["properties"]) == {"lead", "ats", "url"}
     assert set(by_name["cv_run"].input_schema["properties"]) == {"lead", "backend"}
+    # #195: still `{lead}` at --write. The tool is read-only at EVERY level, so the write
+    # registration must not grow it a `write` argument either.
+    assert set(by_name["prep_brief"].input_schema["properties"]) == {"lead"}
     assert set(by_name["verify_evidence"].input_schema["properties"]) == {"kind", "names"}, (
         "verify_evidence must take no argument that could approve on the human's behalf")
     # setup_save takes the agreed changes and the version setup_status returned, both required:
@@ -663,14 +677,39 @@ def test_the_career_interview_prompt_is_registered_and_served_through_the_sdk():
                     await client.get_prompt("career_interview", {}))
 
     listed, got = asyncio.run(_run())
-    assert {p.name for p in listed.prompts} == {"career_interview"}
-    (prompt,) = listed.prompts
+    assert {p.name for p in listed.prompts} == {"career_interview", "interview_prep"}
+    prompt = next(p for p in listed.prompts if p.name == "career_interview")
     # No arguments (2026-10-09, measured on Claude Code 2.1.295): the client splits text after
     # the slash command on whitespace and delivers only the first word, so a free-text argument
     # was silently truncated. The coach's opening asks what the user wants instead.
     assert (prompt.arguments or []) == []
     text = "".join(m.content.text for m in got.messages)
     assert "setup_status" in text
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_the_interview_prep_prompt_is_registered_and_served_at_both_levels(write):
+    """The prep coach (#195), through the real SDK at each privilege level. Exact-set `==` on
+    the prompt roster, as above. No arguments, for the same measured reason as career_interview:
+    a slug holds spaces and the client delivers only an argument's first word. Its text names
+    the read-only `prep_brief` tool at both levels, and `propose_evidence` only where that tool
+    is registered: a read-only coach told to call it would reach for a tool that is not there."""
+    async def _run():
+        from mcp import Client
+        server = build_server(Config(), write=write)
+        async with Client(server, raise_exceptions=True) as client:
+            return (await client.list_prompts(), await client.list_tools(),
+                    await client.get_prompt("interview_prep", {}))
+
+    listed, tools, got = asyncio.run(_run())
+    assert {p.name for p in listed.prompts} == {"career_interview", "interview_prep"}
+    prompt = next(p for p in listed.prompts if p.name == "interview_prep")
+    assert (prompt.arguments or []) == []
+    text = "".join(m.content.text for m in got.messages)
+    assert "prep_brief" in text
+    assert ("propose_evidence" in text) is write
+    # Scope for the line above: the tool the text names exists on exactly the level it is named.
+    assert ("propose_evidence" in {t.name for t in tools.tools}) is write
 
 
 def test_setup_save_registered_description_states_the_save_rules():
@@ -691,3 +730,178 @@ def test_setup_save_registered_description_states_the_save_rules():
                    "comma-joined", "a list, for a list setting"):
         assert phrase in desc, phrase
     assert "form" not in desc and "tick" not in desc
+
+
+# ── prep_brief (#195) ───────────────────────────────────────────────────────────
+# Each row drives the REAL tool through the SDK's dispatch, so the reply is the JSON a client
+# receives. Leads and stories are seeded as literal note text through
+# tests/test_prep_brief_facade.py's own helpers, whose company spellings the fixture-name
+# collectors read; the role comes from the seeded `titles` fixture. The vault root is
+# `tmp_path / "vault"` because tests/conftest.py pins `VAULT_DIR` there and the server's store
+# resolves that env var first (see the comment above
+# test_call_tool_round_trips_list_leads_with_real_arguments).
+
+def _prep_root(tmp_path):
+    return tmp_path / "vault"
+
+
+def _prep_config(tmp_path):
+    return Config(vault_dir=str(_prep_root(tmp_path)), dossier_dir=str(tmp_path / "dos"))
+
+
+def _call_prep_brief(tmp_path, lead, *, write=False):
+    """The tool's reply through the SDK, after asserting that no path is anywhere in the text
+    the client receives: the vault root, resolved or not, never appears."""
+    async def _run():
+        from mcp import Client
+        server = build_server(_prep_config(tmp_path), write=write)
+        async with Client(server, raise_exceptions=True) as client:
+            return await client.call_tool("prep_brief", {"lead": lead})
+
+    result = asyncio.run(_run())
+    assert result.is_error is False
+    text = result.content[0].text
+    for leak in {str(tmp_path), os.path.realpath(tmp_path)}:
+        assert leak not in text, f"a path reached the prep_brief reply: {text}"
+    return json.loads(text)
+
+
+def _facade(tmp_path):
+    """The facade the server wraps, on the same vault, for the reply to be compared against."""
+    return Sluice(_prep_config(tmp_path))
+
+
+_PREP_REPLY_KEYS = {"outcome", "slug", "status", "candidates", "suggestions", "more_suggestions",
+                    "reason", "brief", "jd"}
+_PREP_OK_WARNINGS = {"jd_warning", "lead_warning", "entries_warning"}
+
+
+def test_prep_brief_ok_carries_the_facades_brief_jd_and_one_warning_per_provenance(
+        tmp_path, titles):
+    # Witnesses: rename `brief` in the reply; drop any warning; hand `jd` an empty `text`.
+    root = _prep_root(tmp_path)
+    _story(root, "Told")
+    slug = _seed(root, role=titles[0][0].title())
+    reply = _call_prep_brief(tmp_path, slug)
+    r = _facade(tmp_path).prep_brief(lead=slug)
+    assert r.outcome == "ok"
+    # Scope: the fixture carries a JD and a story body, so the equalities below compare real
+    # text rather than two empty strings.
+    assert r.jd_text and any(e["body"] for k in r.brief["kinds"].values()
+                             for e in k["entries"])
+    assert set(reply) == _PREP_REPLY_KEYS | _PREP_OK_WARNINGS
+    assert reply["outcome"] == "ok" and reply["slug"] == slug and reply["status"] == r.status
+    assert reply["jd"] == {"source": r.jd_source, "text": r.jd_text}
+    assert reply["brief"] == r.brief
+    assert reply["jd_warning"] == mcpserver._PREP_JD_WARNING
+    assert reply["lead_warning"] == mcpserver._PREP_LEAD_WARNING
+    assert reply["entries_warning"] == mcpserver._PREP_ENTRIES_WARNING
+    # Each warning names the part of the reply it is about, so a caller can tell them apart.
+    assert "`jd`" in reply["jd_warning"]
+    assert "`brief.lead`" in reply["lead_warning"]
+    assert "`verified: false`" in reply["entries_warning"]
+
+
+def test_prep_brief_not_found_suggests_with_its_own_warning(tmp_path, titles):
+    # Witness: drop `suggestions_warning`. A case-changed slug is an exact-slug miss whose
+    # substring suggestion is the real slug (tests/test_prep_brief_facade.py's own row).
+    root = _prep_root(tmp_path)
+    slug = _seed(root, role=titles[0][0].title())
+    reply = _call_prep_brief(tmp_path, slug.upper())
+    assert set(reply) == _PREP_REPLY_KEYS | {"suggestions_warning"}
+    assert reply["outcome"] == "not_found"
+    assert reply["suggestions"] == [slug] and reply["more_suggestions"] == 0
+    assert reply["suggestions_warning"] == mcpserver._PREP_SUGGESTIONS_WARNING
+    assert reply["brief"] is None and reply["jd"] == {"source": "none", "text": ""}
+
+
+def test_prep_brief_not_found_passes_the_bound_and_the_count_of_the_rest(tmp_path):
+    # Witness: hand `more_suggestions` a constant 0. Two more matching leads than the bound, so
+    # the reply holds exactly the bound and counts the two it left out, as the facade does.
+    # The roles come from the seeded pool behind the `titles` fixture, which itself carries
+    # too few for this many leads.
+    from sluice.core.prepbrief import SUGGESTION_LIMIT
+    from tests.conftest import _title_pool
+    root = _prep_root(tmp_path)
+    roles = [t.title() for t in _title_pool() if "/" not in t][:SUGGESTION_LIMIT + 2]
+    assert len(set(roles)) == SUGGESTION_LIMIT + 2   # scope: that many distinct leads
+    for role in roles:
+        _seed(root, role=role)
+    reply = _call_prep_brief(tmp_path, "Example Ltd")
+    r = _facade(tmp_path).prep_brief(lead="Example Ltd")
+    assert reply["outcome"] == "not_found"
+    assert len(reply["suggestions"]) == SUGGESTION_LIMIT and reply["more_suggestions"] == 2
+    assert (reply["suggestions"], reply["more_suggestions"]) == (r.suggestions,
+                                                                 r.more_suggestions)
+
+
+def test_prep_brief_not_found_with_nothing_to_suggest_carries_no_warning(tmp_path, titles):
+    # A warning attached to nothing trains a caller to skim past it (list_leads' rule).
+    _seed(_prep_root(tmp_path), role=titles[0][0].title())
+    reply = _call_prep_brief(tmp_path, "zz-no-lead-matches-this")
+    assert reply["outcome"] == "not_found" and reply["suggestions"] == []
+    assert set(reply) == _PREP_REPLY_KEYS
+
+
+def test_prep_brief_ambiguous_names_the_candidates_and_picks_none(tmp_path, titles):
+    root = _prep_root(tmp_path)
+    slug = _seed(root, role=titles[0][0].title())
+    leads = os.path.join(str(root), "Job Applications", "Job Leads")
+    for sub in ("Active", "Archive"):
+        os.makedirs(os.path.join(leads, sub))
+    os.replace(os.path.join(leads, f"{slug}.md"), os.path.join(leads, "Active", f"{slug}.md"))
+    _seed(root, role=titles[0][0].title(), name=os.path.join("Archive", slug))
+    reply = _call_prep_brief(tmp_path, slug)
+    assert set(reply) == _PREP_REPLY_KEYS
+    assert reply["outcome"] == "ambiguous" and reply["candidates"] == [slug, slug]
+    assert reply["brief"] is None and reply["slug"] == ""
+
+
+def _assert_entries_unreadable(reply, slug):
+    assert set(reply) == _PREP_REPLY_KEYS
+    assert reply["outcome"] == "entries_unreadable" and reply["slug"] == slug
+    assert reply["reason"].startswith(f"{KIND}: ")
+    assert reply["brief"] is None
+
+
+def test_prep_brief_entries_unreadable_on_a_story_that_is_not_utf8(tmp_path, titles):
+    # Runs everywhere, unlike the chmod row below (which skips as root).
+    root = _prep_root(tmp_path)
+    slug = _seed(root, role=titles[0][0].title())
+    os.makedirs(_kind_dir(root), exist_ok=True)
+    with open(os.path.join(_kind_dir(root), "Bad.md"), "wb") as fh:
+        fh.write(b"---\nCompany: Example Ltd\n---\n\xff\xfe broken\n")
+    _assert_entries_unreadable(_call_prep_brief(tmp_path, slug), slug)
+
+
+@UNREADABLE_DIR
+def test_prep_brief_entries_unreadable_on_a_story_it_cannot_open(tmp_path, titles):
+    root = _prep_root(tmp_path)
+    path = _story(root, "Told")
+    slug = _seed(root, role=titles[0][0].title())
+    os.chmod(path, 0)
+    try:
+        reply = _call_prep_brief(tmp_path, slug)
+    finally:
+        os.chmod(path, 0o644)
+    _assert_entries_unreadable(reply, slug)
+    assert reply["reason"] == f"{KIND}: PermissionError: Permission denied"
+
+
+@pytest.mark.parametrize("write", [False, True])
+def test_prep_brief_never_writes_at_either_level(tmp_path, titles, write):
+    # Witness: pass `write=True` in the tool. The fixture is WRITE-READY (a verified story
+    # with a `Company:` line and a JD section), so the control at the end proves a write was
+    # possible here: an unchanged note means the tool did not write, not that it could not.
+    root = _prep_root(tmp_path)
+    _story(root, "Told")
+    slug = _seed(root, role=titles[0][0].title())
+    path = os.path.join(str(root), "Job Applications", "Job Leads", f"{slug}.md")
+    with open(path, "rb") as fh:
+        before = fh.read()
+    assert _call_prep_brief(tmp_path, slug, write=write)["outcome"] == "ok"
+    with open(path, "rb") as fh:
+        assert fh.read() == before
+    assert _facade(tmp_path).prep_brief(lead=slug, write=True).outcome == "written"
+    with open(path, "rb") as fh:
+        assert fh.read() != before

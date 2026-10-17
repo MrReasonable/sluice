@@ -60,7 +60,9 @@ claude mcp add --scope user --transport stdio job-sluice -- "$JOB_SLUICE" mcp se
 you ran the command. Restart Claude Code after adding it (`claude --continue` resumes the
 conversation, from the same directory). Measured with Claude Code 2.1.295 on 2026-10-09:
 prompts yes (`/mcp__job-sluice__career_interview`, whose middle part is the name the server
-was registered under), review form yes.
+was registered under), review form yes. Measured with Claude Code 2.1.302 on 2026-10-17: the
+`interview_prep` prompt is listed beside it, under the same registered name, read from the
+`slash_commands` in the session's init event.
 
 ### Docker (Claude Code)
 
@@ -166,8 +168,10 @@ on 2026-10-09: prompts yes (`/career_interview`), review form no.
 | `health` | per-source scrape baseline and retire state |
 | `list_evidence` | your evidence corpora |
 | `setup_status` | the current value of every setup change the career coach can propose, and which setup notes exist |
+| `prep_brief` | one lead's interview prep brief, by its exact slug: the job description and your own story entries, without writing to the note |
 
-That is the whole surface without `--write`.
+Your client's tool list is the authority on what a read-only server registers; this table
+describes the tools, and where the two differ the client's list is right.
 
 ## `--write` is a trust decision, made once
 
@@ -221,6 +225,25 @@ coach walks you through opening your vault in Obsidian: on a first run, the fold
 for `vault_dir`; otherwise `job-sluice doctor` prints it, when run with the same `VAULT_DIR` the
 server was registered with. `scripts/coach_eval/README.md`
 describes the developer-only harness that scores the coach; it never runs in CI.
+
+## The interview prep coach
+
+A second prompt, `interview_prep`, is also registered at either privilege level. It is
+documented here for Claude Code only, the one client it was measured on (2.1.302, 2026-10-17,
+see [Claude Code](#claude-code)), where it is `/mcp__job-sluice__interview_prep` (the middle
+part is the name you gave `claude mcp add`, as for the career coach). Type it on its own,
+with nothing after it: like the career coach it takes no argument, and the coach asks which
+interview it is. It finds the lead with `list_leads`, reads its brief with the read-only
+`prep_brief` tool, and asks you how the interview will run rather than assuming. It names each
+requirement in the job description that none of your entries evidences and asks you for a real
+example, and it never supplies one. It then rehearses your stories with you, commenting only on
+whether each has a situation, your own action and an outcome, and on whether it matches what
+your note says happened; an entry you have not verified is read back to you before it is
+treated as settled. A story you tell that is not in your entries can be kept. Under `--write`
+the coach offers `propose_evidence`, which only queues it in your stories' `_inbox/` folder,
+where no brief reads it until you verify it (`job-sluice stories verify`, or `verify_evidence`).
+On a read-only server it gives you the `job-sluice stories add` command instead, since that
+server registers no `propose_evidence`.
 
 ## What no tool can do for you
 
