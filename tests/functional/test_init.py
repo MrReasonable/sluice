@@ -974,6 +974,28 @@ def test_the_evidence_wizard_runs_through_cmd_init_and_seeds_the_correct_vault(r
     assert Vault(str(vault)).read_evidence("skills", verified_only=True) == []
 
 
+def test_the_wizard_summary_says_what_verifying_a_story_buys(run_init, tmp_path, capsys):
+    """#195: `cmd_init`'s per-kind summary is worded by core/protocols.py::verify_outcome
+    with the subject "them", so a `read_by_prep` kind's line carries the prep suffix in that
+    subject. Exact text, through `cmd_init` itself: the line is the only place the init
+    summary is read, and a substring would pass with the suffix dropped."""
+    dest = config_file()
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as fh:
+        fh.write("# hand written\n")
+
+    script = (
+        [""] * 5    # the 5 Judging Profile prose questions
+        + [""] * 5  # the 5 candidate identity questions
+        + ["n", "n", "y", "alpha", "", "", "", "n"]
+        # decline `experience` and `skills`, accept `stories` (name "alpha", its two fields
+        # and the body left blank), decline "add another".
+    )
+    assert _init(["init", "--vault", str(tmp_path / "notes")], _scripted(script)) == 0
+    assert ("stories: proposed 1 entry -- run `job-sluice stories verify` to mark them "
+            "reviewed and include them in interview prep briefs") in capsys.readouterr().out
+
+
 def test_a_seeded_corpus_stops_the_wizard_being_offered_again_pending_or_verified(
         run_init, tmp_path):
     """The `and corpus_empty` half of `cmd_init`'s evidence gate, which shipped with NO

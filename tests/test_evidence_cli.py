@@ -143,6 +143,11 @@ def test_add_promises_citability_only_for_the_corpus_the_gate_reads(tmp_path, mo
         else:
             assert "to mark it reviewed" in out, kind
             assert "citable" not in out, kind
+        # #195: the prep clause is a suffix after the chain above, in the notice's own
+        # subject ("it"), and only for a kind `leads prep` reads.
+        assert ("and include it in interview prep briefs)" in out) == spec.read_by_prep, kind
+    assert any(s.read_by_prep for s in EVIDENCE_KINDS.values()), \
+        "no kind is read by prep -- the suffix half is vacuous"
 
 
 def test_add_exits_1_and_prints_to_stderr_on_a_taken_name(tmp_path, monkeypatch, capsys):

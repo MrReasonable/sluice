@@ -204,8 +204,9 @@ store it resolved twice:
 The brief is built per kind, and every noun and command is DERIVED from the kind key:
 - the kind's section is headed `### <Kind>` (for example `### Stories`);
 - the pending line reads "N entries are waiting in the inbox. Run `job-sluice <kind> verify`, then
-  delete this section and run `leads prep --write` again, to include them". The line is true in
-  both the printed preview and the written note;
+  delete this section and run `leads prep --write` again, to include them" ("1 entry is ... to
+  include it" at a count of one, since a written brief keeps the line for good; final review).
+  The line is true in both the printed preview and the written note;
 - the empty pointer reads `job-sluice <kind> add`.
 
 No literal `stories` appears in `core/prepbrief.py`.
@@ -232,7 +233,12 @@ The order is the one cv and triage use. A section added after a fetch leaves the
 on disk, so "section, then cache" is the only order that agrees with them:
 
 1. **The note's `## Job description` section**, read with `jdsection.read(note.body)` the way
-   `cv/engine.py::_run_one` reads it. `jd_source = "note"`.
+   `cv/engine.py::_run_one` reads it. `jd_source = "note"`. When the note holds more than one
+   such section, the first is used, as cv and triage use it, and the `- Job description:` line
+   says so ("...; the note has N job description sections and this is the first, the one triage
+   and cv read"). That is informational, not a degradation: added in the final review (ruling
+   R13), because a write-once brief built on a stale first section should be visible before it
+   is locked in.
 2. **Otherwise the cached dossier**, via `DossierCache.peek(note.fm)`. `jd_source = "cached"` when
    `jd_text(d)` is non-empty, with the dossier's `built_at`.
 3. **Otherwise `jd_source = "none"`**, with a reason code: `no_source` (no section and no cached
@@ -375,6 +381,8 @@ Its fields:
 - `suggestions` (at most `SUGGESTION_LIMIT`) and `more_suggestions` (the count of the rest);
 - `markdown` (str or None) and `brief` (the `to_json` dict or None);
 - `jd_source` and `jd_text` (the full text, or "");
+- `appended` (bool): True exactly when the append landed (`written`, `written_hidden`, or a
+  `not_found` after the write), as `AnswerResult.appended`; added in the final review (ruling R12);
 - `reason` (str):
   - for `not_writable`: the degradation sentences joined with "; ", followed by "the note already
     has a brief" when it does;
@@ -405,7 +413,7 @@ The steps:
    | True | not `written_section` | `written_hidden` (a fence opened by a concurrent edit swallowed it; an open fence present beforehand is refused by `note_open_fence`) |
    | False | `tagged_section_exists` | `already_written` (its content may be older than this render; Decision 6) |
    | False | not `tagged_section_exists` | `present_unreadable` (the tag sits elsewhere in the note) |
-   | either | the note is gone | `not_found`, after `record_answer` |
+   | either | the note is gone | `not_found`, after `record_answer`; `appended` says whether the brief landed first |
 
    - `VaultConflict` or `FileNotFoundError` gives `conflict`.
    - Any other `OSError` gives `write_failed`, with a path-free reason.
@@ -442,6 +450,7 @@ job-sluice leads prep --lead SLUG [--write] [--json]
 | `present_unreadable` | `...: the note carries the interview-prep tag but no readable "Interview prep brief (job-sluice)" section -- fix the note by hand` | 1 |
 | `conflict` | the `_lead_refusal` conflict line | 1 |
 | `write_failed` | `...: could not write the note -- <reason>` | 1 |
+| `not_found` with `appended` | `...: written, but the note moved or went before it could be read back, so whether the brief reads as its own section is unchecked; run the same command again to check` | 1 |
 
 - **Refusals:**
   - `not_found` prints the `_lead_refusal` line, then `did you mean:` with one slug per line, then
@@ -451,7 +460,7 @@ job-sluice leads prep --lead SLUG [--write] [--json]
   - Each exits 1.
 - **`--json`, with or without `--write`.** Stdout is ONLY the document:
   `{"outcome", "slug", "status", "candidates", "suggestions", "more_suggestions", "brief",
-  "reason"}`. There is no stderr outcome line. Every outcome's exit code is identical to the
+  "reason", "appended"}`. There is no stderr outcome line. Every outcome's exit code is identical to the
   non-JSON run, so a script cannot read a hidden or failed write as success.
 - **Handler conventions.** The handler imports `Sluice` inside its body. Output goes through the
   `safeout` wrapper, and any log line through `core/log.py::get_logger`.

@@ -180,8 +180,14 @@ modules. Onboard and evidence are not mutually isolated, either: `sluice/evidenc
 imports `sluice.onboard.ask` directly (the same `NoInputAsker`/`TtyAsker` classes `cli.py` itself
 imports for `cmd_init`), lazily, inside `cmd_evidence_verify` -- a deliberate cross-import between
 those two command packages, not a boundary violation. `sluice/evidence/wizard.py` takes its asker
-INJECTED instead and imports nothing from onboard at all. `docs/ARCHITECTURE.md` has the
-per-module detail; what follows is what you cannot see from the file tree.
+INJECTED instead and imports nothing from onboard at all. `sluice/core/prepbrief.py` (#195, the
+interview prep brief) sits the other way round from a command package: it is pure core, the
+facade (`Sluice.prep_brief`) calls it, `mcpserver.py` reads its `TAGGED_HEADING` through the
+isolation allow-list in `tests/test_mcpserver.py`, `cli.py`'s `leads prep` handler imports it
+lazily inside its body for `HEADING` (so the stderr lines name the real section, and the lazy-import
+rule is untouched), and no sub-app imports it -- the importers `docs/ARCHITECTURE.md`'s bullet
+names. `docs/ARCHITECTURE.md` has the per-module detail; what follows is what you cannot see from
+the file tree.
 
 **Config is layered and single-file.** Code defaults < the YAML file at `$SLUICE_CONFIG` (else
 `<XDG config>/sluice/config.yaml`) < env vars. Each sub-app has its own `load_*_config()` reading
@@ -243,9 +249,12 @@ load-bearing and neither substitutes for the other.
 
 **The `leads` passes report by default; the pipeline commands write by default.** `leads dedupe`
 (`--merge ID [ID ...]`), `leads expire` (`--expire [SLUG...]`), `leads unpark`
-(`--apply [SLUG ...]`, #302) and `leads reconcile` (`--apply`, #1) print and change nothing
-until told otherwise, and none offers `--dry-run` — the default IS the dry run, and a
-flag that does nothing is drift. `triage run`/`ingest run`/`track run` invert both halves. The
+(`--apply [SLUG ...]`, #302), `leads reconcile` (`--apply`, #1), `leads rename` (`--apply`,
+#151) and `leads prep` (`--write`, #195) print and change nothing until told otherwise, and none
+offers `--dry-run` — the default IS the dry run, and a flag that does nothing is drift.
+`leads prep` previews by default because an interview prep brief is tool-computed; its flag is
+`--write` rather than `--apply` because `apply` is also the sub-app that SENDS applications, so
+`leads prep --apply` would read as "apply to this job". `triage run`/`ingest run`/`track run` invert both halves. The
 distinguishing property is whose judgement the write encodes: a pipeline command acts on a verdict the user
 configured, while a `leads` pass writes over a set the TOOL computed, so a mistyped one should print
 a list rather than change a hundred notes. **Exception: the `leads` commands that record the user's own words or
@@ -699,9 +708,10 @@ is a judgement about what counts as a real posting, which this repo does not shi
 validator follows `lead_ttl_days`' exact shape (`bool` checked first, since it subclasses `int`), for
 the identical reason: `min_jd_chars: yes` is the natural spelling to turn it on, and would otherwise
 load as a one-character floor, letting nearly every fetched JD through with no error anywhere. It is
-shared, not per sub-app: `Sluice.dossier_cache()` reads `self.config.min_jd_chars` for both
-`triage()` and `compose_cv()`'s cache, since the two already share one dossier cache directory (#80)
-and must agree on the floor. A job description the lead note carries (its `## Job description`
+shared, not per sub-app: `Sluice.dossier_cache()` is handed `self.config.min_jd_chars` for
+`triage()`'s and `compose_cv()`'s cache, since the two already share one dossier cache directory
+(#80) and must agree on the floor, and `prep_brief()` (#195) builds its read-only cache with the
+same floor, so `leads prep --write` refuses exactly the job description triage and cv would. A job description the lead note carries (its `## Job description`
 section, `core/jdsection.py`, #369) obeys the same floor: `DossierCache.get_or_build(...,
 supplied_jd=...)` returns it without a fetch or a cache write, and `jd_arrived` judges it as it
 judges a fetch. It IS the posting for every other reading too, by the owner's ruling: triage's
@@ -909,13 +919,17 @@ says a verified note's NAME -- its `Label:`, else its title (`core/protocols.py:
 appear in a CV's SKILLS section. `experience` is read and cited (its `Tools:` and `Skills:`
 items reach the skills pool through `tool_items` and `skill_items` whatever that flag says); `skills` is read and named, and is
 RECOGNISED by `cv/bundle.py::term_vocabulary`, so the unbundled-term check does not report a
-declared skill, but nothing LICENSES it; `stories` is neither. `judge_fields` (#196) names the declared fields the TRIAGE judge is shown when the user sets `triage.evidence: true`; non-empty is what makes a kind judge-read, so the two cannot disagree. `experience` shows Company/Category/Best For/Metrics/Tools (not `Skills:`, which belong to no job), `skills` shows Proficiency/Domain, `stories` nothing. `__post_init__` refuses
+declared skill, but nothing LICENSES it; `stories` is neither. `read_by_prep` (#195) says
+the corpus is shown, entry by entry, in a `leads prep` interview prep brief, and is exactly
+what `Sluice.prep_brief` iterates; only `stories` carries it. `judge_fields` (#196) names the declared fields the TRIAGE judge is shown when the user sets `triage.evidence: true`; non-empty is what makes a kind judge-read, so the two cannot disagree. `experience` shows Company/Category/Best For/Metrics/Tools (not `Skills:`, which belong to no job), `skills` shows Proficiency/Domain, `stories` nothing. `__post_init__` refuses
 `cited_by_gate` without `read_by_composer`, since the gate cannot license what the composer
 never emitted. `add`'s unverified notice, the `init` wizard's
 summary and the MCP `propose_evidence` RESULT say what verifying buys through
 `core/protocols.py::verify_outcome`, keyed on `cited_by_gate` and then `names_in_skills_pool`,
-and `core/doctor.py::classify_store`'s per-kind row branches on the same two flags in the same
-order -- keying such a message on the wrong flag re-creates the over-claim the flags exist to
+and `core/doctor.py::classify_store`'s per-kind row branches on the same flags in the same
+order, with `read_by_prep` as a SUFFIX after the chain in both, never an arm inside it (an arm
+placed after the early returns never fires for a kind carrying an earlier flag, which is #196's
+bug) -- keying such a message on the wrong flag re-creates the over-claim the flags exist to
 prevent.
 
 **Where that boundary STOPS, stated rather than implied: a human editing their own vault.** The

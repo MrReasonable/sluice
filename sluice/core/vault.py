@@ -580,24 +580,34 @@ VaultNote = LeadNote
 
 
 
-def _unreadable_reason(exc: Exception) -> str:
-    """A PATH-FREE reason for a read `Vault.preflight` could not complete, for the
-    `<kind>_error` and `candidate_error` facts.
+def unreadable_reason(exc: Exception) -> str:
+    """A PATH-FREE reason for a read or write that could not complete, for any text that can
+    leave the machine: `Vault.preflight`'s `<kind>_error` and `candidate_error` facts (which
+    become `doctor` rows), and `Sluice.prep_brief`'s reasons for an unreadable corpus, an
+    unreadable dossier cache file and a failed note write (which reach `leads prep`'s stderr
+    and `--json`). Not only vault reads, then: the dossier cache sits outside the vault.
 
-    Those facts become `doctor` rows, and `doctor` rows reach MCP clients, so the reason
-    must never name the absolute path -- it carries the user's home directory off the
-    machine. A SYSTEM OSError (one with an errno) formats its own text as
+    Such text must never name the absolute path -- it carries the user's home directory off
+    the machine. A SYSTEM OSError (one with an errno) formats its own text as
     `[Errno N] strerror: '<absolute path>'`, so only its type and strerror are kept. An
     errno-less OSError is this module's own symlink refusal
     (`Vault._walk_refusing_symlinks`), whose message is already vault-relative and is the
-    diagnosis, so it passes through. A ValueError (UnicodeDecodeError on a mis-encoded
-    note) states the codec and byte offset, never a path, so it passes through too.
+    diagnosis, so it passes through. A ValueError passes through too: a UnicodeDecodeError on
+    a mis-encoded note states the codec and byte offset, never a path, and
+    `core/dossier.py::DossierCache.peek` raises only fixed, path-free messages for that reason.
 
-    One helper for both sites, so the two facts cannot drift into disclosing differently.
+    One helper for every such site, so they cannot drift into disclosing differently.
     """
     if isinstance(exc, OSError) and exc.errno is not None:
         return f"{type(exc).__name__}: {exc.strerror}"
     return str(exc)
+
+
+# The pre-#195 private spelling, kept as an alias. The helper went public once the dossier cache
+# and the facade relied on it as a contract, and nothing should have to depend on a private name
+# in the store module to keep a path off the machine.
+_unreadable_reason = unreadable_reason
+
 
 class Vault:
     def __init__(self, dir: str | None = None, *,
@@ -1980,7 +1990,7 @@ class Vault:
         absolute path, because the message reaches `doctor` rows and so MCP clients, and an
         absolute path discloses the user's home directory; the relative one names the
         component just as well) at the first symlink, outermost first. The OSError carries
-        no errno, which is what lets `_unreadable_reason` pass its text through verbatim. The one
+        no errno, which is what lets `unreadable_reason` pass its text through verbatim. The one
         walk `_evidence_dir` and `read_cv_layout` share, so the boundary "inside the vault
         the user named" is not restated per reader. See `_evidence_dir` for why every
         component is probed, why outermost first, why islink and never realpath, and why
@@ -2456,7 +2466,7 @@ class Vault:
         with no other signal anywhere). Iterates `EVIDENCE_KINDS` rather than
         naming the three kinds here, so a fourth kind needs no edit at this call
         site. A kind whose directories could not be read reports
-        `<kind>_error` (a path-free reason, `_unreadable_reason`) INSTEAD of that triple, never a
+        `<kind>_error` (a path-free reason, `unreadable_reason`) INSTEAD of that triple, never a
         zero count -- see the loop's own comment for the isolation this buys and
         for why the classification of that fact belongs to `core/doctor.py`.
 
@@ -2495,7 +2505,7 @@ class Vault:
             # catch-all printed a single `store | preflight | DEAD` row and NOTHING else --
             # no Judging Profile row, and no `Candidate Profile | dead |
             # blocks: cv`. A user whose `cv run` says `skipped-config` runs `doctor` to
-            # find out why and was told only about a corpus nothing reads.
+            # find out why and was told only about a corpus `cv run` never reads.
             #
             # The FAILURE is a fact like the counts are; `core/doctor.py:classify_store`
             # is what turns it into a row, so classification stays there. The count keys
@@ -2519,7 +2529,7 @@ class Vault:
                 every = self.read_evidence(kind, verified_only=False)
                 pending = self.read_pending_evidence(kind)
             except (OSError, ValueError) as exc:
-                counts[f"{kind}_error"] = _unreadable_reason(exc)
+                counts[f"{kind}_error"] = unreadable_reason(exc)
                 continue
             counts[f"{kind}_total"] = len(every)
             counts[f"{kind}_verified"] = sum(1 for e in every if e.get("verified"))
@@ -2528,14 +2538,14 @@ class Vault:
         # (a directory at its path, a symlinked component, a non-UTF-8 file) is reported as
         # a FACT, `candidate_error`, and every other fact still answers -- one bad note must
         # not collapse the store rows. The reason never carries a path -- see
-        # `_unreadable_reason`, shared with the per-kind `<kind>_error` above.
+        # `unreadable_reason`, shared with the per-kind `<kind>_error` above.
         candidate: dict
         try:
             profile = self.read_candidate_profile()
             candidate = {"candidate_name_present": bool(full_name(profile).strip()),
                          "candidate_contact_present": bool(contact_block(profile).strip())}
         except (OSError, ValueError) as exc:
-            candidate = {"candidate_error": _unreadable_reason(exc)}
+            candidate = {"candidate_error": unreadable_reason(exc)}
         return {
             "vault_exists": True,
             "criteria_present": bool(self.read_criteria().strip()),

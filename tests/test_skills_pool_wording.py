@@ -20,11 +20,15 @@ def test_each_message_claims_exactly_what_the_kinds_flags_grant(kind):
     for text in (verify_outcome(spec), row.detail, pending_evidence_detail(kind)):
         assert ("citable" in text) == spec.cited_by_gate, (kind, text)
         assert ("skills list" in text) == spec.names_in_skills_pool, (kind, text)
+        # #195: both the doctor row and verify_outcome name the brief as "interview ...
+        # briefs"; neither says it for a kind prep does not read.
+        assert ("interview" in text) == spec.read_by_prep, (kind, text)
 
 
 def test_the_kinds_disagree_on_both_flags_so_the_row_above_can_fail():
     assert {s.cited_by_gate for s in EVIDENCE_KINDS.values()} == {True, False}
     assert {s.names_in_skills_pool for s in EVIDENCE_KINDS.values()} == {True, False}
+    assert {s.read_by_prep for s in EVIDENCE_KINDS.values()} == {True, False}
 
 
 def test_experience_declares_both_skills_and_tools():

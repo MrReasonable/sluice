@@ -64,7 +64,8 @@ rates: frankfurter  # where the pay-floor conversion gets exchange rates (#305)
 # reason `lead_ttl_days` above ships commented. ONE key for both triage and cv, like
 # `dossier_dir` above and for the identical reason: they share the cache directory, so
 # two different floors over it would mean whichever sub-app ran last decides whether
-# an entry exists.
+# an entry exists. `leads prep --write` (#195) applies the same floor: a job description
+# below it is refused, and the interview prep brief is not written.
 # min_jd_chars: 200   # <- uncomment and set YOUR OWN
 
 # Seconds each backend attempt may take, for every backend call except cv's (sized by

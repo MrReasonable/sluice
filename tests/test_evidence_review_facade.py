@@ -97,7 +97,7 @@ def test_promote_shown_reads_by_exact_title_not_by_slug(tmp_path):
 
 @pytest.mark.parametrize("kind,expected", [
     ("experience", "make it citable"), ("skills", "make it available to a CV's skills list"),
-    ("stories", "mark it reviewed")])
+    ("stories", "mark it reviewed and include it in interview prep briefs")])
 def test_verify_outcome_text_is_keyed_on_the_kinds_flags(kind, expected):
     assert verify_outcome_text(kind) == expected
 

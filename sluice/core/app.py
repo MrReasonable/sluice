@@ -339,6 +339,38 @@ class AnswerResult:
     appended: bool = False
 
 
+@dataclass
+class BriefResult:
+    """#195: one interview prep brief. `outcome` is one of ok | written | already_written |
+    written_hidden | present_unreadable | not_writable | conflict | write_failed | not_found |
+    ambiguous | entries_unreadable (the spec's section 5 says what each means). Plain data
+    only, and every text in it path-free, because it is a public surface (`leads prep
+    --json`). `suggestions` holds at most `prepbrief.SUGGESTION_LIMIT` slugs and
+    `more_suggestions` counts the rest. `jd_text` is the full JD the brief was built on (the
+    brief's own text never embeds it) and `jd_source` where it came from: NO caller in #195's
+    first PR reads either -- `--json` leaves them out -- and they are carried so the second
+    PR's MCP tool, which hands the JD to the coach, does not have to widen this result. Do not
+    delete them as dead. `reason` is
+    the degradation sentences joined (not_writable), or a path-free error text
+    (entries_unreadable, write_failed), else "". `appended` is True exactly when the append
+    LANDED (`written`, `written_hidden`, or a `not_found` after the write), as
+    `AnswerResult.appended` is for `record_answer`. On `not_found` it is what tells a note that
+    moved or went after the write -- the brief WAS written, and only the read-back could not
+    find it -- from a slug that never resolved."""
+    outcome: str
+    slug: str = ""
+    status: str = ""
+    candidates: list = field(default_factory=list)
+    suggestions: list = field(default_factory=list)
+    more_suggestions: int = 0
+    markdown: str | None = None
+    brief: dict | None = None
+    jd_source: str = "none"
+    jd_text: str = ""
+    reason: str = ""
+    appended: bool = False
+
+
 def _reread_lead(store, note):
     """`note` as the store holds it after a write attempt, or None when it cannot be found.
     `Sluice.dismiss_lead` calls it after a refused write, to report the fresh status behind the
@@ -2760,6 +2792,137 @@ class Sluice:
         return AnswerResult(outcome="answered", slug=note.slug, status="research",
                             appended=appended)
 
+    def prep_brief(self, *, lead: str, write: bool = False) -> BriefResult:
+        """#195: build the lead's interview prep brief and, with `write`, append it once.
+
+        Exact slug only (never a substring: the caller may be an LLM); a miss carries bounded
+        substring SUGGESTIONS over every status, which are only ever reported -- nothing is
+        read or written through one. No LLM and no cv machinery beyond the ranker: nothing is
+        composed, so the fabrication gate has nothing to check (spec Decision 5).
+
+        The ONE write is `Store.append_body_section`, an EOF append under the brief's tag,
+        with no `require_status`, so a False means only that the tag is already in the file.
+        No status is ever written; the status and `triage_blocked` are read for the
+        `jd_rejected_page` degradation and nothing else. A brief that write-once would lock
+        in DEGRADED is refused (`not_writable`) before any write. The outcome is classified
+        from the note's CONTENT after a fresh read, `record_answer`'s rule. See the spec's
+        section 5 for the outcome table."""
+        from sluice.core import followups, jdsection, prepbrief
+        from sluice.core.dossier import jd_text
+        from sluice.core.leads import blocked_stamp, slug_matches
+        from sluice.core.protocols import EVIDENCE_KINDS, VaultConflict
+        from sluice.core.vault import unreadable_reason
+        store, note, candidates = self._resolve_exact(lead)
+        if candidates:
+            return BriefResult(outcome="ambiguous", candidates=candidates)
+        if note is None:
+            # UNFILTERED read: no CLI listing prints the slug of a lead at `applied` or later,
+            # so the suggestions must span every status (Decision 10). Bounded, with a count
+            # of the rest, so a one-letter or empty fragment cannot return the whole backlog.
+            hits = sorted(n.slug for n in store.read_leads() if slug_matches(n, lead))
+            cap = prepbrief.SUGGESTION_LIMIT
+            return BriefResult(outcome="not_found", suggestions=hits[:cap],
+                               more_suggestions=max(0, len(hits) - cap))
+
+        # Entries (spec section 2): every kind carrying `read_by_prep`, derived, never named.
+        # The inbox is read for its LENGTH only -- no inbox title, field or body enters the
+        # brief, since an inbox note records nothing about whether a human or an assistant
+        # wrote it (Decision 2).
+        kinds = {}
+        for kind, spec in EVIDENCE_KINDS.items():
+            if not spec.read_by_prep:
+                continue
+            try:
+                raw = store.read_evidence(kind, verified_only=False)
+                pending = len(store.read_pending_evidence(kind))
+            except (OSError, UnicodeDecodeError) as e:
+                # `triage/engine.py`'s exception pair. The reason is path-free: it reaches
+                # stderr and `--json`, and an errno OSError's own text names the absolute path.
+                return BriefResult(outcome="entries_unreadable", slug=note.slug,
+                                   status=note.status, reason=f"{kind}: {unreadable_reason(e)}")
+            kinds[kind] = ([prepbrief.entry_from_store(e, spec.fields) for e in raw], pending)
+
+        # The JD (spec section 3), in cv's and triage's order: the note's own section, then
+        # the cached dossier. A reader error propagates (cv's posture: a reader bug is loud,
+        # never "no JD").
+        section, sections = jdsection.read(note.body)
+        if sections > 1:
+            # cv's and triage's warning, word for word: all three read the first section.
+            _log.warning("prep: %s has %d %r sections; the first was used",
+                         note.ref, sections, jdsection.HEADING)
+        jd, jd_source, built_at, jd_reason, reason_text = "", "none", "", "", ""
+        # The read-only construction `Sluice.doctor`'s census uses, given the REAL floor, so
+        # `jd_arrived` below is the one rule triage and cv apply. Its fetcher is lazy and
+        # `peek` never reaches it.
+        cache = self.dossier_cache(self._dossier_dir(), 0, self.config.min_jd_chars)
+        if section:
+            jd, jd_source = section, "note"
+        else:
+            try:
+                d = cache.peek(note.fm)
+            except (OSError, ValueError) as e:
+                d, jd_reason, reason_text = None, "cache_unreadable", unreadable_reason(e)
+            if d is None and not jd_reason:
+                jd_reason = "no_source"   # ONLY here: a found JD carries no reason (spec §3)
+            if d is not None:
+                if jd_text(d):
+                    jd, jd_source = jd_text(d), "cached"
+                    built_at = str(d.get("built_at") or "")
+                else:
+                    jd_reason = "cache_empty"
+
+        # The facts `prepbrief.rejected_route` decides over, read here and nowhere else:
+        # `note.status` is the store-normalised value, never `note.fm["status"]`, so a recased
+        # `Unjudgeable` is still the status triage wrote; `blocked_stamp`, never the raw key,
+        # since a word a person typed into `triage_blocked` is their text, not a stamp.
+        rejected, route = prepbrief.rejected_route(
+            jd_source=jd_source, status=note.status, stamped=bool(blocked_stamp(note.fm)),
+            awaiting_reply=followups.awaiting_reply(note.fm))
+        # ONE read of the role, handed to both the degradations and the brief (Amendment
+        # A5). Never None, which would stem to `none`.
+        role = note.fm.get("role", "") or ""
+        degs = prepbrief.degradations(
+            kinds=kinds, jd=jd, jd_source=jd_source, role=role,
+            min_jd_chars=self.config.min_jd_chars,
+            jd_arrived=bool(jd) and cache.jd_arrived({"jd": {"markdown": jd}}),
+            rejected_page=rejected, open_fence=jdsection.open_fence(note.body),
+            rejected_route=route, slug=note.slug)
+        brief = prepbrief.build_brief(
+            slug=note.slug, fm=note.fm, status=note.status, jd=jd, jd_source=jd_source,
+            jd_reason=jd_reason, jd_reason_text=reason_text, built_at=built_at, kinds=kinds,
+            degradations=degs, role=role, jd_sections=sections)
+        markdown = prepbrief.render_markdown(brief)
+        base = dict(slug=note.slug, status=note.status, markdown=markdown,
+                    brief=prepbrief.to_json(brief), jd_source=jd_source, jd_text=jd)
+        if not write:
+            return BriefResult(outcome="ok", **base)
+        if degs:
+            reason = "; ".join(d.sentence for d in degs)
+            if prepbrief.tagged_section_exists(note.body):
+                reason += "; the note already has a brief"
+            return BriefResult(outcome="not_writable", reason=reason, **base)
+        try:
+            appended = store.append_body_section(note.ref, prepbrief.TAG, markdown)
+        except (VaultConflict, FileNotFoundError) as e:
+            # FileNotFoundError: the note moved or went between the read and the write.
+            _log.warning("prep_brief: %s lost the write: %s", note.ref, e)
+            return BriefResult(outcome="conflict", **base)
+        except OSError as e:
+            return BriefResult(outcome="write_failed", reason=unreadable_reason(e), **base)
+        fresh = _reread_lead(store, note)
+        if fresh is None:
+            # The spec's "the note is gone" row. `appended` carries whether the brief landed
+            # first, so the caller can say it WAS written rather than "no lead matching".
+            return BriefResult(outcome="not_found", appended=appended, **base)
+        if appended:
+            # Content, not heading presence: a fence a concurrent edit left open before EOF
+            # swallows the appended section, and its heading would still be in the file.
+            ok = prepbrief.written_section(fresh.body, markdown)
+            return BriefResult(outcome="written" if ok else "written_hidden", appended=True,
+                               **base)
+        exists = prepbrief.tagged_section_exists(fresh.body)
+        return BriefResult(outcome="already_written" if exists else "present_unreadable", **base)
+
     def add_evidence(self, *, kind: str, name: str, fields: dict, body: str = "") -> str:
         """Propose one evidence entry (#164). Returns the store's opaque handle for it --
         non-empty on success, and safe to show a user; NOT promised to be a path (the
@@ -3613,8 +3776,9 @@ class Sluice:
         # will not build is strictly worse than the missing vault `classify_store` already
         # marks as stopping "the entire pipeline, not a subset of it", so it is spelled the
         # same way. `blocks=()` remains meaningful and must not be filled in reflexively:
-        # the unreadable `stories` corpus carries it deliberately, because nothing reads
-        # that corpus and naming a sub-app there would be an over-claim.
+        # the unreadable `stories` corpus carries it deliberately, because no capability
+        # reads that corpus (its one reader, `leads prep` (#195), is not a capability the
+        # verdict reports on) and naming a sub-app there would be an over-claim.
         try:
             store = self.store()
         except (plugins.UnknownAdapter, ValueError) as e:

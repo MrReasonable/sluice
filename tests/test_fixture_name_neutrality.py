@@ -512,6 +512,16 @@ _LAYOUT_HEADING_RE = re.compile(
     r'''([^\s"'`{\\][^"'`{\\\n]*?)(?=[ \t]*(?:["'\\]|$))''', re.M)
 
 
+# Residual, stated (#195 final review): NO collector below reads a lowercase `company=` KWARG,
+# so `Lead(company="...")` -- and any other call spelling a lead's employer as that kwarg --
+# passes this whole file unswept. The `frontmatter company:` pattern needs the colon, and the
+# evidence pattern needs a capital `Company`. Measured repo-wide while building #195: the
+# generic roster values (`Example Co`, `Example Ltd`, `Acme` and others) appear as unswept
+# kwargs today, so a real employer typed into that call would ship green. Not closed here: the
+# gap predates #195, and a collector for it needs its own scope assertion and roster entries
+# for every existing value, which is a change of its own. Until then, a new fixture that needs
+# a swept company writes it as literal note text (`company: "..."` frontmatter or a
+# `<Company> - <role>.md` filename), as `tests/test_prep_brief_facade.py::_seed` does.
 _IDENTITY_COLLECTORS = (
     ("frontmatter company:", re.compile(r'company:\s*"([^"]*)"')),
     ("lead-note filename", re.compile(r'"([A-Za-z][^"\n]*? - [^"\n]*?\.md)"')),

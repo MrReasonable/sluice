@@ -551,9 +551,12 @@ they named — `leads add` (#241), `leads dismiss` (#131), `leads mark-asked` an
 answer` (#378) — write unconditionally on every call**, like the pipeline commands (`ingest
 run`/`triage run`/`cv run`/`apply record`/`track run`), not like their `leads` siblings — the
 distinguishing property is who decided what to write: these record the user's (the lead's own
-fields, a dismissal reason, that they asked, the reply), while `dedupe`/`expire`/`unpark`/`reconcile`
+fields, a dismissal reason, that they asked, the reply), while `dedupe`/`expire`/`unpark`/`reconcile`/`rename`
 write over a set the TOOL computed. There is nothing to preview when the user is the one
-supplying the content.
+supplying the content. `leads prep` (#195) sits on the report-by-default side: an interview
+prep brief is tool-computed, so it prints and writes nothing until `--write`. Its flag is
+`--write` rather than `--apply` because `apply` is also the sub-app that sends applications,
+and `leads prep --apply` would read as "apply to this job".
 
 ### `job-sluice leads add --url URL --company NAME --role TITLE [--location L] [--salary S] [--role-type contract|permanent] [--jd-file PATH|-]`
 
@@ -700,6 +703,68 @@ ambiguous, the write lost a race, or the answer was written but the lead moved o
 mark could not be cleared, or a code fence left open earlier in the note hides the answer.
 Blank `--text` is a usage error (exit 2).
 
+### `job-sluice leads prep --lead SLUG [--write] [--json]`
+
+Builds an interview prep brief for one lead from your STAR stories (#195): the lead's company,
+role and status, where its job description came from, then every story in the `stories` folder,
+ranked by the job description's keywords, each with its fields, the keywords it matched, and its
+body quoted. No LLM is involved and nothing is composed: the stories appear exactly as you wrote
+them. It works at any lead status. Resolves by EXACT slug, like `leads dismiss`; a slug that
+matches nothing prints `did you mean:` with a bounded list of the slugs containing the text, over every
+status, then `... and N more` when there are more. Nothing is read or written through a
+suggestion.
+
+The job description is the note's own `## Job description` section, else the cached copy triage
+or cv fetched earlier. `leads prep` never fetches, and the brief names the job description's
+source and length but never copies its text into the note.
+
+- **No flags.** The brief goes to stdout, exit 0, degraded or not. Nothing is written.
+- **`--write`.** The brief goes to stdout, then one line on stderr says what happened to the
+  note: `written to the note` (exit 0); `not written -- the note already has an "Interview prep
+  brief (job-sluice)" section ...` (exit 0, nothing written); `not written -- <reason>` for a
+  degraded brief (exit 1, nothing written); `written, but an unclosed code fence before it now
+  hides it ...` (exit 1); `the note carries the interview-prep tag but no readable ... section
+  -- fix the note by hand` (exit 1, nothing written); a `conflict` when the note changed while
+  this ran (exit 1); `could not write the note -- <reason>` (exit 1); `written, but the note
+  moved or went before it could be read back ...` when the brief landed and the note was then
+  moved or deleted before it could be checked (exit 1).
+- **`--json`**, with or without `--write`: stdout is ONLY one JSON document, `{"outcome", "slug",
+  "status", "candidates", "suggestions", "more_suggestions", "brief", "reason", "appended"}`,
+  with no stderr outcome line. `appended` is `true` only when the brief landed in the note, so a
+  `not_found` with `appended: true` is a write whose note moved afterwards. The exit code is the same as without `--json` for every outcome, so a script
+  cannot read a hidden or failed write as success.
+- A slug that matches nothing, an ambiguous slug, or a stories folder that cannot be read exits 1.
+
+**Write once.** The brief goes into the note under the heading `## Interview prep brief
+(job-sluice) <!-- sluice:interview-prep -->`, appended at the end, once. A later `--write`
+reports `already_written` and writes nothing, even after your stories change, and the brief it
+prints is a fresh render that may differ from the one in the note. **To refresh it, delete that
+section from the note and run `--write` again.** The brief's text is quoted and its own headings
+sit below level 2, so triage and cv never read it as the job description and the follow-up
+reader never reads it as an answer.
+
+**Inbox entries are left out.** A story added with `stories add` (or proposed by the `init`
+wizard or an MCP client) waits in the inbox until you review it, and an inbox note does not
+record whether you or an assistant wrote it, so the brief only counts those, with a pointer to
+`job-sluice stories verify`. A story you placed in the folder by hand is included, labelled
+`Verified: no`.
+
+**Degradations.** `--write` refuses a brief that writing once would lock in degraded, and the
+printed brief carries the same sentence, so a preview states exactly what a refusal would say.
+Each code reaches `--json` and names its way out:
+
+| code | means | way out |
+|---|---|---|
+| `no_entries` | the `stories` folder has no entry | `job-sluice stories add`, or `job-sluice stories verify` for entries waiting in the inbox |
+| `no_jd` | no job description section and no usable cached copy | paste the posting under `## Job description` in the note |
+| `jd_below_floor` | the job description is shorter than `min_jd_chars`, the floor triage and cv apply | paste the full posting |
+| `jd_no_keyword` | the job description adds no word beyond the role's that the ranker can match (a section reading "TBD") | paste the full posting |
+| `jd_rejected_page` | the job description is a cached copy, and the lead is `unjudgeable` or carries a `triage_blocked` stamp, so triage would not judge that page | paste the posting; if it has been taken down and you know the cached copy is real, the sentence names the step that fits the lead: `leads unpark --apply`, `leads answer`, deleting `triage_blocked` by hand, or moving the status off `unjudgeable` by hand |
+| `note_open_fence` | the note ends inside an unclosed code fence, which would hide the brief | close the fence with a line of the same character, at least as many as opened it |
+
+With no job description (`no_jd`) or one that adds no keyword (`jd_no_keyword`), the entries are
+in title order and the brief says so.
+
 ### `job-sluice leads reconcile [--apply] [--json]`
 
 Reports (or with `--apply`, moves) each lead note into the folder its `status` implies — only
@@ -738,7 +803,7 @@ failure is non-empty; exit 2 (`job-sluice: <exc>`) if the store cannot rename no
 
 Human-authored source material for CV composition (#164) — the Experience Library (the gate's
 only citable source), the Skills Inventory (shown to the composer as framing, and a source of SKILLS-section names) and STAR
-Stories (captured, not yet consumed), one per `EvidenceKind` in
+Stories (shown in `leads prep` interview briefs), one per `EvidenceKind` in
 `sluice/core/protocols.py`. All three groups (and their `add`/`list`/`verify` subcommands) are
 built from ONE loop over that registry, so they share an identical shape and a fourth kind later
 is one registry entry rather than three more hand-written command blocks.
@@ -754,12 +819,14 @@ on `verify` FILTERS which pending entries are offered for review; it never answe
 LICENSES the **Experience Library** only. The other two differ from each other: a verified
 **Skills Inventory** entry is shown to the composer as framing — it orders and emphasises the
 experience entries, and no number may be quoted from it — and its name (`Label:`, else its
-title) may be picked for a CV's SKILLS section, while **STAR Stories** are captured and
-reviewed but consumed by nothing yet.
+title) may be picked for a CV's SKILLS section, while **STAR Stories** never reach a CV: a
+verified story is shown in a `leads prep` interview brief, and a pending one is only counted
+there.
 
 Registry flags carry that distinction: `EvidenceKind.read_by_composer` (does the corpus reach
 the prompt), `EvidenceKind.cited_by_gate` (may the gate license its content) and
-`EvidenceKind.names_in_skills_pool` (may a verified entry's name be listed under SKILLS).
+`EvidenceKind.names_in_skills_pool` (may a verified entry's name be listed under SKILLS) and
+`EvidenceKind.read_by_prep` (does `leads prep` show its entries in an interview brief).
 `add`'s confirmation line and `doctor`'s row both read them, so neither claims a citability the
 code does not have.
 
@@ -830,8 +897,9 @@ store cannot read an entry (see the note under `verify`, below).
 
 Verified is not the same as **citable**: the CV fabrication gate licenses the Experience Library
 alone, so a verified `skills` entry is shown to the composer as framing and its name may be
-listed under SKILLS, but it is cited by nothing, and a verified `stories` entry is consumed by
-nothing yet (`EvidenceKind.cited_by_gate`, `read_by_composer` and `names_in_skills_pool`).
+listed under SKILLS, but it is cited by nothing, and a verified `stories` entry reaches no CV
+and is shown in `leads prep` interview briefs (`EvidenceKind.cited_by_gate`, `read_by_composer`,
+`names_in_skills_pool` and `read_by_prep`).
 
 ### `job-sluice experience verify [--id NAME]`
 ### `job-sluice skills verify [--id NAME]`

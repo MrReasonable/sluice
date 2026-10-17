@@ -171,6 +171,17 @@ class DossierCache:
         with no url)."""
         lead_id = lead.get("lead_id")
         if lead_id:
+            # A `lead_id` is used as a FILENAME under `self.dir`. Sluice never writes one into a
+            # note (triage sets the judge dossier's own `lead_id` after the cache step), so one
+            # here was typed by hand -- and a value carrying a path separator, `.`/`..` or a NUL
+            # would let `_path` read or write outside the cache directory (`peek` reads through
+            # it, `get_or_build` and `forget` write and remove through it). Such a value is
+            # hashed instead, the same shape as the url arm below; every flat value keeps its
+            # existing key, so no cache entry moves.
+            text = str(lead_id)
+            if (text in (".", "..") or "\0" in text or "/" in text or "\\" in text
+                    or (os.sep in text) or (os.altsep and os.altsep in text)):
+                return "id-" + hashlib.sha256(text.encode()).hexdigest()[:16]
             return lead_id
         url = lead.get("url")
         if url:
@@ -274,6 +285,41 @@ class DossierCache:
             os.remove(self._path(lead))
         except FileNotFoundError:
             pass
+
+    def peek(self, lead: dict) -> dict | None:
+        """The cached dossier for `lead`, or None when there is none (#195).
+
+        Pass the note's frontmatter, never a dossier dict -- see `forget`: the key comes from
+        `_path`, the derivation `get_or_build` and `forget` share, so all three name one file.
+
+        Read-only: it ignores the TTL and the content, never calls the fetcher, and never
+        creates a directory or a file. Freshness is a fetch-scheduling concept, and for an
+        interview-stage lead the cached page may be the only copy of a posting since taken
+        down, so `leads prep` shows it however old or short it is.
+
+        Only `FileNotFoundError` -- which covers a missing cache directory -- means "no cached
+        copy". Any other `OSError` propagates, for the caller to report.
+
+        A broken file raises ValueError with a FIXED, path-free message: the caller hands the
+        text to `core/vault.py::unreadable_reason`, which passes an errno-less message through
+        as it is, and a path in it would carry the user's home directory into a brief and its
+        `--json`. A partial file left by a concurrent triage or cv `json.dump` is one real way
+        in.
+        """
+        try:
+            with open(self._path(lead), encoding="utf-8") as f:
+                text = f.read()
+        except FileNotFoundError:
+            return None
+        try:
+            data = json.loads(text)
+        except ValueError:
+            # `from None`: the decoder's line-and-column detail means nothing to the reader of
+            # a brief, so the fixed message stands alone.
+            raise ValueError("the cached dossier is not valid JSON") from None
+        if not isinstance(data, dict):
+            raise ValueError("the cached dossier is not a JSON object")
+        return data
 
     def get_or_build(self, lead: dict, *, supplied_jd: str = "") -> dict:
         # #369: a job description the lead note carries wins over the cache AND the

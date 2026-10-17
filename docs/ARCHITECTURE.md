@@ -249,9 +249,11 @@ Shared by every sub-app:
   treated as stale and retried on every read rather than served for the rest
   of its TTL. `min_jd_chars` (root `Config`, default `0`: only a wholly empty
   JD ever fails) is the shared floor below which a fetched JD counts as not
-  having arrived; `Sluice.triage()` and `Sluice.compose_cv()` both build their
+  having arrived; `Sluice.triage()` and `Sluice.compose_cv()` build their
   `DossierCache` from `self.config.min_jd_chars`, since triage and cv already
-  share this one cache directory (#80) and must agree on the floor. Triage's
+  share this one cache directory (#80) and must agree on the floor, and
+  `Sluice.prep_brief` (#195) builds its read-only one with the same floor, so a
+  brief refuses exactly the job description triage and cv would. Triage's
   enrich pass asks `jd_arrived` per dossier and marks the lead `unjudgeable`
   (never spending a judge call on page chrome) rather than letting it collapse
   into `research`; `cv/engine.py`'s `run_one` asks the identical question and
@@ -271,8 +273,9 @@ Shared by every sub-app:
 
   A lead note may carry its own job description, under a `## Job description`
   heading (#369; a referral or an InMail has no posting to fetch).
-  `core/jdsection.py` is the ONE grammar for that section, shared by triage, cv
-  and `Sluice.create_lead`: where it stops (a level-1 or level-2 ATX heading) and
+  `core/jdsection.py` is the ONE grammar for that section, shared by every reader
+  and writer of it (triage, cv, `Sluice.create_lead`, and `Sluice.prep_brief`,
+  #195): where it stops (a level-1 or level-2 ATX heading) and
   what pasted text must be demoted so it cannot stop early. A section with text is
   handed to `get_or_build(..., supplied_jd=...)`, which builds the dossier from it
   with no fetch and no cache read or write, so an edit to the section takes effect
@@ -287,6 +290,17 @@ Shared by every sub-app:
   open) is what a writer applies to pasted text -- the text exactly as written,
   so `core/followups.py::dated_answer` neutralises the dated line rather than the
   bare text, whose first-line fence the date prefix would otherwise unmake.
+  Since #195 it also answers `open_fence(body)`: whether the body ENDS inside an
+  unclosed code fence, read from the same fence scanner the section reader uses, so
+  `leads prep --write` can refuse to append a brief the fence would swallow (and
+  that triage and cv would then read as part of the job description).
+  `DossierCache.peek(lead)` (#195) is the cache's read-only door: it reads the
+  entry at the same key `get_or_build` and `forget` derive, ignores the TTL and the
+  content (for an interview-stage lead the cached page may be the only copy of a
+  posting since taken down), never calls the fetcher, never creates a directory or
+  file, and returns `None` for a missing file or directory. Invalid JSON and a
+  non-object raise `ValueError` with fixed, path-free messages, since the caller's
+  reason reaches the brief and `leads prep --json`.
 - `core/followups.py` (#378) is the research worklist. A `research` verdict's
   question is written to its own key, `triage_next`, on every verdict that
   lands (blanked when the model gave none or the text is unsafe for frontmatter,
@@ -311,6 +325,37 @@ Shared by every sub-app:
   `require_unchanged`, so a re-stamp landing while the lead was being judged
   refuses that verdict's write (`unchanged`) instead of being erased; a snapshot
   with no stamp writes no key, so a stamp added mid-judge is never touched.
+- `core/rank.py` (#195) is the keyword ranker, moved out of `cv/` so a core
+  module can use it: `jd_keywords(role, jd)` (sorted, unique, lowercased words of
+  four or more ASCII letters, from the role and the job description),
+  `matched_keywords(entry, keywords)` (which keywords land in an entry's `Best For`,
+  `Category:` and title, by stem), and `rank(entries, keywords)`, a stable sort by
+  how many keyword stems that same haystack holds, so the terms a brief shows are
+  exactly the terms that ranked it. cv calls `rank` from its bundle builder and
+  binds `jd_keywords` as `cv/engine.py`'s `_jd_keywords`; `core/prepbrief.py` uses
+  all three.
+- `core/prepbrief.py` (#195) is the interview prep brief, placed the way
+  `core/followups.py` above is: a facade-driven feature with a body-section grammar
+  that mcpserver reads, all in one core module rather than a command package.
+  Everything in it is pure: the degradations (the codes a `--write` would lock in
+  degraded, each with a fixed sentence naming its way out), the brief's ordering
+  (casefolded title, then `rank` unless there is no usable job description), the
+  markdown on a closed line grammar (no scraped or vault VALUE ever starts a line;
+  entry bodies are blockquoted; the brief's own headings sit at levels 3 and 4, so
+  none can end its section), the `--json` dict, and the reader for its own tagged
+  section, plus `rejected_route`, the decision whether a cached page is one triage
+  would not judge and which way out fits the lead. Its importers: the facade
+  (`Sluice.prep_brief`), which reads the note and hands those decisions primitives
+  (the normalised status, whether `triage_blocked` holds a stamp, whether the lead
+  awaits a reply, whether the note ends inside an open fence) plus the one fact that
+  needs the dossier cache, whether the job description arrived, and does the one
+  write, `Store.append_body_section` under the brief's tag;
+  `mcpserver.py`, for `TAGGED_HEADING` in `get_lead`'s content warning, through the
+  isolation allow-list; and `cli.py`'s `leads prep` handler, lazily, for `HEADING`,
+  so its stderr names the real section. No sub-app imports it. Write-once is the
+  rule: a later `--write` reports `already_written` and the user refreshes by
+  deleting the section. No status is ever written, and no entry passes through the
+  CV bundle, so no entry gets a citable `[id]`.
 - `Sluice.health_report(include_leads=False)` (`core/app.py`) is the
   per-source health REPORT `job-sluice health` and the MCP `health` tool both
   show: `HealthStore`'s baseline/recent counts and stuck-streak reason,
@@ -906,8 +951,11 @@ whichever neighbour it was written next to:
    `judge_fields` (#196) names the declared fields the triage judge is shown when
    `triage.evidence` is on; non-empty is what makes a kind judge-read.
    `__post_init__` refuses `cited_by_gate` without `read_by_composer`, since the gate
-   cannot license what the composer never saw. `stories` carries none: captured and
-   reviewed, consumed by nothing yet.
+   cannot license what the composer never saw. `read_by_prep` (#195) names the corpora
+   `leads prep` shows in an interview prep brief -- `stories`; `classify_store` and
+   `verify_outcome` both word it as a suffix after their chains, the shape `judge_fields`
+   takes in `classify_store`, so a kind carrying an earlier flag still says it. `stories`
+   carries no other flag: captured, reviewed, and read by `leads prep` alone.
 
    Beside the bundle, not inside it, `compose.py` adds a TRIAGE NOTES
    section after the JD when the lead carries `culture_flags` or
