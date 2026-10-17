@@ -148,9 +148,9 @@ class EvidenceKind:
 
     It exists because the floor is otherwise an identity mapping on title-cased names,
     and `skills`' four fields collide with NONE of them: measured (#164 review, M3), a
-    skills entry whose own `Domain` was `platform` scored ZERO in `cv/bundle.py`'s
-    `rank()` against the keyword `platform`, because `rank` reads `best_for`/`category`/
-    `title` and the first two were empty strings. #165 is what made that reachable, and
+    skills entry whose own `Domain` was `platform` scored ZERO in `core/rank.py::rank`
+    against the keyword `platform`, because `rank` reads `best_for`/`category`/`title`
+    and the first two were empty strings. #165 is what made that reachable, and
     the mapping was already in place when it landed.
     """
     relpath: str
@@ -324,7 +324,7 @@ EVIDENCE_KINDS = {
                                judge_fields=("Company", "Category", "Best For", "Metrics",
                                              "Tools")),
     # `Domain` IS this kind's keyword axis -- what `Best For` is for the other two, and
-    # exactly what `cv/bundle.py`'s rank() scores on. Without the mapping the floor's
+    # exactly what `core/rank.py::rank` scores on. Without the mapping the floor's
     # `best_for` was the empty string for every skill, so a skills entry in domain
     # `platform` scored ZERO against the JD keyword `platform` (#164 review, M3).
     #
@@ -346,9 +346,9 @@ EVIDENCE_KINDS = {
                            # with the scaffold's word for the JD), not Label (it is the
                            # entry's NAME, via cv_name).
                            judge_fields=("Proficiency", "Domain")),
-    # STAR reuses `Best For` rather than inventing a keyword field: cv/bundle.py's
-    # rank() scores on best_for/category/title, so a future consumer gets that ranker
-    # unchanged (#195).
+    # STAR reuses `Best For` rather than inventing a keyword field: `core/rank.py::rank`
+    # scores on best_for/category/title, so the interview prep brief ranks stories with
+    # that ranker unchanged (#195).
     # Situation/Task/Action/Result live in the BODY -- _parse_fm_spaced is line-based,
     # so a multi-line frontmatter value does not round-trip (its continuation lines
     # are re-read as further keys).
@@ -980,7 +980,7 @@ class Store(Protocol):
         from an empty store and which the fabrication gate reports as `skipped-gate`.
 
         Returns dicts carrying at least `title`, `company`, `category`, `best_for`,
-        `metrics`, `verified`, `body` (the floor cv/bundle.py's ranker needs on every
+        `metrics`, `verified`, `body` (the floor `core/rank.py::rank` needs on every
         kind) plus `fields`, the kind's own frontmatter under its own names. Which of a
         kind's fields fills each of the four TEXT floor keys is `FLOOR_FIELD_SOURCES`
         merged with that kind's `floor_map` -- not an identity mapping the store invents

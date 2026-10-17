@@ -276,7 +276,7 @@ def test_a_multi_word_keyword_matches_the_entry_that_answers_it():
     haystack can contain -- measured, the entry answering it ranked LAST of seven while
     entries matching an unrelated keyword scored 1.
 
-    Not reachable from `cv/engine.py:_jd_keywords`, which yields single `[a-z]{4,}` words;
+    Not reachable from `core/rank.py::jd_keywords`, which yields single `[a-z]{4,}` words;
     this pins `rank`'s own contract, since it is reachable with any keyword list."""
     entries = ([_rank_entry("delivery", f"unrelated-{i}") for i in range(3)]
                + [_rank_entry("machine learning", "THE-RIGHT-ONE")]

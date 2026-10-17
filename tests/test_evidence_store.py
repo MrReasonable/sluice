@@ -55,7 +55,7 @@ def test_a_floor_map_naming_an_undeclared_frontmatter_key_is_refused_at_construc
     """`floor_sources()` feeds `fm.get(key, "")`, so a typo'd frontmatter key yields the
     EMPTY STRING for every entry with nothing red anywhere. That is exactly the shape of
     the zero-score bug the `floor_map` was added to fix -- a skills entry in domain
-    `platform` scoring zero in `cv/bundle.py`'s `rank()` against the keyword `platform`
+    `platform` scoring zero in `core/rank.py::rank` against the keyword `platform`
     -- silently re-opened by a misspelling. The kind's own `fields` is the only honest
     thing to check against."""
     with pytest.raises(ValueError, match="does not declare"):
@@ -231,7 +231,7 @@ def test_a_skills_entrys_domain_reaches_the_ranker_the_cv_bundle_actually_uses(t
 
     The eight-key floor was an identity mapping on title-cased names, and `skills`' four
     fields collide with NONE of them. So `best_for` and `category` were the empty string
-    for every skill, and `cv/bundle.py`'s `rank()` -- which scores on
+    for every skill, and `core/rank.py::rank` -- which scores on
     `best_for`/`category`/`title` -- gave a skills entry in domain `platform` a score of
     ZERO against the JD keyword `platform`. That is rework #165 walks straight into.
 
