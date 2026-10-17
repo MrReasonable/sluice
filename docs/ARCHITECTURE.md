@@ -952,10 +952,11 @@ whichever neighbour it was written next to:
    `triage.evidence` is on; non-empty is what makes a kind judge-read.
    `__post_init__` refuses `cited_by_gate` without `read_by_composer`, since the gate
    cannot license what the composer never saw. `read_by_prep` (#195) names the corpora
-   `leads prep` shows in an interview prep brief -- `stories`; `classify_store` and
+   `Sluice.prep_brief` shows in an interview prep brief (behind `leads prep` and the
+   `prep_brief` MCP tool) -- `stories`; `classify_store` and
    `verify_outcome` both word it as a suffix after their chains, the shape `judge_fields`
    takes in `classify_store`, so a kind carrying an earlier flag still says it. `stories`
-   carries no other flag: captured, reviewed, and read by `leads prep` alone.
+   carries no other flag: captured, reviewed, and read by `Sluice.prep_brief` alone.
 
    Beside the bundle, not inside it, `compose.py` adds a TRIAGE NOTES
    section after the JD when the lead carries `culture_flags` or
@@ -1137,14 +1138,17 @@ whichever neighbour it was written next to:
 
 ## `onboard/` — a command package, not a sixth sub-app
 
-`sluice/onboard/` backs `job-sluice init` (#8). It sits BESIDE the pipeline rather
+`sluice/onboard/` backs `job-sluice init` (#8) and also hosts both MCP coach prompts
+(`career_interview` and `interview_prep`, in `coach/`). It sits BESIDE the pipeline rather
 than inside it: nothing in `ingest -> triage -> cv -> apply -> track` imports it,
 and it has no engine, no store of its own and no place in any run. `cli.py` is no longer its
 only importer: `sluice/mcpserver.py` imports its `review` and `coach` modules at module scope
-for in-session setup (below). Neither does I/O, but importing them is not free: `review`
-imports `core/vault.py`'s frontmatter text helpers at module scope, so importing `mcpserver`
-loads the store module, and `coach`'s prompt assembly imports `core/app.py` and the backend
-registry (registering every backend) when the prompt is built.
+for in-session setup (below) and the `interview_prep` prompt. Neither does I/O, but importing
+them is not free: `review` imports `core/vault.py`'s frontmatter text helpers at module scope,
+so importing `mcpserver` loads the store module, and `coach.assemble_prompt` imports
+`core/app.py` and the backend registry (registering every backend) when the `career_interview`
+prompt is built. `coach.assemble_prep_prompt`, which builds `interview_prep`'s, imports
+neither.
 
 Split pure-from-impure, which is the whole reason its guarantees are unit-testable:
 
@@ -1197,10 +1201,18 @@ Split pure-from-impure, which is the whole reason its guarantees are unit-testab
   through `parse_value`: a list only for a list setting (`questions.py::is_list`, keyed on the
   parser's `items` reader), each item kept whole; text through the question's `parse`, which
   for a list setting still splits on commas, as `init`'s TTY prompt does.
-- **`coach/`**: the `career_interview` prompt, assembled from the Markdown playbooks beside
-  it (a persona plus one page per phase). It writes nothing; the only route from the coach to
-  a write is `setup_save`, which the playbooks call only after a playback and the user's yes. Building the prompt imports `core/app.py` and
-  `sluice.backends`, inside the function, to list what each backend needs.
+- **`coach/`**: the coach's two prompts, each assembled from the Markdown playbooks beside it,
+  each from its own roster. `career_interview` is `PLAYBOOKS` (a persona plus one page per
+  phase) followed by the units `setup_save` accepts; `interview_prep` is `PREP_PLAYBOOKS`
+  (`rehearse.md`) followed by a capture note for the server's privilege level, and reads none
+  of the setup playbooks. The package writes nothing. The setup coach reaches a write only
+  through `setup_save`, which the playbooks call only after a playback and the user's yes; what
+  the rehearsal coach itself writes, under `--write`, goes only through `propose_evidence`, which
+  queues a story in the inbox where no brief reads it until the user verifies it. That
+  promotion is the user's: the capture note points them at `job-sluice stories verify` or the
+  server's `verify_evidence`, which puts a human in front of every entry it promotes. Building `career_interview`'s
+  prompt imports `core/app.py` and `sluice.backends`, inside the function, to list what each
+  backend needs; building `interview_prep`'s imports neither.
 - **`ask.py`** (impure): the only half that touches a terminal. `TtyAsker` prompts
   and re-asks on a bad answer; `NoInputAsker` answers only from flags and REFUSES
   rather than reading stdin, because a wizard blocking on a pipe is a hung CI job
@@ -1315,11 +1327,12 @@ or a `Camofox()`, builds a backend, or duplicates the triage/compose/prep/record
 track wiring itself. `cli.py` is now a thin shell over `Sluice` -- each command
 builds one, calls one method, and formats the result for the terminal -- so a surface
 built today has nothing left in `cli.py` worth forking. `sluice/mcpserver.py` (#105,
-extended #131, extended again #164 and #175) is the first one: a Model Context
-Protocol server exposing the read-only tools (`list_leads`, `get_lead`, `doctor`,
-`health`, `list_evidence`) always, and the write-capable tools (`dismiss_lead`,
-`apply_record`, `cv_run`, `cv_signoff`, `create_lead`, `propose_evidence`,
-`verify_evidence`) under `--write`. No COUNT of those is stated here on purpose: "five" stood in this paragraph,
+extended #131, extended again #164, #175 and #195) is the first one: a Model Context
+Protocol server exposing its read-only tools always, and its write-capable tools under
+`--write`. Which is which is `build_server`'s own registrations: everything registered
+above its `if write:` is read-only. This paragraph named them once, and the list was
+already missing `setup_status` when `prep_brief` (#195) arrived, so it names none now.
+No COUNT of those is stated here on purpose either: "five" stood in this paragraph,
 in `mcpserver.py`'s own module docstring, in `build_server`, in `cli.py`'s `--write`
 help, in `docs/USAGE.md` and in both MCP test files, and every one went stale the
 moment #175 registered a sixth. No count of THOSE either — three reviewers tallied

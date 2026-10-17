@@ -350,8 +350,9 @@ Full flag reference, exit codes and which stream each command writes to:
 ## MCP server
 
 `job-sluice mcp serve` runs sluice as a Model Context Protocol server over stdio, so an agent can
-call `list_leads`/`get_lead`/`doctor`/`health`/`list_evidence` directly instead of parsing CLI
-output. Read-only by default; needs `pip install 'job-sluice[mcp]'`. Register it in the AI
+read your leads, evidence and preflight report, and an interview prep brief, directly instead of
+parsing CLI output. Read-only by default; needs `pip install 'job-sluice[mcp]'`. Your client's tool
+list shows exactly what is registered. Register it in the AI
 clients on this machine with:
 
 ```bash

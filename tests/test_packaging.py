@@ -961,6 +961,16 @@ def test_the_sdist_ships_every_coach_playbook(pristine_sdist):
         f"downstream of it.")
 
 
+def test_the_rehearse_playbook_ships_in_the_wheel_and_the_sdist(pristine_wheel, pristine_sdist):
+    """The interview_prep prompt's playbook by name. The two derived rows above pass whatever
+    the tree holds, so this pins that `_expected_playbooks` found rehearse.md at all, and that
+    both built artefacts carry it: the second prompt reads a file the first never did."""
+    rehearse = "sluice/onboard/coach/rehearse.md"
+    assert rehearse in _expected_playbooks()
+    assert rehearse in pristine_wheel.namelist
+    assert f"{_sdist_root_prefix(pristine_sdist)}/{rehearse}" in pristine_sdist
+
+
 def test_the_sdist_template_guard_is_falsified_by_excluding_them(tmp_path):
     """The guard above must be FALSIFIABLE, not merely green.
 

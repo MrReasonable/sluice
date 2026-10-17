@@ -185,8 +185,9 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     from sluice.core.criteria import DEFAULT_CRITERIA
     from tests.onboard_prose import rendered_artefacts
     surfaces = dict(rendered_artefacts())
-    # +candidate_text, +view_text (#240), +role_brief (setup), +coach_prompt (the career coach)
-    assert len(surfaces) == 7
+    # +candidate_text, +view_text (#240), +role_brief (setup), +coach_prompt (the career coach),
+    # +prep_prompt at both privilege levels (#195). Distinct labels, or dict() would merge them.
+    assert len(surfaces) == 9
     for label, text in surfaces.items():
         assert text.strip(), f"{label} swept nothing"
 
@@ -205,6 +206,9 @@ def test_the_rendered_sweep_covers_BOTH_arms_and_strips_nothing():
     from sluice.onboard import coach
     assert all(coach.read_playbook(n).strip() in surfaces["rendered:coach_prompt"]
                for n in coach.PLAYBOOKS)
+    for label in ("rendered:prep_prompt(write)", "rendered:prep_prompt(read-only)"):
+        assert all(coach.read_playbook(n).strip() in surfaces[label]
+                   for n in coach.PREP_PLAYBOOKS), label
 
     # candidate_text has only one structural shape (every field always present), so there is no
     # second arm to miss the way `_render_sources` had one -- just confirm it is actually reached.

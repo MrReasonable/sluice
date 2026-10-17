@@ -2443,3 +2443,22 @@ def test_get_lead_warning_names_the_follow_up_answers_section(tmp_path):
     out = get_lead(_app(tmp_path), slug)
     assert "## Follow-up answers" in out["content_warning"]
     assert "own notes" in out["content_warning"]
+
+
+def test_the_prep_brief_tool_hands_the_facade_the_slug_and_nothing_else():
+    """#195: `prep_brief` is read-only at EVERY privilege level, and what holds that is the
+    one call it makes: `sluice.prep_brief(lead=lead)`, with no `write` keyword. Pinned on the
+    AST rather than by behaviour alone, because a `**kwargs` or `*args` forwarding a caller's
+    value would reach `write` without the word appearing here. Every attribute call named
+    `prep_brief` in the module is counted, so a second route to the facade (`holder.sluice.
+    prep_brief(...)` inside the closure) turns this red too; the module function's own name is
+    a plain Name call and is not counted."""
+    tree = ast.parse(pathlib.Path(mcpserver_mod.__file__).read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call)
+             and isinstance(n.func, ast.Attribute) and n.func.attr == "prep_brief"]
+    assert len(calls) == 1, f"expected ONE facade call, found {len(calls)}"
+    (call,) = calls
+    assert isinstance(call.func.value, ast.Name) and call.func.value.id == "sluice"
+    # A keyword whose `arg` is None is a `**` expansion, so it fails this equality by name.
+    assert [k.arg for k in call.keywords] == ["lead"]
+    assert call.args == [], "no positional (or *args) argument may reach the facade"

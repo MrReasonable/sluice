@@ -255,12 +255,15 @@ def test_the_doc_names_the_coach_prompt_the_server_registers():
     from sluice.core.config import Config
     from sluice.mcpserver import build_server
 
+    # The doc is the SETUP hand-over, so it names the setup coach. interview_prep (#195) is
+    # registered too, and comes after setup rather than in it, so the doc leaves it to MCP.md;
+    # the exact set still makes a third prompt arrive reviewed.
     assert "/mcp__job-sluice__career_interview" in _doc()
     for write in (False, True):
         async def _names(srv=build_server(Config(), write=write)):
             async with Client(srv, raise_exceptions=True) as client:
                 return {p.name for p in (await client.list_prompts()).prompts}
-        assert asyncio.run(_names()) == {"career_interview"}, write
+        assert asyncio.run(_names()) == {"career_interview", "interview_prep"}, write
 
 
 def test_step_1_registers_with_mcp_install():

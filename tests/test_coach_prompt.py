@@ -24,17 +24,36 @@ def _leaks(text):
     return expresses_a_preference(text) + [t for t in FORBIDDEN_ROLE_AND_CULTURE_TERMS if t in low]
 
 
+# Both prompts the package serves, each at both privilege levels. This test's NAME is what
+# tests/test_renderer_template.py's `covered` mapping certifies as the sweep over the shipped
+# `onboard/coach/*.md` files, so the prep prompt is swept HERE rather than beside it: a sibling
+# would leave the named sweep never reading rehearse.md.
+@pytest.mark.parametrize("assembler", ["assemble_prompt", "assemble_prep_prompt"])
 @pytest.mark.parametrize("write", [True, False])
-def test_the_assembled_prompt_names_no_preference(write):
-    assert _leaks(coach.assemble_prompt(write=write)) == []
+def test_the_assembled_prompt_names_no_preference(assembler, write):
+    assert _leaks(getattr(coach, assembler)(write=write)) == []
 
 
 def test_every_packaged_playbook_is_found_and_used():
     files = {p.name[:-3] for p in resources.files("sluice.onboard.coach").iterdir()
              if p.name.endswith(".md")}
-    assert files and files == set(coach.PLAYBOOKS)
+    assert files and files == set(coach.PLAYBOOKS) | set(coach.PREP_PLAYBOOKS)
     full = coach.assemble_prompt()
     assert all(coach.read_playbook(n).strip()[:80] in full for n in coach.PLAYBOOKS)
+    # Each prompt carries ITS OWN roster: the prep playbooks reach the prep prompt at both
+    # levels and never the setup coach's.
+    for write in (True, False):
+        prep = coach.assemble_prep_prompt(write=write)
+        assert all(coach.read_playbook(n).strip()[:80] in prep for n in coach.PREP_PLAYBOOKS)
+    assert not [n for n in coach.PREP_PLAYBOOKS if coach.read_playbook(n).strip()[:80] in full]
+
+
+@pytest.mark.parametrize("write", [True, False])
+def test_the_prep_prompt_carries_no_setup_playbook(write):
+    # The other direction of "each prompt carries its own roster": a prep prompt assembled from
+    # PLAYBOOKS + PREP_PLAYBOOKS would hand the prep coach every setup rule, setup_save's included.
+    prep = coach.assemble_prep_prompt(write=write)
+    assert not [n for n in coach.PLAYBOOKS if coach.read_playbook(n).strip()[:80] in prep]
 
 
 def test_the_sweep_reports_a_planted_role_word():
@@ -42,6 +61,15 @@ def test_the_sweep_reports_a_planted_role_word():
         return coach.read_playbook(name) + ("\nConsider a scrum master role.\n"
                                             if name == "discovery" else "")
     assert _leaks(coach.assemble_prompt(read=planted))
+
+
+@pytest.mark.parametrize("write", [True, False])
+def test_the_sweep_reports_a_planted_role_word_in_the_prep_prompt(write):
+    # The prep twin: "discovery" is not a prep playbook, so the plant goes into "rehearse".
+    def planted(name):
+        return coach.read_playbook(name) + ("\nConsider a scrum master role.\n"
+                                            if name == "rehearse" else "")
+    assert _leaks(coach.assemble_prep_prompt(write=write, read=planted))
 
 
 def test_the_prompt_states_the_rules_and_names_every_unit_kind():
@@ -61,10 +89,20 @@ def test_the_prompt_states_the_rules_and_names_every_unit_kind():
 
 # An example list is an opinion about what is typical, which no vocabulary can enumerate;
 # the playbooks may not use the phrasing that introduces one.
-_EXAMPLE_MARKERS = ("e.g.", "for example", "for instance", "such as", "say, a", "like a ")
+_EXAMPLE_MARKERS = ("e.g.", "for example", "for instance", "such as", "say, a", "like a ",
+                    "etc.", "and so on")
+
+# The text-only sweeps read every playbook the package ships, from both rosters.
+_ALL_PLAYBOOKS = coach.PLAYBOOKS + coach.PREP_PLAYBOOKS
 
 
-@pytest.mark.parametrize("name", coach.PLAYBOOKS)
+def test_the_text_only_sweeps_reach_both_rosters():
+    # Scope for the two text-only sweeps: a parametrize list that lost the prep roster would
+    # leave both green without ever reading rehearse.md.
+    assert "rehearse" in _ALL_PLAYBOOKS
+
+
+@pytest.mark.parametrize("name", _ALL_PLAYBOOKS)
 def test_no_playbook_introduces_an_example_list(name):
     low = coach.read_playbook(name).lower()
     assert [m for m in _EXAMPLE_MARKERS if m in low] == []
@@ -77,7 +115,18 @@ def test_registered_descriptions_name_no_preference():
     server = build_server(Config(), write=True)
     tools = asyncio.run(server.list_tools())
     prompts = asyncio.run(server.list_prompts())
-    texts = [t.description for t in tools if t.name.startswith("setup_")]
+    # Scope of the original population, asserted on its own: the setup tools by name and a
+    # non-empty set of described prompts. The by-name prep texts appended below would otherwise
+    # satisfy any count over the combined list, so a `setup_` filter that matched nothing, or a
+    # server that registered no prompt, would leave this sweep green over none of the texts it
+    # exists for.
+    setup = {t.name: t.description for t in tools if t.name.startswith("setup_")}
+    assert set(setup) == {"setup_status", "setup_save"} and all(setup.values()), setup
+    assert prompts and all(p.description for p in prompts), [p.name for p in prompts]
+    # Both prompts' registered descriptions, by name: the interview_prep description is swept
+    # because it is among these, so a roster that lost it must go red here, not pass quietly.
+    assert {"career_interview", "interview_prep"} <= {p.name for p in prompts}
+    texts = list(setup.values())
     texts += [p.description for p in prompts] + [a.description for p in prompts
                                                  for a in (p.arguments or [])
                                                  if a.description]
@@ -90,12 +139,125 @@ def test_registered_descriptions_name_no_preference():
     assert TAGGED_HEADING in _GET_LEAD_PREP_BRIEF_NOTE
     assert _GET_LEAD_PREP_BRIEF_NOTE in _GET_LEAD_CONTENT_WARNING
     texts.append(_GET_LEAD_PREP_BRIEF_NOTE)
-    assert len(texts) >= 4 and all(_leaks(t) == [] for t in texts)
+    # #195: the prep_brief tool's registered description and the four warnings its replies
+    # carry, each by name. Scope: each is found and non-empty, so a renamed tool or a constant
+    # emptied out cannot leave this sweep passing over nothing.
+    from sluice import mcpserver
+    described = {t.name: t.description for t in tools}
+    prep = {"prep_brief": described.get("prep_brief") or "",
+            **{name: getattr(mcpserver, name, "") for name in (
+                "_PREP_JD_WARNING", "_PREP_LEAD_WARNING", "_PREP_ENTRIES_WARNING",
+                "_PREP_SUGGESTIONS_WARNING")}}
+    assert all(prep.values()), [name for name, text in prep.items() if not text]
+    texts += list(prep.values())
+    assert [t for t in texts if _leaks(t)] == []
 
 
 def test_a_read_only_server_says_to_restart_with_write():
     assert "--write" in coach.assemble_prompt(write=False)
     assert "--write" not in coach.assemble_prompt(write=True)
+
+
+def test_the_read_only_prep_prompt_gives_the_stories_add_command():
+    # A read-only server registers no propose_evidence, so naming it would send the coach after
+    # a tool that is not there. The user gets the command to add the story themselves instead.
+    text = coach.assemble_prep_prompt(write=False)
+    assert "propose_evidence" not in text
+    assert "job-sluice stories add" in text and coach.PREP_READ_ONLY_NOTE in text
+    assert coach.PREP_WRITE_NOTE not in text
+
+
+def test_the_write_level_prep_prompt_offers_propose_evidence_and_says_where_it_lands():
+    # At --write the coach may queue a story, and must say what that does and does not do:
+    # proposed in the user's own words, it lands in the inbox, and it reaches a brief only once
+    # the user verifies it. Each clause is pinned, so a note that only said "save it with
+    # propose_evidence" goes red.
+    text = coach.assemble_prep_prompt(write=True)
+    assert "propose_evidence" in text and coach.PREP_WRITE_NOTE in text
+    assert coach.PREP_READ_ONLY_NOTE not in text
+    for clause in ("in the user's own words", "`_inbox/`", "`job-sluice stories verify`"):
+        assert clause in coach.PREP_WRITE_NOTE, clause
+
+
+def test_both_prep_notes_capture_a_story_not_in_the_entries_never_judging_its_worth():
+    # The coach holds no opinion about answer content, so what makes a story one to capture is
+    # only that the user's entries do not hold it, at either level: a trigger on a story "worth
+    # keeping" would have the read-only coach decide which of the user's stories matter.
+    for note in (coach.PREP_READ_ONLY_NOTE, coach.PREP_WRITE_NOTE):
+        assert "a story that is not in their entries" in note, note
+        assert "worth" not in note.lower(), note
+
+
+def test_the_rehearse_playbook_names_neither_capture_tool():
+    # The level-specific capture rule lives in the two constants, never in the playbook, which
+    # both levels share: a playbook naming propose_evidence would serve it to a read-only coach.
+    text = coach.read_playbook("rehearse")
+    assert "propose_evidence" not in text and "stories add" not in text
+
+
+@pytest.mark.parametrize("write", [True, False])
+def test_the_prep_prompt_reads_the_brief_and_finds_the_slug_with_list_leads(write):
+    text = coach.assemble_prep_prompt(write=write)
+    assert "`prep_brief`" in text and "`list_leads`" in text
+
+
+def test_the_rehearse_playbook_runs_its_phases_in_order_each_with_an_exit():
+    # Spec section 9's six phases, in the session's order, each closed by its own exit criterion.
+    text = coach.read_playbook("rehearse")
+    phases = ["## Phase 1: Choose the interview", "## Phase 2: Read the brief",
+              "## Phase 3: How the interview will run", "## Phase 4: The gaps",
+              "## Phase 5: Rehearse", "## Phase 6: Keep what was new"]
+    at = [text.index(p) for p in phases]
+    assert at == sorted(at), "the phases are out of order"
+    sections = text.split("\n## Phase ")[1:]
+    assert len(sections) == len(phases)
+    assert all("\n## Done when\n" in s for s in sections), "a phase has no exit criterion"
+
+
+def test_the_rehearse_playbook_states_its_rules():
+    # The neutrality rules a rehearsal coach is most likely to break: inferring the format,
+    # supplying an example for a gap, judging the content of an answer, and treating an entry the
+    # user has not reviewed as settled.
+    text = coach.read_playbook("rehearse")
+    for phrase in ("Ask it as an open question",
+                   "Never supply an example",
+                   "only on two things",
+                   "never on whether you would have chosen it",
+                   "`verified: false`",
+                   "never treat it as settled",
+                   "an acknowledged gap"):
+        assert phrase in text, phrase
+
+
+@pytest.mark.parametrize("call,loads", [
+    ("c.assemble_prep_prompt(write=True); c.assemble_prep_prompt(write=False)", False),
+    # The control: the setup prompt DOES load them (its units list each backend's requirement),
+    # so the probe can see a backend import when one happens.
+    ("c.assemble_prompt()", True),
+])
+def test_the_prep_prompt_imports_no_backend(call, loads):
+    import importlib.util
+    import os
+    import pathlib
+    import subprocess
+    import sys
+    # `sluice.core.app` is watched in its own right: the coach docstring and docs/ARCHITECTURE.md
+    # say building `interview_prep`'s prompt imports neither core/app.py nor the backends, and
+    # importing core/app.py loads neither backend module, so watching only those two would leave
+    # an app import in assemble_prep_prompt green.
+    watched = ("sluice.core.app", "sluice.core.backends", "sluice.backends")
+    assert all(importlib.util.find_spec(m) for m in watched), watched
+    # `-c` puts the CURRENT DIRECTORY first on the child's sys.path, ahead of PYTHONPATH, so
+    # the child runs from this tree's root and asserts that it imported this tree's coach:
+    # started from another checkout, it would otherwise measure that checkout's copy.
+    root = str(pathlib.Path(coach.__file__).resolve().parents[3])
+    probe = (f"import os, sys, sluice.onboard.coach as c; "
+             f"assert os.path.realpath(c.__file__).startswith({root + os.sep!r}), c.__file__; "
+             f"{call}; "
+             f"print(sorted(m for m in {watched!r} if m in sys.modules))")
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                         check=True, cwd=root).stdout.strip()
+    assert (out != "[]") is loads, f"{call} loaded {out}"
 
 
 def test_every_roster_backend_states_its_requirement():
@@ -186,8 +348,9 @@ def test_no_playbook_mentions_the_retired_form():
     """The per-change setup form is gone (spec 2026-10-08). The one form left is
     verify_evidence's, which the hand-off names for evidence only."""
     import re
-    seen = 0
-    for name in coach.PLAYBOOKS:
+    seen, visited = 0, set()
+    for name in _ALL_PLAYBOOKS:
+        visited.add(name)
         low = coach.read_playbook(name).lower()
         for word in ("tick", "checkbox", "not_shown", "review form", "unticked"):
             assert word not in low, (name, word)
@@ -195,8 +358,10 @@ def test_no_playbook_mentions_the_retired_form():
         seen += len(forms)
         assert all("evidence" in low[max(0, i - 200):i] for i in forms), (name, forms)
     # Scope: the hand-off's evidence form is the one mention that must be there, so a matcher
-    # that found nothing at all would be the broken one, not a clean sweep.
+    # that found nothing at all would be the broken one, not a clean sweep. And the loop itself
+    # read the prep roster's playbook, not only the constant it iterates.
     assert seen >= 1
+    assert "rehearse" in visited
 
 
 def test_the_interview_probes_gaps_names_tensions_and_does_not_push():
@@ -324,3 +489,16 @@ def test_the_units_mark_every_list_setting_and_never_ask_for_commas():
     for q in questions.catalogue():
         if q.key not in lists:
             assert f"- `{q.key}` (list)" not in units, q.key
+
+
+def test_rehearse_names_every_unsupported_requirement_before_asking_which_to_prepare():
+    # A coach told only "check the requirements the user chose" can leave every other gap
+    # unnamed; the docs promise the coach finds the requirements no story evidences. So the
+    # playbook names ALL of them first, then asks which to prepare for, and its exit criterion
+    # holds it to that.
+    text = coach.read_playbook("rehearse")
+    low = " ".join(text.lower().split())
+    names_all = low.index("name to the user every requirement it states that no entry")
+    asks = low.index("then ask which requirements they want to prepare for")
+    assert names_all < asks
+    assert "you have named every requirement no entry evidences" in low

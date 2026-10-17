@@ -254,13 +254,15 @@ def test_the_shipped_template_sweep_covers_every_route_into_a_users_install():
         f"{sorted(set(patterns) - set(covered))}. Write a sweep that covers it (extend "
         "tests/template_content.py::packaged_templates for a template), then name it in "
         "`covered` -- do not widen `covered` alone.")
-    # The coach sweep reaches its files through `coach.PLAYBOOKS`, not through the glob, so
-    # pin that the glob ships exactly the files that roster names: a playbook dropped into
-    # the directory but missing from PLAYBOOKS would ship to every install and be read by
-    # nothing that sweeps it.
+    # The coach sweep reaches its files through the two rosters, `coach.PLAYBOOKS` (the
+    # career_interview prompt) and `coach.PREP_PLAYBOOKS` (the interview_prep prompt), not
+    # through the glob, so pin that the glob ships exactly the files those rosters name: a
+    # playbook dropped into the directory but on neither roster would ship to every install
+    # and be read by nothing that sweeps it.
     from sluice.onboard import coach
     shipped = {p.stem for p in (REPO / "sluice" / "onboard" / "coach").glob("*.md")}
-    assert shipped and shipped == set(coach.PLAYBOOKS), (shipped, coach.PLAYBOOKS)
+    rosters = set(coach.PLAYBOOKS) | set(coach.PREP_PLAYBOOKS)
+    assert shipped and shipped == rosters, (shipped, rosters)
 
 
 @pytest.mark.parametrize("planted,why", [

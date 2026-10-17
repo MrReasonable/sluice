@@ -2,7 +2,7 @@
 
 Call `doctor` (its default, offline, is enough). It reports what is ready and what still needs action. Read it, then tell the user, in plain words, what is left that this session does not do:
 
-- **Verifying evidence.** sluice writes a CV only from evidence entries the user has verified: their experience, skills and stories. Adding and verifying them is the user's own step, with `job-sluice experience add` and `job-sluice experience verify` (and the same for `skills` and `stories`), or through this server's evidence tools, where every entry is approved by the user in a form. You never verify anything for them.
+- **Verifying evidence.** sluice writes a CV only from evidence entries the user has verified: their experience and skills. Their verified stories never reach a CV; they appear in an interview prep brief. Adding and verifying them is the user's own step, with `job-sluice experience add` and `job-sluice experience verify` (and the same for `skills` and `stories`), or through this server's evidence tools, where every entry is approved by the user in a form. You never verify anything for them.
 - **The CV Layout.** The note `Job Applications/CV Layout.md` in their vault sets out the roles on their CV, with dates, and which experience entries each role may draw on. No CV can be composed until it exists.
 - **Job-board logins.** Some boards only show results to a logged-in user, in the browser sluice drives. Logging in is something the user does; you cannot do it for them.
 - Anything else `doctor` reports as needing action, explained in a sentence each.

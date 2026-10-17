@@ -170,9 +170,10 @@ class EvidenceKind:
     # `Skills:` reach the pool through core/tokens.py::tool_items and ::skill_items whatever
     # this flag says.
     names_in_skills_pool: bool = False
-    # #195: `leads prep` (core/prepbrief.py via Sluice.prep_brief) shows this corpus's entries in
-    # an interview prep brief. The flag is what the facade iterates, so the flag and the reader
-    # cannot disagree, and doctor/verify_outcome key their wording on it.
+    # #195: `Sluice.prep_brief` (core/prepbrief.py) shows this corpus's entries in an interview
+    # prep brief, behind `leads prep` and the `prep_brief` MCP tool. The flag is what the facade
+    # iterates, so the flag and the reader cannot disagree, and doctor/verify_outcome key their
+    # wording on it.
     read_by_prep: bool = False
     # #196: the declared fields the TRIAGE JUDGE is shown, in order, when the user sets
     # `triage.evidence: true`. Non-empty IS "the judge reads this kind": one attribute, so

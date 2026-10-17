@@ -69,9 +69,11 @@ _NOT_PROSE = {
     # as guidance. Everything shown from review.py is rostered in shipped_prose() below.
     ("sluice.onboard.review", "UNIT_KINDS"),
     # The coach's playbook FILE NAMES (identifiers `read_playbook` joins with `.md`), never shown
-    # as prose. The playbooks' TEXT is swept whole as `rendered:coach_prompt` below, and by
-    # tests/test_coach_prompt.py with the judge prompt's vocabulary as well.
+    # as prose, for both prompts. The playbooks' TEXT is swept whole as `rendered:coach_prompt`
+    # and the two `rendered:prep_prompt` surfaces below, and by tests/test_coach_prompt.py with
+    # the judge prompt's vocabulary as well.
     ("sluice.onboard.coach", "PLAYBOOKS"),
+    ("sluice.onboard.coach", "PREP_PLAYBOOKS"),
     ("sluice.evidence.wizard", "EVIDENCE_KINDS"),
 }
 
@@ -89,6 +91,11 @@ def _role_brief_text():
 def _coach_prompt_text():
     from sluice.onboard.coach import assemble_prompt
     return assemble_prompt()
+
+
+def _prep_prompt_text(write):
+    from sluice.onboard.coach import assemble_prep_prompt
+    return assemble_prep_prompt(write=write)
 
 
 def rendered_artefacts():
@@ -132,7 +139,11 @@ def rendered_artefacts():
             # The career coach's prompt, assembled from the packaged playbooks exactly as the
             # MCP server serves it: shipped prose a model reads as instructions to the user's
             # coach. Data files, not module constants, so only a rendered sweep reaches them.
-            ("rendered:coach_prompt", _coach_prompt_text())]
+            ("rendered:coach_prompt", _coach_prompt_text()),
+            # The interview_prep prompt, at both privilege levels: each level appends its own
+            # capture note, so each is a distinct text a model reads as instructions.
+            ("rendered:prep_prompt(write)", _prep_prompt_text(True)),
+            ("rendered:prep_prompt(read-only)", _prep_prompt_text(False))]
 
 
 def terminal_transcript():
@@ -393,9 +404,10 @@ def shipped_prose(tmp_path=None):
         out.append((f"review.ROLE_BRIEF_SECTIONS[{section}]", section))
     out.append(("review.ROLE_BRIEF_INTRO", review_mod.ROLE_BRIEF_INTRO))
     # The coach's module-level text: appended to its prompt on a read-only server, above the
-    # list of units it may propose, and above each backend's requirement.
+    # list of units it may propose, and above each backend's requirement; and the prep prompt's
+    # capture note at each privilege level.
     for name in ("READ_ONLY_NOTE", "UNITS_INTRO", "LIST_NOTE", "BACKENDS_INTRO",
-                 "NO_REQUIREMENT_STATED"):
+                 "NO_REQUIREMENT_STATED", "PREP_READ_ONLY_NOTE", "PREP_WRITE_NOTE"):
         out.append((f"coach.{name}", getattr(coach_mod, name)))
     out.append(("wizard._INTRO", wizard_mod._INTRO))
     out.append(("wizard._CAPTURE_PROMPT", wizard_mod._CAPTURE_PROMPT))
