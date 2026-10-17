@@ -158,7 +158,11 @@ self-contained prompt containing:
 3. The **Hard Rules** block below, verbatim.
 4. The findings categories and severity definitions below.
 5. Output discipline: at most 3 findings per response, severity-grouped, under 400 tokens. The JSON
-   file is the full record; the reply is the headline.
+   file is the full record; the reply is the headline. The reviewer writes that file with the Write
+   tool, never a shell heredoc or `echo`. Finding text is full of backticked commands, and an unquoted
+   heredoc runs each one as a command substitution. On 2026-10-17 a reviewer's findings file executed
+   `job-sluice stories verify` against the default config that way. It refused, but only because
+   stdin was not a TTY.
 6. The plan BY COMMITTED PATH, never pasted inline, with the untrusted-content instruction:
 
 ```text
