@@ -234,16 +234,18 @@ see [Claude Code](#claude-code)), where it is `/mcp__job-sluice__interview_prep`
 part is the name you gave `claude mcp add`, as for the career coach). Type it on its own,
 with nothing after it: like the career coach it takes no argument, and the coach asks which
 interview it is. It finds the lead with `list_leads`, reads its brief with the read-only
-`prep_brief` tool, and asks you how the interview will run rather than assuming. It names each
-requirement in the job description that none of your entries evidences and asks you for a real
-example, and it never supplies one. It then rehearses your stories with you, commenting only on
+`prep_brief` tool, and asks you how the interview will run rather than assuming. It names every
+requirement in the job description that none of your entries evidences, asks which you want to
+prepare for, and asks you for a real example of each one you choose; it never supplies one. It then rehearses your stories with you, commenting only on
 whether each has a situation, your own action and an outcome, and on whether it matches what
 your note says happened; an entry you have not verified is read back to you before it is
 treated as settled. A story you tell that is not in your entries can be kept. Under `--write`
 the coach offers `propose_evidence`, which only queues it in your stories' `_inbox/` folder,
 where no brief reads it until you verify it (`job-sluice stories verify`, or `verify_evidence`).
 On a read-only server it gives you the `job-sluice stories add` command instead, since that
-server registers no `propose_evidence`.
+server registers no `propose_evidence`. Either way it sets the story's Best For to the
+requirement you told it for, because a brief finds a story by its title and Best For, never
+its body.
 
 ## What no tool can do for you
 

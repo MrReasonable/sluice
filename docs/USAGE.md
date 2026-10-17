@@ -1177,14 +1177,16 @@ harness is a developer tool and never runs in CI: `scripts/coach_eval/README.md`
 whatever name you registered the server under, as above; measured with Claude Code 2.1.302 on
 2026-10-17, from the `slash_commands` in the session's init event). The coach asks which interview it is,
 finds the lead with `list_leads` and reads its brief with the read-only `prep_brief` tool. It
-asks how the interview will run, names each requirement in the job description that none of
-your entries evidences and asks you for a real example of it, never supplying one, then
+asks how the interview will run, names every requirement in the job description that none of
+your entries evidences, asks which you want to prepare for and asks you for a real example of
+each one you choose, never supplying one, then
 rehearses your stories with you, commenting only on whether each has a situation, your own
 action and an outcome, and whether it matches what your note says happened. A story you tell
 that is not in your entries can be kept: under `--write` the coach offers `propose_evidence`,
 which puts it in your stories' `_inbox/` folder, where no brief reads it until you verify it
 (`job-sluice stories verify`); on a read-only server it gives you `job-sluice stories add`
-instead. `job-sluice leads prep` builds the same brief in the terminal.
+instead. Either way it sets the story's Best For to the requirement you told it for, because a
+brief finds a story by its title and Best For, never its body. `job-sluice leads prep` builds the same brief in the terminal.
 
 ### `job-sluice mcp install [--client NAME ...] [--read-only] [--replace] [--yes] [--dry-run]`
 

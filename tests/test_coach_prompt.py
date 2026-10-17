@@ -502,3 +502,43 @@ def test_rehearse_names_every_unsupported_requirement_before_asking_which_to_pre
     asks = low.index("then ask which requirements they want to prepare for")
     assert names_all < asks
     assert "you have named every requirement no entry evidences" in low
+
+
+def test_both_prep_notes_say_to_give_a_captured_story_its_best_for():
+    # A brief ranks a story on its title and Best For, never its body (core/rank.py), so a story
+    # captured with a blank Best For is nearly invisible to the next brief. The first live eval
+    # run saved two of three stories that way. Each note names its own level's spelling of the
+    # field: propose_evidence takes the kind's declared label, the CLI the flag derived from it.
+    from sluice.core.protocols import EVIDENCE_KINDS
+    assert "Best For" in EVIDENCE_KINDS["stories"].fields
+    assert "`Best For`" in coach.PREP_WRITE_NOTE
+    assert "`--best-for`" in coach.PREP_READ_ONLY_NOTE
+    for note in (coach.PREP_READ_ONLY_NOTE, coach.PREP_WRITE_NOTE):
+        assert "to the requirement they told it for" in note, note
+        assert "in the posting's own words" in note, note
+        assert "in the user's own words when the requirement came from them" in note, note
+        assert "never its body" in note, note
+    # Best For is the one part of a saved story the model writes, so the user sees it first.
+    assert "show them that Best For with the story before they say yes" in coach.PREP_WRITE_NOTE
+
+
+def test_the_stories_add_command_really_takes_the_best_for_flag_the_note_names():
+    # The read-only note sends the user to a flag; a renamed field would leave it naming one the
+    # parser rejects.
+    from tests.test_docs_claims import _parser_flags
+    assert "--best-for" in _parser_flags("stories", "add")
+
+
+def test_rehearse_answers_whether_a_requirement_matters_with_what_the_posting_says():
+    # Asked "do I need these?", the first live run answered only "that's your call", leaving out
+    # that the posting listed both under its required heading. What the posting says is a fact
+    # the coach can give; the choice stays with the user.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "if they ask whether a requirement matters, tell them what the posting itself says" \
+        in low
+    assert "leave the choice with them" in low
+    # The heading was the fact the live run left out; quoting only the posting's own text, and
+    # saying so when it has nothing more, keeps the coach from inventing a heading or a quote.
+    assert "including the heading it sits under when it has one" in low
+    assert "quoting only its own text" in low
+    assert "when the posting says nothing more about it, say so" in low

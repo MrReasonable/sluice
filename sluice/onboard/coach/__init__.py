@@ -63,15 +63,23 @@ PREP_PLAYBOOKS = ("rehearse",)
 PREP_READ_ONLY_NOTE = (
     "This sluice server is read-only, so it cannot save a story. When the user tells a story "
     "that is not in their entries, give them the command to add it themselves: "
-    "`job-sluice stories add`, then `job-sluice stories verify` to include it in a brief.")
+    "`job-sluice stories add`, with `--best-for` set to the requirement they told it for, in "
+    "the posting's own words, or in the user's own words when the requirement came from them. "
+    "Then `job-sluice stories verify` includes it in a brief. A brief finds a story by its "
+    "title and Best For, never its body, so one added without Best For is hard to find for "
+    "the next interview.")
 PREP_WRITE_NOTE = (
     "This sluice server can save a story for the user to review. When the user tells a story "
     "that is not in their entries, offer to save it with `propose_evidence` (kind `stories`), "
     "in the user's own words: never reword it, add a part they did not tell, or save it "
-    "without their yes. A saved story lands in the `_inbox/` folder of their stories, not among "
-    "their entries, and it reaches a brief only after they review and verify it themselves, "
-    "with `job-sluice stories verify` or this server's `verify_evidence`. Never tell them it is "
-    "in their brief.")
+    "without their yes. Set its `Best For` field to the requirement they told it for, in the "
+    "posting's own words, or in the user's own words when the requirement came from them, and "
+    "show them that Best For with the story before they say yes. A brief finds a story by its "
+    "title and Best For, never its body, so one saved without Best For is hard to find for "
+    "the next interview. A saved story lands in the `_inbox/` folder of their stories, not "
+    "among their entries, and it reaches a brief only after they review and verify it "
+    "themselves, with `job-sluice stories verify` or this server's `verify_evidence`. Never "
+    "tell them it is in their brief.")
 
 
 def read_playbook(name: str) -> str:
