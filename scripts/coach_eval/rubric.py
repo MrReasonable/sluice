@@ -339,3 +339,52 @@ def scenario_checks(scenario, events, *, user_messages=(), edit=None, board=None
     out.update(_retired(calls, user_messages, board if scenario == "retired_board" else None,
                         config_text))
     return out
+
+
+# ── the prep coach (prep.py): the interview_prep prompt over the prep_brief tool ──
+# This module never imports prep: the kept set arrives as an argument, already prefixed.
+
+PREP = "mcp__sluice__prep_brief"
+PROPOSE = "mcp__sluice__propose_evidence"
+
+
+def prep_brief_ok(events) -> list:
+    """The prep_brief calls that SUCCEEDED, defined once: answered without `is_error` AND
+    carrying outcome `ok`. Every outcome the facade classifies is a structured reply (the SDK
+    discards a raised tool error's message), so a guessed slug's `not_found`, an `ambiguous` or
+    an `entries_unreadable` arrives as a plain result, and the not-`is_error` test the setup
+    checks use would count it as the brief having been read. A read failure the facade does
+    not classify still raises and arrives as `is_error`, which this predicate also refuses. The grader's facts,
+    `prep_brief_reached`, both grade overwrites and the rubric's first two checks all read this
+    one predicate, so they cannot disagree on whether the brief was reached."""
+    return [c for c in _calls(events) if c["name"] == PREP and c["ok"] and _outcome(c) == "ok"]
+
+
+def prep_deterministic(events, *, slug, write, kept, max_turns) -> dict:
+    """The prep coach's checks, from tool calls only. `slug` is the seeded lead's, as the seeder
+    returned it; `kept` is the set of tool names the coach may use, PREFIXED as the client
+    reports them (prep.expected_tools), so any other name attempted is a breach, a built-in
+    included."""
+    calls = _calls(events)
+    ok = prep_brief_ok(events)
+    outside = [c["name"] for c in calls if c["name"] not in kept]
+    proposed = [c for c in calls if c["name"] == PROPOSE]
+    failed = failed_calls(events)
+    turns = sum(1 for ev in events if ev.get("subtype") == "init")
+    return {
+        "prep_brief_ok": (bool(ok), "a prep_brief call returned the brief (outcome ok)"),
+        # `_when`: with no successful call `all([])` is True, and a check whose subject never
+        # happened must not read pass (this module's docstring). A guessed fragment's
+        # not_found before the real call is not counted: recovering through the bounded
+        # suggestions is what they are for.
+        "seeded_slug": (_when(bool(ok), all(c["input"].get("lead") == slug for c in ok)),
+                        "every successful prep_brief call named the seeded lead's slug"),
+        "no_disallowed_tool": (not outside, f"no tool outside the kept set was attempted "
+                                            f"(saw {outside})"),
+        # Every attempt counts, a denied one included: at read-only the playbook gives the
+        # `stories add` command instead, so reaching for the tool at all is the failure.
+        "propose_only_when_writing": (_when(bool(proposed), bool(write)),
+                                      "propose_evidence was called only at the write level"),
+        "no_tool_denied": (not failed, f"no tool call was denied or errored (saw {failed})"),
+        "turns": (turns <= max_turns, f"{turns} coach messages, cap {max_turns}"),
+    }

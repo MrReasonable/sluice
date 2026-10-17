@@ -1,0 +1,33 @@
+{
+  "id": "prep-strong",
+  "name_seed": 201,
+  "location": "Alfa",
+  "company": "Example Meridian",
+  "role_seed": 16,
+  "status": "interview",
+  "write": true,
+  "jd_template": "{company} is looking for a {role} to join its team in {location}.\n\nIn this role you will:\n- plan and deliver your own work against agreed deadlines\n- work closely with colleagues in other teams\n- explain your decisions clearly to people without your background\n\nWe are looking for someone who has:\n- delivered a piece of work under a tight deadline\n- resolved a disagreement with a colleague\n- improved a process and measured the result",
+  "stories": [
+    {
+      "title": "Delivered the quarterly report two days early",
+      "company": "Example Foundry",
+      "best_for": "a tight deadline",
+      "body": "**Situation.** The quarterly report was due in five working days, and two of the four people who usually prepared it were away.\n\n**Task.** I was asked to make sure it went out on time.\n\n**Action.** I split the report into sections, took the two largest myself, and set a short check-in each afternoon with the one colleague left. With the agreement of the person I reported to, I moved two routine tasks to the following week.\n\n**Result.** The report went out two days before the deadline, and the review that followed found no errors in it.",
+      "verified": true
+    },
+    {
+      "title": "Settled a disagreement over priorities",
+      "company": "Example Systems",
+      "best_for": "a disagreement with a colleague",
+      "body": "**Situation.** A colleague and I disagreed about which of two requests to finish first, and the work had stalled for a week.\n\n**Task.** I wanted us to agree a plan we could both stand behind.\n\n**Action.** I asked for half an hour with them, wrote down what each request would cost and what waiting would cost, and suggested we take the comparison to the person who had asked for both.\n\n**Result.** We agreed an order the same afternoon, and both requests were finished within the month.",
+      "verified": true
+    },
+    {
+      "title": "Cut the time to process a request",
+      "company": "Example Telemetry",
+      "best_for": "improving a process",
+      "body": "**Situation.** Requests took nine days on average to process, and people often chased them.\n\n**Task.** I offered to find out where the time went.\n\n**Action.** I followed twenty requests from start to finish, found that most of the delay was waiting for a second signature, and proposed that requests under a set value need only one.\n\n**Result.** After the change the average fell to four days, measured over the next two months.",
+      "verified": true
+    }
+  ]
+}

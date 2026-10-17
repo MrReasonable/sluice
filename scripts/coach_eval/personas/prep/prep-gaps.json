@@ -1,0 +1,26 @@
+{
+  "id": "prep-gaps",
+  "name_seed": 202,
+  "location": "Bravo",
+  "company": "Example Tidal",
+  "role_seed": 32,
+  "status": "interview",
+  "write": true,
+  "jd_template": "{company} is hiring a {role} in {location}.\n\nWhat you will do:\n- look after several ongoing pieces of work from start to finish\n- train new colleagues as they join\n- report progress to the people who depend on your work\n\nWhat we need from you:\n- experience training or guiding someone new to the work\n- experience handling a complaint from someone you work for\n- experience presenting your work to a large group",
+  "stories": [
+    {
+      "title": "Trained two new starters in their first month",
+      "company": "Example Robotics",
+      "best_for": "training someone new",
+      "body": "**Situation.** Two new starters joined in the same week, and the usual trainer had just left.\n\n**Task.** I was asked to get them working on their own within a month.\n\n**Action.** I wrote a one-page guide to the tasks they would do most, sat with each of them for an hour a day in the first week, and then moved to a short daily question time.\n\n**Result.** Both were handling their own work by the end of the third week, and the guide was kept for later starters.",
+      "verified": true
+    },
+    {
+      "title": "Reorganised the shared files",
+      "company": "Example Analytics",
+      "best_for": "organising shared work",
+      "body": "**Situation.** The shared folders had grown over years, and people spent a long time finding the current version of a document.\n\n**Task.** I volunteered to sort them out.\n\n**Action.** I agreed a simple folder plan with my colleagues, moved the files over two evenings, and archived anything untouched for a year.\n\n**Result.** People stopped asking where things were, and the number of duplicate copies fell by about half.",
+      "verified": true
+    }
+  ]
+}
