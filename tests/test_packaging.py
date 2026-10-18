@@ -299,6 +299,7 @@ CLASSIFIERS_LINES = (
     '    "Programming Language :: Python :: 3.12",\n'
     '    "Programming Language :: Python :: 3.13",\n'
     '    "Programming Language :: Python :: 3.14",\n'
+    '    "Programming Language :: Python :: 3.15",\n'
     '    "Topic :: Office/Business",\n'
     '    "Topic :: Utilities",\n'
     ']\n'

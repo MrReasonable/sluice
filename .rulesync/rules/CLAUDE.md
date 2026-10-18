@@ -95,7 +95,7 @@ found by running the guard rather than reading it:
 The suite is fast and hermetic — there is no reason not to run all of it. `run_tests.sh` is the same
 thing via `.venv/bin/python`, so it needs a `.venv/` (gitignored) to exist first. CI
 (`.github/workflows/ci.yml`) runs `lint` (ruff + zizmor), `test` (pytest on Python
-3.12/3.13/3.14), `rulesync` (regenerates `.rulesync/`'s outputs and fails the build on any drift
+3.12/3.13/3.14/3.15), `rulesync` (regenerates `.rulesync/`'s outputs and fails the build on any drift
 or hand-edited generated file), `docker` (builds the image, runs the
 smoke script against it, renders the compose file and checks the ssh key path does not leak
 into the container environment), and `packages` (#218: builds the wheel, sdist, .deb and .rpm
