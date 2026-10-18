@@ -2285,8 +2285,8 @@ def test_no_prep_persona_text_expresses_a_preference():
 # real place or employer no roster can enumerate, so a change here must be READ before it is
 # re-digested: the digest only forces that review.
 _PREP_PERSONA_DIGESTS = {
-    "prep-gaps.json": "413dbfce2585bc8e6bea2ca24b5e9b80905f56d6f3419a384f864170e6147c35",
-    "prep-strong.json": "397e7de83caef5c81eadfc182bd7fa123aa18518920a9b8b1bb3e06f105c9ca2",
+    "prep-gaps.json": "70e374127badb17ea17002dbbea5f59f21a2767ee2fe60549e1ec942a1395088",
+    "prep-strong.json": "1106edafb1f8087affcde816fbc62e70faa2fce053824a8379ac24c8860013fa",
     "prep-unverified.json": "d824c6efcab876c864cc4afaf9c6929ca5ecb7f0d657b87fcb15664e9d9d54cd",
 }
 
@@ -2606,7 +2606,7 @@ def test_the_prep_grader_judges_the_verify_route_and_the_save():
     assert "move that note into its kind's _inbox/ folder before running job-sluice <kind> verify" \
         in text
     assert "advice to verify a story just saved or added is right as it stands" in text
-    assert "the user said yes, and what was saved is the user's own telling" in text
+    assert "the user said yes, what was saved is the user's own telling" in text
     assert "verify_route" in prep.FACT_SCORED
 
 
@@ -2735,6 +2735,12 @@ def test_every_directive_naming_a_note_names_one_the_persona_has():
     assert named   # scope: some directive names a note
     for p, title in named:
         assert title in {s["title"] for s in p.stories}, (p.id, title)
+    # A directive naming an untold story names one the persona carries.
+    stories = [(p, t) for p in _prep_personas() for d in p.directives
+               for t in re.findall(r'your story "([^"]+)"', d)]
+    assert stories   # scope: some directive names an untold story
+    for p, title in stories:
+        assert title in {s["title"] for s in p.untold_stories}, (p.id, title)
 
 
 def test_the_prep_grader_anchors_the_gaps_scale():
@@ -2816,8 +2822,9 @@ def test_the_prep_grader_judges_the_read_only_add_command_and_the_wider_gap_miss
     assert "add_command: \"yes\" when every job-sluice stories add command" in text
     assert "any --name or --body in it is the user's own telling" in text
     assert "every line the job description lists, under any heading, is a requirement" in text
-    assert ("referred to by a count rather than its words, called partly covered, or said an "
-            "entry evidences when the entry does not say the user did that thing") in text
+    assert "referred to by a count rather than its words" in text
+    assert ("called partly covered, or said an entry evidences when the entry does not say the "
+            "user did that thing") in text
 
 
 def test_grade_prep_overwrites_the_add_command_score_at_the_write_level(monkeypatch, tmp_path):
@@ -2838,3 +2845,43 @@ def test_every_prep_persona_prepares_for_a_gap_no_story_covers_somewhere():
     assert any("experience handling a complaint from someone you work for" in d
                for d in gaps.directives)
     assert "experience handling a complaint from someone you work for" in gaps.jd_template
+
+
+# ── the fourth live run's findings (2026-10-18) ──
+
+def test_the_prep_grader_scores_the_we_probe_the_telling_the_best_for_value_and_the_format():
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    for clause in ('an action the user gave to \"we\" that the coach did not ask about, or that '
+                   "its playback credited to the user",
+                   "Each of these is a miss:",
+                   "for a requirement the user chose, a story the coach never asked them to "
+                   "tell as in the interview (their yes to a read-back is not that telling)",
+                   "telling). Score 5 when there is no miss, and one point lower for each miss "
+                   "down to 1",
+                   "(an evidenced one left out of the choice included)",
+                   'the two gaps\", \"any of the six\", even after naming them',
+                   "(if it is, coaching_quality is at most 3)",
+                   "its Best For is the requirement the story was told for, in the posting's "
+                   "words or in the user's when the requirement came from them",
+                   "quote in notes the entry sentence that says the user did it",
+                   "asks how the interview will run as an open question with no list of "
+                   "formats, and a format the user only guessed is never treated as settled"):
+        assert clause in text, clause
+
+
+def test_prep_gaps_reaches_the_acknowledged_gap_branch():
+    gaps = next(p for p in _prep_personas() if p.id == "prep-gaps")
+    assert any("You have no real example of" in d and "complaint" in d for d in gaps.directives)
+
+
+def test_prep_strong_brings_a_requirement_of_its_own_words_for_the_user_best_for_branch():
+    import re
+    strong = next(p for p in _prep_personas() if p.id == "prep-strong")
+    assert len(strong.untold_stories) >= 2
+    own = [re.search(r'name yourself as "([^"]+)"', d) for d in strong.directives]
+    own = [m.group(1) for m in own if m]
+    assert own   # scope: the directive names its own requirement
+    # The branch exists only while the phrase is the user's, not the posting's.
+    for phrase in own:
+        assert phrase.casefold() not in strong.jd_template.casefold(), phrase

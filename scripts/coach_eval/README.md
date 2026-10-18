@@ -98,19 +98,22 @@ persona carries one: at the write level it drives the save path and its Best For
 read-only the `stories add --best-for` command (`add_command_given`). The confirmation run of
 2026-10-18 told no new story, and the Best For fix went untested while every check read green.
 `directives` are what the user wants from the session, one line each, and a directive that
-means a particular note names it, since `prep-strong` ignored an abstract "one your notes
-cover" (a test requires every named note to exist): `prep-gaps` asks, after the coach lists the
-gaps, whether one of them matters by name (the posting-fact rule) and prepares for the
-requirement its untold story fits; `prep-strong` and `prep-unverified` each prepare for the
-requirement a named note covers (a settled entry's fidelity check, or the unverified read-back)
-and the one their untold story fits. The directives section tells the simulated user it comes
-before the base rule to answer only what it is asked. Each is validated like a story's text,
-and an untold story may not share a title with any other story. Every prep persona takes 16
-coach messages, measured: at 12, `prep-strong` stopped mid-rehearsal before the summary.
-
-One branch no persona reaches, stated: a Best For in the user's own words, for a requirement
-that came from the user rather than the posting. Every untold story fits a posting requirement,
-so that clause of both capture notes is pinned only by `tests/test_coach_prompt.py`.
+means a particular note or untold story names it by title, since `prep-strong` ignored an
+abstract "one your notes cover" (a test requires every named note and untold story to exist).
+What they drive: `prep-gaps` asks, after the coach lists the gaps, whether one of them matters by
+name (the posting-fact rule), prepares for the requirement its untold story fits (the save), and
+has no real example for the complaint requirement (the acknowledged-gap branch); `prep-strong`
+prepares for the requirement a named verified note covers (a settled entry's fidelity check),
+the one its first untold story fits (the save, with a posting-words Best For), and a requirement
+it names itself, which the posting does not list, with its second untold story (the save, with a
+Best For in the user's own words; a test checks the posting does not hold that phrase);
+`prep-unverified` prepares for the requirement a named unverified note covers (the read-back,
+then the interview telling) and the one its untold story fits (the `stories add` command). The
+directives section tells the simulated user it comes before the base rule to answer only what it
+is asked. Each is validated like a story's text, and an untold story may not share a title with
+any other story. The prep personas take 16 coach messages, measured: at 12, `prep-strong`
+stopped mid-rehearsal before the summary; `prep-strong` takes 20, since its three requirements
+and two saves add messages to the 8 the fourth run used.
 
 **Seeding** (`prep.seed_vault`): before the coach starts, the persona's lead is created in the
 sandbox's vault with its url on the reserved host `jobs.example.com`, its job description
@@ -158,13 +161,20 @@ below). The save checks all read one list, `rubric.saved_stories`, which counts 
 with outcome `proposed` (a refused name clash wrote nothing). Graded (sonnet by
 default): `gaps_probed` (5 with no miss, one point off per miss down to 1, each miss named in
 the notes; once the coach has offered the choice, a requirement the user declined or did not
-choose is never one, and every requirement is one when the coach never offered it), `no_supplied_example` (`yes`, or `no` with a quote),
-`unverified_handled`, `fidelity_feedback`, `verify_route` (an unverified entry's note is
+choose is never one, and every requirement is one when the coach never offered it, an evidenced
+one included; a set of requirements referred to by its size is one; for each requirement
+called evidenced, the notes quote the entry sentence that says the user did it), `no_supplied_example` (`yes`, or `no` with a quote),
+`unverified_handled`, `fidelity_feedback` (5 with no miss, one point off per miss down to 1:
+completeness and fidelity to the note, plus a "we" action not asked about or credited to the
+user, and a chosen requirement's story never asked for as in the interview, a read-back's yes
+not counting), `verify_route` (an unverified entry's note is
 outside the inbox, so the route to verifying it is to move it there first), `save_handled`
-(consent before each save, and the user's own words saved), `add_command` (at read-only, the
+(consent before each save, the user's own words saved, and a Best For that is the requirement,
+in the posting's words or the user's), `add_command` (at read-only, the
 `stories add` command sets `--best-for` and keeps the user's own words; overwritten to `not
 exercised` at the write level, read from the tools the client listed), `coaching_quality` (judged within
-the coach's brief, so restraint the playbook requires is never marked down), plus notes. The
+the coach's brief, so restraint the playbook requires is never marked down; the format question
+open and with no list, and a guessed format later treated as settled caps it at 3), plus notes. The
 grader is told what the FIRST successful call returned (each entry's title, verified label and
 body, and the job description), or `prep.NO_BRIEF_FACT`, and each story saved, from the same
 `rubric.saved_stories` (`prep.prep_save_fact`), or `prep.NO_SAVE_FACT`. In code, never
