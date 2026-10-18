@@ -50,6 +50,7 @@ from sluice.core.protocols import (
     CRITERIA_RELPATH,
     CV_LAYOUT_RELPATH,
     EVIDENCE_KINDS,
+    UNVERIFIED_WORDS,
     CandidateProfile,
     CvLayout,
     LayoutError,
@@ -99,6 +100,69 @@ VERIFIED_KEY = "verified"
 """The frontmatter key that makes an entry citable by the hard fabrication gate.
 Store-managed: `propose_evidence` never writes it and `EvidenceKind.fields` never
 lists it."""
+
+
+def _verified_raw(inner, fm) -> str:
+    """The `verified:` value as a person typed it: the raw text of the key's last top-level line,
+    quotes and any comment intact, for `verified_value` to read. The parser decides whether
+    the key is there at all (last line wins; a same-named key nested under another reads
+    absent), and only then is its own line consulted, because the parser strips a double quote
+    from each end independently: `"false" # x` came out as `false" # x`, which read as
+    verified."""
+    if not fm.get(VERIFIED_KEY):
+        return ""
+    lines = _key_lines(inner, VERIFIED_KEY)
+    return lines[-1][1] if lines else fm.get(VERIFIED_KEY)
+
+
+def _quoted_scalar(value: str) -> str | None:
+    """The inside of a YAML quoted scalar that opens `value`, unescaped, or None when `value` does
+    not open with a closed one. YAML's own escapes decide where it closes: in single quotes a
+    doubled `''` is one quote, in double quotes a backslash escapes the next character -- so
+    `'no''pe'` is `no'pe`, not the word no."""
+    if value[:1] not in ("'", '"'):
+        return None
+    quote, out, i = value[0], [], 1
+    while i < len(value):
+        ch = value[i]
+        if quote == "'" and ch == "'":
+            if value[i + 1:i + 2] == "'":
+                out.append("'")
+                i += 2
+                continue
+            return "".join(out)
+        if quote == '"' and ch == "\\" and i + 1 < len(value):
+            out.append(value[i + 1])
+            i += 2
+            continue
+        if quote == '"' and ch == '"':
+            return "".join(out)
+        out.append(ch)
+        i += 1
+    return None
+
+
+def verified_value(raw) -> str | None:
+    """The `verified:` frontmatter value as this store reports it: None when the entry is not
+    verified, else the value itself. The ONE reading of the key, so every consumer of
+    `verified` agrees, and it can only shrink the citable set relative to treating every
+    non-empty value as yes (owner rulings, 2026-10-18).
+
+    A person can type this key by hand, so it is read the way YAML (and Obsidian) would read
+    what they typed: a trailing ` # comment` is dropped -- only after whitespace, so a `#`
+    inside a value survives -- and so is one pair of surrounding quotes (the parser strips
+    double quotes, not single; a comment after the closing quote goes with it). What is left
+    reads as not verified when it is blank or one of `core/protocols.py::UNVERIFIED_WORDS`, in
+    any case. A quoted value is a string, so `'false # x'` is not the word false."""
+    value = str(raw or "").strip()
+    quoted = _quoted_scalar(value)
+    if quoted is not None:
+        value = quoted.strip()
+    else:
+        value = re.split(r"(?:^|\s)#", value, maxsplit=1)[0].strip()
+    if not value or value.casefold() in UNVERIFIED_WORDS:
+        return None
+    return value
 
 # Directories under leads_dir that SLUICE owns, pruned from the scan set. Everything else
 # under leads_dir is the user's and is scanned -- a `_`-prefix rule instead would silently
@@ -2045,7 +2109,7 @@ class Vault:
             out.append({
                 "path": path, "title": name[:-3],
                 **{floor: fm.get(key, "") for floor, key in sources.items()},
-                "verified": fm.get(VERIFIED_KEY) or None, "body": body.strip(),
+                "verified": verified_value(_verified_raw(inner, fm)), "body": body.strip(),
                 # The keys above are a FLOOR, kept so `core/rank.py::rank` and
                 # `cv/bundle.py::assign_codes` work on every kind unchanged. `fields` carries the kind's
                 # OWN frontmatter under its own names, which is where a field with no
@@ -2206,7 +2270,25 @@ class Vault:
         # since review is still reported as the abstention it is rather than as this
         # refusal -- the two need different answers from the human.
         _refuse_citation_shaped_body(body)
-        stamped = f"---\n{_set_fm(inner or '', VERIFIED_KEY, today)}\n---\n{body}"
+        # A `verified:` value spread over several lines (a list under the key, a block scalar)
+        # would be corrupted by `_set_fm`'s single-line replace, the #329 hazard, leaving its
+        # items orphaned in a note the human approved; refused first, by name.
+        if _holds_multiline_value(inner, VERIFIED_KEY):
+            raise ValueError(f"{name}: its `verified:` value spans several lines; make it one "
+                             f"line or blank, then verify again")
+        stamped_inner = _set_fm(inner or '', VERIFIED_KEY, today)
+        # Re-read the stamp the way the citable reader will, and refuse before anything is
+        # written unless it reads as today's date: `_set_fm` replaces the FIRST `verified:`
+        # line and the parser keeps the LAST, so a hand-typed second line ("verified: no",
+        # a blank one) or a nested one left the promoted entry uncitable and out of the
+        # inbox while this reported success. Refused here, the entry stays pending and the per-item handler
+        # names it.
+        if verified_value(_verified_raw(stamped_inner, _parse_fm_spaced(stamped_inner))) != today:
+            raise ValueError(f"{name}: its `verified:` frontmatter would not read back as "
+                             f"verified after stamping (a second `verified:` line, or one "
+                             f"nested under another key); keep a single top-level line, then "
+                             f"verify again")
+        stamped = f"---\n{stamped_inner}\n---\n{body}"
         # _evidence_dir(kind), not a second self._doc_path(spec.relpath) spelling of the
         # same directory: two spellings of one path is the exact hazard Task 1's _EXP_SUBDIR
         # existed to remove, and the concrete cost is that a guard living in _evidence_dir --

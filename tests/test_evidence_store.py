@@ -121,7 +121,10 @@ def test_the_citability_key_is_written_in_exactly_one_function():
                 continue
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            (readers if name == "get" else writers).add(fn.name)
+            # `_key_lines` only LOCATES the key's lines (verified_value reads the raw text a person
+            # typed); the frontmatter writer is `_set_fm`, so a call handing it the key is a
+            # write and lands in `writers`.
+            (readers if name in ("get", "_key_lines") else writers).add(fn.name)
 
     assert readers, ("the sweep found no VERIFIED_KEY read at all -- the matcher is "
                      "broken, not the vault; the writer assertion below would then be "
@@ -1113,3 +1116,108 @@ def test_an_experience_entrys_skills_is_written_and_read_back_as_data(tmp_path):
     [entry] = v.read_evidence("experience")
     assert entry["fields"]["Skills"] == "examplecoach"
     assert "legacy" not in entry
+
+
+# Owner rulings, 2026-10-18: the words meaning no or no value, in any case, read the way YAML
+# would read what a person typed -- one pair of quotes and a trailing comment dropped.
+_NO_WORDS = ["false", "False", "NO", "off", "'no'", '"OFF"', "' no '", "null", "~", "NULL",
+             "false # not checked yet", "no  #later", "# only a comment", "'no' # quoted",
+             '"false" # not approved']   # the parser alone strips only the opening quote here
+
+
+@pytest.mark.parametrize("word", _NO_WORDS)
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_a_verified_key_a_person_typed_as_no_reads_as_unverified(tmp_path, kind, word):
+    # Owner ruling, 2026-10-18. Before it, any non-empty value counted, so a note its author
+    # marked `verified: false` was citable (experience) and showed as verified in a prep brief.
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, kind, "marked-no", f"verified: {word}")
+    assert v.read_evidence(kind) == [], (kind, word)
+    every = v.read_evidence(kind, verified_only=False)
+    assert [(e["title"], e["verified"]) for e in every] == [("marked-no", None)]
+
+
+@pytest.mark.parametrize("value, reported", [
+    ("2026-10-18", "2026-10-18"), ("yes", "yes"), ("true", "true"),
+    ("nope", "nope"), ("offline", "offline"),        # starting like a no word is not one
+    ("'2026-10-18'", "2026-10-18"),                  # quotes go; the value is reported bare
+    ("2026-10-18 # approved", "2026-10-18"),         # so does a comment after whitespace
+    ("no#tag", "no#tag"),                            # a `#` inside a value is not a comment
+    ("'false # x'", "false # x"),                    # quoted, it is a string, not the word
+    ('"2026-10-18" # ok', "2026-10-18"),             # double quotes then a comment
+    ('"false # x"', "false # x"),                    # double-quoted, a string, not the word
+])
+def test_any_other_verified_value_still_counts_as_verified(tmp_path, value, reported):
+    # The rulings narrow exactly the words meaning no or no value: a date (what verify stamps)
+    # and every other value are read as before.
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, "experience", "marked", f"verified: {value}")
+    assert [(e["title"], e["verified"]) for e in v.read_evidence("experience")] == [
+        ("marked", reported)]
+
+
+def test_the_no_words_reach_the_brief_label_and_the_doctor_count(tmp_path):
+    # Every consumer reads the store's `verified`, so fixing the one reading fixes them all:
+    # the prep brief labels the note unverified and doctor does not count it as verified.
+    from sluice.core.prepbrief import entry_from_store
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, "stories", "marked-no", "verified: false")
+    _seed(tmp_path, "stories", "marked-yes", "verified: 2026-10-18")
+    labels = {e["title"]: entry_from_store(e, EVIDENCE_KINDS["stories"].fields)["verified"]
+              for e in v.read_evidence("stories", verified_only=False)}
+    assert labels == {"marked-no": False, "marked-yes": True}
+    facts = v.preflight()
+    assert facts["stories_verified"] == 1 and facts["stories_total"] == 2
+
+
+def test_an_inbox_note_marked_no_is_promoted_by_verify_and_becomes_citable(tmp_path):
+    # The recovery route: a note hand-marked `verified: false`, moved into the inbox, is
+    # verified like any other, the stamp replacing the hand-typed line.
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, "experience", "marked-no", "Company: X\nverified: false", inbox=True)
+    reviewed = v.read_pending_evidence_text("experience", "marked-no")
+    assert v.verify_evidence("experience", "marked-no", today="2026-10-18", reviewed=reviewed)
+    assert [(e["title"], e["verified"]) for e in v.read_evidence("experience")] == [
+        ("marked-no", "2026-10-18")]
+
+
+@pytest.mark.parametrize("frontmatter, message", [
+    ("Company: X\nverified: 2026-01-01\nverified: no", "would not read back as verified"),
+    ("Company: X\nverified: 2026-01-01\nverified:", "would not read back as verified"),
+    ("Company: X\nverified: 2026-01-01\nparent:\n  verified: x",
+     "would not read back as verified"),
+    ("Company: X\nverified:\n  - no", "value spans several lines"),   # a list under the key
+])
+def test_verify_refuses_a_note_whose_stamp_would_not_read_as_verified(tmp_path, frontmatter,
+                                                                      message):
+    # `_set_fm` replaces the FIRST `verified:` line and the parser keeps the LAST, so a second
+    # line left the promoted entry uncitable and out of the inbox while verify reported
+    # success. It now refuses, writes nothing, and the entry stays pending.
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, "experience", "doubled", frontmatter, inbox=True)
+    reviewed = v.read_pending_evidence_text("experience", "doubled")
+    with pytest.raises(ValueError, match=message):
+        v.verify_evidence("experience", "doubled", today="2026-10-18", reviewed=reviewed)
+    assert v.read_evidence("experience", verified_only=False) == []
+    assert [e["title"] for e in v.read_pending_evidence("experience")] == ["doubled"]
+
+
+def test_a_verified_key_nested_under_another_still_reads_absent(tmp_path):
+    # Reading the key's own line must not widen what the parser decides: a same-named key nested
+    # under another mapping makes the top-level one read absent, so the entry stays uncitable.
+    v = Vault(str(tmp_path))
+    _seed(tmp_path, "experience", "nested", "verified: 2026-01-01\nparent:\n  verified: x")
+    assert v.read_evidence("experience") == []
+
+
+@pytest.mark.parametrize("raw, read", [('"false # x"', "false # x"), ("'off'", None),
+                                        ('"no" # later', None), ("no # later", None),
+                                        ("'no''pe'", "no'pe"),     # YAML's doubled-quote escape
+                                        ("'it''s no' # x", "it's no"),
+                                        ('"no\\"pe"', 'no"pe'),     # a backslash escape
+                                        ("'no", "'no")])           # unclosed: not quoted
+def test_verified_value_reads_quotes_before_a_comment(raw, read):
+    # The one reading, fed the raw line text: a quoted value's inside is the value, and a
+    # comment counts only outside quotes.
+    from sluice.core.vault import verified_value
+    assert verified_value(raw) == read

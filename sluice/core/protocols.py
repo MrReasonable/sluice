@@ -363,6 +363,14 @@ EVIDENCE_KINDS = {
 
 
 
+# What a person types on an evidence entry's approval marker to mean NO or NO VALUE (owner rulings,
+# 2026-10-18): every store reports None for these, compared case-insensitively, as it does for
+# an absent or blank one. Closed, so a second store meets it
+# exactly; `core/vault.py::verified_value` is the vault's reading, and how it strips a YAML
+# comment or quotes before comparing is that store's own concern.
+UNVERIFIED_WORDS = frozenset({"false", "no", "off", "null", "~"})
+
+
 def verify_outcome(spec, subject: str = "it") -> str:
     """What `verify` actually BUYS for this kind, as a verb phrase -- the one place, so no
     message can over-claim on its own (#164 review, M2). Keyed on the kind's flags, never its
@@ -1025,7 +1033,15 @@ class Store(Protocol):
 
         `tests/conformance/test_store_contract.py::test_an_absent_corpus_reads_as_empty`
         binds this per kind, because a docstring alone is what the vault happened to do
-        rather than what the seam requires."""
+        rather than what the seam requires.
+
+        `verified` is None for an entry that is not verified. A store reports None for an
+        absent or blank approval marker and for any of `UNVERIFIED_WORDS`, compared
+        case-insensitively, and never reads one as yes; a store whose marker a person cannot
+        type still declares how such a value would reach it, so the row below runs for it. The
+        vault's reading is `core/vault.py::verified_value`, and every caller of this store
+        takes `verified` from it. `tests/conformance/test_store_contract.py::
+        test_an_approval_marker_typed_as_no_is_not_citable` binds it per kind."""
         ...
 
     def read_pending_evidence(self, kind: str) -> list:

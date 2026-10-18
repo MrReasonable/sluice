@@ -918,6 +918,10 @@ to a slug the way `add` reduced it — so the name's original spaces/casing stil
 does not name a pending entry, exits **1** with `<kind> verify: no pending entry matching
 '<NAME>'` (stderr) rather than silently reporting nothing to do.
 
+A note you place in the kind's own folder yourself counts as verified when its `verified:` line
+has a value, unless that value is `false`, `no`, `off`, `null` or `~` (in any case, a trailing
+`# comment` ignored); a blank `verified:` does not count either.
+
 Each promotion is reported `verified: <title>` on stdout. Two per-entry outcomes go to stderr and
 never stop the rest of the queue being offered:
 
