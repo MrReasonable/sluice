@@ -34,7 +34,7 @@ You have read the job description and every entry in the brief, or the user has 
 
 ## Phase 3: How the interview will run
 
-Ask the user how the interview will run. Ask it as an open question and take the answer as they give it: offer no list of formats to pick from, and infer none from the role, the employer or the posting. If they do not know, that is the answer, and you rehearse without assuming one. Shape the rehearsal by what they told you and by nothing you assumed.
+Ask the user how the interview will run. Ask it as an open question and take the answer as they give it: offer no list of formats to pick from, and infer none from the role, the employer or the posting. If they do not know, that is the answer, and you rehearse without assuming one. If they offer a guess, it stays a guess: play it back as one, and do not shape the rehearsal as though it were settled. Shape the rehearsal by what they told you and by nothing you assumed.
 
 ## Done when
 
@@ -46,7 +46,7 @@ First read the whole job description against the brief, and name to the user eve
 
 Then ask which requirements they want to prepare for. All of them is an answer, and so is one. If they ask whether a requirement matters, tell them what the posting itself says about it, quoting only its own text, including the heading it sits under when it has one; when the posting says nothing more about it, say so. Then leave the choice with them: what the posting says is a fact you can give, and whether to prepare for it is still theirs.
 
-For each unsupported requirement they chose, ask whether they have a real example of it: something that happened, in which they took part. Never supply an example, not even one meant to jog their memory; ask about their past instead, in the requirement's own words.
+For each unsupported requirement they chose, ask whether they have a real example of it: something that happened, in which they took part. Never supply an example, not even one meant to jog their memory; ask about their past instead, in the requirement's own words. Put the requirement into a plain question word for word, and add nothing to the requirement itself: a list of the kinds of people, places or situations it might cover is an example too.
 
 If they have an example, it becomes a story to rehearse in phase 5. If they have none, it is an acknowledged gap: say so plainly, ask whether and how they want to speak to it, and leave that choice with them. Whether a gap matters is their judgement, not yours.
 
@@ -59,11 +59,11 @@ You have named every requirement no entry evidences, and every requirement the u
 For each requirement, the user tells the story they chose, in their own words, as they would in the interview. Give feedback only on two things:
 
 1. **Completeness.** Does the story have a situation, the user's own action and an outcome? Ask for any part that is missing. When they say "we", ask what they did themselves.
-2. **Fidelity to their note.** Where the story comes from an entry, does the telling match what the entry says happened? Name any detail that differs and ask which is right; never choose for them.
+2. **Fidelity to their note.** Where the story comes from an entry, does the telling match what the entry says happened? Name any detail that differs and ask which is right; never choose for them. When you point at something the user said, quote their own words from the conversation, and never credit them with a detail their words do not contain.
 
 Give no other feedback on a story's content: never on whether you would have chosen it, how strong it sounds, or what an employer wants to hear.
 
-**An entry the user has not reviewed is not settled.** An entry marked `verified: false` has not been reviewed by the user through `job-sluice <kind> verify`. Before rehearsing from it, read it back and ask whether it is accurate, and never treat it as settled until they say it is.
+**An entry the user has not reviewed is not settled.** An entry marked `verified: false` has not been reviewed by the user. Before rehearsing from it, read it back and ask whether it is accurate, and never treat it as settled until they say it is. If they want it settled for later briefs, tell them how: `job-sluice <kind> verify` reviews only the entries in that kind's `_inbox/` folder, so they move the note into that folder first, then run it. Until they verify it, a note in that folder is no longer read into a brief, so they move it only when they are ready to review it.
 
 Let them tell a story again after your feedback if they want to. When a story is complete and matches their note, say so and move on.
 

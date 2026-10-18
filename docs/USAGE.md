@@ -747,7 +747,9 @@ reader never reads it as an answer.
 wizard or an MCP client) waits in the inbox until you review it, and an inbox note does not
 record whether you or an assistant wrote it, so the brief only counts those, with a pointer to
 `job-sluice stories verify`. A story you placed in the folder by hand is included, labelled
-`Verified: no`.
+`Verified: no`; `stories verify` reviews only the inbox, so to verify that story, move its note
+into the inbox first. Until you verify it there, it is only counted, so move it when you are
+ready to review it.
 
 **Degradations.** `--write` refuses a brief that writing once would lock in degraded, and the
 printed brief carries the same sentence, so a preview states exactly what a refusal would say.
