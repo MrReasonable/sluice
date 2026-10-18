@@ -22,5 +22,17 @@
       "body": "**Situation.** The shared folders had grown over years, and people spent a long time finding the current version of a document.\n\n**Task.** I volunteered to sort them out.\n\n**Action.** I agreed a simple folder plan with my colleagues, moved the files over two evenings, and archived anything untouched for a year.\n\n**Result.** People stopped asking where things were, and the number of duplicate copies fell by about half.",
       "verified": true
     }
+  ],
+  "max_turns": 16,
+  "untold_stories": [
+    {
+      "title": "Sent a weekly note on a shared backlog",
+      "company": "Example Analytics",
+      "body": "**Situation.** Three colleagues relied on a backlog of requests I worked through, and they often asked where each one stood.\n\n**Task.** I wanted them to know without having to ask.\n\n**Action.** Every Friday I sent a short note listing what I had finished that week, what came next and what was waiting on someone else.\n\n**Result.** Within a month the questions about where things stood had mostly stopped, and one colleague began using the note to plan their own week."
+    }
+  ],
+  "directives": [
+    "Before you choose which requirements to prepare for, ask the coach whether one of the requirements none of your notes covers matters.",
+    "Prepare for at most two requirements, and make one of them the requirement your story that is not in your notes fits."
   ]
 }

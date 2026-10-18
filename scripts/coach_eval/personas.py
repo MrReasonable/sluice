@@ -11,7 +11,7 @@ the interview's employer, a seeded role, the lead's status, the server's level, 
 the user's own stories. `Persona` never receives its keys, since `load_personas` globs only the
 top directory."""
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # The simulated user's exact reply the first time the coach asks whether to save.
@@ -86,7 +86,16 @@ class PrepPersona:
     write: bool           # the server's level: --write, else read-only
     jd_template: str
     stories: list         # [{title, company (the PAST employer), best_for, body, verified}]
-    max_turns: int = 12   # the owner's setup budget; no prep run has been measured yet
+    max_turns: int = 12   # the owner's setup budget; each shipped persona sets its own (README)
+    # Stories the user has really lived that are NOT in their notes: told to the simulated user,
+    # never seeded. They are what makes a write-level run reliably reach the save path. Left to
+    # chance, the confirmation run of 2026-10-18 told no new story and the Best For fix went
+    # untested while every check read green.
+    untold_stories: list = field(default_factory=list)   # [{title, company, body}]
+    # What the user wants from the session, one line each: how a persona reaches a path the
+    # coach only takes when asked (whether a requirement matters) or when the user chooses it
+    # (rehearsing an unverified entry), rather than by chance.
+    directives: list = field(default_factory=list)
 
     def __post_init__(self):
         # Loudly, at load: each of these would otherwise seed a vault the persona did not mean,
@@ -133,6 +142,33 @@ class PrepPersona:
         shared = sorted({t for t in folded if folded.count(t) > 1})
         if shared:
             raise ValueError(f"prep persona {self.id}: two stories share the title {shared}")
+        titles = set(folded)
+        for i, story in enumerate(self.untold_stories):
+            for key in STORY_REQUIRED:
+                if not str(story.get(key) or "").strip():
+                    raise ValueError(f"prep persona {self.id}: untold story {i} has no {key}")
+            # Never seeded, so it has no verified state and no Best For of its own: what the
+            # coach saves it under is the coach's to choose, and a key here would read as a
+            # vault entry the persona meant to write.
+            for key in ("verified", "best_for"):
+                if key in story:
+                    raise ValueError(f"prep persona {self.id}: untold story {i} carries {key}, "
+                                     f"but an untold story is never seeded")
+            for key in STORY_TEXT_FIELDS:
+                if any(c in str(story.get(key) or "") for c in "{}"):
+                    raise ValueError(f"prep persona {self.id}: untold story {i}'s {key} carries "
+                                     f"a placeholder")
+            # The simulated user is handed notes and untold stories by title; one sharing a
+            # title with a note or another untold story would read as a second telling of it.
+            if str(story["title"]).casefold() in titles:
+                raise ValueError(f"prep persona {self.id}: untold story {i} shares the title "
+                                 f"{story['title']!r} with another story")
+            titles.add(str(story["title"]).casefold())
+        for i, line in enumerate(self.directives):
+            if not isinstance(line, str) or not line.strip():
+                raise ValueError(f"prep persona {self.id}: directive {i} is not a line of text")
+            if any(c in line for c in "{}"):
+                raise ValueError(f"prep persona {self.id}: directive {i} carries a placeholder")
 
 
 def is_plain_file_name(name: str) -> bool:

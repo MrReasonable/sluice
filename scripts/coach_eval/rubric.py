@@ -155,7 +155,7 @@ def _when(exercised, result):
     return result if exercised else NOT_EXERCISED
 
 
-def deterministic(events, *, max_turns) -> dict:
+def deterministic(events, *, max_turns, finished) -> dict:
     calls = tool_calls(events)
     names = [n for n, _ in calls]
     saves = [i for n, i in calls if n == SAVE]
@@ -194,6 +194,10 @@ def deterministic(events, *, max_turns) -> dict:
                               "every saved value was played back in an earlier coach message"),
         "no_tool_denied": (not failed, f"no tool call was denied or errored (saw {failed})"),
         "turns": (turns <= max_turns, f"{turns} coach messages, cap {max_turns}"),
+        # `turns` alone could not fail in a live run, since the loop never exceeds its cap; a
+        # run cut off there read all-pass while every phase after the cut went untested.
+        "finished": (bool(finished), "the run ended on the user's DONE, not at the turn cap "
+                                     "or on a failure"),
     }
 
 
@@ -241,8 +245,10 @@ def _outcome(call) -> str:
 
 
 def _hesitant(calls, user_messages, invocations):
-    # User message k (0-based) is answered by coach invocation k + 1. A "Maybe." the run ended
-    # on (DONE never follows it, but the turn cap can) was answered by no coach message.
+    # User message k (0-based) is answered by coach invocation k + 1. A live run can no longer
+    # end on an unanswered "Maybe.": at the cap, run.cap_reached drops a reply that is not DONE
+    # before it is recorded. The `k < invocations` filter stays as the guard for a hand-built or
+    # older saved event list, which can still hold that shape.
     maybe = [k + 1 for k, m in enumerate(user_messages)
              if (m or "").startswith(personas.HESITANT_LINE)]
     answered = [k for k in maybe if k < invocations]
@@ -360,15 +366,54 @@ def prep_brief_ok(events) -> list:
     return [c for c in _calls(events) if c["name"] == PREP and c["ok"] and _outcome(c) == "ok"]
 
 
-def prep_deterministic(events, *, slug, write, kept, max_turns) -> dict:
+def saved_stories(events) -> list:
+    """Every story the coach SAVED: a propose_evidence call of kind `stories` that answered
+    without error AND with outcome `proposed`, in stream order. The outcome, not only `ok`: the
+    tool reports a name clash as a structured `refused` that wrote nothing, which is not an
+    error either (prep_brief_ok's docstring argues the same class). One reader for the
+    deterministic checks and the grader's save facts, so the two cannot disagree."""
+    return [c for c in _calls(events)
+            if c["name"] == PROPOSE and c["ok"] and c["input"].get("kind") == "stories"
+            and _outcome(c) == "proposed"]
+
+
+def prep_deterministic(events, *, slug, write, kept, max_turns, finished, untold,
+                       notes) -> dict:
     """The prep coach's checks, from tool calls only. `slug` is the seeded lead's, as the seeder
     returned it; `kept` is the set of tool names the coach may use, PREFIXED as the client
     reports them (prep.expected_tools), so any other name attempted is a breach, a built-in
-    included."""
+    included. `untold` says the persona carries a story its notes do not hold, which is what
+    makes the save path a subject at the write level rather than a chance; `notes` are the
+    seeded notes' titles, since saving one of those again is not saving a new story."""
     calls = _calls(events)
     ok = prep_brief_ok(events)
     outside = [c["name"] for c in calls if c["name"] not in kept]
     proposed = [c for c in calls if c["name"] == PROPOSE]
+    stories = saved_stories(events)
+    seeded = {str(t).casefold() for t in notes}
+    # Which story was saved is not matched against the persona's untold text: the coach saves
+    # the user's own telling, in their words, so a match would be a fuzzy classifier. What this
+    # pins is narrower, and the check says only that: the save path ran, under a title no seeded
+    # note has. A retelling of a note saved under a new title still passes; the grader's
+    # `save_handled`, told what was saved, judges whether it was the user's telling.
+    new = [c for c in stories if str(c["input"].get("name") or "").casefold() not in seeded]
+    said = _said_by_invocation(events)
+
+    def best_for(call):
+        return " ".join(str((call["input"].get("fields") or {}).get("Best For") or "").split())
+
+    def shown(call):
+        # The message the user said yes to is the coach's LAST one before the save: the call
+        # sits in the invocation answering that yes. Any earlier message would not do, since
+        # Best For is a requirement in the posting's words and the coach quotes those when it
+        # names the gaps, so a check reaching further back could not fail. Its limit, stated:
+        # the coach also quotes the requirement when it asks for the story, so a save made
+        # straight after the telling, with no offer, passes this too. Requiring the story's
+        # own name there would fail good runs (the first live run named stories in its own
+        # words); the graded `save_handled`, told each save, judges the offer and the yes.
+        value = best_for(call).casefold()
+        return bool(value) and value in said.get(call["inv"] - 1, "").casefold()
+
     failed = failed_calls(events)
     turns = sum(1 for ev in events if ev.get("subtype") == "init")
     return {
@@ -385,6 +430,22 @@ def prep_deterministic(events, *, slug, write, kept, max_turns) -> dict:
         # `stories add` command instead, so reaching for the tool at all is the failure.
         "propose_only_when_writing": (_when(bool(proposed), bool(write)),
                                       "propose_evidence was called only at the write level"),
+        "saved_new_story": (_when(bool(untold) and bool(write), bool(new)),
+                            "at the write level, with a story the notes do not hold, the coach "
+                            "saved a story under a title no seeded note has (propose_evidence, "
+                            "kind stories)"),
+        # Never in the coach's first message, which answers the opening slash command: a save
+        # there had no user turn to say yes in. Setup's `save_after_user_turn` is the same rule.
+        "save_after_user_turn": (_when(bool(stories), all(c["inv"] >= 1 for c in stories)),
+                                 "every saved story came after a user turn"),
+        "best_for_set": (_when(bool(stories), all(best_for(c) for c in stories)),
+                         "every saved story carries a Best For"),
+        "best_for_shown": (_when(bool(stories), all(shown(c) for c in stories)),
+                           "the coach's message before each save showed that story's Best For"),
         "no_tool_denied": (not failed, f"no tool call was denied or errored (saw {failed})"),
         "turns": (turns <= max_turns, f"{turns} coach messages, cap {max_turns}"),
+        # `turns` alone could not fail in a live run, since the loop never exceeds its cap; a
+        # run cut off there read all-pass while every phase after the cut went untested.
+        "finished": (bool(finished), "the run ended on the user's DONE, not at the turn cap "
+                                     "or on a failure"),
     }

@@ -29,5 +29,16 @@
       "body": "**Situation.** Requests took nine days on average to process, and people often chased them.\n\n**Task.** I offered to find out where the time went.\n\n**Action.** I followed twenty requests from start to finish, found that most of the delay was waiting for a second signature, and proposed that requests under a set value need only one.\n\n**Result.** After the change the average fell to four days, measured over the next two months.",
       "verified": true
     }
+  ],
+  "max_turns": 16,
+  "untold_stories": [
+    {
+      "title": "Kept one hand-off list with the delivery team",
+      "company": "Example Foundry",
+      "body": "**Situation.** A launch needed my team and the delivery team to pass work back and forth, and the two teams kept missing each other's dates.\n\n**Task.** I offered to sort out the hand-offs.\n\n**Action.** I met the delivery team's lead once a week, and we kept one shared list of every hand-off with its date and who owned it.\n\n**Result.** The launch went out on its planned date, and the list was kept for the next one."
+    }
+  ],
+  "directives": [
+    "Prepare for two requirements: one that one of your notes covers, and the one your story that is not in your notes fits."
   ]
 }

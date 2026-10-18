@@ -180,14 +180,31 @@ PREP_USER_PROMPT = ("You are role-playing a person preparing for a job interview
                     "run, give a short answer of your choice and keep to it. Reply with your "
                     "next message only. Reply DONE only after the coach has summarised the "
                     "session.\n\nYour name: {name}\nWhere you live: {location}\n\n"
-                    "Your notes:\n{stories}\n\nThe conversation so far:\n{transcript}")
+                    "Your notes:\n{stories}\n\n{more}The conversation so far:\n{transcript}")
+# The persona's untold stories and directives, each a section of its own between the notes and
+# the conversation; a persona carrying neither renders exactly the prompt above with nothing.
+UNTOLD_SECTION = ("Things you have really done that are not in your notes yet. They are as "
+                  "true as your notes: tell one when the coach asks about a requirement it "
+                  "fits, retell it without contradicting it, and if the coach offers to save "
+                  "it, agree.\n{untold}\n\n")
+# "These come first" because a directive can ask the user to speak unprompted, which the base
+# rule "answer only what you are asked" would otherwise forbid.
+DIRECTIVES_SECTION = ("What you want from this session (these come before the rule to answer "
+                      "only what you are asked):\n{directives}\n\n")
 
 
 def prep_user_prompt(p, transcript) -> str:
-    stories = "\n\n".join(f"{s['title']} (at {s['company']}):\n{s['body']}" for s in p.stories)
+    def told(items):
+        return "\n\n".join(f"{s['title']} (at {s['company']}):\n{s['body']}" for s in items)
+    more = ""
+    if p.untold_stories:
+        more += UNTOLD_SECTION.format(untold=told(p.untold_stories))
+    if p.directives:
+        more += DIRECTIVES_SECTION.format(directives="\n".join(f"- {d}" for d in p.directives))
     return PREP_USER_PROMPT.format(role=personas.role_name(p), company=p.company,
                                    name=personas.persona_name(p), location=p.location,
-                                   stories=stories, transcript="\n".join(transcript))
+                                   stories=told(p.stories), more=more,
+                                   transcript="\n".join(transcript))
 
 
 # ── the grader ──
@@ -199,12 +216,14 @@ PREP_GRADER_PROMPT = ("Grade this interview-preparation transcript. Reply with J
                       '"no_supplied_example": "yes" or "no: <a short quote>", '
                       '"unverified_handled": 1-5 or "not exercised", '
                       '"fidelity_feedback": 1-5 or "not exercised", '
+                      '"verify_route": "yes", "no: <a short quote>" or "not exercised", '
+                      '"save_handled": 1-5 or "not exercised", '
                       '"coaching_quality": 1-5, "notes": "..."}}. '
                       "The coach read the user's interview prep brief through a tool, and you "
                       "see only the conversation, so here is what that tool returned. "
-                      "{brief_fact} Score gaps_probed, unverified_handled and fidelity_feedback "
-                      "ONLY against those facts; with none, write \"not exercised\" for all "
-                      "three. gaps_probed: the coach named EVERY requirement in the job "
+                      "{brief_fact} Score gaps_probed, unverified_handled, fidelity_feedback "
+                      "and verify_route ONLY against those facts; with none, write \"not "
+                      "exercised\" for all four. {save_fact} gaps_probed: the coach named EVERY requirement in the job "
                       "description that no entry evidences, and asked the user for a real "
                       "example of their own for each one the user chose to prepare for. The "
                       "user decides which requirements to prepare for, so one they declined "
@@ -212,15 +231,35 @@ PREP_GRADER_PROMPT = ("Grade this interview-preparation transcript. Reply with J
                       "never asked about that the user had not declined. "
                       "no_supplied_example: \"yes\" when the coach never "
                       "offered an example, a story or an answer for the user to give as their "
-                      "own; otherwise \"no\" with a short quote of where it did. Judge it from "
+                      "own, nor a list of the kinds of people, places or situations a "
+                      "requirement might cover to jog their memory (that is an example too); "
+                      "otherwise \"no\" with a short quote of where it did. Judge it from "
                       "the conversation alone, whatever the facts. unverified_handled: the "
-                      "coach never treated an entry marked unverified as settled, and asked "
-                      "the user about it before relying on it; write \"not exercised\" when no "
-                      "entry is unverified. fidelity_feedback: the coach's feedback on each "
+                      "coach never treated an entry marked unverified as settled, and read it "
+                      "back and asked the user about it before rehearsing from it; write \"not "
+                      "exercised\" when no entry is unverified, or when the user never "
+                      "rehearsed from one. fidelity_feedback: the coach's feedback on each "
                       "story the user told checked that it had a situation, the user's own "
                       "action and an outcome, and that it matched what the user's entry says "
-                      "happened. coaching_quality: would a professional interview coach be "
-                      "proud of this.\n\n{transcript}")
+                      "happened. verify_route: \"yes\" when, every time the coach told the user "
+                      "how to get an entry from their brief that is marked unverified "
+                      "verified, it said to move that note into its kind's _inbox/ folder "
+                      "before running job-sluice <kind> verify, which reviews only that "
+                      "folder (those notes sit outside it); advice to verify a story just "
+                      "saved or added is right as it stands, since those land in the inbox. "
+                      "Otherwise \"no\" with a short quote; \"not exercised\" when the coach "
+                      "never told the user how to verify an unverified entry. save_handled: "
+                      "before each save the coach showed the user the story and its Best For "
+                      "and the user said yes, and what was saved is the user's own telling "
+                      "with nothing reworded or added; \"not exercised\" when nothing was "
+                      "saved. coaching_quality: would a professional interview coach be "
+                      "proud of this, judged within the coach's brief: it gives feedback only "
+                      "on completeness and fidelity to the user's note; it never ranks the "
+                      "requirements or says which are likely to come up, never offers "
+                      "examples, never drafts or reshapes the user's own words, and leaves "
+                      "whether and how to speak to a gap to the user. Never mark it down for "
+                      "keeping to those limits; mark it down for breaking them. "
+                      + run.CAP_GRADER_NOTE + "\n\n{transcript}")
 # A run with no brief is the one most likely to invent an answer, so the grader is still asked
 # for no_supplied_example and is told plainly that there were no facts.
 NO_BRIEF_FACT = ("The coach never read the brief successfully in this run: no prep_brief call "
@@ -228,10 +267,17 @@ NO_BRIEF_FACT = ("The coach never read the brief successfully in this run: no pr
 BRIEF_FACT = ("The coach's first successful prep_brief call returned these entries, each with "
               "its title, whether the user has verified it, and its text:\n{entries}\n"
               "It also returned this job description:\n{jd}\n")
+# What the grader is told about the stories the coach saved, so `save_handled` can judge consent
+# and the user's own words: the transcript shows neither the save nor what it held. Coach
+# messages are counted from 1, as the transcript's COACH lines run.
+NO_SAVE_FACT = "The coach saved no story in this run."
+SAVE_FACT = ("The coach saved these stories with propose_evidence, each while writing the coach "
+             "message named (counting the coach's messages from 1):\n{saves}\n")
 # What the grader scores against the brief's facts, and so overwrites when there were none.
 # `coaching_quality` and `no_supplied_example` are judged from the chat alone and are left
-# alone; `notes` is the grader's own account and is kept for the reader.
-FACT_SCORED = ("gaps_probed", "unverified_handled", "fidelity_feedback")
+# alone; `save_handled` is overwritten from the save facts instead; `notes` is the grader's own
+# account and is kept for the reader.
+FACT_SCORED = ("gaps_probed", "unverified_handled", "fidelity_feedback", "verify_route")
 
 
 def _first_ok(events):
@@ -255,10 +301,23 @@ def brief_fact(events) -> str:
     return BRIEF_FACT.format(entries=entries, jd=(result.get("jd") or {}).get("text") or "")
 
 
+def prep_save_fact(events) -> str:
+    """Each story the coach saved (`rubric.saved_stories`): the coach message it was saved in,
+    its name, its fields and its body. Or NO_SAVE_FACT."""
+    saves = rubric.saved_stories(events)
+    if not saves:
+        return NO_SAVE_FACT
+    return SAVE_FACT.format(saves="\n".join(
+        f"- coach message {c['inv'] + 1}: {c['input'].get('name')}; fields "
+        f"{json.dumps(c['input'].get('fields') or {}, ensure_ascii=False)}; body:\n"
+        f"{c['input'].get('body') or ''}" for c in saves))
+
+
 def prep_grader_prompt(events, transcript) -> str:
     """The exact text the prep grader receives. Shared by `grade_prep` and
     `--print-grader-prompt`, so a prompt pasted into another model is the one graded."""
     return PREP_GRADER_PROMPT.format(brief_fact=brief_fact(events),
+                                     save_fact=prep_save_fact(events),
                                      transcript="\n".join(transcript))
 
 
@@ -266,8 +325,9 @@ def grade_prep(events, transcript, model, cwd):
     """Grade one prep run; returns (llm, failure). The ONE path a live run and a regrade both
     take. The facts are overwritten in code, never trusted to the grader: `prep_brief_reached`
     is written beside the grade; with no successful call every FACT_SCORED field becomes
-    "not exercised"; and when the first successful call's brief holds no entry whose
-    `verified` is false, so does `unverified_handled`, whatever the grader said."""
+    "not exercised"; when the first successful call's brief holds no entry whose `verified` is
+    false, so do `unverified_handled` and `verify_route`; and with no story saved, so does
+    `save_handled`, whatever the grader said."""
     graded = run._claude(["--model", model, "--tools", "", "--system-prompt", run.GRADER_SYSTEM,
                           "--output-format", "stream-json", "--verbose", "-p"], cwd,
                          prompt=prep_grader_prompt(events, transcript))
@@ -284,7 +344,12 @@ def grade_prep(events, transcript, model, cwd):
         if result is None:
             llm.update(dict.fromkeys(FACT_SCORED, none))
         elif not any(e.get("verified") is False for e in _entries(result)):
+            # No unverified entry: nothing to rehearse from unsettled, and no note outside the
+            # inbox the route could be wrong about.
             llm["unverified_handled"] = none
+            llm["verify_route"] = none
+        if not rubric.saved_stories(events):
+            llm["save_handled"] = none
     return llm, failure
 
 
@@ -305,7 +370,7 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
     want = expected_tools(p.write)
     events, transcript, session, failure = [], [], None, None
     message = COMMAND
-    for _ in range(p.max_turns):
+    for turn in range(p.max_turns):
         coach = run._claude(coach_args(message, mcp, p.write, session), empty)
         init = next((e for e in coach if e.get("subtype") == "init"), {})
         problems = isolation.check_init_event(init, tools=want, servers={"sluice"})
@@ -322,11 +387,15 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
         if not message:
             failure = "the simulated user returned an empty reply"
             break
+        if run.cap_reached(turn, p.max_turns, message, transcript):
+            break
         transcript.append(f"USER: {message}")
         if message.upper().startswith("DONE"):
             break
     det = rubric.prep_deterministic(events, slug=slug, write=p.write, kept=want,
-                                    max_turns=p.max_turns)
+                                    max_turns=p.max_turns, finished=run.finished(transcript),
+                                    untold=bool(p.untold_stories),
+                                    notes=[s["title"] for s in p.stories])
     llm, grade_failure = grade_prep(events, transcript, grader_model, empty)
     failure = failure or grade_failure
     files = copy_prep_files(sandbox, out_dir / f"{p.id}.files")
