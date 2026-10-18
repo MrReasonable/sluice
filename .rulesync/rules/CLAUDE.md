@@ -940,7 +940,11 @@ prevent.
 **Where that boundary STOPS, stated rather than implied: a human editing their own vault.** The
 vault is the user's Obsidian directory and hand-editing it is a first-class workflow here, so a
 note hand-placed in an evidence kind's own directory carrying `verified:` IS citable — measured:
-`read_evidence("experience")` returns it under the default `verified_only=True`, and nothing in
+`read_evidence("experience")` returns it under the default `verified_only=True` -- unless the value
+is a word meaning no or no value (`core/protocols.py::UNVERIFIED_WORDS`, any case, after a trailing
+YAML comment and one pair of quotes are dropped), which reads as unverified (owner rulings
+2026-10-18, `core/vault.py::verified_value`, the one reading of the key; it can only shrink the
+citable set) -- and nothing in
 `sluice/` inspects a file it never wrote. `_refuse_citation_shaped_body` does not reach it either,
 since that runs on the two WRITE paths (`_render_evidence_note` and `verify_evidence`), which is
 why it is a NARROWING and #174 -- the gate reading structured entries (`cv/validate.py::entry_facts`)

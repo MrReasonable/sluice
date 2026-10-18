@@ -345,6 +345,32 @@ def test_an_absent_corpus_reads_as_empty(store_name, tmp_path, monkeypatch):
         assert store.read_pending_evidence(kind) == [], kind
 
 
+def test_every_seeded_store_declares_how_a_person_types_its_marker(store_name):
+    from tests.conformance.seeds import HAND_MARKERS, SEEDERS
+    assert store_name in HAND_MARKERS and set(HAND_MARKERS) == set(SEEDERS)
+
+
+@pytest.mark.parametrize("kind", sorted(EVIDENCE_KINDS))
+def test_an_approval_marker_typed_as_no_is_not_citable(store_name, tmp_path, monkeypatch, kind):
+    """Owner rulings, 2026-10-18 (core/protocols.py::UNVERIFIED_WORDS): a marker a person typed
+    to mean no or no value reads as not verified, for every kind, while a date still counts.
+    Before, any non-empty value counted, so an `experience` note its author marked
+    `verified: false` was citable by the fabrication gate."""
+    from sluice.core.protocols import UNVERIFIED_WORDS
+    from tests.conformance.seeds import HAND_MARKERS
+    store = _make_store(store_name, tmp_path, monkeypatch)
+    mark = HAND_MARKERS[store_name]
+    mark(store, kind, "dated", "2026-01-01")
+    words = sorted(UNVERIFIED_WORDS)
+    assert words   # scope: the sweep has words to mark
+    for i, word in enumerate(words):
+        mark(store, kind, f"no-{i}", word.upper() if i % 2 else word)
+    assert [e["title"] for e in store.read_evidence(kind)] == ["dated"]
+    every = {e["title"]: e["verified"] for e in store.read_evidence(kind, verified_only=False)}
+    assert every.pop("dated") and set(every.values()) == {None}
+    assert len(every) == len(words)
+
+
 def test_read_evidence_honours_verified_only(store_name, tmp_path, monkeypatch):
     """This is the FABRICATION GATE'S GROUND TRUTH.
 

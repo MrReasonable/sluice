@@ -115,6 +115,27 @@ SEEDERS = {
 }
 
 
+def _hand_mark_vault(store, kind, name, value):
+    """An evidence entry as a PERSON writes it in the vault: a note dropped into the kind's own
+    folder carrying a typed `verified:` line. The one write the Store contract has no member
+    for, by design (only `verify_evidence` stamps the key), so it is per store."""
+    import os
+
+    from sluice.core.protocols import EVIDENCE_KINDS
+    folder = os.path.join(store.dir, *EVIDENCE_KINDS[kind].relpath.split("/"))
+    os.makedirs(folder, exist_ok=True)
+    with open(os.path.join(folder, f"{name}.md"), "w", encoding="utf-8") as fh:
+        fh.write(f"---\nverified: {value}\n---\nWhat happened.\n")
+
+
+# How each store's approval marker gets typed by a person, for the contract row that binds
+# UNVERIFIED_WORDS. Keyed like SEEDERS, and a test requires the two rosters to match, so a
+# second store cannot skip the row by never declaring how its marker is written.
+HAND_MARKERS = {
+    "vault": _hand_mark_vault,
+}
+
+
 def seed(store_name, store, **kw):
     """Seed `store` for a conformance test, or fail loudly if it has no seeder."""
     if store_name not in SEEDERS:

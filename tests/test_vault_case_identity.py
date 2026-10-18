@@ -472,6 +472,8 @@ def test_no_inline_fold_anywhere_in_the_vault_module_outside_the_named_sites():
         ("evidence_slug", "lower"): 1,        # slugifies an EVIDENCE name, not a lead note name.
         ("<module scope>", "casefold"): 1,    # _SANITIZED_NON_ANSWERS: placeholder COMPANY
                                               # answers, a different vocabulary entirely.
+        ("verified_value", "casefold"): 1,    # a `verified:` VALUE against UNVERIFIED_WORDS
+                                              # (owner ruling 2026-10-18), not a lead name.
     })
     assert found == expected, (
         "the inline folds in core/vault.py no longer match the listed sites that legitimately "

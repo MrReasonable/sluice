@@ -37,7 +37,8 @@ WRITE_DISALLOWED = ("apply_record", "create_lead", "cv_run", "cv_signoff", "dism
                     "setup_status", "verify_evidence")
 # The seeded lead's url, on a reserved host (RFC 2606) so it can never be a real posting.
 LEAD_URL = "https://jobs.example.com/{id}"
-# The value a verified story's `verified:` key is seeded with. Any value marks it verified;
+# The value a verified story's `verified:` key is seeded with: a date, what verify stamps (the rule
+# for what reads as verified is core/vault.py::verified_value);
 # a fixed one keeps the seeded vault the same on every run.
 VERIFIED_ON = "2026-01-01"
 
