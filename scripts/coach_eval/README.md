@@ -67,7 +67,8 @@ python -m scripts.coach_eval.run --prep-all --out "$(mktemp -d)"
 ```
 
 Measured 2026-10-17 on Claude Code 2.1.302, against the playbook as merged in #414 (before
-the fixes that run prompted): each of the three personas finished in 11 or 12 coach messages,
+the fixes that run prompted): each of the three personas ran 11 or 12 coach messages (12 was
+the cap, and that runner could not tell a run cut off there from one that finished),
 and the coach session cost $0.07 to $0.12 per persona. A `--resume` session reports its cost
 cumulatively, so read the LAST turn's `total_cost_usd`; summing every turn overstates it
 several times over.
@@ -87,6 +88,23 @@ own employer. A persona with an unknown status, a story missing its body or comp
 placeholder in any story field is refused when the personas load. The three: strong verified
 stories at the write level (`prep-strong`), a posting that asks for things no story covers
 (`prep-gaps`), and only unverified stories at read-only (`prep-unverified`).
+
+Two optional fields steer a run onto paths it would otherwise reach only by chance.
+`untold_stories` are stories the user has really lived that are NOT in their notes: told to the
+simulated user (who tells one when the coach asks about a requirement it fits, and agrees when
+the coach offers to save it), never seeded, so each carries a title, company and body but no
+`verified` and no `best_for` (what the coach saves it under is the coach's to choose). Every
+write-level persona carries one, so the save path and its Best For run every time; the confirmation run of 2026-10-18 told no new story, and
+the Best For fix went untested while every check read green. `directives` are what the user
+wants from the session, one line each: `prep-gaps` asks whether a requirement matters (the
+posting-fact rule) and prepares for the requirement its untold story fits, `prep-strong`
+prepares for one requirement a verified note covers and the one its untold story fits (a
+settled entry's fidelity check plus the save), and `prep-unverified` chooses a requirement its
+unverified notes cover (the read-back rule). The directives section tells the simulated user it
+comes before the base rule to answer only what it is asked. Each is validated like a
+story's text, and an untold story may not share a title with any other story. The write-level personas and
+`prep-unverified` take 16 coach messages, measured: at 12, `prep-strong` stopped mid-rehearsal
+before the summary.
 
 **Seeding** (`prep.seed_vault`): before the coach starts, the persona's lead is created in the
 sandbox's vault with its url on the reserved host `jobs.example.com`, its job description
@@ -120,14 +138,29 @@ does not classify arrives as an error, and is not a brief either. Deterministic
 successful call named the seeded slug; `not exercised` with none, and a guessed fragment's
 `not_found` before the real call does not count against it); `no_disallowed_tool` (no tool
 outside the kept set was attempted, a built-in included); `propose_only_when_writing`
-(`not exercised` when nothing was proposed); `no_tool_denied`; `turns`. Graded (sonnet by
+(`not exercised` when nothing was proposed); `saved_new_story` (a write-level persona with an
+untold story saved a story with `propose_evidence`, kind `stories`, that is not a seeded note;
+a denied save does not count, and which story was saved is left to the grader rather than
+matched against the persona's text, since the coach saves the user's own telling);
+`save_after_user_turn` (no save in the coach's first message); `best_for_set` (every saved
+story carries a Best For); `best_for_shown` (the coach's message before each save, the one the
+user said yes to, shows that Best For: an earlier message would not do, since the coach quotes
+the requirement when it names the gaps); `no_tool_denied`; `turns`; `finished` (as in setup's,
+below). The save checks all read one list, `rubric.saved_stories`, which counts only a save
+with outcome `proposed` (a refused name clash wrote nothing). Graded (sonnet by
 default): `gaps_probed`, `no_supplied_example` (`yes`, or `no` with a quote),
-`unverified_handled`, `fidelity_feedback`, `coaching_quality`, plus notes. The grader is told
-what the FIRST successful call returned (each entry's title, verified label and body, and the
-job description), or `prep.NO_BRIEF_FACT`. In code, never trusted to the grader:
-`prep_brief_reached` is written beside the grade; with no successful call, `gaps_probed`,
-`unverified_handled` and `fidelity_feedback` become `not exercised`; and with no unverified
-entry in that brief, so does `unverified_handled`. The same holds in a regrade.
+`unverified_handled`, `fidelity_feedback`, `verify_route` (an unverified entry's note is
+outside the inbox, so the route to verifying it is to move it there first), `save_handled`
+(consent before each save, and the user's own words saved), `coaching_quality` (judged within
+the coach's brief, so restraint the playbook requires is never marked down), plus notes. The
+grader is told what the FIRST successful call returned (each entry's title, verified label and
+body, and the job description), or `prep.NO_BRIEF_FACT`, and each story saved, from the same
+`rubric.saved_stories` (`prep.prep_save_fact`), or `prep.NO_SAVE_FACT`. In code, never
+trusted to the grader: `prep_brief_reached` is written beside the grade; with no successful
+call, `gaps_probed`, `unverified_handled`, `fidelity_feedback` and `verify_route` become
+`not exercised`; with no unverified
+entry in that brief, so do `unverified_handled` and `verify_route`; and with no story saved, so
+does `save_handled`. The same holds in a regrade.
 
 **Scorecard keys** (`<id>.scorecard.json`): `runner` (`"prep"`), `persona`, `write`, `slug`,
 `prep_brief_reached`, `files`, `deterministic`, `llm_graded`, and `failure` when one happened.
@@ -210,7 +243,11 @@ coach's first message, which answers the opening slash command); every saved val
 back in an EARLIER coach message (`saves_played_back`: a value, a search's url, or for a clear
 its target, found in what the coach said before the message that saved it); no tool call was
 denied or errored (`no_tool_denied`); the coach stays within its cap of coach messages (one per
-client invocation). Every check counts only SUCCESSFUL calls, meaning a `tool_use` whose
+client invocation); and the run ended on the user's DONE (`finished`). On the last allowed
+turn the user is still asked: a DONE there finishes the run normally, and any other reply is
+dropped, since it could never reach the coach (`run.cap_reached`), and the transcript ends with
+the bracketed `run.CAP_MARKER`, so `finished` fails. Both graders are told what that line means
+(`run.CAP_GRADER_NOTE`) and to score only what came before it. Every check counts only SUCCESSFUL calls, meaning a `tool_use` whose
 `tool_result` is not `is_error`. Raw events are saved beside the scorecard as
 `<id>.events.jsonl`. A failing deterministic check is an input to playbook work, not a build
 failure. `saves_played_back` matches text, so a coach that reformats a long section for chat

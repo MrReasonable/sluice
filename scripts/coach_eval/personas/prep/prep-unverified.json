@@ -22,5 +22,9 @@
       "body": "**Situation.** On a Monday morning an urgent request arrived that needed most of my week.\n\n**Task.** I had to fit it in without dropping the work already promised.\n\n**Action.** I listed everything due that week, asked each person waiting which of their items could move, and agreed new dates for three of them before starting the urgent request.\n\n**Result.** The urgent request was finished on Thursday, and every moved item was delivered by its new date.",
       "verified": false
     }
+  ],
+  "max_turns": 16,
+  "directives": [
+    "Choose at least one requirement one of your notes covers, and prepare for at most two requirements in all."
   ]
 }

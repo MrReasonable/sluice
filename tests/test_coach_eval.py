@@ -134,7 +134,7 @@ def test_rubric_deterministic_checks():
                    _start(), _use(rubric.SAVE, [
                        {"kind": "brief", "target": "Sources consulted",
                         "value": "example.invalid"}]))
-    out = rubric.deterministic(events, max_turns=30)
+    out = rubric.deterministic(events, max_turns=30, finished=True)
     assert all(v[0] for v in out.values()), out
 
 
@@ -152,7 +152,7 @@ def test_rubric_deterministic_checks():
     (_flat(_use(rubric.STATUS, answered=False)), "no_tool_denied"),
 ])
 def test_each_rubric_check_fails_when_its_rule_is_broken(events, check):
-    assert rubric.deterministic(events, max_turns=30)[check][0] is False
+    assert rubric.deterministic(events, max_turns=30, finished=True)[check][0] is False
 
 
 _SOURCED = {"kind": "brief", "target": "Sources consulted", "value": "example.invalid"}
@@ -164,7 +164,7 @@ def test_denied_calls_are_ignored_by_the_checks_that_read_inputs():
     events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, bad, denied=True),
                    _use(rubric.SAVE, [{"kind": "config", "target": "verified"}], denied=True),
                    _use(rubric.SAVE, [_SOURCED]))
-    out = rubric.deterministic(events, max_turns=30)
+    out = rubric.deterministic(events, max_turns=30, finished=True)
     assert out["schema_valid"][0] is True and out["no_verified"][0] is True
     assert out["no_tool_denied"][0] is False
 
@@ -174,7 +174,7 @@ def test_a_denied_calls_sources_do_not_count_for_brief_cites_sources():
     # successful one proposes a brief WITHOUT sources, so the check must fail.
     events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED], denied=True),
                    _use(rubric.SAVE, [_UNSOURCED]))
-    assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
+    assert rubric.deterministic(events, max_turns=30, finished=True)["brief_cites_sources"][0] is False
 
 
 _SAVE_CHECKS = ("status_before_save", "schema_valid", "brief_cites_sources", "no_verified")
@@ -191,7 +191,7 @@ _SAVE_CHECKS = ("status_before_save", "schema_valid", "brief_cites_sources", "no
     _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_UNSOURCED], denied=True)),
 ])
 def test_save_checks_are_not_exercised_without_a_successful_save(events):
-    out = rubric.deterministic(events, max_turns=30)
+    out = rubric.deterministic(events, max_turns=30, finished=True)
     assert {k: out[k][0] for k in _SAVE_CHECKS} == dict.fromkeys(
         _SAVE_CHECKS, rubric.NOT_EXERCISED)
     assert [rubric.verdict(out[k][0]) for k in _SAVE_CHECKS] == ["not exercised"] * 4
@@ -201,7 +201,7 @@ def test_save_checks_are_not_exercised_without_a_successful_save(events):
 def test_brief_cites_sources_is_not_exercised_when_no_brief_was_proposed():
     events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [
         {"kind": "config", "target": "accept_titles", "value": "x"}]))
-    out = rubric.deterministic(events, max_turns=30)
+    out = rubric.deterministic(events, max_turns=30, finished=True)
     assert out["brief_cites_sources"][0] is rubric.NOT_EXERCISED
     assert all(out[k][0] is True for k in ("status_before_save", "schema_valid", "no_verified"))
     assert rubric.save_reached(events) is True
@@ -214,7 +214,7 @@ def test_verdict_spells_each_state():
 
 def test_turns_counts_coach_messages_not_assistant_events():
     events = _flat(_start(), *[_use(rubric.STATUS) for _ in range(40)])
-    assert rubric.deterministic(events, max_turns=1)["turns"][0] is True
+    assert rubric.deterministic(events, max_turns=1, finished=True)["turns"][0] is True
 
 
 def test_run_refuses_an_output_directory_inside_the_repository():
@@ -756,10 +756,10 @@ def test_brief_cites_sources_is_checked_per_save_call_carrying_a_brief():
     """One sourced brief early in the run must not cover an unsourced brief proposed later."""
     events = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED]),
                    _use(rubric.SAVE, [_UNSOURCED]))
-    assert rubric.deterministic(events, max_turns=30)["brief_cites_sources"][0] is False
+    assert rubric.deterministic(events, max_turns=30, finished=True)["brief_cites_sources"][0] is False
     both = _flat(_use(rubric.STATUS), _use(rubric.SAVE, [_SOURCED]),
                  _use(rubric.SAVE, [_UNSOURCED, _SOURCED]))
-    assert rubric.deterministic(both, max_turns=30)["brief_cites_sources"][0] is True
+    assert rubric.deterministic(both, max_turns=30, finished=True)["brief_cites_sources"][0] is True
 
 
 def test_the_sources_section_is_the_tools_own_last_brief_section():
@@ -856,7 +856,7 @@ _PLAYBACK = ("Config: lead_ttl_days 30. Search on example-board: https://example
 
 
 def _chat_yes(events):
-    out = rubric.deterministic(events, max_turns=40)
+    out = rubric.deterministic(events, max_turns=40, finished=True)
     return out["save_after_user_turn"][0], out["saves_played_back"][0]
 
 
@@ -1884,25 +1884,36 @@ def test_the_prep_users_system_prompt_replaces_the_agent_prompt(monkeypatch, tmp
 
 # ── the rubric ──
 
-def _det(events, slug, write, max_turns=12):
+def _det(events, slug, write, max_turns=12, finished=True, untold=False, notes=()):
     from scripts.coach_eval import prep
     out = rubric.prep_deterministic(events, slug=slug, write=write,
-                                    kept=prep.expected_tools(write), max_turns=max_turns)
+                                    kept=prep.expected_tools(write), max_turns=max_turns,
+                                    finished=finished, untold=untold, notes=notes)
     return {k: v[0] for k, v in out.items()}
 
 
-def _propose(denied=False):
-    return _tool(rubric.PROPOSE, {"kind": "stories"}, {"outcome": "proposed"}, denied=denied)
+_BEST_FOR = "report progress to the people who depend on your work"
+
+
+def _propose(denied=False, best_for=_BEST_FOR, name="A new story", kind="stories",
+             outcome="proposed"):
+    fields = {"Company": "Example Co"} | ({"Best For": best_for} if best_for else {})
+    return _tool(rubric.PROPOSE, {"kind": kind, "name": name, "fields": fields,
+                                  "body": "What I did."}, {"outcome": outcome}, denied=denied)
 
 
 def test_prep_rubric_deterministic_checks(tmp_path):
     sluice, slug = _seeded(tmp_path, _all_verified())
+    # The coach shows the story with its Best For, the user says yes, and the save follows.
     events = _flat(_start(), _tool("mcp__sluice__list_leads", {}, {"leads": []}),
-                   _brief_call(sluice, slug), _start(), _propose())
-    assert all(_det(events, slug, write=True).values())
-    # read-only, no proposal: everything passes and the proposal check has no subject
+                   _brief_call(sluice, slug), _say(f"Shall I save it, Best For: {_BEST_FOR}?"),
+                   _start(), _propose())
+    assert all(_det(events, slug, write=True, untold=True).values())
+    # read-only, no proposal: everything passes and the proposal checks have no subject
     out = _det(_flat(_start(), _brief_call(sluice, slug)), slug, write=False)
-    assert out.pop("propose_only_when_writing") is rubric.NOT_EXERCISED
+    for check in ("propose_only_when_writing", "saved_new_story", "best_for_set",
+                  "best_for_shown", "save_after_user_turn"):
+        assert out.pop(check) is rubric.NOT_EXERCISED, check
     assert all(out.values()), out
 
 
@@ -2213,9 +2224,16 @@ def test_every_prep_persona_company_and_location_is_on_its_roster():
     ps = _prep_personas()
     story_companies = [s["company"] for p in ps for s in p.stories]
     assert story_companies   # scope: the story level was checked, not only the persona's
+    untold_companies = [s["company"] for p in ps for s in p.untold_stories]
+    assert untold_companies   # scope: the untold stories were checked too
+    story_companies += untold_companies
     for name in [p.company for p in ps] + story_companies:
         assert name in _REVIEWED_FIXTURE_IDENTITIES, name
     assert all(p.location in LOCATIONS for p in ps)
+
+
+# An untold story's text fields: never seeded, so it carries no Best For (personas.py refuses one).
+_UNTOLD_FIELDS = ("title", "company", "body")
 
 
 def test_only_the_jd_template_carries_placeholders_and_only_the_three():
@@ -2225,18 +2243,27 @@ def test_only_the_jd_template_carries_placeholders_and_only_the_three():
     for p in ps:
         named = {f for _, f, _, _ in string.Formatter().parse(p.jd_template) if f is not None}
         assert named == {"company", "location", "role"}, p.id
-        for s in p.stories:
-            assert not any(c in str(s[k]) for k in ("title", "company", "best_for", "body")
-                           for c in "{}"), (p.id, s["title"])
+        for s, keys in [*((s, personas.STORY_TEXT_FIELDS) for s in p.stories),
+                        *((s, _UNTOLD_FIELDS) for s in p.untold_stories)]:
+            assert not any(c in str(s[k]) for k in keys for c in "{}"), (p.id, s["title"])
+        assert not any(c in d for d in p.directives for c in "{}"), p.id
+    # scope: the untold stories and directives were read, not only the notes
+    assert any(p.untold_stories for p in ps) and any(p.directives for p in ps)
 
 
 def test_no_prep_persona_text_expresses_a_preference():
     from sluice.onboard.questions import expresses_a_preference
 
     texts = [(p.id, "jd_template", p.jd_template) for p in _prep_personas()] + [
-        (p.id, f"{s['title']}.{k}", s[k]) for p in _prep_personas() for s in p.stories
-        for k in ("title", "best_for", "body")]
+        (p.id, f"{s['title']}.{k}", s[k]) for p in _prep_personas() for s, keys in
+        [*((s, ("title", "best_for", "body")) for s in p.stories),
+         *((s, ("title", "body")) for s in p.untold_stories)] for k in keys] + [
+        (p.id, f"directive {i}", d) for p in _prep_personas() for i, d in enumerate(p.directives)]
     assert len(texts) > len(_prep_personas())   # scope: the story fields were read
+    # scope: the untold stories and the directives were read too
+    assert any(w.startswith("directive") for _, w, _ in texts)
+    assert any(s["title"] in w for p in _prep_personas() for s in p.untold_stories
+               for _, w, _ in texts)
     for pid, where, text in texts:
         assert expresses_a_preference(text) == [], (pid, where)
 
@@ -2246,9 +2273,9 @@ def test_no_prep_persona_text_expresses_a_preference():
 # real place or employer no roster can enumerate, so a change here must be READ before it is
 # re-digested: the digest only forces that review.
 _PREP_PERSONA_DIGESTS = {
-    "prep-gaps.json": "45206bef4f7ef22e12914b1d3af2d87f6861fe2e78f5f9c89076522e77f3be27",
-    "prep-strong.json": "7b08c5e7a4d8ecbcd7dd98af13810c03ec830392372b29d87c5b54dfbd309e7b",
-    "prep-unverified.json": "00c20bcdad0f0fb934cb40ce8b1b8e16ae7c72e548ec4cb5d2c481de38da7afc",
+    "prep-gaps.json": "360dc0bf517529ba9ed030145fafdea9c3b52b9afa3d22adcb94b96d200f4f47",
+    "prep-strong.json": "9529db088f6c518bffa7144e1153f4b0db4e0999d0cf59b6354100d43cba3a3e",
+    "prep-unverified.json": "fe4bbf96601fe346b1e88da9974d97758f6f75e427b86d71c5bd2f9e41dbddf5",
 }
 
 
@@ -2281,3 +2308,378 @@ def test_the_prep_grader_scores_gaps_against_the_requirements_the_user_chose():
     # A coach that never offers the choice has nothing declined, so every gap it skipped is a
     # miss: without this clause, asking about none would score as well as asking about all.
     assert "one it never asked about that the user had not declined" in text
+
+
+# ── the confirmation run's findings (2026-10-18) ──
+
+def _untold(**over):
+    return {"title": "u", "company": "c", "body": "x", **over}
+
+
+def test_a_well_formed_prep_persona_with_untold_stories_and_directives_loads():
+    p = _prep_persona_with(untold_stories=[_untold()], directives=["Prepare for one."])
+    assert p.untold_stories[0]["title"] == "u" and p.directives == ["Prepare for one."]
+
+
+@pytest.mark.parametrize("bad, match", [
+    ({"company": ""}, "untold story 0 has no company"),
+    ({"body": ""}, "untold story 0 has no body"),
+    ({"verified": True}, "carries verified, but an untold story is never seeded"),
+    ({"best_for": "b"}, "carries best_for, but an untold story is never seeded"),
+    ({"body": "x {role}"}, "carries a placeholder"),
+    ({"title": "T"}, "shares the title"),        # the note `_story()` seeds is titled "t"
+])
+def test_a_malformed_untold_story_is_refused(bad, match):
+    with pytest.raises(ValueError, match=match):
+        _prep_persona_with(untold_stories=[_untold(**bad)])
+
+
+def test_two_untold_stories_sharing_a_title_are_refused():
+    with pytest.raises(ValueError, match="shares the title"):
+        _prep_persona_with(untold_stories=[_untold(title="Same"), _untold(title="SAME")])
+
+
+@pytest.mark.parametrize("bad", ["", "  ", "ask {coach}", 3])
+def test_a_malformed_directive_is_refused(bad):
+    with pytest.raises(ValueError, match="directive 0"):
+        _prep_persona_with(directives=[bad])
+
+
+def test_the_simulated_user_is_told_its_untold_stories_and_directives_and_nothing_else_moves():
+    from scripts.coach_eval import prep
+    plain = _prep_persona_with()
+    rich = _prep_persona_with(untold_stories=[_untold(title="Lived it", body="It happened.")],
+                              directives=["Ask whether it matters."])
+    plain_text, rich_text = prep.prep_user_prompt(plain, []), prep.prep_user_prompt(rich, [])
+    # Without either field the prompt goes straight from the notes to the conversation.
+    assert "Your notes:\nt (at c):\nx\n\nThe conversation so far:" in plain_text
+    assert "not in your notes yet" not in plain_text and "What you want" not in plain_text
+    assert "Lived it (at c):\nIt happened." in rich_text
+    assert "if the coach offers to save it, agree" in rich_text
+    assert ("What you want from this session (these come before the rule to answer only what "
+            "you are asked):\n- Ask whether it matters.") in rich_text
+    # Both sections sit between the notes and the conversation, never inside either.
+    notes, convo = rich_text.index("Your notes:"), rich_text.index("The conversation so far:")
+    assert notes < rich_text.index("Lived it") < rich_text.index("What you want") < convo
+
+
+def test_every_write_persona_carries_an_untold_story_so_the_save_path_runs_every_time():
+    # The confirmation run told no new story and the Best For fix went untested while every
+    # check read green; an untold story is what makes saved_new_story a subject.
+    writes = [p for p in _prep_personas() if p.write]
+    assert writes and all(p.untold_stories for p in writes)
+
+
+def _save_turn(shown_text, best_for=_BEST_FOR):
+    return _flat(_say(shown_text), _start(), _propose(best_for=best_for))
+
+
+def test_saved_new_story_fails_when_a_write_persona_with_an_untold_story_saved_nothing(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug))
+    assert _det(events, slug, write=True, untold=True)["saved_new_story"] is False
+    # Not a subject at read-only, nor without an untold story.
+    assert _det(events, slug, write=False, untold=True)["saved_new_story"] is rubric.NOT_EXERCISED
+    assert _det(events, slug, write=True, untold=False)["saved_new_story"] is rubric.NOT_EXERCISED
+
+
+def test_a_denied_save_does_not_count_as_saving_the_untold_story(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _say(f"Best For: {_BEST_FOR}"), _start(),
+                   _propose(denied=True))
+    assert _det(events, slug, write=True, untold=True)["saved_new_story"] is False
+
+
+def test_best_for_set_fails_on_a_saved_story_without_one(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _save_turn("Shall I save it?", ""))
+    out = _det(events, slug, write=True, untold=True)
+    assert out["best_for_set"] is False and out["best_for_shown"] is False
+
+
+def test_best_for_shown_reads_only_the_message_the_user_said_yes_to(tmp_path):
+    # The requirement's words appear early, when the coach names the gaps; a check reading the
+    # whole conversation could not fail. Shown two messages back is not shown with the save.
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    early = _flat(_start(), _brief_call(sluice, slug), _say(f"Unsupported: {_BEST_FOR}."),
+                  _start(), _save_turn("Shall I save that story?"))
+    assert _det(early, slug, write=True, untold=True)["best_for_shown"] is False
+    shown = _flat(_start(), _brief_call(sluice, slug),
+                  _save_turn(f"I would save it with Best For: {_BEST_FOR.upper()}. Yes?"))
+    assert _det(shown, slug, write=True, untold=True)["best_for_shown"] is True
+
+
+def _cap_run(monkeypatch, runner, p, replies=("Here is more.",)):
+    """Drive a run whose simulated user gives `replies` in turn, then repeats the last; returns
+    the list of calls made."""
+    from scripts.coach_eval import run
+    calls = []
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            calls.append("coach")
+            init = (_prep_init(p.write) if runner == "prep" else
+                    {"type": "system", "subtype": "init", "session_id": "s", "plugins": [],
+                     "claude_code_version": next(iter(isolation.MEASURED_VERSIONS)),
+                     "mcp_servers": [{"name": "sluice", "status": "connected"}],
+                     "tools": sorted(run.COACH_EXPECTED_TOOLS)})
+            return [init, *_say("Tell me more.")]
+        if (prompt or "").startswith("Grade"):
+            calls.append("grader")
+            return [{"type": "result", "result": json.dumps(_PREP_GRADE)}]
+        calls.append("user")
+        said = calls.count("user")
+        return [{"type": "result", "result": replies[min(said, len(replies)) - 1]}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    return calls
+
+
+@pytest.mark.parametrize("runner", ["prep", "setup"])
+def test_a_run_that_reaches_its_turn_cap_sends_no_undelivered_reply_and_fails_finished(
+        monkeypatch, tmp_path, runner):
+    import dataclasses
+
+    from scripts.coach_eval import prep, run
+    if runner == "prep":
+        p = dataclasses.replace(_prep_personas()[0], max_turns=2)
+        calls = _cap_run(monkeypatch, runner, p)
+        card = prep.run_persona(p, tmp_path)
+    else:
+        p = dataclasses.replace(personas.load_personas(ROOT / "scripts" / "coach_eval"
+                                                       / "personas")[0], max_turns=2, focus="")
+        calls = _cap_run(monkeypatch, runner, p)
+        card = run.run_persona(p, tmp_path)
+    # At the cap the user is still asked (a DONE there would finish the run), but a reply that
+    # is not DONE could never reach the coach, so it is dropped and the marker ends the run.
+    assert calls == ["coach", "user", "coach", "user", "grader"]
+    transcript = (tmp_path / f"{p.id}.transcript.txt").read_text().splitlines()
+    assert transcript[-1] == run.cap_marker(2)
+    assert transcript.count("USER: Here is more.") == 1
+    assert card["deterministic"]["finished"]["result"] == "fail"
+    assert card["deterministic"]["turns"]["result"] == "pass"
+
+
+def test_finished_reads_the_users_done_from_the_transcript():
+    from scripts.coach_eval import run
+    assert run.finished(["COACH: hi", "USER: done, thanks"])
+    assert not run.finished(["COACH: hi", "USER: not yet"])
+    assert not run.finished(["COACH: hi", "USER: DONE", run.cap_marker(3)])
+    assert not run.finished([])
+
+
+def test_the_cap_marker_is_the_bracketed_line_the_grader_is_told_about():
+    from scripts.coach_eval import prep, run
+    marker = run.cap_marker(5)
+    assert marker.startswith("[") and marker.endswith("]") and "turn cap" in marker
+    assert "A line in brackets at the end of the transcript is the harness's note" \
+        in prep.PREP_GRADER_PROMPT
+    assert "score only what happened before that line" in prep.PREP_GRADER_PROMPT
+
+
+def test_text_blocks_either_side_of_a_tool_call_stay_apart_in_the_transcript():
+    from scripts.coach_eval import run
+    events = [*_say("One lead matches."), *_say("I've read the brief.")]
+    assert run._text(events) == "One lead matches.\n\nI've read the brief."
+
+
+def test_the_prep_grader_counts_a_memory_jogging_list_as_a_supplied_example():
+    from scripts.coach_eval import prep
+    assert ("nor a list of the kinds of people, places or situations a requirement might cover "
+            "to jog their memory") in " ".join(prep.PREP_GRADER_PROMPT.split())
+
+
+def test_the_prep_grader_scores_unverified_handling_only_when_the_user_rehearsed_from_one():
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    assert "or when the user never rehearsed from one" in text
+    assert "read it back and asked the user about it before rehearsing from it" in text
+
+
+def test_the_prep_grader_judges_coaching_quality_within_the_coachs_brief():
+    # Run 1's grader docked the coach for not saying which requirements are likely to come up,
+    # and run 2's for not offering memory-jogging categories: both are what the playbook bans.
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    for clause in ("never ranks the requirements or says which are likely to come up",
+                   "never offers examples", "never drafts or reshapes the user's own words",
+                   "Never mark it down for keeping to those limits"):
+        assert clause in text, clause
+
+
+def _drive(monkeypatch, tmp_path, runner, max_turns, replies):
+    import dataclasses
+
+    from scripts.coach_eval import prep, run
+    if runner == "prep":
+        p = dataclasses.replace(_prep_personas()[0], max_turns=max_turns)
+        calls = _cap_run(monkeypatch, runner, p, replies)
+        card = prep.run_persona(p, tmp_path)
+    else:
+        p = dataclasses.replace(personas.load_personas(ROOT / "scripts" / "coach_eval"
+                                                       / "personas")[0],
+                                max_turns=max_turns, focus="")
+        calls = _cap_run(monkeypatch, runner, p, replies)
+        card = run.run_persona(p, tmp_path)
+    return card, calls, (tmp_path / f"{p.id}.transcript.txt").read_text().splitlines()
+
+
+@pytest.mark.parametrize("runner", ["prep", "setup"])
+def test_a_run_ending_on_done_passes_finished(monkeypatch, tmp_path, runner):
+    from scripts.coach_eval import run
+    card, calls, transcript = _drive(monkeypatch, tmp_path, runner, 5, ("More.", "DONE"))
+    assert calls == ["coach", "user", "coach", "user", "grader"]
+    assert transcript[-1] == "USER: DONE" and run.CAP_MARKER[:20] not in "\n".join(transcript)
+    assert card["deterministic"]["finished"]["result"] == "pass"
+
+
+@pytest.mark.parametrize("runner", ["prep", "setup"])
+def test_a_run_whose_summary_lands_on_its_last_allowed_message_is_finished(
+        monkeypatch, tmp_path, runner):
+    # The boundary: the coach's last allowed message is the summary and the user says DONE.
+    from scripts.coach_eval import run
+    card, calls, transcript = _drive(monkeypatch, tmp_path, runner, 2, ("More.", "DONE"))
+    assert calls == ["coach", "user", "coach", "user", "grader"]
+    assert transcript[-1] == "USER: DONE" and run.cap_marker(2) not in transcript
+    assert card["deterministic"]["finished"]["result"] == "pass"
+
+
+def test_both_graders_are_told_what_the_cap_marker_means():
+    from scripts.coach_eval import prep, run
+    assert run.CAP_GRADER_NOTE in run.GRADER_PROMPT
+    assert run.CAP_GRADER_NOTE in prep.PREP_GRADER_PROMPT
+    assert run.CAP_GRADER_NOTE in run.grader_prompt([], ["COACH: hi", run.cap_marker(2)])
+
+
+def test_resaving_a_seeded_note_is_not_saving_a_new_story(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug),
+                   _say(f"Best For: {_BEST_FOR}"), _start(), _propose(name="AN OLD NOTE"))
+    out = _det(events, slug, write=True, untold=True, notes=["An old note"])
+    assert out["saved_new_story"] is False
+    assert _det(events, slug, write=True, untold=True, notes=["Other"])["saved_new_story"] is True
+
+
+def test_a_story_saved_under_another_kind_does_not_count(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _say(f"Best For: {_BEST_FOR}"),
+                   _start(), _propose(kind="experience"))
+    out = _det(events, slug, write=True, untold=True)
+    assert out["saved_new_story"] is False
+    for check in ("best_for_set", "best_for_shown", "save_after_user_turn"):
+        assert out[check] is rubric.NOT_EXERCISED, check
+
+
+def test_a_save_in_the_coachs_first_message_had_no_user_turn_to_say_yes_in(tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _propose())
+    assert _det(events, slug, write=True, untold=True)["save_after_user_turn"] is False
+
+
+def test_the_prep_grader_is_told_each_saved_story_and_where_it_was_saved(tmp_path):
+    from scripts.coach_eval import prep
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _say("Save it?"), _start(), _propose(),
+                   _start(), _propose(kind="experience", name="Not a story"))
+    fact = prep.prep_save_fact(events)
+    assert "coach message 2: A new story" in fact and _BEST_FOR in fact and "What I did." in fact
+    assert "Not a story" not in fact     # one reader, rubric.saved_stories, for both
+    assert prep.prep_save_fact(_flat(_start(), _brief_call(sluice, slug))) == prep.NO_SAVE_FACT
+    assert fact in prep.prep_grader_prompt(events, ["COACH: hi"])
+
+
+def test_the_prep_grader_judges_the_verify_route_and_the_save():
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    assert "move that note into its kind's _inbox/ folder before running job-sluice <kind> verify" \
+        in text
+    assert "advice to verify a story just saved or added is right as it stands" in text
+    assert "the user said yes, and what was saved is the user's own telling" in text
+    assert "verify_route" in prep.FACT_SCORED
+
+
+def _grade_with(monkeypatch, events, reply):
+    from scripts.coach_eval import prep, run
+    monkeypatch.setattr(run, "_claude", lambda args, cwd, prompt=None: [
+        {"type": "result", "result": json.dumps(reply)}])
+    return prep.grade_prep(events, ["COACH: hi"], "sonnet", ".")[0]
+
+
+def test_grade_prep_overwrites_save_and_route_scores_that_had_no_subject(monkeypatch, tmp_path):
+    sluice, slug = _seeded(tmp_path, _all_verified())   # no unverified entry, nothing saved
+    reply = {**_PREP_GRADE, "verify_route": "no: x", "save_handled": 2}
+    llm = _grade_with(monkeypatch, _flat(_start(), _brief_call(sluice, slug)), reply)
+    assert llm["verify_route"] == llm["save_handled"] == "not exercised"
+    # With a save, the grader's save score stands.
+    saved = _flat(_start(), _brief_call(sluice, slug), _say("Save?"), _start(), _propose())
+    assert _grade_with(monkeypatch, saved, reply)["save_handled"] == 2
+    # With an unverified entry in the brief, its route score stands.
+    (tmp_path / "u").mkdir()
+    usluice, uslug = _seeded(tmp_path / "u", _with_unverified())
+    assert _grade_with(monkeypatch, _flat(_start(), _brief_call(usluice, uslug)),
+                       reply)["verify_route"] == "no: x"
+
+
+def test_a_refused_save_wrote_nothing_and_does_not_count(tmp_path):
+    # The tool reports a name clash as a structured `refused`, not an error: nothing was saved.
+    from scripts.coach_eval import prep
+    sluice, slug = _seeded(tmp_path, _all_verified())
+    events = _flat(_start(), _brief_call(sluice, slug), _say(f"Best For: {_BEST_FOR}"), _start(),
+                   _propose(outcome="refused"))
+    out = _det(events, slug, write=True, untold=True)
+    assert out["saved_new_story"] is False
+    for check in ("best_for_set", "best_for_shown", "save_after_user_turn"):
+        assert out[check] is rubric.NOT_EXERCISED, check
+    assert prep.prep_save_fact(events) == prep.NO_SAVE_FACT
+
+
+def _saving_run(monkeypatch, tmp_path, p, name):
+    """A live prep run whose coach saves a story named `name` in its second message, after
+    showing its Best For in the first; the user says yes, then DONE."""
+    import dataclasses
+
+    from scripts.coach_eval import prep, run
+    p = dataclasses.replace(p, max_turns=4)
+    coach = iter([
+        [_prep_init(p.write), *_say(f"Shall I save it, Best For: {_BEST_FOR}?")],
+        [_prep_init(p.write), *_propose(name=name), *_say("Saved. Summary: done.")]])
+    replies = iter(["Yes, save it.", "DONE"])
+
+    def fake(args, cwd, prompt=None):
+        if "--mcp-config" in args:
+            return next(coach)
+        if (prompt or "").startswith("Grade"):
+            return [{"type": "result", "result": json.dumps(_PREP_GRADE)}]
+        return [{"type": "result", "result": next(replies)}]
+
+    monkeypatch.setattr(run, "_claude", fake)
+    return prep.run_persona(p, tmp_path)["deterministic"]
+
+
+def test_the_live_runner_passes_the_untold_flag_and_the_seeded_titles(monkeypatch, tmp_path):
+    # The rubric rows above feed prep_deterministic by hand; this drives the runner, so a runner
+    # passing untold=False or notes=[] goes red here.
+    p = next(p for p in _prep_personas() if p.write and p.untold_stories)
+    new = _saving_run(monkeypatch, tmp_path / "new", p, "A story I just told")
+    assert new["saved_new_story"]["result"] == "pass"
+    assert new["finished"]["result"] == "pass" and new["best_for_shown"]["result"] == "pass"
+    seeded = p.stories[0]["title"].upper()
+    again = _saving_run(monkeypatch, tmp_path / "again", p, seeded)
+    assert again["saved_new_story"]["result"] == "fail"
+
+
+def test_a_live_run_that_saves_nothing_fails_saved_new_story(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    p = next(p for p in _prep_personas() if p.write and p.untold_stories)
+    card, _, _ = _drive_persona(monkeypatch, tmp_path, p)
+    assert card["deterministic"]["saved_new_story"]["result"] == "fail"
+    assert run.cap_marker(2) in (tmp_path / f"{p.id}.transcript.txt").read_text()
+
+
+def _drive_persona(monkeypatch, tmp_path, p):
+    import dataclasses
+
+    from scripts.coach_eval import prep
+    p = dataclasses.replace(p, max_turns=2)
+    calls = _cap_run(monkeypatch, "prep", p)
+    return prep.run_persona(p, tmp_path), calls, p

@@ -68,6 +68,12 @@ USER_PROMPT = ("You are role-playing a person looking for work, talking to a car
 # received. Run 3 never called the save tool (then `setup_review`) and the grader still scored
 # asked_before_proposing 4 ("All setup_review settings were based on user agreement"), reading
 # values the coach merely recited in chat as proposals.
+# What both graders are told about the line a turn-capped run ends on (`CAP_MARKER`, below). One
+# constant, appended to both prompts: the setup runner writes the marker too, and a grader left
+# to guess at an unexplained bracketed line is what the marker's wording exists to prevent.
+CAP_GRADER_NOTE = ("A line in brackets at the end of the transcript is the harness's note on how "
+                   "the run ended, not something either party said: if the run stopped at its "
+                   "turn cap, score only what happened before that line.")
 GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
                  '{{"asked_before_proposing": 1-5 or "not exercised", '
                  '"role_specific_questions": 1-5, "coaching_quality": 1-5, "notes": "..."}}. '
@@ -77,8 +83,8 @@ GRADER_PROMPT = ("Grade this career-coaching transcript. Reply with JSON only: "
                  "actually happened, never from values the coach read back or recorded in chat. "
                  "{save_fact} If there were none, write \"not exercised\" for it. "
                  "role_specific_questions: questions drew on research into the chosen role. "
-                 "coaching_quality: would a professional career coach be proud of this.\n\n"
-                 "{transcript}")
+                 "coaching_quality: would a professional career coach be proud of this. "
+                 + CAP_GRADER_NOTE + "\n\n{transcript}")
 # A scenario's instruction to the simulated user, appended to its situation. The hesitant line
 # is personas.HESITANT_LINE verbatim, the string rubric.scenario_checks looks for. The user model
 # is stateless between turns and sees the transcript, so "the first time" is decided from it.
@@ -203,9 +209,40 @@ def _claude(args, cwd, prompt=None):
 
 
 def _text(events):
-    return "".join(b.get("text", "") for ev in events if ev.get("type") == "assistant"
-                   for b in (ev.get("message") or {}).get("content") or []
-                   if b.get("type") == "text")
+    # A blank line between blocks, never "": the text before a tool call and the text after it
+    # are separate blocks, and joined bare they read as one garbled sentence ("brief.I've
+    # found") to the simulated user and the grader, who marked the coach down for it.
+    return "\n\n".join(b.get("text", "") for ev in events if ev.get("type") == "assistant"
+                       for b in (ev.get("message") or {}).get("content") or []
+                       if b.get("type") == "text")
+
+
+# How a run that reached its turn cap ends its transcript. Bracketed and worded as the
+# harness's note, so the grader, told about it, scores only what happened before it.
+CAP_MARKER = "[The run stopped at its turn cap of {cap} coach messages, before the user said DONE.]"
+
+
+def cap_marker(cap) -> str:
+    return CAP_MARKER.format(cap=cap)
+
+
+def cap_reached(turn, max_turns, message, transcript) -> bool:
+    """On the last allowed turn, a reply that is not DONE could never reach the coach: it is
+    dropped (left in, the grader held it against the coach for leaving it unanswered) and the
+    cap marker ends the transcript. A DONE there is the summary landing on the last message, so
+    the run finishes normally. Shared by both runners."""
+    if turn < max_turns - 1 or message.upper().startswith("DONE"):
+        return False
+    transcript.append(cap_marker(max_turns))
+    return True
+
+
+def finished(transcript) -> bool:
+    """The run ended on the user's DONE, not at the turn cap or on a failure: the transcript's
+    last entry is the user's DONE, so the cap marker and an empty-reply stop both read as not
+    finished."""
+    last = transcript[-1] if transcript else ""
+    return last.startswith("USER: ") and last[len("USER: "):].strip().upper().startswith("DONE")
 
 
 def _final_text(events):
@@ -397,11 +434,13 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
             # Sending `-p ""` would burn a turn on nothing; stop and record why.
             failure = "the simulated user returned an empty reply"
             break
+        if cap_reached(turn, p.max_turns, message, transcript):
+            break
         transcript.append(f"USER: {message}")
         user_messages.append(message)
         if message.upper().startswith("DONE"):
             break
-    det = rubric.deterministic(events, max_turns=p.max_turns)
+    det = rubric.deterministic(events, max_turns=p.max_turns, finished=finished(transcript))
     llm, grade_failure = grade(events, transcript, grader_model, empty)
     failure = failure or grade_failure
     reached = rubric.save_reached(events)
