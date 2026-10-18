@@ -40,6 +40,35 @@ deliberately no `## [Unreleased]` heading: release-please's insertion point matc
 0.1.0 seed forever. Unreleased work lives in its open release PR, which is the one place
 it is accurate. -->
 
+## [4.10.0](https://github.com/MrReasonable/sluice/compare/v4.9.0...v4.10.0) (2026-10-18)
+
+
+### Features
+
+* **leads:** job-sluice leads prep, an interview prep brief from STAR stories ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([ae80ce7](https://github.com/MrReasonable/sluice/commit/ae80ce7e3c7976f525585499d04a384ac8511a2b))
+* **mcp:** a read-only prep_brief tool and an interview_prep coach prompt ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([e63dc94](https://github.com/MrReasonable/sluice/commit/e63dc94f44983e05e38cef9183ee7d4ca96689c1))
+
+
+### Bug Fixes
+
+* **mcp:** the interview coach accounts for every requirement by name, and the eval reaches the read-only save advice ([9ca48d8](https://github.com/MrReasonable/sluice/commit/9ca48d8e4f3328d7828d12d928753dc00fd3ba4b))
+* **mcp:** the interview coach gives a working verify route, asks in the posting's words and keeps a guess a guess ([df477d3](https://github.com/MrReasonable/sluice/commit/df477d32dc30994117080ee6a35981408b3e8517))
+* **mcp:** the interview coach probes every "we", offers every requirement, and asks for the telling after a read-back ([9f77ed6](https://github.com/MrReasonable/sluice/commit/9f77ed6f11c3f65ebaca5197d0ea5ef918a4be1a))
+* **mcp:** the interview_prep coach gives saved stories a Best For and quotes the posting when asked ([ac7f215](https://github.com/MrReasonable/sluice/commit/ac7f2159daf12b3ea98f0360fd15e286fe719f5f))
+* **vault:** a verified: value a person typed as no reads as unverified ([8ec67b2](https://github.com/MrReasonable/sluice/commit/8ec67b2d64c3c922ab073e41d85ed0223510b6f1))
+
+
+### Refactoring
+
+* **core:** move rank and jd_keywords into core/rank.py ([#195](https://github.com/MrReasonable/sluice/issues/195)) ([5f42161](https://github.com/MrReasonable/sluice/commit/5f4216169e89e4ff7d022ec77223612d3f97ec03))
+
+
+### Documentation
+
+* **plan:** implementation plan for [#195](https://github.com/MrReasonable/sluice/issues/195) interview prep briefs (PR 1) ([96464e8](https://github.com/MrReasonable/sluice/commit/96464e8ab7c9cabd105a472e0bf71215cc4eeb50))
+* **plan:** implementation plan for [#195](https://github.com/MrReasonable/sluice/issues/195) PR 2 (MCP tool, coach prompt, eval runner) ([4d49f94](https://github.com/MrReasonable/sluice/commit/4d49f945cf75c573632b8edf8fe8aacfd40c595e))
+* **spec:** interview prep briefs from STAR stories ([#195](https://github.com/MrReasonable/sluice/issues/195), part 1) ([0af95c3](https://github.com/MrReasonable/sluice/commit/0af95c3b7a37b3d9da8e927413846dbc2efb25c7))
+
 ## [4.9.0](https://github.com/MrReasonable/sluice/compare/v4.8.0...v4.9.0) (2026-10-15)
 
 
