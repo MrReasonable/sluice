@@ -30,15 +30,21 @@
       "verified": true
     }
   ],
-  "max_turns": 16,
+  "max_turns": 20,
   "untold_stories": [
     {
       "title": "Kept one hand-off list with the delivery team",
       "company": "Example Foundry",
       "body": "**Situation.** A launch needed my team and the delivery team to pass work back and forth, and the two teams kept missing each other's dates.\n\n**Task.** I offered to sort out the hand-offs.\n\n**Action.** I met the delivery team's lead once a week, and we kept one shared list of every hand-off with its date and who owned it.\n\n**Result.** The launch went out on its planned date, and the list was kept for the next one."
+    },
+    {
+      "title": "Covered a colleague's work while they were away",
+      "company": "Example Systems",
+      "body": "**Situation.** A colleague was away for three weeks at short notice, and two of their pieces of work were due in that time.\n\n**Task.** I agreed to keep both moving until they were back.\n\n**Action.** I read their notes, asked the two people waiting what they needed by when, and set myself a short daily slot for each piece.\n\n**Result.** Both pieces went out on their dates, and I handed back a one-page note of where each one stood."
     }
   ],
   "directives": [
-    "Prepare for two requirements: the one your note \"Delivered the quarterly report two days early\" covers, and the one your story that is not in your notes fits."
+    "Prepare for two requirements from the posting: the one your note \"Delivered the quarterly report two days early\" covers, and the one your story \"Kept one hand-off list with the delivery team\" fits.",
+    "Also prepare for one thing the posting does not list, which you name yourself as \"keeping work going while a key colleague is away\", and tell your story \"Covered a colleague's work while they were away\" for it."
   ]
 }

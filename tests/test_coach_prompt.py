@@ -660,3 +660,23 @@ def test_the_read_only_note_keeps_the_users_own_words_in_the_command():
     note = " ".join(coach.PREP_READ_ONLY_NOTE.split())
     assert ("Any `--name` or `--body` you write into the command is the user's own telling: "
             "never reword it or add a part they did not tell") in note
+
+
+
+def test_rehearse_fourth_run_rules():
+    # The fourth live run: a "we" credited without asking, a choice narrowed to the gaps, a read-
+    # back yes taken as the rehearsal, a guessed format later treated as settled.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    for clause in ('when they say "we" about an action, ask what they did themselves, every time',
+                   "list only what they said they did",
+                   "offering every requirement the posting states by its words, the evidenced ones too",
+                   "never narrow the choice to the gaps",
+                   "never refer to a set of requirements by its size, even after naming them",
+                   "their yes settles the entry; it is not the rehearsal",
+                   "then ask them to tell the story as they would in the interview, and give "
+                   "your feedback on that telling",
+                   "it stays a guess for the rest of the session",
+                   "never later word a prompt as though it were settled",
+                   "even when the story already has actions of their own",
+                   "or from another story the user chooses"):
+        assert clause in low, clause
