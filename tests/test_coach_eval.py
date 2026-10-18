@@ -398,13 +398,19 @@ def test_coach_argv_preapproves_exactly_the_expected_tools(tmp_path):
 
 
 def _stub_claude(monkeypatch, replies):
-    """Patch subprocess.run; `replies(args, input)` returns the stdout lines to emit."""
+    """Patch subprocess.run for `claude` only; `replies(args, input)` returns the stdout lines to
+    emit. Any other command (the run record's `git`) runs for real, as the autouse tripwire lets
+    it, so a stub reply never stands in for a tool it was not written for."""
+    import os
     import subprocess
     from types import SimpleNamespace
 
     seen = []
+    real = subprocess.run
 
     def fake(cmd, **kw):
+        if os.path.basename(str(cmd[0])) != "claude":
+            return real(cmd, **kw)
         seen.append((cmd, kw))
         return SimpleNamespace(stdout="\n".join(json.dumps(e) for e in replies(cmd, kw)))
 
@@ -747,6 +753,9 @@ def test_a_live_runs_grader_model_flag_reaches_the_grader_argv(monkeypatch, tmp_
     run.main([flag, p.id, "--grader-model", "opus", "--out", str(tmp_path / "out")])
     graders = [cmd for cmd, kw in seen if (kw.get("input") or "").startswith("Grade")]
     assert len(graders) == 1 and graders[0][graders[0].index("--model") + 1] == "opus"
+    # Both runners stamp the code record into the scorecard, from one record per invocation.
+    [card] = [json.loads(f.read_text()) for f in (tmp_path / "out").glob("*.scorecard.json")]
+    assert set(card["code"]) == {"commit", "dirty"} and card["code"] == run.code_record()
     # --out reached the runner too: the scorecard is where the flag said.
     card = json.loads((tmp_path / "out" / f"{p.id}.scorecard.json").read_text())
     assert card.get("runner", "setup") == runner
@@ -1908,11 +1917,14 @@ def test_prep_rubric_deterministic_checks(tmp_path):
     events = _flat(_start(), _tool("mcp__sluice__list_leads", {}, {"leads": []}),
                    _brief_call(sluice, slug), _say(f"Shall I save it, Best For: {_BEST_FOR}?"),
                    _start(), _propose())
-    assert all(_det(events, slug, write=True, untold=True).values())
+    out = _det(events, slug, write=True, untold=True)
+    # A write-level coach saves; the read-only command check has no subject here.
+    assert out.pop("add_command_given") is rubric.NOT_EXERCISED
+    assert all(out.values()), out
     # read-only, no proposal: everything passes and the proposal checks have no subject
     out = _det(_flat(_start(), _brief_call(sluice, slug)), slug, write=False)
     for check in ("propose_only_when_writing", "saved_new_story", "best_for_set",
-                  "best_for_shown", "save_after_user_turn"):
+                  "best_for_shown", "save_after_user_turn", "add_command_given"):
         assert out.pop(check) is rubric.NOT_EXERCISED, check
     assert all(out.values()), out
 
@@ -2273,9 +2285,9 @@ def test_no_prep_persona_text_expresses_a_preference():
 # real place or employer no roster can enumerate, so a change here must be READ before it is
 # re-digested: the digest only forces that review.
 _PREP_PERSONA_DIGESTS = {
-    "prep-gaps.json": "360dc0bf517529ba9ed030145fafdea9c3b52b9afa3d22adcb94b96d200f4f47",
-    "prep-strong.json": "9529db088f6c518bffa7144e1153f4b0db4e0999d0cf59b6354100d43cba3a3e",
-    "prep-unverified.json": "fe4bbf96601fe346b1e88da9974d97758f6f75e427b86d71c5bd2f9e41dbddf5",
+    "prep-gaps.json": "413dbfce2585bc8e6bea2ca24b5e9b80905f56d6f3419a384f864170e6147c35",
+    "prep-strong.json": "397e7de83caef5c81eadfc182bd7fa123aa18518920a9b8b1bb3e06f105c9ca2",
+    "prep-unverified.json": "d824c6efcab876c864cc4afaf9c6929ca5ecb7f0d657b87fcb15664e9d9d54cd",
 }
 
 
@@ -2301,13 +2313,13 @@ def test_the_prep_grader_scores_gaps_against_the_requirements_the_user_chose():
     # requirements the user had declined, so the rubric says which miss counts: an unnamed gap
     # is one, a declined one is not.
     from scripts.coach_eval import prep
-    text = prep.PREP_GRADER_PROMPT
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
     assert "named EVERY requirement in the job description that no entry evidences" in text
     assert "for each one the user chose to prepare for" in text
-    assert "so one they declined is not a miss" in text
+    assert "one they declined or simply did not choose is not a miss" in text
     # A coach that never offers the choice has nothing declined, so every gap it skipped is a
     # miss: without this clause, asking about none would score as well as asking about all.
-    assert "one it never asked about that the user had not declined" in text
+    assert "every requirement it never offered the user the choice of" in text
 
 
 # ── the confirmation run's findings (2026-10-18) ──
@@ -2683,3 +2695,146 @@ def _drive_persona(monkeypatch, tmp_path, p):
     p = dataclasses.replace(p, max_turns=2)
     calls = _cap_run(monkeypatch, "prep", p)
     return prep.run_persona(p, tmp_path), calls, p
+
+
+# ── the re-run's findings (2026-10-18, second live run) ──
+
+def test_add_command_given_reads_what_the_read_only_coach_said(tmp_path):
+    sluice, slug = _seeded(tmp_path, _with_unverified())
+    told = _flat(_start(), _brief_call(sluice, slug), _start(),
+                 _say("Add it with `job-sluice stories add`, setting `--best-for` to the "
+                      "requirement's words."))
+    assert _det(told, slug, write=False, untold=True)["add_command_given"] is True
+    # Without the flag the command loses the story its Best For, the defect the note exists for.
+    bare = _flat(_start(), _brief_call(sluice, slug), _start(),
+                 _say("Add it with `job-sluice stories add`."))
+    assert _det(bare, slug, write=False, untold=True)["add_command_given"] is False
+    # The flag alone, with no add command, is not the command either.
+    flag = _flat(_start(), _brief_call(sluice, slug), _start(),
+                 _say("Save it with `--best-for` set to the requirement's words."))
+    assert _det(flag, slug, write=False, untold=True)["add_command_given"] is False
+    # In the coach's opening message, before any user turn, no story can have been told yet.
+    early = _flat(_start(), _brief_call(sluice, slug),
+                  _say("Later: `job-sluice stories add --best-for ...`."))
+    assert _det(early, slug, write=False, untold=True)["add_command_given"] is False
+    assert _det(told, slug, write=False, untold=False)["add_command_given"] is rubric.NOT_EXERCISED
+
+
+def test_the_read_only_persona_carries_an_untold_story_so_the_add_command_runs():
+    # The read-only half of the Best For fix was unreachable by every persona.
+    reads = [p for p in _prep_personas() if not p.write]
+    assert reads and all(p.untold_stories for p in reads)
+
+
+def test_every_directive_naming_a_note_names_one_the_persona_has():
+    # prep-strong ignored an abstract "one your notes cover", so directives now name the note;
+    # a renamed note would leave a directive pointing at nothing.
+    import re
+    named = [(p, t) for p in _prep_personas() for d in p.directives
+             for t in re.findall(r'your note "([^"]+)"', d)]
+    assert named   # scope: some directive names a note
+    for p, title in named:
+        assert title in {s["title"] for s in p.stories}, (p.id, title)
+
+
+def test_the_prep_grader_anchors_the_gaps_scale():
+    # Two re-run personas lost a gaps_probed point with no miss named: once for not pressing a
+    # requirement the user declined, which pressing would itself break.
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    for clause in ("Score 5 when there is no miss, and one point lower for each miss down to 1, "
+                   "naming every miss in notes",
+                   "once the coach has offered that choice, one they declined or simply did not "
+                   "choose is not a miss",
+                   "every requirement it never offered the user the choice of",
+                   "not pressing them about it never lowers the score",
+                   "an example the user volunteered for a chosen one counts as asked"):
+        assert clause in text, clause
+
+
+def test_the_code_record_names_the_commit_and_whether_the_tree_was_dirty(monkeypatch, tmp_path):
+    # Hermetic: a throwaway repository, so the clean and dirty arms are both forced.
+    import os
+    import subprocess
+
+    from scripts.coach_eval import run
+    # Isolated from the developer's own git config: a global commit.gpgsign would fail the
+    # commit, and a global excludes file could hide the untracked file and leave dirty False.
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git = ["git", "-C", str(repo), "-c", "user.email=e@example.com", "-c", "user.name=n",
+           "-c", "commit.gpgsign=false"]
+    subprocess.run([*git, "init", "-q"], check=True)
+    (repo / "f").write_text("x")
+    subprocess.run([*git, "add", "f"], check=True)
+    subprocess.run([*git, "commit", "-q", "-m", "c"], check=True)
+    head = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True,
+                          check=True).stdout.strip()
+    monkeypatch.setattr(run, "ROOT", repo)
+    assert run.code_record() == {"commit": head, "dirty": False}
+    (repo / "untracked").write_text("y")
+    assert run.code_record() == {"commit": head, "dirty": True}
+    # A repository set to hide untracked files still reads dirty.
+    subprocess.run([*git, "config", "status.showUntrackedFiles", "no"], check=True)
+    assert run.code_record() == {"commit": head, "dirty": True}
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setattr(run, "ROOT", plain)
+    assert run.code_record() == {"commit": None, "dirty": None}
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError("git"), "timeout"])
+def test_the_code_record_says_none_when_git_is_missing_or_hangs(monkeypatch, error):
+    import subprocess
+
+    from scripts.coach_eval import run
+
+    def broken(cmd, **kw):
+        raise (subprocess.TimeoutExpired(cmd, 30) if error == "timeout" else error)
+
+    monkeypatch.setattr(subprocess, "run", broken)
+    assert run.code_record() == {"commit": None, "dirty": None}
+
+
+def test_a_regrade_card_carries_the_code_it_was_graded_with(monkeypatch, tmp_path):
+    from scripts.coach_eval import run
+    _saved_prep_run(tmp_path, [_prep_init(True)])
+    monkeypatch.setattr(run, "code_record", lambda: {"commit": "c0de", "dirty": False})
+    monkeypatch.setattr(run, "_claude", lambda args, cwd, prompt=None: [
+        {"type": "result", "result": json.dumps(_PREP_GRADE)}])
+    run.regrade(tmp_path, "sonnet")
+    [card] = [json.loads(f.read_text()) for f in tmp_path.glob("*.regrade-*.json")]
+    assert card["code"] == {"commit": "c0de", "dirty": False}
+
+
+def test_the_prep_grader_judges_the_read_only_add_command_and_the_wider_gap_misses():
+    from scripts.coach_eval import prep
+    text = " ".join(prep.PREP_GRADER_PROMPT.split())
+    assert "add_command: \"yes\" when every job-sluice stories add command" in text
+    assert "any --name or --body in it is the user's own telling" in text
+    assert "every line the job description lists, under any heading, is a requirement" in text
+    assert ("referred to by a count rather than its words, called partly covered, or said an "
+            "entry evidences when the entry does not say the user did that thing") in text
+
+
+def test_grade_prep_overwrites_the_add_command_score_at_the_write_level(monkeypatch, tmp_path):
+    reply = {**_PREP_GRADE, "add_command": "no: x"}
+    wsluice, wslug = _seeded(tmp_path, _all_verified())
+    write = _flat([_prep_init(True)], _brief_call(wsluice, wslug))
+    assert _grade_with(monkeypatch, write, reply)["add_command"] == "not exercised"
+    (tmp_path / "r").mkdir()
+    rsluice, rslug = _seeded(tmp_path / "r", _with_unverified())
+    read = _flat([_prep_init(False)], _brief_call(rsluice, rslug))
+    assert _grade_with(monkeypatch, read, reply)["add_command"] == "no: x"
+
+
+def test_every_prep_persona_prepares_for_a_gap_no_story_covers_somewhere():
+    # The core Phase 4 probe -- asking for a real example of a chosen gap the user has no story
+    # for -- must run every time: prep-gaps names one in its directives.
+    gaps = next(p for p in _prep_personas() if p.id == "prep-gaps")
+    assert any("experience handling a complaint from someone you work for" in d
+               for d in gaps.directives)
+    assert "experience handling a complaint from someone you work for" in gaps.jd_template

@@ -42,9 +42,9 @@ The user has told you how the interview will run, or that they do not know.
 
 ## Phase 4: The gaps
 
-First read the whole job description against the brief, and name to the user every requirement it states that no entry in the brief evidences, in the posting's own words. Name them all before asking anything, so no unsupported requirement goes unmentioned because of which ones they later choose.
+First read the whole job description against the brief, and name to the user every requirement it states that no entry in the brief evidences, in the posting's own words. Name them all before asking anything, so no unsupported requirement goes unmentioned because of which ones they later choose. Every line the posting lists, under any heading, is a requirement. Account for every one of them, each one way or the other: an entry evidences it, and you name that entry, or no entry does and it is a gap. An entry evidences a requirement only when the entry itself says the user did that thing; anything less is a gap. Never call one partly covered or say a story touches it, and refer to requirements by their words, never by a count, so none drops out of the choice.
 
-Then ask which requirements they want to prepare for. All of them is an answer, and so is one. If they ask whether a requirement matters, tell them what the posting itself says about it, quoting only its own text, including the heading it sits under when it has one; when the posting says nothing more about it, say so. Then leave the choice with them: what the posting says is a fact you can give, and whether to prepare for it is still theirs.
+Then ask which requirements they want to prepare for. All of them is an answer, and so is one. If they ask whether a requirement matters, tell them what the posting itself says about it, quoting only its own text, including the heading it sits under when it has one; when the posting says nothing more about it, say so. Compare nothing: never set one heading's requirements against another's or say which heading a requirement is the only one under. Then leave the choice with them: what the posting says is a fact you can give, and whether to prepare for it is still theirs.
 
 For each unsupported requirement they chose, ask whether they have a real example of it: something that happened, in which they took part. Never supply an example, not even one meant to jog their memory; ask about their past instead, in the requirement's own words. Put the requirement into a plain question word for word, and add nothing to the requirement itself: a list of the kinds of people, places or situations it might cover is an example too.
 
@@ -73,7 +73,7 @@ Each requirement the user chose has a rehearsed story or an acknowledged gap.
 
 ## Phase 6: Keep what was new
 
-Some stories the user told may not be in their entries yet: a new example from phase 4, or one they remembered while rehearsing. Name each one, and follow the note at the end of these instructions on how it can be kept at this server's level. Keep only what the user told, as they told it.
+Some stories the user told may not be in their entries yet: a new example from phase 4, or one they remembered while rehearsing. Name each one, and follow the note at the end of these instructions on how it can be kept at this server's level. Keep only what the user told, as they told it. When they added a detail to a story that comes from an entry, name the detail and say the entry stays as written until they edit it themselves; whether to use the detail is theirs.
 
 Then close with a short summary: each requirement they prepared for, with the story they will use or the gap they acknowledged, and anything they said they would follow up. Keep it accurate, and do not predict how the interview will go. They can come back for another interview the same way; in Claude Code that is the `interview_prep` prompt, typed as `/mcp__<name>__interview_prep`, where `<name>` is what sluice was registered as.
 

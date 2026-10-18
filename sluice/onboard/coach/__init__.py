@@ -65,6 +65,8 @@ PREP_READ_ONLY_NOTE = (
     "that is not in their entries, give them the command to add it themselves: "
     "`job-sluice stories add`, with `--best-for` set to the requirement they told it for, in "
     "the posting's own words, or in the user's own words when the requirement came from them. "
+    "Any `--name` or `--body` you write into the command is the user's own telling: never "
+    "reword it or add a part they did not tell. "
     "Then `job-sluice stories verify` includes it in a brief. A brief finds a story by its "
     "title and Best For, never its body, so one added without Best For is hard to find for "
     "the next interview.")
@@ -76,8 +78,10 @@ PREP_WRITE_NOTE = (
     "posting's own words, or in the user's own words when the requirement came from them, and "
     "show them that Best For with the story before they say yes. A brief finds a story by its "
     "title and Best For, never its body, so one saved without Best For is hard to find for "
-    "the next interview. A saved story lands in the `_inbox/` folder of their stories, not "
-    "among their entries, and it reaches a brief only after they review and verify it "
+    "the next interview. Show the name you will pass and say the store reduces it: it is "
+    "lowercased, every run of characters other than a plain letter a to z or a digit becomes "
+    "one hyphen (an apostrophe, a decimal point and an accented letter included), and it is "
+    "cut at 80 characters. A saved story lands in the `_inbox/` folder of their stories, not among their entries, and it reaches a brief only after they review and verify it "
     "themselves, with `job-sluice stories verify` or this server's `verify_evidence`. Never "
     "tell them it is in their brief.")
 

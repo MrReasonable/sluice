@@ -366,6 +366,12 @@ def prep_brief_ok(events) -> list:
     return [c for c in _calls(events) if c["name"] == PREP and c["ok"] and _outcome(c) == "ok"]
 
 
+def write_level(events) -> bool:
+    """Whether the run's server was at the write level: propose_evidence was among the tools
+    the client listed. Read from the events, so a regrade, which has no persona, answers too."""
+    return any(PROPOSE in (ev.get("tools") or []) for ev in events if ev.get("subtype") == "init")
+
+
 def saved_stories(events) -> list:
     """Every story the coach SAVED: a propose_evidence call of kind `stories` that answered
     without error AND with outcome `proposed`, in stream order. The outcome, not only `ok`: the
@@ -383,7 +389,8 @@ def prep_deterministic(events, *, slug, write, kept, max_turns, finished, untold
     returned it; `kept` is the set of tool names the coach may use, PREFIXED as the client
     reports them (prep.expected_tools), so any other name attempted is a breach, a built-in
     included. `untold` says the persona carries a story its notes do not hold, which is what
-    makes the save path a subject at the write level rather than a chance; `notes` are the
+    makes the save path a subject at the write level rather than a chance, and at read-only
+    makes `add_command_given` (the `stories add --best-for` command) one; `notes` are the
     seeded notes' titles, since saving one of those again is not saving a new story."""
     calls = _calls(events)
     ok = prep_brief_ok(events)
@@ -438,6 +445,15 @@ def prep_deterministic(events, *, slug, write, kept, max_turns, finished, untold
         # there had no user turn to say yes in. Setup's `save_after_user_turn` is the same rule.
         "save_after_user_turn": (_when(bool(stories), all(c["inv"] >= 1 for c in stories)),
                                  "every saved story came after a user turn"),
+        # The read-only half of the Best For fix: no save is possible, so the coach must hand
+        # the user the command, with its --best-for flag. Read from what the coach said.
+        # After the first user turn: the coach's opening message answers the slash command,
+        # before any story could have been told.
+        "add_command_given": (_when(bool(untold) and not write, any(
+            "stories add" in text and "--best-for" in text
+            for inv, text in said.items() if inv >= 1)),
+                              "at read-only, with a story the notes do not hold, the coach gave "
+                              "the `job-sluice stories add` command with `--best-for`"),
         "best_for_set": (_when(bool(stories), all(best_for(c) for c in stories)),
                          "every saved story carries a Best For"),
         "best_for_shown": (_when(bool(stories), all(shown(c) for c in stories)),

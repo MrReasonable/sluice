@@ -609,3 +609,54 @@ def test_the_verify_route_the_coach_gives_for_a_hand_placed_entry_really_works(t
     assert [e["title"] for e in vault.read_evidence("stories", verified_only=False)] == []
     assert vault.verify_evidence("stories", "Hand note", today="2026-10-18", reviewed=text)
     assert [e["title"] for e in vault.read_evidence("stories")] == ["Hand note"]
+
+
+
+def test_rehearse_accounts_for_every_requirement_one_way_or_the_other_and_never_counts():
+    # The re-run's coach dropped one of six requirements from the choice ("any of the five")
+    # and called another "touched"; run 2's said "two" of three. Both recur, so the rule is
+    # stated: every requirement evidenced by a named entry or a gap, by its words.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "account for every one of them, each one way or the other" in low
+    assert "never call one partly covered or say a story touches it" in low
+    assert "refer to requirements by their words, never by a count" in low
+
+
+def test_rehearse_compares_no_headings_when_it_quotes_what_the_posting_says():
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "compare nothing: never set one heading's requirements against another's" in low
+
+
+def test_rehearse_names_a_detail_added_to_an_entry_and_leaves_the_entry_as_written():
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "say the entry stays as written until they edit it themselves" in low
+
+
+def test_the_write_note_says_how_a_saved_name_is_stored(tmp_path):
+    # The coach showed a title the store then reduced; the note now says how, measured against
+    # the reducer on the inputs where "dropped" and "becomes a hyphen" disagree.
+    from sluice.core.vault import evidence_slug
+    note = " ".join(coach.PREP_WRITE_NOTE.split())
+    assert ("every run of characters other than a plain letter a to z or a digit becomes one "
+            "hyphen (an apostrophe, a decimal point and an accented letter included), and it is "
+            "cut at 80 characters") in note
+    assert evidence_slug("Didn't miss a deadline") == "didn-t-miss-a-deadline"
+    assert evidence_slug("Cut costs 3.5%") == "cut-costs-3-5"
+    assert evidence_slug("Caf\u00e9 rollout") == "caf-rollout"
+    assert len(evidence_slug("a" * 81)) == 80
+
+
+
+def test_rehearse_counts_an_entry_as_evidence_only_when_it_says_the_user_did_that_thing():
+    # Banning "partly covered" without a direction invites rounding up, which takes a
+    # requirement off the gap list on evidence the user's note does not hold.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert ("an entry evidences a requirement only when the entry itself says the user did that "
+            "thing; anything less is a gap") in low
+    assert "every line the posting lists, under any heading, is a requirement" in low
+
+
+def test_the_read_only_note_keeps_the_users_own_words_in_the_command():
+    note = " ".join(coach.PREP_READ_ONLY_NOTE.split())
+    assert ("Any `--name` or `--body` you write into the command is the user's own telling: "
+            "never reword it or add a part they did not tell") in note
