@@ -237,6 +237,28 @@ def cap_reached(turn, max_turns, message, transcript) -> bool:
     return True
 
 
+def code_record() -> dict:
+    """The code a scorecard came from: the commit, and whether the tree was dirty, since a
+    scorecard from uncommitted code names no commit truthfully. Either is None when git cannot
+    say. Stamped into EVERY scorecard and regrade card, so the record travels with the file it
+    describes: the review of the 2026-10-18 re-run paired two run directories one off because
+    nothing in them said which code each ran, and a per-directory record would be rewritten
+    by the next run into the same directory."""
+    def git(*args):
+        # A missing git binary, or one that hangs, is "git cannot say", never a crash: this
+        # runs before any grading, in both main() and regrade().
+        try:
+            done = subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True,
+                                  text=True, timeout=30)
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        return done.stdout.strip() if done.returncode == 0 else None
+    # --untracked-files=all overrides a `status.showUntrackedFiles=no` setting, which would
+    # hide an untracked source file and record a dirty tree as clean.
+    status = git("status", "--porcelain", "--untracked-files=all")
+    return {"commit": git("rev-parse", "HEAD"), "dirty": None if status is None else bool(status)}
+
+
 def finished(transcript) -> bool:
     """The run ended on the user's DONE, not at the turn cap or on a failure: the transcript's
     last entry is the user's DONE, so the cap marker and an empty-reply stop both read as not
@@ -359,12 +381,13 @@ def regrade(directory, model):
     """Re-grade every saved run in `directory` with `model`; spends only the grader call."""
     directory = Path(directory)
     safe = "".join(c if c.isalnum() or c in "-._" else "_" for c in model)
+    code = code_record()
     # The grader's empty working directory; removed afterwards, whatever happens.
     with tempfile.TemporaryDirectory(prefix="coach-eval-regrade-") as sandbox:
         for pid, events, transcript, runner in _saved_runs(directory):
             _, grade_for = _grading(runner)
             llm, failure = grade_for(events, transcript, model, Path(sandbox))
-            card = {"persona": pid, "grader_model": model, "llm_graded": llm}
+            card = {"persona": pid, "grader_model": model, "llm_graded": llm, "code": code}
             if runner != "setup":
                 card["runner"] = runner
             if failure:
@@ -373,11 +396,12 @@ def regrade(directory, model):
             print(json.dumps(card))
 
 
-def run_persona(p, out_dir, grader_model=GRADER_MODEL):
+def run_persona(p, out_dir, grader_model=GRADER_MODEL, code=None):
     # The sandbox is removed on success AND on the SystemExit an isolation failure or a timeout
     # raises; mkdtemp left one behind per persona per run. Scorecards go to `out_dir`, not here.
+    # `code` is `code_record()`, stamped into the scorecard when given.
     with tempfile.TemporaryDirectory(prefix=f"coach-eval-{p.id}-") as sandbox:
-        return _run_in_sandbox(p, out_dir, grader_model, Path(sandbox))
+        return _run_in_sandbox(p, out_dir, grader_model, Path(sandbox), code)
 
 
 def write_mcp_config(sandbox, server_args) -> Path:
@@ -391,7 +415,7 @@ def write_mcp_config(sandbox, server_args) -> Path:
     return mcp
 
 
-def _run_in_sandbox(p, out_dir, grader_model, sandbox):
+def _run_in_sandbox(p, out_dir, grader_model, sandbox, code=None):
     empty = sandbox / "client-cwd"
     empty.mkdir()
     mcp = write_mcp_config(sandbox, ["--sandbox", str(sandbox)]
@@ -460,6 +484,8 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
             "deterministic": {k: {"result": rubric.verdict(v[0]), "check": v[1]}
                               for k, v in det.items()},
             "llm_graded": llm}
+    if code is not None:
+        card["code"] = code
     if p.scenario:
         card["scenario"] = p.scenario
     if board:
@@ -526,6 +552,7 @@ def main(argv=None):
                                                   "--print-grader-prompt"))
     out = _outside_repo(args.out or tempfile.mkdtemp(prefix="coach-eval-out-"), "--out")
     out.mkdir(parents=True, exist_ok=True)
+    code = code_record()
     if args.prep_persona or args.prep_all:
         from scripts.coach_eval import prep
         ps = personas.load_prep_personas(PREP_PERSONAS)
@@ -534,7 +561,7 @@ def main(argv=None):
             raise SystemExit(f"coach_eval: no prep persona {args.prep_persona!r}; valid: "
                              f"{', '.join(p.id for p in ps)}")
         for p in chosen:
-            print(json.dumps(prep.run_persona(p, out, args.grader_model)))
+            print(json.dumps(prep.run_persona(p, out, args.grader_model, code=code)))
         print(f"scorecards in {out}")
         return
     ps = personas.load_personas(ROOT / "scripts" / "coach_eval" / "personas")
@@ -542,7 +569,7 @@ def main(argv=None):
     if not chosen:
         raise SystemExit("coach_eval: name a --persona or pass --all")
     for p in chosen:
-        print(json.dumps(run_persona(p, out, args.grader_model)))
+        print(json.dumps(run_persona(p, out, args.grader_model, code=code)))
     print(f"scorecards in {out}")
 
 

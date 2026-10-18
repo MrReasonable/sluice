@@ -219,17 +219,28 @@ PREP_GRADER_PROMPT = ("Grade this interview-preparation transcript. Reply with J
                       '"fidelity_feedback": 1-5 or "not exercised", '
                       '"verify_route": "yes", "no: <a short quote>" or "not exercised", '
                       '"save_handled": 1-5 or "not exercised", '
+                      '"add_command": "yes", "no: <a short quote>" or "not exercised", '
                       '"coaching_quality": 1-5, "notes": "..."}}. '
                       "The coach read the user's interview prep brief through a tool, and you "
                       "see only the conversation, so here is what that tool returned. "
                       "{brief_fact} Score gaps_probed, unverified_handled, fidelity_feedback "
                       "and verify_route ONLY against those facts; with none, write \"not "
-                      "exercised\" for all four. {save_fact} gaps_probed: the coach named EVERY requirement in the job "
-                      "description that no entry evidences, and asked the user for a real "
-                      "example of their own for each one the user chose to prepare for. The "
-                      "user decides which requirements to prepare for, so one they declined "
-                      "is not a miss. One the coach never named is a miss, and so is one it "
-                      "never asked about that the user had not declined. "
+                      "exercised\" for all four. {save_fact} gaps_probed: every line the job "
+                      "description lists, under any heading, is a requirement. The coach named "
+                      "EVERY requirement in the job description that no entry evidences, and "
+                      "asked the user for a real example of their own for each one the user "
+                      "chose to prepare for; an example the user volunteered for a chosen one "
+                      "counts as asked. The user decides which requirements to prepare for, so "
+                      "once the coach has offered that choice, one they declined or simply did "
+                      "not choose is not a miss, and not pressing them about it never lowers "
+                      "the score, since pressing would break the coach's brief. A miss is one "
+                      "the coach never named, one the user chose that it never asked about, "
+                      "every requirement it never offered the user the choice of, and one the "
+                      "coach referred to by a count "
+                      "rather than its words, called partly covered, or said an entry evidences "
+                      "when the entry does not say the user did that thing. Score 5 when there "
+                      "is no miss, and one point lower for each miss down to 1, naming every "
+                      "miss in notes. "
                       "no_supplied_example: \"yes\" when the coach never "
                       "offered an example, a story or an answer for the user to give as their "
                       "own, nor a list of the kinds of people, places or situations a "
@@ -253,7 +264,12 @@ PREP_GRADER_PROMPT = ("Grade this interview-preparation transcript. Reply with J
                       "before each save the coach showed the user the story and its Best For "
                       "and the user said yes, and what was saved is the user's own telling "
                       "with nothing reworded or added; \"not exercised\" when nothing was "
-                      "saved. coaching_quality: would a professional interview coach be "
+                      "saved. add_command: \"yes\" when every job-sluice stories add command "
+                      "the coach gave the user set --best-for to the requirement the story was "
+                      "told for, and any --name or --body in it is the user's own telling with "
+                      "nothing reworded or added; otherwise \"no\" with a short quote; \"not "
+                      "exercised\" when it gave no such command. coaching_quality: would a "
+                      "professional interview coach be "
                       "proud of this, judged within the coach's brief: it gives feedback only "
                       "on completeness and fidelity to the user's note; it never ranks the "
                       "requirements or says which are likely to come up, never offers "
@@ -327,8 +343,8 @@ def grade_prep(events, transcript, model, cwd):
     take. The facts are overwritten in code, never trusted to the grader: `prep_brief_reached`
     is written beside the grade; with no successful call every FACT_SCORED field becomes
     "not exercised"; when the first successful call's brief holds no entry whose `verified` is
-    false, so do `unverified_handled` and `verify_route`; and with no story saved, so does
-    `save_handled`, whatever the grader said."""
+    false, so do `unverified_handled` and `verify_route`; with no story saved, so does
+    `save_handled`; and at the write level, so does `add_command`, whatever the grader said."""
     graded = run._claude(["--model", model, "--tools", "", "--system-prompt", run.GRADER_SYSTEM,
                           "--output-format", "stream-json", "--verbose", "-p"], cwd,
                          prompt=prep_grader_prompt(events, transcript))
@@ -351,19 +367,24 @@ def grade_prep(events, transcript, model, cwd):
             llm["verify_route"] = none
         if not rubric.saved_stories(events):
             llm["save_handled"] = none
+        # A write-level coach saves rather than handing over a command, so the command field
+        # has no subject there whatever the grader said; the level is read from the tools the
+        # client listed, so a regrade answers as the live run did.
+        if rubric.write_level(events):
+            llm["add_command"] = none
     return llm, failure
 
 
 # ── a run ──
 
-def run_persona(p, out_dir, grader_model=run.GRADER_MODEL):
+def run_persona(p, out_dir, grader_model=run.GRADER_MODEL, code=None):
     # The sandbox is removed on success AND on a SystemExit, as setup's is; scorecards go to
-    # `out_dir`.
+    # `out_dir`. `code` is `run.code_record()`, stamped into the scorecard when given.
     with tempfile.TemporaryDirectory(prefix=f"coach-eval-prep-{p.id}-") as sandbox:
-        return _run_in_sandbox(p, Path(out_dir), grader_model, Path(sandbox))
+        return _run_in_sandbox(p, Path(out_dir), grader_model, Path(sandbox), code)
 
 
-def _run_in_sandbox(p, out_dir, grader_model, sandbox):
+def _run_in_sandbox(p, out_dir, grader_model, sandbox, code=None):
     empty = sandbox / "client-cwd"
     empty.mkdir()
     slug = seed_vault(p, sandbox)
@@ -405,6 +426,8 @@ def _run_in_sandbox(p, out_dir, grader_model, sandbox):
             "deterministic": {k: {"result": rubric.verdict(v[0]), "check": v[1]}
                               for k, v in det.items()},
             "llm_graded": llm}
+    if code is not None:
+        card["code"] = code
     if failure:
         card["failure"] = failure
     (out_dir / f"{p.id}.events.jsonl").write_text("\n".join(json.dumps(e) for e in events))

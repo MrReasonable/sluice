@@ -25,6 +25,13 @@
   ],
   "max_turns": 16,
   "directives": [
-    "Choose at least one requirement one of your notes covers, and prepare for at most two requirements in all."
+    "Prepare for two requirements: the one your note \"Caught a billing error before it went out\" covers, and the one your story that is not in your notes fits."
+  ],
+  "untold_stories": [
+    {
+      "title": "Kept a running log of every query and its answer",
+      "company": "Example Cartography",
+      "body": "**Situation.** Questions about wording came in from several people, and answers were getting lost in long email threads.\n\n**Task.** I wanted one place where every question and its answer could be found again.\n\n**Action.** I kept a shared log with the date, the question, who asked it and the answer agreed, and I added each new one the same day.\n\n**Result.** Repeat questions dropped, and a new colleague used the log to learn the agreed wording in their first week."
+    }
   ]
 }

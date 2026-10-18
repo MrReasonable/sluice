@@ -94,17 +94,23 @@ Two optional fields steer a run onto paths it would otherwise reach only by chan
 simulated user (who tells one when the coach asks about a requirement it fits, and agrees when
 the coach offers to save it), never seeded, so each carries a title, company and body but no
 `verified` and no `best_for` (what the coach saves it under is the coach's to choose). Every
-write-level persona carries one, so the save path and its Best For run every time; the confirmation run of 2026-10-18 told no new story, and
-the Best For fix went untested while every check read green. `directives` are what the user
-wants from the session, one line each: `prep-gaps` asks whether a requirement matters (the
-posting-fact rule) and prepares for the requirement its untold story fits, `prep-strong`
-prepares for one requirement a verified note covers and the one its untold story fits (a
-settled entry's fidelity check plus the save), and `prep-unverified` chooses a requirement its
-unverified notes cover (the read-back rule). The directives section tells the simulated user it
-comes before the base rule to answer only what it is asked. Each is validated like a
-story's text, and an untold story may not share a title with any other story. The write-level personas and
-`prep-unverified` take 16 coach messages, measured: at 12, `prep-strong` stopped mid-rehearsal
-before the summary.
+persona carries one: at the write level it drives the save path and its Best For, and at
+read-only the `stories add --best-for` command (`add_command_given`). The confirmation run of
+2026-10-18 told no new story, and the Best For fix went untested while every check read green.
+`directives` are what the user wants from the session, one line each, and a directive that
+means a particular note names it, since `prep-strong` ignored an abstract "one your notes
+cover" (a test requires every named note to exist): `prep-gaps` asks, after the coach lists the
+gaps, whether one of them matters by name (the posting-fact rule) and prepares for the
+requirement its untold story fits; `prep-strong` and `prep-unverified` each prepare for the
+requirement a named note covers (a settled entry's fidelity check, or the unverified read-back)
+and the one their untold story fits. The directives section tells the simulated user it comes
+before the base rule to answer only what it is asked. Each is validated like a story's text,
+and an untold story may not share a title with any other story. Every prep persona takes 16
+coach messages, measured: at 12, `prep-strong` stopped mid-rehearsal before the summary.
+
+One branch no persona reaches, stated: a Best For in the user's own words, for a requirement
+that came from the user rather than the posting. Every untold story fits a posting requirement,
+so that clause of both capture notes is pinned only by `tests/test_coach_prompt.py`.
 
 **Seeding** (`prep.seed_vault`): before the coach starts, the persona's lead is created in the
 sandbox's vault with its url on the reserved host `jobs.example.com`, its job description
@@ -142,16 +148,22 @@ outside the kept set was attempted, a built-in included); `propose_only_when_wri
 untold story saved a story with `propose_evidence`, kind `stories`, that is not a seeded note;
 a denied save does not count, and which story was saved is left to the grader rather than
 matched against the persona's text, since the coach saves the user's own telling);
-`save_after_user_turn` (no save in the coach's first message); `best_for_set` (every saved
+`save_after_user_turn` (no save in the coach's first message); `add_command_given` (at
+read-only, with an untold story, the coach gave `job-sluice stories add` with `--best-for`);
+`best_for_set` (every saved
 story carries a Best For); `best_for_shown` (the coach's message before each save, the one the
 user said yes to, shows that Best For: an earlier message would not do, since the coach quotes
 the requirement when it names the gaps); `no_tool_denied`; `turns`; `finished` (as in setup's,
 below). The save checks all read one list, `rubric.saved_stories`, which counts only a save
 with outcome `proposed` (a refused name clash wrote nothing). Graded (sonnet by
-default): `gaps_probed`, `no_supplied_example` (`yes`, or `no` with a quote),
+default): `gaps_probed` (5 with no miss, one point off per miss down to 1, each miss named in
+the notes; once the coach has offered the choice, a requirement the user declined or did not
+choose is never one, and every requirement is one when the coach never offered it), `no_supplied_example` (`yes`, or `no` with a quote),
 `unverified_handled`, `fidelity_feedback`, `verify_route` (an unverified entry's note is
 outside the inbox, so the route to verifying it is to move it there first), `save_handled`
-(consent before each save, and the user's own words saved), `coaching_quality` (judged within
+(consent before each save, and the user's own words saved), `add_command` (at read-only, the
+`stories add` command sets `--best-for` and keeps the user's own words; overwritten to `not
+exercised` at the write level, read from the tools the client listed), `coaching_quality` (judged within
 the coach's brief, so restraint the playbook requires is never marked down), plus notes. The
 grader is told what the FIRST successful call returned (each entry's title, verified label and
 body, and the job description), or `prep.NO_BRIEF_FACT`, and each story saved, from the same
@@ -161,6 +173,11 @@ call, `gaps_probed`, `unverified_handled`, `fidelity_feedback` and `verify_route
 `not exercised`; with no unverified
 entry in that brief, so do `unverified_handled` and `verify_route`; and with no story saved, so
 does `save_handled`. The same holds in a regrade.
+
+**The code record** (`code`, in every scorecard and regrade card, both runners, from
+`run.code_record()`): the `commit` it came from and whether the tree was `dirty`, each `null`
+when git cannot say. It travels with the file it describes, so two runs cannot be paired
+wrongly later, and a second run into the same directory relabels nothing.
 
 **Scorecard keys** (`<id>.scorecard.json`): `runner` (`"prep"`), `persona`, `write`, `slug`,
 `prep_brief_reached`, `files`, `deterministic`, `llm_graded`, and `failure` when one happened.
