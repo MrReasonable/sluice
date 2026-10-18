@@ -542,3 +542,70 @@ def test_rehearse_answers_whether_a_requirement_matters_with_what_the_posting_sa
     assert "including the heading it sits under when it has one" in low
     assert "quoting only its own text" in low
     assert "when the posting says nothing more about it, say so" in low
+
+
+def test_rehearse_keeps_a_guessed_interview_format_a_guess():
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "if they offer a guess, it stays a guess" in low
+
+
+def test_rehearse_asks_for_an_example_in_the_requirements_own_words_adding_nothing():
+    # The confirmation run's coach asked about "someone from outside your organisation, such as
+    # a client, a supplier or a partner": a list of kinds is an example meant to jog memory.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    # A plain question around the exact quote, since a requirement worded as a noun phrase
+    # ("experience with ...") asks nothing on its own; nothing is added to the requirement.
+    assert "put the requirement into a plain question word for word, and add nothing to the " \
+        "requirement itself" in low
+    assert "a list of the kinds of people, places or situations it might cover is an example" \
+        in low
+
+
+def test_rehearse_quotes_the_users_own_words_when_it_points_at_what_they_said():
+    # The confirmation run's coach told the user a statement carried a detail it did not.
+    low = " ".join(coach.read_playbook("rehearse").lower().split())
+    assert "quote their own words from the conversation" in low
+    assert "never credit them with a detail their words do not contain" in low
+
+
+def test_no_prep_surface_says_verify_reaches_an_entry_outside_the_inbox():
+    # `<kind> verify` reviews only `_inbox/`, so wording an unverified entry as "not reviewed
+    # through verify" sent the coach to tell users to run a command that does nothing for it,
+    # in both live runs. Every surface the coach reads now says where verify looks.
+    from sluice import mcpserver
+    surfaces = {"rehearse": coach.read_playbook("rehearse"),
+                "_PREP_ENTRIES_WARNING": mcpserver._PREP_ENTRIES_WARNING,
+                "_GET_LEAD_PREP_BRIEF_NOTE": mcpserver._GET_LEAD_PREP_BRIEF_NOTE}
+    for name, text in surfaces.items():
+        flat = " ".join(text.split())
+        assert "reviewed through `job-sluice <kind> verify`" not in flat, name
+        assert "`_inbox/` folder" in flat, name
+
+
+def test_the_verify_route_the_coach_gives_for_a_hand_placed_entry_really_works(tmp_path):
+    # rehearse.md tells the user to move an unverified note into its kind's `_inbox/` and run
+    # `verify`. Measured end to end through the store that command drives: outside the inbox
+    # the entry is not pending; moved in, it is, and approving it makes it a verified entry.
+    import shutil
+
+    from sluice.core.protocols import EVIDENCE_KINDS
+    from sluice.core.vault import INBOX_SUBDIR, Vault
+    assert "move the note into that folder first, then run it" in " ".join(
+        coach.read_playbook("rehearse").split())
+    vault = Vault(str(tmp_path))
+    folder = tmp_path / EVIDENCE_KINDS["stories"].relpath
+    folder.mkdir(parents=True)
+    note = folder / "Hand note.md"
+    note.write_text("---\nCompany: Example Co\nBest For: b\n---\nA thing I did.\n")
+    assert [e["title"] for e in vault.read_pending_evidence("stories")] == []
+    (folder / INBOX_SUBDIR).mkdir()
+    shutil.move(note, folder / INBOX_SUBDIR / note.name)
+    assert [e["title"] for e in vault.read_pending_evidence("stories")] == ["Hand note"]
+    text = vault.read_pending_evidence_text("stories", "Hand note")
+    # The cost the playbook states: once in the inbox, the note is no longer read into a brief
+    # (a brief reads the folder, never the inbox) until it is verified.
+    assert "until they verify it, a note in that folder is no longer read into a brief" in " ".join(
+        coach.read_playbook("rehearse").lower().split())
+    assert [e["title"] for e in vault.read_evidence("stories", verified_only=False)] == []
+    assert vault.verify_evidence("stories", "Hand note", today="2026-10-18", reviewed=text)
+    assert [e["title"] for e in vault.read_evidence("stories")] == ["Hand note"]
