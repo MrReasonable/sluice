@@ -6,6 +6,6 @@
     "rulesync": "node_modules/.bin/rulesync generate -t 'claudecode,agentsmd' -f '*' && python3 scripts/guard_emitted_outputs.py ."
   },
   "devDependencies": {
-    "rulesync": "32.0.0"
+    "rulesync": "40.2.0"
   }
 }
