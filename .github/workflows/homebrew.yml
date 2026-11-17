@@ -99,7 +99,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - name: Check out the tap at the planned commit
@@ -140,7 +140,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -198,7 +198,7 @@ jobs:
           ROOT_URL: ${{ needs.plan.outputs.root_url }}
           PLATFORMS: ${{ needs.plan.outputs.platforms }}
         run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" validate-bottles
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: tap-token
         with:
           client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
@@ -230,7 +230,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -300,7 +300,7 @@ jobs:
           VERSION: ${{ inputs.version }}
           CALLER: ${{ needs.plan.outputs.caller }}
         run: python3 -P "$GITHUB_WORKSPACE/scripts/homebrew_bottles.py" push-prepare
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
         id: tap-token
         with:
           client-id: ${{ secrets.RELEASE_PLEASE_CLIENT_ID }}
